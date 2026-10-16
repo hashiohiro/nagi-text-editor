@@ -1,0 +1,11 @@
+[package]
+name = "nagi-core"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+# GPU・OS に依存しない純粋なロジック（バッファ、カーソル、移動）
+[dependencies]
+ropey.workspace = true
+unicode-width.workspace = true
+unicode-segmentation.workspace = true

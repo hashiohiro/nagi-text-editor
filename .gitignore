@@ -1,0 +1,8 @@
+/target
+**/target
+*.pdb
+/spikes/**/results/*.csv
+# スパイクの画面キャプチャ（大きいので入れない。ログと結果の文書は残す）
+/spikes/**/results/*.bmp
+/spikes/**/results/*.png
+*.nagi-tmp

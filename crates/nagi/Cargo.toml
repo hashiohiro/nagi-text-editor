@@ -1,0 +1,23 @@
+[package]
+name = "nagi"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "nagi"
+path = "src/main.rs"
+
+[dependencies]
+nagi-core.workspace = true
+nagi-text.workspace = true
+nagi-render.workspace = true
+winit.workspace = true
+unicode-segmentation.workspace = true
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_System_Performance",
+    "Win32_System_ProcessStatus",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+] }

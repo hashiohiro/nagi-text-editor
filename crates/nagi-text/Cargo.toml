@@ -1,0 +1,11 @@
+[package]
+name = "nagi-text"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+dwrote.workspace = true
+swash.workspace = true
+unicode-width.workspace = true
+unicode-segmentation.workspace = true

@@ -1,0 +1,29 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace.dependencies]
+nagi-core = { path = "crates/nagi-core" }
+nagi-text = { path = "crates/nagi-text" }
+nagi-render = { path = "crates/nagi-render" }
+nagi-platform = { path = "crates/nagi-platform" }
+winit = "=0.30.13"
+windows = "0.62.2"
+windows-sys = "0.61.2"
+dwrote = "=0.11.5"
+swash = "=0.2.10"
+unicode-width = "0.2.2"
+unicode-segmentation = "1.13.3"
+ropey = "=2.0.0-beta.1"
+
+[profile.release]
+debug = "line-tables-only"
+panic = "abort"
+
+[profile.dev.package."*"]
+opt-level = 2
