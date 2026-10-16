@@ -120,7 +120,13 @@ fn parse_into(rc: &mut Rc, text: &str, name: &str, depth: usize) {
                     continue;
                 }
                 let lhs = parse_keys(lhs, &rc.leader);
-                let rhs = parse_keys(rhs, &rc.leader);
+                let mut rhs = parse_keys(rhs, &rc.leader);
+                // `:%s///cg<Left>...` のように置換コマンドを途中まで入力して止まる割り当ては、
+                // Nagi の置換（最下行の 2 行で入力し、本文に予告表示する）を開く形に読み替える
+                let typed: String = rhs.iter().filter_map(|k| if let crate::Key::Char(c) = k { Some(*c) } else { None }).collect();
+                if typed.starts_with(':') && typed.contains("%s/") && rhs.last() != Some(&crate::Key::Enter) {
+                    rhs = parse_keys(":<C-u>%s///cg<CR>", &rc.leader);
+                }
                 rc.keymap.add(lhs, rhs, noremap);
             }
             _ => note(rc, "未対応のコマンド"),
@@ -155,5 +161,7 @@ nnoremap <leader><leader>R :<C-u>source ~/.ideavimrc \| echo "Reloaded"<CR>
         let zj = rc.keymap.normal.iter().find(|m| m.lhs == vec![Key::Char(' '), Key::Char('z'), Key::Char('j')]).unwrap();
         assert_eq!(zj.rhs, parse_keys(":action Back<CR>", " "));
         assert_eq!(rc.notes.len(), 1, "{:?}", rc.notes);
+        let rc = parse_rc("nnoremap <C-s> :<C-u>%s///cg<left><left><left><left>");
+        assert_eq!(rc.keymap.normal[0].rhs, parse_keys(":<C-u>%s///cg<CR>", " "));
     }
 }

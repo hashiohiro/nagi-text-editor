@@ -7,5 +7,6 @@ publish.workspace = true
 # GPU・OS に依存しない純粋なロジック（バッファ、カーソル、移動）
 [dependencies]
 ropey.workspace = true
+regex = "1.13.1"
 unicode-width.workspace = true
 unicode-segmentation.workspace = true

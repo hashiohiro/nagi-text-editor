@@ -5,6 +5,7 @@
 //! エディタに届き、[`action::ideavim`] の対応表で Nagi の機能に振り分ける。
 
 pub mod action;
+pub mod cmd;
 mod key;
 mod map;
 mod rc;

@@ -13,6 +13,7 @@ const LT: LineType = LineType::LF_CR;
 pub const TAB_WIDTH: usize = 4;
 
 mod history;
+pub mod textops;
 pub use history::{Change, History};
 
 /// 構文木の更新用に記録する編集（位置は (行, 行内 byte)）
@@ -144,6 +145,11 @@ impl Buffer {
         Change { at: start, removed, inserted: text.to_string() }
     }
 
+    /// バッファ全体の文字列（検索・括弧の対応・text object の計算用）
+    pub fn text(&self) -> String {
+        self.slice_string(0, self.rope.len())
+    }
+
     pub fn has_edits(&self) -> bool {
         !self.edits.is_empty()
     }
@@ -229,23 +235,7 @@ pub struct Motion<'a> {
     pub ambiguous_wide: bool,
 }
 
-#[derive(PartialEq, Eq, Clone, Copy)]
-enum Class {
-    Space,
-    Word,
-    Punct,
-}
-
-fn class(g: &str) -> Class {
-    let c = g.chars().next().unwrap_or(' ');
-    if c.is_whitespace() {
-        Class::Space
-    } else if c.is_alphanumeric() || c == '_' {
-        Class::Word
-    } else {
-        Class::Punct
-    }
-}
+use textops::{Class, class};
 
 impl Motion<'_> {
     fn set_byte(&self, cur: &mut Cursor, line: &str, byte: usize) {
@@ -283,7 +273,7 @@ impl Motion<'_> {
     /// `^`: 行頭の空白を飛ばした最初の文字
     pub fn first_non_blank(&self, cur: &mut Cursor) {
         let line = self.buf.line(cur.line);
-        let b = line.grapheme_indices(true).find(|(_, g)| class(g) != Class::Space).map_or(0, |(i, _)| i);
+        let b = line.grapheme_indices(true).find(|(_, g)| class(g, false) != Class::Space).map_or(0, |(i, _)| i);
         self.set_byte(cur, &line, b);
     }
 
@@ -300,18 +290,18 @@ impl Motion<'_> {
     }
 
     /// `w`: 次の単語の先頭（行をまたぐ）
-    pub fn word_forward(&self, cur: &mut Cursor) {
+    pub fn word_forward(&self, cur: &mut Cursor, big: bool) {
         let mut line_no = cur.line;
         let mut line = self.buf.line(line_no);
         let gs: Vec<(usize, &str)> = line.grapheme_indices(true).collect();
         let start = gs.iter().position(|(i, _)| *i == cur.byte).unwrap_or(0);
-        let cls = gs.get(start).map_or(Class::Space, |(_, g)| class(g));
+        let cls = gs.get(start).map_or(Class::Space, |(_, g)| class(g, big));
         // 同じ種類を飛ばし、続く空白を飛ばす
         let mut k = start;
-        while k < gs.len() && class(gs[k].1) == cls && cls != Class::Space {
+        while k < gs.len() && class(gs[k].1, big) == cls && cls != Class::Space {
             k += 1;
         }
-        while k < gs.len() && class(gs[k].1) == Class::Space {
+        while k < gs.len() && class(gs[k].1, big) == Class::Space {
             k += 1;
         }
         if k < gs.len() {
@@ -323,7 +313,7 @@ impl Motion<'_> {
         while line_no + 1 < self.buf.line_count() {
             line_no += 1;
             line = self.buf.line(line_no);
-            if let Some((i, _)) = line.grapheme_indices(true).find(|(_, g)| class(g) != Class::Space) {
+            if let Some((i, _)) = line.grapheme_indices(true).find(|(_, g)| class(g, big) != Class::Space) {
                 cur.line = line_no;
                 self.set_byte(cur, &line, i);
                 return;
@@ -337,19 +327,19 @@ impl Motion<'_> {
     }
 
     /// `e`: 単語の末尾（今が末尾なら次の単語の末尾。行をまたぐ）
-    pub fn word_end(&self, cur: &mut Cursor) {
+    pub fn word_end(&self, cur: &mut Cursor, big: bool) {
         let mut line_no = cur.line;
         let mut line = self.buf.line(line_no);
         // 1 つ進めてから、空白を飛ばし、同じ種類の終わりまで進む
         let mut gs: Vec<(usize, &str)> = line.grapheme_indices(true).collect();
         let mut k = gs.iter().position(|(i, _)| *i == cur.byte).map_or(0, |k| k + 1);
         loop {
-            while k < gs.len() && class(gs[k].1) == Class::Space {
+            while k < gs.len() && class(gs[k].1, big) == Class::Space {
                 k += 1;
             }
             if k < gs.len() {
-                let cls = class(gs[k].1);
-                while k + 1 < gs.len() && class(gs[k + 1].1) == cls {
+                let cls = class(gs[k].1, big);
+                while k + 1 < gs.len() && class(gs[k + 1].1, big) == cls {
                     k += 1;
                 }
                 let b = gs[k].0;
@@ -368,19 +358,19 @@ impl Motion<'_> {
     }
 
     /// `b`: 前の単語の先頭（行をまたぐ）
-    pub fn word_backward(&self, cur: &mut Cursor) {
+    pub fn word_backward(&self, cur: &mut Cursor, big: bool) {
         let mut line_no = cur.line;
         let mut line = self.buf.line(line_no);
         let mut end = cur.byte;
         loop {
             let gs: Vec<(usize, &str)> = line.grapheme_indices(true).filter(|(i, _)| *i < end).collect();
             let mut k = gs.len();
-            while k > 0 && class(gs[k - 1].1) == Class::Space {
+            while k > 0 && class(gs[k - 1].1, big) == Class::Space {
                 k -= 1;
             }
             if k > 0 {
-                let cls = class(gs[k - 1].1);
-                while k > 0 && class(gs[k - 1].1) == cls {
+                let cls = class(gs[k - 1].1, big);
+                while k > 0 && class(gs[k - 1].1, big) == cls {
                     k -= 1;
                 }
                 let b = gs[k].0;
@@ -429,26 +419,26 @@ mod tests {
         let b = Buffer::from_str("foo bar.baz\n\n  qux");
         let m = Motion { buf: &b, ambiguous_wide: false };
         let mut c = Cursor::default();
-        m.word_forward(&mut c);
+        m.word_forward(&mut c, false);
         assert_eq!((c.line, c.byte), (0, 4));
-        m.word_forward(&mut c);
+        m.word_forward(&mut c, false);
         assert_eq!((c.line, c.byte), (0, 7));
-        m.word_forward(&mut c);
+        m.word_forward(&mut c, false);
         assert_eq!((c.line, c.byte), (0, 8));
-        m.word_forward(&mut c);
+        m.word_forward(&mut c, false);
         assert_eq!((c.line, c.byte), (1, 0));
-        m.word_forward(&mut c);
+        m.word_forward(&mut c, false);
         assert_eq!((c.line, c.byte), (2, 2));
-        m.word_backward(&mut c);
+        m.word_backward(&mut c, false);
         assert_eq!((c.line, c.byte), (1, 0));
-        m.word_backward(&mut c);
+        m.word_backward(&mut c, false);
         assert_eq!((c.line, c.byte), (0, 8));
         let mut c = Cursor::default();
-        m.word_end(&mut c);
+        m.word_end(&mut c, false);
         assert_eq!((c.line, c.byte), (0, 2));
-        m.word_end(&mut c);
+        m.word_end(&mut c, false);
         assert_eq!((c.line, c.byte), (0, 6));
-        m.word_end(&mut c);
+        m.word_end(&mut c, false);
         assert_eq!((c.line, c.byte), (0, 7));
     }
 }

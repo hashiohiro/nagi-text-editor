@@ -1,8 +1,12 @@
-//! 1 ファイル分の編集状態とキー処理（M1 の範囲）。
+//! 1 ファイル分の編集状態とキー処理。
 //!
-//! Normal モードのキーは、App がマッピング（nagi-vim の Matcher）を通してから渡す。
-//! ここに届くキーは、すでにマッピングを展開した後のもの。
+//! Normal / Visual モードのキーは、App がマッピング（nagi-vim の Matcher）を通してから渡す。
+//! ここに届くキーは、すでにマッピングを展開した後のもの。Normal / Visual の実行は normal.rs。
 
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+use nagi_core::textops::{compile_search, find_all, next_match};
 use nagi_core::{Buffer, Cursor, History, Motion, byte_at_col, display_col};
 use nagi_vim::Key;
 use unicode_segmentation::UnicodeSegmentation;
@@ -14,8 +18,13 @@ pub const GUTTER: usize = 6;
 pub enum Mode {
     Normal,
     Insert,
+    Visual { line: bool },
     /// `:` のコマンドライン
     Command,
+    /// `/` `?` の検索（最下行）
+    Search,
+    /// 置換（最下行の 2 行）
+    Replace,
 }
 
 pub enum Effect {
@@ -31,32 +40,118 @@ pub struct Clipboard {
     pub set: fn(&str),
 }
 
+/// 1 行の入力欄（コマンドライン・検索語・置換後）
+#[derive(Default, Clone)]
+pub struct Prompt {
+    pub text: String,
+    /// 入力欄の中のカーソル（byte）
+    pub cursor: usize,
+}
+
+impl Prompt {
+    pub fn set(&mut self, s: &str) {
+        self.text = s.to_string();
+        self.cursor = self.text.len();
+    }
+
+    pub fn insert(&mut self, s: &str) {
+        self.text.insert_str(self.cursor, s);
+        self.cursor += s.len();
+    }
+
+    /// 編集キーを処理する。処理したら true
+    fn key(&mut self, k: Key) -> bool {
+        let prev = |t: &str, i: usize| t[..i].chars().next_back().map_or(0, char::len_utf8);
+        match k {
+            Key::Char(c) => self.insert(c.encode_utf8(&mut [0; 4])),
+            Key::Backspace if self.cursor > 0 => {
+                let n = prev(&self.text, self.cursor);
+                self.cursor -= n;
+                self.text.replace_range(self.cursor..self.cursor + n, "");
+            }
+            Key::Delete if self.cursor < self.text.len() => {
+                let n = self.text[self.cursor..].chars().next().map_or(0, char::len_utf8);
+                self.text.replace_range(self.cursor..self.cursor + n, "");
+            }
+            // Ctrl-u: カーソルより前を消す（`:<C-u>` は回数や範囲の自動入力を消す定番）
+            Key::Ctrl('u') => {
+                self.text.drain(..self.cursor);
+                self.cursor = 0;
+            }
+            Key::Ctrl('w') => {
+                let before = &self.text[..self.cursor];
+                let start = before.trim_end().rfind(char::is_whitespace).map_or(0, |i| i + 1);
+                self.text.replace_range(start..self.cursor, "");
+                self.cursor = start;
+            }
+            Key::Left => self.cursor -= prev(&self.text, self.cursor),
+            Key::Right => self.cursor += self.text[self.cursor..].chars().next().map_or(0, char::len_utf8),
+            Key::Home | Key::Ctrl('a') => self.cursor = 0,
+            Key::End | Key::Ctrl('e') => self.cursor = self.text.len(),
+            _ => return false,
+        }
+        true
+    }
+}
+
+/// 検索・置換の状態
+#[derive(Default)]
+pub struct Search {
+    pub forward: bool,
+    /// 正規表現として扱うか（Alt+R で切り替え）
+    pub regex: bool,
+    /// 入力を始めたときのカーソルと表示位置（Esc で戻す）
+    origin: Option<(Cursor, usize)>,
+    /// 一致（絶対 byte の範囲）。`computed` のバッファと検索語に対して計算したもの
+    pub matches: Vec<(usize, usize)>,
+    /// 今の一致の番号
+    pub current: Option<usize>,
+    computed: Option<(u64, String, bool)>,
+    /// 最後に確定した検索（検索語, 正規表現か, 下方向か）。n / N / hlsearch 用
+    pub last: Option<(String, bool, bool)>,
+    /// 一致を強調するか（hlsearch。:noh で消える）
+    pub highlight: bool,
+}
+
 pub struct Editor {
     pub buf: Buffer,
-    hist: History,
+    pub(crate) hist: History,
     pub cursor: Cursor,
     /// 画面最上段の行
     pub top: usize,
     pub mode: Mode,
-    pub count: usize,
-    /// 2 打鍵目を待っている前置キー（g, d, ]）
-    pub pending: Option<char>,
     pub message: String,
-    pub cmdline: String,
-    /// コマンドライン内のカーソル（byte）
-    pub cmd_cursor: usize,
+    pub cmdline: Prompt,
+    /// 検索語（置換のときも）と置換後
+    pub query: Prompt,
+    pub repl: Prompt,
+    /// 置換の入力欄のどちらにいるか（0: 検索語, 1: 置換後）
+    pub replace_field: usize,
+    pub search: Search,
     /// IME の変換中の文字列と、その中のカーソル（byte 範囲）
     pub preedit: String,
     pub preedit_cursor: Option<(usize, usize)>,
-    /// 無名レジスタ（文字列, 行単位か）
-    register: (String, bool),
+    /// レジスタ（文字列, 行単位か）
+    pub(crate) registers: HashMap<char, (String, bool)>,
     pub clipboard: Option<Clipboard>,
     /// 最後に変更した位置（絶対 byte。g; 用）
-    last_change: Option<usize>,
+    pub(crate) last_change: Option<usize>,
     /// マッピングの続きを待っているキー（showcmd。App が描画前に入れる）
     pub showcmd: String,
     /// 構文木（対応言語のときだけ）
     pub syntax: Option<nagi_syntax::Syntax>,
+    /// Normal / Visual で解釈中のキー列
+    pub pending_keys: Vec<Key>,
+    /// Visual の起点（絶対 byte）
+    pub(crate) anchor: usize,
+    /// 最後の f / t（; と , 用）
+    pub(crate) last_find: Option<(char, bool, bool)>,
+    /// `.` で繰り返すキー列と、記録中のキー列
+    pub(crate) dot: Vec<Key>,
+    pub(crate) dot_rec: Option<Vec<Key>>,
+    pub(crate) replaying: bool,
+    /// 画面の行数（App が描画前に入れる）
+    pub rows: usize,
 }
 
 impl Editor {
@@ -67,37 +162,55 @@ impl Editor {
             cursor: Cursor::default(),
             top: 0,
             mode: Mode::Normal,
-            count: 0,
-            pending: None,
             message: String::new(),
-            cmdline: String::new(),
-            cmd_cursor: 0,
+            cmdline: Prompt::default(),
+            query: Prompt::default(),
+            repl: Prompt::default(),
+            replace_field: 0,
+            search: Search::default(),
             preedit: String::new(),
             preedit_cursor: None,
-            register: (String::new(), false),
+            registers: HashMap::new(),
             clipboard: None,
             last_change: None,
             showcmd: String::new(),
             syntax,
+            pending_keys: Vec::new(),
+            anchor: 0,
+            last_find: None,
+            dot: Vec::new(),
+            dot_rec: None,
+            replaying: false,
+            rows: 1,
         }
     }
 
-    fn motion(&self) -> Motion<'_> {
+    /// 最下行に使う行数（置換は 2 行）
+    pub fn status_rows(&self) -> usize {
+        if self.mode == Mode::Replace { 2 } else { 1 }
+    }
+
+    /// 入力欄（IME の確定先）があるモードか
+    pub fn has_prompt(&self) -> bool {
+        matches!(self.mode, Mode::Command | Mode::Search | Mode::Replace)
+    }
+
+    pub(crate) fn motion(&self) -> Motion<'_> {
         Motion { buf: &self.buf, ambiguous_wide: false }
     }
 
     /// Motion を写しのカーソルに適用して戻す（Motion は self を借用するため）
-    fn with_motion(&mut self, f: impl FnOnce(&Motion, &mut Cursor)) {
+    pub(crate) fn with_motion(&mut self, f: impl FnOnce(&Motion, &mut Cursor)) {
         let mut c = self.cursor;
         f(&self.motion(), &mut c);
         self.cursor = c;
     }
 
-    fn abs(&self) -> usize {
+    pub(crate) fn abs(&self) -> usize {
         self.buf.line_start(self.cursor.line) + self.cursor.byte
     }
 
-    fn set_abs(&mut self, abs: usize) {
+    pub(crate) fn set_abs(&mut self, abs: usize) {
         let (line, byte) = self.buf.pos_of(abs);
         self.cursor.line = line;
         self.cursor.byte = byte;
@@ -106,39 +219,20 @@ impl Editor {
     }
 
     /// Normal ではカーソルを最後の書記素より右に置かない
-    fn clamp_normal(&mut self) {
+    pub(crate) fn clamp_normal(&mut self) {
         let line = self.buf.line(self.cursor.line);
         if self.cursor.byte >= line.len() {
             self.cursor.byte = line.grapheme_indices(true).last().map_or(0, |(i, _)| i);
         }
     }
 
-    fn edit(&mut self, start: usize, end: usize, text: &str) {
+    pub(crate) fn edit(&mut self, start: usize, end: usize, text: &str) {
         let c = self.buf.edit(start, end, text);
         self.hist.record(c);
         self.last_change = Some(start);
     }
 
-    fn set_register(&mut self, text: String, linewise: bool) {
-        if let Some(cb) = &self.clipboard {
-            // Windows のクリップボードは CRLF が普通
-            (cb.set)(&text.replace("\r\n", "\n").replace('\n', "\r\n"));
-        }
-        self.register = (text, linewise);
-    }
-
-    fn get_register(&self) -> (String, bool) {
-        if let Some(cb) = &self.clipboard {
-            if let Some(t) = (cb.get)() {
-                let t = t.replace("\r\n", "\n");
-                let linewise = t.ends_with('\n');
-                return (t, linewise);
-            }
-        }
-        (self.register.0.replace("\r\n", "\n"), self.register.1)
-    }
-
-    fn enter_insert(&mut self) {
+    pub(crate) fn enter_insert(&mut self) {
         self.hist.begin();
         self.mode = Mode::Insert;
         self.message.clear();
@@ -154,6 +248,7 @@ impl Editor {
             self.with_motion(|m, c| m.left(c, 1));
         }
         self.clamp_normal();
+        self.finish_dot();
     }
 
     /// 文字列を挿入する。改行はこのファイルの改行コードにする
@@ -182,99 +277,42 @@ impl Editor {
         }
     }
 
-    /// 行全体（改行込み）の範囲。最終行で改行が無ければ、前の行の改行を含める
-    fn line_range(&self, line: usize, n: usize) -> (usize, usize) {
-        let last = (line + n).min(self.buf.line_count()) - 1;
-        let start = self.buf.line_start(line);
-        let end = self.buf.line_start(last) + self.buf.line_len_with_break(last);
-        if end == self.buf.len_bytes() && !self.buf.slice_string(start, end).ends_with('\n') && line > 0 {
-            let brk = self.buf.line_len_with_break(line - 1) - self.buf.line(line - 1).len();
-            (start - brk, end)
-        } else {
-            (start, end)
-        }
-    }
-
-    fn delete_lines(&mut self, n: usize) {
-        let (start, end) = self.line_range(self.cursor.line, n);
-        let mut text = self.buf.slice_string(start, end);
-        if !text.ends_with('\n') {
-            text = text.trim_start_matches(['\r', '\n']).to_string() + "\n";
-        }
-        self.set_register(text, true);
-        self.edit(start, end, "");
-        self.cursor.line = self.cursor.line.min(self.buf.line_count().saturating_sub(1));
-        self.with_motion(|m, c| m.first_non_blank(c));
-    }
-
-    /// 現在行の下に空行を足す（ideavimrc の `O` = `:call append(expand('.'), '')`）。カーソルは動かさない
-    fn append_blank_line(&mut self) {
-        let at = self.buf.line_start(self.cursor.line) + self.buf.line(self.cursor.line).len();
-        let nl = self.buf.newline();
-        self.hist.begin();
-        self.edit(at, at, nl);
-        self.hist.close();
-    }
-
-    /// p / P。`indent` は ]p（インデントを現在行に合わせる）
-    fn put(&mut self, after: bool, indent: bool) {
-        let (text, linewise) = self.get_register();
-        if text.is_empty() {
-            return;
-        }
-        let nl = self.buf.newline();
-        self.hist.begin();
-        if linewise {
-            let mut text = text;
-            if indent {
-                text = reindent(&text, &leading_ws(&self.buf.line(self.cursor.line)));
+    pub fn key(&mut self, key: Key) -> Effect {
+        if !self.replaying {
+            if let Some(rec) = &mut self.dot_rec {
+                rec.push(key);
             }
-            let text = text.replace('\n', nl);
-            let line = if after { self.cursor.line + 1 } else { self.cursor.line };
-            let at = if line >= self.buf.line_count() {
-                // 最終行の後ろ: 改行が無ければ先に足す
-                let end = self.buf.len_bytes();
-                if !self.buf.slice_string(end.saturating_sub(1), end).ends_with('\n') {
-                    self.edit(end, end, nl);
-                }
-                self.buf.len_bytes()
-            } else {
-                self.buf.line_start(line)
-            };
-            self.edit(at, at, &text);
-            self.set_abs(at);
-            self.with_motion(|m, c| m.first_non_blank(c));
-        } else {
-            let text = text.replace('\n', nl);
-            let mut at = self.abs();
-            if after && !self.buf.line(self.cursor.line).is_empty() {
-                let g = self.buf.line(self.cursor.line)[self.cursor.byte..].graphemes(true).next().map_or(0, str::len);
-                at += g;
-            }
-            self.edit(at, at, &text);
-            self.set_abs(at + text.len());
-            self.with_motion(|m, c| m.left(c, 1));
         }
-        self.hist.close();
-    }
-
-    pub fn key(&mut self, key: Key, rows: usize) -> Effect {
         let effect = match self.mode {
-            Mode::Normal => self.normal(key, rows),
+            Mode::Normal | Mode::Visual { .. } => self.normal_key(key),
             Mode::Insert => {
                 self.insert(key);
                 Effect::None
             }
             Mode::Command => self.command(key),
+            Mode::Search => {
+                self.search_key(key);
+                Effect::None
+            }
+            Mode::Replace => {
+                self.replace_key(key);
+                Effect::None
+            }
         };
-        self.scroll_into_view(rows);
+        self.scroll_into_view();
         effect
     }
 
     fn insert(&mut self, key: Key) {
         match key {
-            Key::Esc => self.leave_insert(),
-            Key::Enter => self.insert_text("\n"),
+            Key::Esc | Key::Ctrl('c') => self.leave_insert(),
+            // 新しい行のインデントは今の行に合わせる（autoindent。Neovim の既定と同じ）
+            Key::Enter => {
+                let line = self.buf.line(self.cursor.line);
+                let indent: String = line.chars().take_while(|c| *c == ' ' || *c == '\t').collect();
+                let indent = &indent[..indent.len().min(self.cursor.byte)];
+                self.insert_text(&format!("\n{indent}"));
+            }
             Key::Backspace => self.backspace(),
             Key::Tab => self.insert_text("\t"),
             Key::Left => self.with_motion(|m, c| m.left(c, 1)),
@@ -294,35 +332,18 @@ impl Editor {
 
     fn command(&mut self, key: Key) -> Effect {
         match key {
-            Key::Esc => {
-                self.cmdline.clear();
+            Key::Esc | Key::Ctrl('c') => {
+                self.cmdline = Prompt::default();
                 self.mode = Mode::Normal;
             }
-            Key::Backspace => {
-                if self.cmdline.is_empty() {
-                    self.mode = Mode::Normal;
-                } else if self.cmd_cursor > 0 {
-                    let prev = self.cmdline[..self.cmd_cursor].chars().next_back().map_or(0, char::len_utf8);
-                    self.cmd_cursor -= prev;
-                    self.cmdline.remove(self.cmd_cursor);
-                }
-            }
-            // Ctrl-u: カーソルより前を消す（`:<C-u>` は回数や範囲の自動入力を消す定番）
-            Key::Ctrl('u') => {
-                self.cmdline.drain(..self.cmd_cursor);
-                self.cmd_cursor = 0;
-            }
-            Key::Left => self.cmd_cursor -= self.cmdline[..self.cmd_cursor].chars().next_back().map_or(0, char::len_utf8),
-            Key::Right => self.cmd_cursor += self.cmdline[self.cmd_cursor..].chars().next().map_or(0, char::len_utf8),
-            Key::Home => self.cmd_cursor = 0,
-            Key::End => self.cmd_cursor = self.cmdline.len(),
+            Key::Backspace if self.cmdline.text.is_empty() => self.mode = Mode::Normal,
             Key::Enter => {
-                let line = std::mem::take(&mut self.cmdline);
-                self.cmd_cursor = 0;
+                let line = std::mem::take(&mut self.cmdline).text;
                 self.mode = Mode::Normal;
-                // `|` で区切った複数のコマンド（`source ~/.ideavimrc | echo "..."`）
+                // `|` で区切った複数のコマンド（`source ~/.ideavimrc | echo "..."`）。:s の中の | は区切らない
+                let cmds: Vec<String> = if self.is_substitute(&line) { vec![line] } else { line.split('|').map(str::to_string).collect() };
                 let mut effect = Effect::None;
-                for cmd in line.split('|') {
+                for cmd in cmds {
                     match self.ex(cmd.trim()) {
                         Effect::None => {}
                         e => effect = e,
@@ -330,14 +351,226 @@ impl Editor {
                 }
                 return effect;
             }
-            Key::Char(c) => {
-                self.cmdline.insert(self.cmd_cursor, c);
-                self.cmd_cursor += c.len_utf8();
+            k => {
+                self.cmdline.key(k);
             }
-            _ => {}
         }
         Effect::None
     }
+
+    // ---------------------------------------------------------------- 検索・置換
+
+    /// 検索語の一致を（バッファか検索語が変わっていれば）計算し直す
+    pub fn refresh_matches(&mut self) {
+        let (pattern, regex) = match self.mode {
+            Mode::Search | Mode::Replace => (self.query.text.clone(), self.search.regex),
+            _ => match (&self.search.last, self.search.highlight) {
+                (Some((p, r, _)), true) => (p.clone(), *r),
+                _ => {
+                    self.search.matches.clear();
+                    self.search.computed = None;
+                    return;
+                }
+            },
+        };
+        let key = (self.buf.version, pattern.clone(), regex);
+        if self.search.computed.as_ref() == Some(&key) {
+            return;
+        }
+        self.search.matches = match compile_search(&pattern, regex) {
+            Some(re) => find_all(&self.buf.text(), &re),
+            None => Vec::new(),
+        };
+        self.search.computed = Some(key);
+    }
+
+    pub(crate) fn start_search(&mut self, forward: bool, replace: bool, initial: &str) {
+        self.search.origin = Some((self.cursor, self.top));
+        self.search.forward = forward;
+        self.search.current = None;
+        self.query.set(initial);
+        self.repl = Prompt::default();
+        self.replace_field = if replace && !initial.is_empty() { 1 } else { 0 };
+        self.mode = if replace { Mode::Replace } else { Mode::Search };
+        self.message.clear();
+        self.update_incsearch();
+    }
+
+    /// 入力のたびに、最寄りの一致へカーソルを動かす（incsearch）
+    fn update_incsearch(&mut self) {
+        let Some((origin, top)) = self.search.origin else { return };
+        self.refresh_matches();
+        let at = self.buf.line_start(origin.line) + origin.byte;
+        self.search.current = next_match(&self.search.matches, at, self.search.forward, self.mode == Mode::Replace);
+        match self.search.current {
+            Some(i) => self.set_abs(self.search.matches[i].0),
+            None => {
+                self.cursor = origin;
+                self.top = top;
+            }
+        }
+    }
+
+    fn cancel_search(&mut self) {
+        if let Some((c, top)) = self.search.origin.take() {
+            self.cursor = c;
+            self.top = top;
+        }
+        self.mode = Mode::Normal;
+        self.clamp_normal();
+    }
+
+    fn search_key(&mut self, key: Key) {
+        match key {
+            Key::Esc | Key::Ctrl('c') => self.cancel_search(),
+            Key::Backspace if self.query.text.is_empty() => self.cancel_search(),
+            Key::Enter => {
+                let pattern = self.query.text.clone();
+                if pattern.is_empty() {
+                    // 空なら前回の検索を繰り返す（Vim と同じ）
+                    self.cancel_search();
+                    if let Some(at) = self.search_next(false, 1) {
+                        self.set_abs(at);
+                    }
+                    return;
+                }
+                self.mode = Mode::Normal;
+                self.search.last = Some((pattern.clone(), self.search.regex, self.search.forward));
+                self.search.highlight = true;
+                self.search.origin = None;
+                if self.search.current.is_none() {
+                    self.message = format!("E486: パターンは見つかりませんでした: {pattern}");
+                } else {
+                    self.show_count();
+                }
+                self.clamp_normal();
+            }
+            Key::Alt('r') => {
+                self.search.regex = !self.search.regex;
+                self.update_incsearch();
+            }
+            k => {
+                if self.query.key(k) {
+                    self.update_incsearch();
+                }
+            }
+        }
+    }
+
+    fn show_count(&mut self) {
+        if let Some(i) = self.search.current {
+            let (p, _, f) = self.search.last.clone().unwrap_or_default();
+            self.message = format!("{}{p}  [{}/{}]", if f { '/' } else { '?' }, i + 1, self.search.matches.len());
+        }
+    }
+
+    /// n / N の移動先。`reverse` は検索の向きを逆にする
+    pub(crate) fn search_next(&mut self, reverse: bool, count: usize) -> Option<usize> {
+        let Some((_, _, forward)) = self.search.last.clone() else {
+            self.message = "E35: 前回の検索パターンがありません".into();
+            return None;
+        };
+        self.search.highlight = true;
+        self.refresh_matches();
+        let fwd = forward != reverse;
+        let mut at = self.abs();
+        let mut idx = None;
+        for _ in 0..count.max(1) {
+            idx = next_match(&self.search.matches, at, fwd, false);
+            if let Some(i) = idx {
+                at = self.search.matches[i].0;
+            }
+        }
+        match idx {
+            Some(i) => {
+                self.search.current = Some(i);
+                self.show_count();
+                Some(self.search.matches[i].0)
+            }
+            None => {
+                let p = self.search.last.as_ref().map(|l| l.0.clone()).unwrap_or_default();
+                self.message = format!("E486: パターンは見つかりませんでした: {p}");
+                None
+            }
+        }
+    }
+
+    fn replace_key(&mut self, key: Key) {
+        match key {
+            Key::Esc | Key::Ctrl('c') => {
+                self.search.origin = None;
+                self.mode = Mode::Normal;
+                self.clamp_normal();
+            }
+            Key::Tab | Key::Down | Key::Up => self.replace_field = 1 - self.replace_field,
+            Key::Alt('r') => {
+                self.search.regex = !self.search.regex;
+                self.update_incsearch();
+            }
+            // 今の 1 件を置き換えて次へ
+            Key::Enter => {
+                self.refresh_matches();
+                let Some(i) = self.search.current else { return };
+                let (s, e) = self.search.matches[i];
+                let rep = self.replacement(s, e);
+                self.hist.begin();
+                self.edit(s, e, &rep);
+                self.hist.close();
+                self.refresh_matches();
+                let after = s + rep.len();
+                self.search.current = next_match(&self.search.matches, after, true, true);
+                match self.search.current {
+                    Some(i) => self.set_abs(self.search.matches[i].0),
+                    None => {
+                        self.message = "置換が終わりました".into();
+                        self.mode = Mode::Normal;
+                        self.set_abs(s);
+                        self.clamp_normal();
+                    }
+                }
+            }
+            // すべて置き換える（1 回の u で戻る）
+            Key::Alt('a') => {
+                self.refresh_matches();
+                let ms = self.search.matches.clone();
+                if ms.is_empty() {
+                    return;
+                }
+                let reps: Vec<String> = ms.iter().map(|&(s, e)| self.replacement(s, e)).collect();
+                self.hist.begin();
+                for (&(s, e), rep) in ms.iter().zip(&reps).rev() {
+                    self.edit(s, e, rep);
+                }
+                self.hist.close();
+                self.message = format!("{} 箇所を置換しました", ms.len());
+                self.mode = Mode::Normal;
+                self.search.origin = None;
+                self.set_abs(ms[0].0);
+                self.clamp_normal();
+            }
+            k => {
+                let field = self.replace_field;
+                let changed = if field == 0 { self.query.key(k) } else { self.repl.key(k) };
+                if changed && field == 0 {
+                    self.update_incsearch();
+                }
+            }
+        }
+    }
+
+    /// 一致 [s, e) の置換後の文字列（正規表現なら $1 などを展開する）。予告表示にも使う
+    pub fn replacement(&self, s: usize, e: usize) -> String {
+        if !self.search.regex {
+            return self.repl.text.clone();
+        }
+        let matched = self.buf.slice_string(s, e);
+        match compile_search(&self.query.text, true) {
+            Some(re) => re.replace(&matched, self.repl.text.as_str()).into_owned(),
+            None => self.repl.text.clone(),
+        }
+    }
+
+    // ---------------------------------------------------------------- Ex コマンド
 
     fn write(&mut self) -> bool {
         match self.buf.save() {
@@ -353,8 +586,46 @@ impl Editor {
         }
     }
 
+    fn open(&mut self, path: PathBuf, force: bool) {
+        if self.buf.dirty && !force {
+            self.message = "E37: 変更が保存されていません（:e! で破棄して開く）".into();
+            return;
+        }
+        let mut message = String::new();
+        let mut buf = match Buffer::open(&path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let mut b = Buffer::from_str("");
+                b.path = Some(path.clone());
+                message = format!("\"{}\" [新規]", path.display());
+                b
+            }
+            Err(e) => {
+                self.message = format!("{}: {e}", path.display());
+                return;
+            }
+        };
+        let syntax = nagi_syntax::Lang::detect(&path).and_then(nagi_syntax::Syntax::new).map(|mut s| {
+            s.parse(&mut buf);
+            s
+        });
+        let keep = Self {
+            clipboard: self.clipboard.take(),
+            registers: std::mem::take(&mut self.registers),
+            search: std::mem::take(&mut self.search),
+            rows: self.rows,
+            message,
+            ..Self::new(buf, syntax)
+        };
+        *self = keep;
+    }
+
     fn ex(&mut self, cmd: &str) -> Effect {
         let cmd = cmd.trim_start_matches(':').trim();
+        if self.is_substitute(cmd) {
+            self.substitute(cmd);
+            return Effect::None;
+        }
         let (name, arg) = cmd.split_once(char::is_whitespace).map_or((cmd, ""), |(n, a)| (n, a.trim()));
         match name {
             "" => {}
@@ -368,10 +639,16 @@ impl Editor {
                     return Effect::Quit;
                 }
             }
+            "e" | "edit" | "e!" | "edit!" if !arg.is_empty() => self.open(PathBuf::from(arg), name.ends_with('!')),
+            "e!" | "edit!" => {
+                if let Some(p) = self.buf.path.clone() {
+                    self.open(p, true);
+                }
+            }
             "action" => self.action(arg),
             "source" | "so" => return Effect::ReloadRc,
             "echo" => self.message = arg.trim_matches(['"', '\'']).to_string(),
-            "noh" | "nohlsearch" => {}
+            "noh" | "nohlsearch" => self.search.highlight = false,
             // ideavimrc の `O`: `:call append(expand('.'), '')`（現在行の下に空行を足す）
             "call" if arg.starts_with("append(") => self.append_blank_line(),
             n if n.chars().all(|c| c.is_ascii_digit()) => {
@@ -379,23 +656,105 @@ impl Editor {
                 self.with_motion(|m, c| m.goto_line(c, line));
             }
             n if n.starts_with('!') => self.message = format!("未実装: 外部コマンド（{cmd}）"),
-            n if n.starts_with('%') || n.starts_with("s/") => self.message = format!("未実装: 置換（{cmd}）"),
             _ => self.message = format!("E492: エディタのコマンドではありません: {cmd}"),
         }
         Effect::None
+    }
+
+    /// `[範囲]s/検索/置換/フラグ` の形か（範囲は 空 . % 数字 , $）
+    fn is_substitute(&self, cmd: &str) -> bool {
+        let cmd = cmd.trim().trim_start_matches(':');
+        let body = cmd.trim_start_matches(|c: char| c.is_ascii_digit() || matches!(c, ',' | '%' | '.' | '$'));
+        let rest = body.strip_prefix("substitute").or(body.strip_prefix("s"));
+        rest.and_then(|r| r.chars().next()).is_some_and(|c| !c.is_alphanumeric() && !c.is_whitespace())
+    }
+
+    fn substitute(&mut self, cmd: &str) {
+        let body_start = cmd.find(|c: char| !(c.is_ascii_digit() || matches!(c, ',' | '%' | '.' | '$'))).unwrap_or(0);
+        let range = &cmd[..body_start];
+        let rest = &cmd[body_start..];
+        let rest = rest.strip_prefix("substitute").or(rest.strip_prefix("s")).unwrap_or(rest);
+        let Some(delim) = rest.chars().next() else { return };
+        let parts: Vec<&str> = rest[delim.len_utf8()..].splitn(3, delim).collect();
+        let pat = parts.first().copied().unwrap_or("");
+        let rep = parts.get(1).copied().unwrap_or("");
+        let flags = parts.get(2).copied().unwrap_or("");
+        let last = self.buf.line_count().saturating_sub(1);
+        let n = |s: &str| match s {
+            "." | "" => Some(self.cursor.line),
+            "$" => Some(last),
+            s => s.parse::<usize>().ok().map(|n| n.saturating_sub(1)),
+        };
+        let (l1, l2) = match range {
+            "%" => (0, last),
+            r => {
+                let (a, b) = r.split_once(',').unwrap_or((r, r));
+                match (n(a), n(b)) {
+                    (Some(a), Some(b)) => (a, b.min(last)),
+                    _ => {
+                        self.message = format!("E16: 範囲が不正です: {r}");
+                        return;
+                    }
+                }
+            }
+        };
+        // 確認付き（c）や検索語が空なら、置換の入力欄を開く（ideavimrc の <C-s> = :%s///cg）
+        if pat.is_empty() || flags.contains('c') {
+            self.start_search(true, true, pat);
+            if !rep.is_empty() {
+                self.repl.set(rep);
+            }
+            if !pat.is_empty() {
+                self.search.regex = true;
+                self.update_incsearch();
+            }
+            return;
+        }
+        let Some(re) = compile_search(pat, true) else {
+            self.message = format!("E486: パターンが不正です: {pat}");
+            return;
+        };
+        // Vim の置換文字列（\1 と &）を regex の書き方（${1} と ${0}）に直す
+        let rep = rep.replace("\\&", "\u{0}").replace('&', "${0}").replace('\u{0}', "&");
+        let rep = (1..=9).fold(rep, |r, i| r.replace(&format!("\\{i}"), &format!("${{{i}}}")));
+        let global = flags.contains('g');
+        let mut count = 0;
+        let mut last_hit = None;
+        self.hist.begin();
+        for l in (l1..=l2).rev() {
+            let line = self.buf.line(l);
+            let new = if global { re.replace_all(&line, rep.as_str()) } else { re.replace(&line, rep.as_str()) };
+            if new != line {
+                last_hit = last_hit.or(Some(l));
+                count += if global { re.find_iter(&line).count() } else { 1 };
+                let start = self.buf.line_start(l);
+                let new = new.into_owned();
+                self.edit(start, start + line.len(), &new);
+            }
+        }
+        self.hist.close();
+        self.message = if count == 0 { format!("E486: パターンは見つかりませんでした: {pat}") } else { format!("{count} 箇所を置換しました") };
+        // カーソルは最後に置換した行の最初の文字へ（Vim と同じ）
+        if let Some(l) = last_hit {
+            self.cursor.line = l;
+            self.with_motion(|m, c| m.first_non_blank(c));
+        }
+        self.clamp_normal();
     }
 
     /// IdeaVim の `:action <IntelliJ のアクション名>` を Nagi の機能に振り分ける
     fn action(&mut self, name: &str) {
         match nagi_vim::action::ideavim(name) {
             Some((Some("jump.last_change"), _)) => self.jump_last_change(),
+            Some((Some("search.buffer"), _)) => self.start_search(true, false, ""),
+            Some((Some("replace.buffer"), _)) => self.start_search(true, true, ""),
             Some((Some(cmd), desc)) => self.message = format!("未実装: {desc}（{cmd}）"),
             Some((None, desc)) => self.message = format!("Nagi には無い機能: {desc}"),
             None => self.message = format!("不明なアクション: {name}"),
         }
     }
 
-    fn jump_last_change(&mut self) {
+    pub(crate) fn jump_last_change(&mut self) {
         match self.last_change {
             Some(at) => {
                 self.set_abs(at.min(self.buf.len_bytes()));
@@ -405,134 +764,16 @@ impl Editor {
         }
     }
 
-    fn normal(&mut self, key: Key, rows: usize) -> Effect {
-        let n = self.count.max(1);
-        let mut keep = false;
-        let pending = self.pending.take();
-        let mut c = self.cursor;
-        match (pending, key) {
-            (_, Key::Esc) => self.message.clear(),
-            (None, Key::Ctrl('d')) => self.motion().vertical(&mut c, (rows / 2) as isize),
-            (None, Key::Ctrl('u')) => self.motion().vertical(&mut c, -((rows / 2) as isize)),
-            (None, Key::Ctrl('f')) => self.motion().vertical(&mut c, rows as isize),
-            (None, Key::Ctrl('b')) => self.motion().vertical(&mut c, -(rows as isize)),
-            (None, Key::Ctrl('r')) => {
-                if let Some(at) = self.hist.redo(&mut self.buf) {
-                    self.set_abs(at);
-                    c = self.cursor;
-                }
-            }
-            (None, Key::Down) => self.motion().vertical(&mut c, n as isize),
-            (None, Key::Up) => self.motion().vertical(&mut c, -(n as isize)),
-            (None, Key::Left) => self.motion().left(&mut c, n),
-            (None, Key::Right) => self.motion().right(&mut c, n),
-            (Some('g'), Key::Char('g')) => self.motion().goto_line(&mut c, self.count.saturating_sub(1)),
-            // 折り返しをしない間は gj / gk は j / k と同じ
-            (Some('g'), Key::Char('j')) => self.motion().vertical(&mut c, n as isize),
-            (Some('g'), Key::Char('k')) => self.motion().vertical(&mut c, -(n as isize)),
-            (Some('g'), Key::Char(';')) => {
-                self.jump_last_change();
-                c = self.cursor;
-            }
-            (Some('d'), Key::Char('d')) => {
-                self.delete_lines(n);
-                c = self.cursor;
-            }
-            (Some(']'), Key::Char(p @ ('p' | 'P'))) => {
-                self.put(p == 'p', true);
-                c = self.cursor;
-            }
-            (Some(_), _) => {}
-            (None, Key::Char(d)) if d.is_ascii_digit() && (d != '0' || self.count > 0) => {
-                self.count = self.count * 10 + (d as u8 - b'0') as usize;
-                keep = true;
-            }
-            (None, Key::Char(p @ ('g' | 'd' | ']'))) => {
-                self.pending = Some(p);
-                keep = true;
-            }
-            (None, Key::Char(ch)) => match ch {
-                'h' => self.motion().left(&mut c, n),
-                'l' | ' ' => self.motion().right(&mut c, n),
-                'j' => self.motion().vertical(&mut c, n as isize),
-                'k' => self.motion().vertical(&mut c, -(n as isize)),
-                '0' => self.motion().line_start(&mut c),
-                '^' => self.motion().first_non_blank(&mut c),
-                '$' => self.motion().line_end(&mut c),
-                'w' => (0..n).for_each(|_| self.motion().word_forward(&mut c)),
-                'b' => (0..n).for_each(|_| self.motion().word_backward(&mut c)),
-                'e' => (0..n).for_each(|_| self.motion().word_end(&mut c)),
-                'G' => self.motion().goto_line(&mut c, if self.count > 0 { self.count - 1 } else { usize::MAX }),
-                'i' => self.enter_insert(),
-                'a' => {
-                    self.enter_insert();
-                    let line = self.buf.line(c.line);
-                    if let Some(g) = line[c.byte.min(line.len())..].graphemes(true).next() {
-                        c.byte += g.len();
-                    }
-                }
-                'I' => {
-                    self.motion().first_non_blank(&mut c);
-                    self.enter_insert();
-                }
-                'A' => {
-                    c.byte = self.buf.line(c.line).len();
-                    self.enter_insert();
-                }
-                'o' | 'O' => {
-                    self.enter_insert();
-                    let nl = self.buf.newline();
-                    if ch == 'o' {
-                        let at = self.buf.line_start(c.line) + self.buf.line(c.line).len();
-                        self.edit(at, at, nl);
-                        self.set_abs(at + nl.len());
-                    } else {
-                        let at = self.buf.line_start(c.line);
-                        self.edit(at, at, nl);
-                        self.set_abs(at);
-                    }
-                    c = self.cursor;
-                }
-                'x' => {
-                    let line = self.buf.line(c.line);
-                    let start = self.buf.line_start(c.line) + c.byte;
-                    let len: usize = line[c.byte.min(line.len())..].graphemes(true).take(n).map(str::len).sum();
-                    if len > 0 {
-                        let t = self.buf.slice_string(start, start + len);
-                        self.set_register(t, false);
-                        self.edit(start, start + len, "");
-                    }
-                }
-                'p' | 'P' => {
-                    self.put(ch == 'p', false);
-                    c = self.cursor;
-                }
-                'u' => {
-                    match self.hist.undo(&mut self.buf) {
-                        Some(at) => self.set_abs(at),
-                        None => self.message = "これ以上は元に戻せません".into(),
-                    }
-                    c = self.cursor;
-                }
-                ':' => {
-                    self.mode = Mode::Command;
-                    self.cmdline.clear();
-                    self.cmd_cursor = 0;
-                    self.message.clear();
-                }
-                other => self.message = format!("未実装: {other}"),
-            },
-            _ => keep = self.count > 0,
-        }
-        if !keep {
-            self.count = 0;
-        }
-        self.cursor = c;
-        if self.mode == Mode::Normal {
-            self.clamp_normal();
-        }
-        Effect::None
+    /// 現在行の下に空行を足す（ideavimrc の `O` = `:call append(expand('.'), '')`）。カーソルは動かさない
+    fn append_blank_line(&mut self) {
+        let at = self.buf.line_start(self.cursor.line) + self.buf.line(self.cursor.line).len();
+        let nl = self.buf.newline();
+        self.hist.begin();
+        self.edit(at, at, nl);
+        self.hist.close();
     }
+
+    // ---------------------------------------------------------------- IME・マウス
 
     /// IME の変換中の文字列（winit の Ime::Preedit）
     pub fn ime_preedit(&mut self, text: String, cursor: Option<(usize, usize)>) {
@@ -548,19 +789,41 @@ impl Editor {
         self.preedit = text;
     }
 
-    /// IME の確定（winit の Ime::Commit）。Insert グループの中の 1 つの変更になる
+    /// IME の確定（winit の Ime::Commit）。Insert なら挿入、入力欄なら欄に入れる
     pub fn ime_commit(&mut self, text: &str) {
         self.preedit.clear();
         self.preedit_cursor = None;
-        if self.mode == Mode::Insert {
-            self.insert_text(text);
+        if !self.replaying {
+            if let Some(rec) = &mut self.dot_rec {
+                rec.extend(text.chars().map(Key::Char));
+            }
+        }
+        match self.mode {
+            Mode::Insert => self.insert_text(text),
+            Mode::Search => {
+                self.query.insert(text);
+                self.update_incsearch();
+            }
+            Mode::Replace => {
+                if self.replace_field == 0 {
+                    self.query.insert(text);
+                    self.update_incsearch();
+                } else {
+                    self.repl.insert(text);
+                }
+            }
+            Mode::Command => self.cmdline.insert(text),
+            _ => {}
         }
     }
 
     /// マウスのクリック: 画面上の (行, セル列) へカーソルを移す
-    pub fn click(&mut self, row: usize, col: usize, rows: usize) {
-        if self.mode == Mode::Command {
+    pub fn click(&mut self, row: usize, col: usize) {
+        if self.has_prompt() {
             return;
+        }
+        if matches!(self.mode, Mode::Visual { .. }) {
+            self.mode = Mode::Normal;
         }
         let line = (self.top + row).min(self.buf.line_count().saturating_sub(1));
         let text = self.buf.line(line);
@@ -575,11 +838,12 @@ impl Editor {
         if self.mode == Mode::Normal {
             self.clamp_normal();
         }
-        self.scroll_into_view(rows);
+        self.scroll_into_view();
     }
 
     /// ホイール: 表示を動かし、カーソルは画面内に留める（Vim と同じ）
-    pub fn scroll(&mut self, lines: isize, rows: usize) {
+    pub fn scroll(&mut self, lines: isize) {
+        let rows = self.rows;
         let max_top = self.buf.line_count().saturating_sub(1);
         self.top = (self.top as isize + lines).clamp(0, max_top as isize) as usize;
         let mut c = self.cursor;
@@ -596,33 +860,12 @@ impl Editor {
         }
     }
 
-    fn scroll_into_view(&mut self, rows: usize) {
+    pub(crate) fn scroll_into_view(&mut self) {
+        let rows = self.rows.max(1);
         if self.cursor.line < self.top {
             self.top = self.cursor.line;
         } else if self.cursor.line >= self.top + rows {
             self.top = self.cursor.line + 1 - rows;
         }
     }
-}
-
-fn leading_ws(line: &str) -> String {
-    line.chars().take_while(|c| *c == ' ' || *c == '\t').collect()
-}
-
-/// ]p: 行単位のテキストのインデントを、先頭行が `indent` になるようにずらす
-fn reindent(text: &str, indent: &str) -> String {
-    let lines: Vec<&str> = text.split_inclusive('\n').collect();
-    let base = lines.first().map(|l| leading_ws(l)).unwrap_or_default();
-    lines
-        .iter()
-        .map(|l| {
-            if l.trim().is_empty() {
-                l.to_string()
-            } else if let Some(rest) = l.strip_prefix(base.as_str()) {
-                format!("{indent}{rest}")
-            } else {
-                format!("{indent}{}", l.trim_start_matches([' ', '\t']))
-            }
-        })
-        .collect()
 }

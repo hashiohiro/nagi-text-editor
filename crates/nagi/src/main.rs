@@ -1,13 +1,18 @@
 //! nagi（凪）: 静かで、余計なものがない、速いエディタ。
 //!
-//! 使い方: nagi [FILE] [--startup-report] [--exit-after-first-frame]
+//! 使い方: nagi [FILE] [--startup-report] [--exit-after-first-frame] [--keys KEYS]
+//!
+//! `--keys` は起動直後にキー列（Vim の表記。`/foo<CR>` など）を流し込む。画面の確認やデモ用。
 //!
 //! 起動は並列（architecture.md §6.4）: GPU・フォント・ファイル読込を別スレッドで進め、
 //! メインスレッドはその間にイベントループと非表示のウィンドウを作る。最初のフレームを描いてから表示する。
 
 mod clipboard;
 mod clock;
+#[cfg(test)]
+mod difftest;
 mod editor;
+mod normal;
 mod view;
 
 use std::path::PathBuf;
@@ -32,15 +37,18 @@ const FONT_PX: f64 = 14.0;
 
 struct Opts {
     file: Option<PathBuf>,
+    keys: Option<String>,
     startup_report: bool,
     exit_after_first_frame: bool,
 }
 
 impl Opts {
     fn parse() -> Self {
-        let mut o = Opts { file: None, startup_report: false, exit_after_first_frame: false };
-        for a in std::env::args().skip(1) {
+        let mut o = Opts { file: None, keys: None, startup_report: false, exit_after_first_frame: false };
+        let mut args = std::env::args().skip(1);
+        while let Some(a) = args.next() {
             match a.as_str() {
+                "--keys" => o.keys = args.next(),
                 "--startup-report" => o.startup_report = true,
                 "--exit-after-first-frame" => {
                     o.exit_after_first_frame = true;
@@ -128,6 +136,13 @@ impl App {
         if self.opts.exit_after_first_frame {
             el.exit();
         }
+        if let Some(keys) = self.opts.keys.take() {
+            for k in nagi_vim::parse_keys(&keys, &self.rc.leader.clone()) {
+                self.feed(k, el);
+            }
+            self.sync_ime();
+            self.draw();
+        }
     }
 
     fn title_for(&self, path: Option<&std::path::Path>) -> String {
@@ -137,14 +152,19 @@ impl App {
         }
     }
 
+    /// 本文に使える行数（最下行の分を除く。置換中は 2 行）
     fn rows(&self) -> usize {
         let (Some(r), Some(f)) = (&self.renderer, &self.fonts) else { return 1 };
-        ((r.size().1 as f32 / f.cell().h) as usize).saturating_sub(1).max(1)
+        let status = self.ed.as_ref().map_or(1, |e| e.status_rows());
+        ((r.size().1 as f32 / f.cell().h) as usize).saturating_sub(status).max(1)
     }
 
     fn draw(&mut self) {
         let (Some(r), Some(f), Some(ed)) = (&mut self.renderer, &mut self.fonts, &mut self.ed) else { return };
         r.wait_frame();
+        let status = ed.status_rows();
+        ed.rows = ((r.size().1 as f32 / f.cell().h) as usize).saturating_sub(status).max(1);
+        ed.scroll_into_view();
         ed.showcmd = self.matcher.pending().iter().map(|k| k.label()).collect();
         if let Some(s) = &mut ed.syntax {
             s.sync(&mut ed.buf);
@@ -180,7 +200,9 @@ impl App {
             return;
         }
         let ctrl = self.modifiers.control_key();
+        let alt = self.modifiers.alt_key();
         let keys: Vec<VKey> = match &ev.logical_key {
+            Key::Character(c) if alt && !ctrl => c.chars().next().map(|ch| VKey::Alt(ch.to_ascii_lowercase())).into_iter().collect(),
             Key::Character(c) if ctrl => c.chars().next().map(|ch| VKey::Ctrl(ch.to_ascii_lowercase())).into_iter().collect(),
             Key::Character(_) => ev.text.as_deref().unwrap_or("").chars().map(VKey::Char).collect(),
             Key::Named(n) => match n {
@@ -207,21 +229,7 @@ impl App {
             return;
         }
         for k in keys {
-            // マッピングは Normal モードだけ（ideavimrc は nnoremap だけを使っている）
-            let normal = self.ed.as_ref().is_some_and(|e| e.mode == Mode::Normal);
-            let out = if normal {
-                match self.matcher.feed(&self.rc.keymap, k) {
-                    Feed::Pending => {
-                        self.map_deadline = Some(Instant::now() + TIMEOUT_LEN);
-                        continue;
-                    }
-                    Feed::Emit(keys) => keys,
-                }
-            } else {
-                vec![k]
-            };
-            self.map_deadline = None;
-            if self.run_keys(out, el) {
+            if self.feed(k, el) {
                 return;
             }
         }
@@ -230,12 +238,32 @@ impl App {
         self.draw();
     }
 
+    /// 1 打をマッピングに通してからエディタに流す。終了したら true
+    fn feed(&mut self, k: VKey, el: &ActiveEventLoop) -> bool {
+        // マッピングは Normal モードだけ（ideavimrc は nnoremap だけを使っている）
+        let normal = self.ed.as_ref().is_some_and(|e| e.mode == Mode::Normal);
+        let out = if normal {
+            match self.matcher.feed(&self.rc.keymap, k) {
+                Feed::Pending => {
+                    self.map_deadline = Some(Instant::now() + TIMEOUT_LEN);
+                    return false;
+                }
+                Feed::Emit(keys) => keys,
+            }
+        } else {
+            vec![k]
+        };
+        self.map_deadline = None;
+        self.run_keys(out, el)
+    }
+
     /// マッピング展開後のキーをエディタに流す。終了したら true
     fn run_keys(&mut self, keys: Vec<VKey>, el: &ActiveEventLoop) -> bool {
         let rows = self.rows();
         for k in keys {
             let Some(ed) = &mut self.ed else { return true };
-            match ed.key(k, rows) {
+            ed.rows = rows;
+            match ed.key(k) {
                 Effect::None => {}
                 Effect::Quit => {
                     el.exit();
@@ -267,19 +295,30 @@ impl App {
         self.draw();
     }
 
-    /// モードに合わせて IME を切り替え、候補ウィンドウの位置をカーソルに合わせる（案1）
+    /// モードに合わせて IME を切り替え、候補ウィンドウの位置をカーソルに合わせる（案1）。
+    /// Insert に加えて、最下行の入力欄（: / ? と置換）でも IME を使える（日本語で検索できるように）
     fn sync_ime(&mut self) {
+        let rows = self.rows();
         let (Some(w), Some(ed), Some(f)) = (&self.window, &self.ed, &self.fonts) else { return };
-        let want = ed.mode == Mode::Insert;
+        let want = ed.mode == Mode::Insert || ed.has_prompt();
         if want != self.ime_allowed {
             w.set_ime_allowed(want);
             self.ime_allowed = want;
         }
         if want {
             let cell = f.cell();
-            let line = ed.buf.line(ed.cursor.line);
-            let col = editor::GUTTER + nagi_core::display_col(&line, ed.cursor.byte.min(line.len()), false);
-            let row = ed.cursor.line.saturating_sub(ed.top);
+            let (col, row) = if ed.has_prompt() {
+                // 最下行の入力欄のカーソル位置
+                let (p, row) = match ed.mode {
+                    Mode::Replace if ed.replace_field == 1 => (&ed.repl, rows + 1),
+                    Mode::Command => (&ed.cmdline, rows),
+                    _ => (&ed.query, rows),
+                };
+                (1 + nagi_core::display_col(&p.text, p.cursor, false), row)
+            } else {
+                let line = ed.buf.line(ed.cursor.line);
+                (editor::GUTTER + nagi_core::display_col(&line, ed.cursor.byte.min(line.len()), false), ed.cursor.line.saturating_sub(ed.top))
+            };
             w.set_ime_cursor_area(
                 winit::dpi::PhysicalPosition::new((col as f32 * cell.w) as i32, (row as f32 * cell.h) as i32),
                 winit::dpi::PhysicalSize::new(cell.w as u32, cell.h as u32),
@@ -309,7 +348,8 @@ impl App {
         if row >= rows {
             return;
         }
-        ed.click(row, col, rows);
+        ed.rows = rows;
+        ed.click(row, col);
         self.sync_ime();
         self.draw();
     }
@@ -324,7 +364,8 @@ impl App {
         if lines == 0 {
             return;
         }
-        ed.scroll(lines, rows);
+        ed.rows = rows;
+        ed.scroll(lines);
         self.sync_ime();
         self.draw();
     }

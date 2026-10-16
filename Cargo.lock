@@ -617,6 +617,7 @@ dependencies = [
 name = "nagi-core"
 version = "0.1.0"
 dependencies = [
+ "regex",
  "ropey",
  "unicode-segmentation",
  "unicode-width",

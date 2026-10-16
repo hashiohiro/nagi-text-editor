@@ -6,6 +6,8 @@ pub enum Key {
     Char(char),
     /// Ctrl＋文字（小文字に正規化）
     Ctrl(char),
+    /// Alt＋文字（小文字に正規化）
+    Alt(char),
     Esc,
     Enter,
     Tab,
@@ -29,6 +31,7 @@ impl Key {
             Key::Char(' ') => "<Space>".into(),
             Key::Char(c) => c.to_string(),
             Key::Ctrl(c) => format!("^{}", c.to_ascii_uppercase()),
+            Key::Alt(c) => format!("<M-{c}>"),
             Key::Esc => "<Esc>".into(),
             Key::Enter => "<CR>".into(),
             Key::Tab => "<Tab>".into(),
@@ -70,6 +73,14 @@ fn named(name: &str, leader: &str) -> Option<Vec<Key>> {
         "leader" => return Some(parse_keys(leader, leader)),
         "nop" => return Some(Vec::new()),
         _ => {
+            if let Some(rest) = lower.strip_prefix("m-").or(lower.strip_prefix("a-")) {
+                let mut cs = rest.chars();
+                let c = cs.next()?;
+                if cs.next().is_none() {
+                    return Some(vec![Key::Alt(c)]);
+                }
+                return None;
+            }
             if let Some(rest) = lower.strip_prefix("c-") {
                 let mut cs = rest.chars();
                 let c = cs.next()?;
