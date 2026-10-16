@@ -71,6 +71,43 @@ struct Pending {
 
 /// マッピングの続きを待つ時間（Vim の timeoutlen の既定値）
 const TIMEOUT_LEN: Duration = Duration::from_millis(1000);
+/// ホイール 1 目盛りで動かす行数と、それを動かしきる時間
+const WHEEL_LINES: f64 = 3.0;
+const SCROLL_TIME: Duration = Duration::from_millis(110);
+/// タッチパッドで止まってから行境界へ寄せるまでの時間
+const SNAP_AFTER: Duration = Duration::from_millis(120);
+/// ドラッグで画面外に出たときの自動スクロールの間隔
+const AUTOSCROLL_EVERY: Duration = Duration::from_millis(40);
+
+/// スムーズスクロールの動き（行単位の小数で from → to）
+struct ScrollAnim {
+    from: f64,
+    to: f64,
+    start: Instant,
+}
+
+impl ScrollAnim {
+    /// 今の位置と、動ききったか
+    fn at(&self, now: Instant) -> (f64, bool) {
+        let t = (now - self.start).as_secs_f64() / SCROLL_TIME.as_secs_f64();
+        if t >= 1.0 {
+            return (self.to, true);
+        }
+        // ease-out（最初に速く、最後にゆっくり止まる）
+        let e = 1.0 - (1.0 - t).powi(3);
+        (self.from + (self.to - self.from) * e, false)
+    }
+}
+
+/// 左ボタンを押している間の状態
+struct Press {
+    /// 押した位置（絶対 byte）。ドラッグ選択の起点
+    anchor: usize,
+    /// 押したセル（本文の行, セル列）。ここから出たらドラッグ
+    cell: (usize, usize),
+    /// ダブル・トリプルクリックで選んだ後は、ドラッグで選び直さない
+    selected: bool,
+}
 
 struct App {
     opts: Opts,
@@ -88,6 +125,12 @@ struct App {
     matcher: Matcher,
     /// マッピングの続きを待つ期限
     map_deadline: Option<Instant>,
+    scroll_anim: Option<ScrollAnim>,
+    snap_deadline: Option<Instant>,
+    press: Option<Press>,
+    /// 直前のクリック（時刻, 画面上のセル, 連続回数）。ダブル・トリプルクリックの判定用
+    last_click: Option<(Instant, (usize, usize), u32)>,
+    autoscroll_deadline: Option<Instant>,
 }
 
 impl App {
@@ -224,6 +267,7 @@ impl App {
             },
             _ => return,
         };
+        self.stop_scroll();
         if keys == [VKey::Ctrl('q')] {
             el.exit();
             return;
@@ -340,50 +384,191 @@ impl App {
         self.draw();
     }
 
-    fn on_click(&mut self) {
-        let rows = self.rows();
-        let (Some(ed), Some(f)) = (&mut self.ed, &self.fonts) else { return };
+    /// マウスの位置にあたる (本文の行, セル列)。行は負や本文の外にもなる
+    fn mouse_cell(&self) -> Option<(isize, usize)> {
+        let (f, ed) = (self.fonts.as_ref()?, self.ed.as_ref()?);
         let cell = f.cell();
-        let (row, col) = ((self.mouse.1 as f32 / cell.h) as usize, (self.mouse.0 as f32 / cell.w) as usize);
-        if row >= rows {
+        let row = (self.mouse.1 as f32 / cell.h + ed.frac).floor() as isize;
+        Some((row, (self.mouse.0.max(0.0) as f32 / cell.w) as usize))
+    }
+
+    fn on_press(&mut self) {
+        let rows = self.rows();
+        let Some((row, col)) = self.mouse_cell() else { return };
+        // 最下行（入力欄・ルーラー）は対象外
+        if row < 0 || row as usize >= rows {
             return;
         }
+        let row = row as usize;
+        let now = Instant::now();
+        let clicks = match self.last_click {
+            Some((t, cell, n)) if now - t <= double_click_time() && cell == (row, col) => n % 3 + 1,
+            _ => 1,
+        };
+        self.last_click = Some((now, (row, col), clicks));
+        self.stop_scroll();
+        let Some(ed) = &mut self.ed else { return };
         ed.rows = rows;
-        ed.click(row, col);
+        if clicks == 1 {
+            ed.click(row, col);
+        } else {
+            ed.select_at(row, col, clicks);
+        }
+        let anchor = ed.abs();
+        self.press = Some(Press { anchor, cell: (ed.top + row, col), selected: clicks > 1 });
         self.sync_ime();
+        self.draw();
+    }
+
+    fn on_drag(&mut self) {
+        let rows = self.rows();
+        let Some(press) = &self.press else { return };
+        if press.selected {
+            return;
+        }
+        let (anchor, start) = (press.anchor, press.cell);
+        let Some((row, col)) = self.mouse_cell() else { return };
+        let Some(ed) = &mut self.ed else { return };
+        ed.rows = rows;
+        // 画面の上下へはみ出したら端の行で選び、続きは自動スクロールで送る
+        let r = row.clamp(0, rows as isize - 1) as usize;
+        let before = (ed.cursor, ed.mode);
+        let dragging = matches!(ed.mode, Mode::Visual { .. }) || (ed.top + r, col) != start;
+        if dragging {
+            ed.drag(anchor, r, col);
+        }
+        let outside = row < 0 || row as usize >= rows;
+        if outside && self.autoscroll_deadline.is_none() {
+            self.autoscroll_deadline = Some(Instant::now());
+        }
+        if before != (ed.cursor, ed.mode) {
+            self.sync_ime();
+            self.draw();
+        }
+    }
+
+    /// ドラッグで画面外にいる間、一定間隔で 1 行ずつ送る
+    fn on_autoscroll(&mut self) {
+        let rows = self.rows();
+        let (Some(press), Some((row, col))) = (&self.press, self.mouse_cell()) else {
+            self.autoscroll_deadline = None;
+            return;
+        };
+        let anchor = press.anchor;
+        let d = if row < 0 {
+            -1
+        } else if row as usize >= rows {
+            1
+        } else {
+            self.autoscroll_deadline = None;
+            return;
+        };
+        let Some(ed) = &mut self.ed else { return };
+        ed.rows = rows;
+        ed.scroll(d);
+        ed.drag(anchor, if d < 0 { 0 } else { rows - 1 }, col);
+        self.autoscroll_deadline = Some(Instant::now() + AUTOSCROLL_EVERY);
         self.draw();
     }
 
     fn on_wheel(&mut self, delta: winit::event::MouseScrollDelta) {
         let rows = self.rows();
         let (Some(ed), Some(f)) = (&mut self.ed, &self.fonts) else { return };
-        let lines = match delta {
-            winit::event::MouseScrollDelta::LineDelta(_, y) => -(y * 3.0) as isize,
-            winit::event::MouseScrollDelta::PixelDelta(p) => -(p.y as f32 / f.cell().h) as isize,
-        };
-        if lines == 0 {
-            return;
-        }
         ed.rows = rows;
-        ed.scroll(lines);
+        let now = Instant::now();
+        match delta {
+            // マウスのホイール: 目盛りごとに 3 行を、短い時間で滑らかに動かす
+            winit::event::MouseScrollDelta::LineDelta(_, y) => {
+                let base = self.scroll_anim.as_ref().map_or(ed.scroll_pos(), |a| a.to);
+                let max = ed.buf.line_count().saturating_sub(1) as f64;
+                let to = (base - y as f64 * WHEEL_LINES).round().clamp(0.0, max);
+                self.scroll_anim = Some(ScrollAnim { from: ed.scroll_pos(), to, start: now });
+                self.snap_deadline = None;
+                self.step_scroll(now);
+            }
+            // タッチパッド: 指の動きにそのまま付いていき、止まったら行の境目へ寄せる
+            winit::event::MouseScrollDelta::PixelDelta(p) => {
+                self.scroll_anim = None;
+                ed.scroll_to(ed.scroll_pos() - p.y / f.cell().h as f64);
+                self.snap_deadline = Some(now + SNAP_AFTER);
+                self.sync_ime();
+                self.draw();
+            }
+        }
+    }
+
+    /// スムーズスクロールを 1 コマ進めて描く
+    fn step_scroll(&mut self, now: Instant) {
+        let Some(a) = &self.scroll_anim else { return };
+        let (pos, done) = a.at(now);
+        if done {
+            self.scroll_anim = None;
+        }
+        if std::env::var_os("NAGI_DEBUG_MOUSE").is_some() {
+            eprintln!("[{:.1}] scroll {pos:.3}", clock::since_process_start_ms());
+        }
+        if let Some(ed) = &mut self.ed {
+            ed.scroll_to(pos);
+        }
         self.sync_ime();
         self.draw();
     }
+
+    /// タッチパッドが止まった: 近い方の行の境目へ滑らせる
+    fn snap_scroll(&mut self) {
+        self.snap_deadline = None;
+        let Some(ed) = &self.ed else { return };
+        let pos = ed.scroll_pos();
+        if pos.fract() != 0.0 {
+            self.scroll_anim = Some(ScrollAnim { from: pos, to: pos.round(), start: Instant::now() });
+        }
+    }
+
+    /// キー操作が来たら、スクロールの途中でも行の境目に揃える
+    fn stop_scroll(&mut self) {
+        self.scroll_anim = None;
+        self.snap_deadline = None;
+        if let Some(ed) = &mut self.ed {
+            ed.frac = 0.0;
+        }
+    }
+}
+
+/// ダブルクリックとみなす間隔（Windows の設定に従う）
+fn double_click_time() -> Duration {
+    // SAFETY: 引数なしで値を返すだけの API
+    Duration::from_millis(unsafe { windows::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime() } as u64)
 }
 
 impl ApplicationHandler for App {
     fn new_events(&mut self, el: &ActiveEventLoop, cause: winit::event::StartCause) {
         if let winit::event::StartCause::ResumeTimeReached { .. } = cause {
-            if self.map_deadline.is_some_and(|d| Instant::now() >= d) {
+            let now = Instant::now();
+            if self.map_deadline.is_some_and(|d| now >= d) {
                 self.on_map_timeout(el);
+            }
+            if self.snap_deadline.is_some_and(|d| now >= d) {
+                self.snap_scroll();
+            }
+            if self.autoscroll_deadline.is_some_and(|d| now >= d) {
+                self.on_autoscroll();
             }
         }
     }
 
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
-        el.set_control_flow(match self.map_deadline {
-            Some(d) => ControlFlow::WaitUntil(d),
-            None => ControlFlow::Wait,
+        // スクロール中は毎フレーム描く（draw はスワップチェーンの待機で垂直同期に合わせて止まる）
+        if self.scroll_anim.is_some() {
+            self.step_scroll(Instant::now());
+        }
+        let deadline = [self.map_deadline, self.snap_deadline, self.autoscroll_deadline].into_iter().flatten().min();
+        el.set_control_flow(if self.scroll_anim.is_some() {
+            ControlFlow::Poll
+        } else {
+            match deadline {
+                Some(d) => ControlFlow::WaitUntil(d),
+                None => ControlFlow::Wait,
+            }
         });
     }
 
@@ -409,8 +594,26 @@ impl ApplicationHandler for App {
             WindowEvent::ModifiersChanged(m) => self.modifiers = m.state(),
             WindowEvent::KeyboardInput { event, .. } => self.on_key(event, el),
             WindowEvent::Ime(ime) => self.on_ime(ime),
-            WindowEvent::CursorMoved { position, .. } => self.mouse = (position.x, position.y),
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: winit::event::MouseButton::Left, .. } => self.on_click(),
+            WindowEvent::CursorMoved { position, .. } => {
+                if std::env::var_os("NAGI_DEBUG_MOUSE").is_some() {
+                    eprintln!("[{:.1}] move {:.0},{:.0}", clock::since_process_start_ms(), position.x, position.y);
+                }
+                self.mouse = (position.x, position.y);
+                if self.press.is_some() {
+                    self.on_drag();
+                }
+            }
+            WindowEvent::MouseInput { state, button: winit::event::MouseButton::Left, .. } => match state {
+                _ if std::env::var_os("NAGI_DEBUG_MOUSE").is_some() && {
+                    eprintln!("[{:.1}] {state:?} at {:.0},{:.0}", clock::since_process_start_ms(), self.mouse.0, self.mouse.1);
+                    false
+                } => {}
+                ElementState::Pressed => self.on_press(),
+                ElementState::Released => {
+                    self.press = None;
+                    self.autoscroll_deadline = None;
+                }
+            },
             WindowEvent::MouseWheel { delta, .. } => self.on_wheel(delta),
             WindowEvent::RedrawRequested => self.draw(),
             _ => {}
@@ -489,6 +692,11 @@ fn main() {
         rc: Rc::default(),
         matcher: Matcher::default(),
         map_deadline: None,
+        scroll_anim: None,
+        snap_deadline: None,
+        press: None,
+        last_click: None,
+        autoscroll_deadline: None,
     };
     event_loop.run_app(&mut app).unwrap();
 }

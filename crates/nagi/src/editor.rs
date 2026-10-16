@@ -119,6 +119,8 @@ pub struct Editor {
     pub cursor: Cursor,
     /// 画面最上段の行
     pub top: usize,
+    /// スムーズスクロール中の、行に満たない分（0.0〜1.0 行。描画は top + frac から始める）
+    pub frac: f32,
     pub mode: Mode,
     pub message: String,
     pub cmdline: Prompt,
@@ -161,6 +163,7 @@ impl Editor {
             hist: History::default(),
             cursor: Cursor::default(),
             top: 0,
+            frac: 0.0,
             mode: Mode::Normal,
             message: String::new(),
             cmdline: Prompt::default(),
@@ -817,6 +820,19 @@ impl Editor {
         }
     }
 
+    /// 画面上の (行, セル列) にあたるカーソル位置。行は表示中のスクロール位置から数える
+    pub fn pos_at(&self, row: usize, col: usize) -> Cursor {
+        let line = (self.top + row).min(self.buf.line_count().saturating_sub(1));
+        let text = self.buf.line(line);
+        let col = col.saturating_sub(GUTTER);
+        let byte = if self.mode == Mode::Insert && col >= display_col(&text, text.len(), false) {
+            text.len()
+        } else {
+            byte_at_col(&text, col, false)
+        };
+        Cursor { line, byte, want_col: display_col(&text, byte, false) }
+    }
+
     /// マウスのクリック: 画面上の (行, セル列) へカーソルを移す
     pub fn click(&mut self, row: usize, col: usize) {
         if self.has_prompt() {
@@ -825,33 +841,72 @@ impl Editor {
         if matches!(self.mode, Mode::Visual { .. }) {
             self.mode = Mode::Normal;
         }
-        let line = (self.top + row).min(self.buf.line_count().saturating_sub(1));
-        let text = self.buf.line(line);
-        let col = col.saturating_sub(GUTTER);
-        self.cursor.line = line;
-        self.cursor.byte = if self.mode == Mode::Insert && col >= display_col(&text, text.len(), false) {
-            text.len()
-        } else {
-            byte_at_col(&text, col, false)
-        };
-        self.cursor.want_col = display_col(&text, self.cursor.byte, false);
+        self.cursor = self.pos_at(row, col);
         if self.mode == Mode::Normal {
             self.clamp_normal();
         }
         self.scroll_into_view();
     }
 
+    /// ドラッグ: 押した位置（絶対 byte）を起点に Visual で選ぶ。Insert 中なら先に抜ける
+    pub fn drag(&mut self, anchor: usize, row: usize, col: usize) {
+        if self.has_prompt() {
+            return;
+        }
+        if self.mode == Mode::Insert {
+            self.key(Key::Esc);
+        }
+        if !matches!(self.mode, Mode::Visual { .. }) {
+            self.anchor = anchor;
+            self.mode = Mode::Visual { line: false };
+        }
+        self.cursor = self.pos_at(row, col);
+        self.clamp_normal();
+    }
+
+    /// ダブルクリックで単語、トリプルクリックで行を選ぶ（viw / V と同じ）
+    pub fn select_at(&mut self, row: usize, col: usize, clicks: u32) {
+        if self.has_prompt() {
+            return;
+        }
+        if self.mode == Mode::Insert {
+            self.key(Key::Esc);
+        }
+        self.mode = Mode::Normal;
+        self.cursor = self.pos_at(row, col);
+        self.clamp_normal();
+        if clicks == 2 {
+            self.key(Key::Char('v'));
+            self.key(Key::Char('i'));
+            self.key(Key::Char('w'));
+        } else {
+            self.key(Key::Char('V'));
+        }
+    }
+
     /// ホイール: 表示を動かし、カーソルは画面内に留める（Vim と同じ）
     pub fn scroll(&mut self, lines: isize) {
-        let rows = self.rows;
-        let max_top = self.buf.line_count().saturating_sub(1);
-        self.top = (self.top as isize + lines).clamp(0, max_top as isize) as usize;
+        let pos = self.top as f64 + lines as f64;
+        self.scroll_to(pos);
+        self.frac = 0.0;
+    }
+
+    /// 表示位置を行単位の小数で決める（スムーズスクロール）。カーソルは見えている行に留める
+    pub fn scroll_to(&mut self, pos: f64) {
+        let rows = self.rows.max(1);
+        let max = self.buf.line_count().saturating_sub(1) as f64;
+        let pos = pos.clamp(0.0, max);
+        self.top = pos.floor() as usize;
+        self.frac = (pos - pos.floor()) as f32;
+        // 上端が欠けている行には置かない
+        let first = self.top + usize::from(self.frac > 0.0);
+        let last = (self.top + rows).saturating_sub(1).max(first);
         let mut c = self.cursor;
-        if c.line < self.top {
-            let d = (self.top - c.line) as isize;
+        if c.line < first {
+            let d = (first - c.line) as isize;
             self.motion().vertical(&mut c, d);
-        } else if c.line >= self.top + rows {
-            let d = -((c.line + 1 - (self.top + rows)) as isize);
+        } else if c.line > last {
+            let d = -((c.line - last) as isize);
             self.motion().vertical(&mut c, d);
         }
         self.cursor = c;
@@ -860,12 +915,74 @@ impl Editor {
         }
     }
 
+    /// 今の表示位置（行単位の小数）
+    pub fn scroll_pos(&self) -> f64 {
+        self.top as f64 + self.frac as f64
+    }
+
     pub(crate) fn scroll_into_view(&mut self) {
         let rows = self.rows.max(1);
+        if self.frac > 0.0 && self.cursor.line <= self.top {
+            self.frac = 0.0;
+        }
         if self.cursor.line < self.top {
             self.top = self.cursor.line;
         } else if self.cursor.line >= self.top + rows {
             self.top = self.cursor.line + 1 - rows;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ed(text: &str) -> Editor {
+        let mut e = Editor::new(Buffer::from_str(text), None);
+        e.rows = 3;
+        e
+    }
+
+    #[test]
+    fn drag_selects_from_press() {
+        let mut e = ed("hello world\nsecond line\n");
+        e.click(0, GUTTER + 2);
+        let anchor = e.abs();
+        e.drag(anchor, 1, GUTTER + 3);
+        assert_eq!(e.mode, Mode::Visual { line: false });
+        assert_eq!((e.cursor.line, e.cursor.byte), (1, 3));
+        assert_eq!(e.visual_range(), (2, 16, false));
+    }
+
+    #[test]
+    fn drag_leaves_insert() {
+        let mut e = ed("abc\n");
+        e.key(Key::Char('i'));
+        e.drag(0, 0, GUTTER + 2);
+        assert_eq!(e.mode, Mode::Visual { line: false });
+    }
+
+    #[test]
+    fn double_and_triple_click() {
+        let mut e = ed("let name = 1;\n");
+        e.select_at(0, GUTTER + 5, 2);
+        assert_eq!(e.visual_range(), (4, 8, false), "単語 name");
+        e.select_at(0, GUTTER + 5, 3);
+        assert_eq!(e.mode, Mode::Visual { line: true });
+    }
+
+    #[test]
+    fn smooth_scroll_keeps_cursor_on_full_rows() {
+        let text: String = (0..20).map(|i| format!("{i}\n")).collect();
+        let mut e = ed(&text);
+        e.scroll_to(2.5);
+        assert_eq!((e.top, e.frac), (2, 0.5));
+        // 上端が半分欠けた 2 行目ではなく、3 行目に置く
+        assert_eq!(e.cursor.line, 3);
+        e.scroll_to(100.0);
+        assert_eq!(e.top, 19, "最終行より先へは行かない");
+        assert_eq!(e.cursor.line, 19);
+        e.scroll_to(0.0);
+        assert_eq!(e.cursor.line, 2, "画面の最下段に留まる");
     }
 }

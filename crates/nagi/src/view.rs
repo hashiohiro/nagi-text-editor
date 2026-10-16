@@ -108,7 +108,7 @@ pub fn prefetch(ed: &Editor, fonts: &mut Fonts, r: &mut Renderer) {
     let rows = ((h as f32 / cell.h) as usize).saturating_sub(1).max(1);
     let total = ed.buf.line_count();
     let mut keys = Vec::new();
-    let mut lines: Vec<String> = (ed.top..(ed.top + rows).min(total)).map(|l| ed.buf.line(l)).collect();
+    let mut lines: Vec<String> = (ed.top..(ed.top + rows + 1).min(total)).map(|l| ed.buf.line(l)).collect();
     lines.push("~ 0123456789,[No Name]-- INSERT VISUAL LINE --/?:→".into());
     for line in &lines {
         let items: Vec<(String, usize)> = nagi_text::graphemes(fonts, line).map(|(g, _, w)| (g.to_string(), w)).collect();
@@ -131,16 +131,19 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     let mut p = Painter { out: Vec::with_capacity(cols * rows + 64), fonts, r, cols, bar, underline };
     let total = ed.buf.line_count();
     ed.refresh_matches();
+    // スムーズスクロール中は 1 行多く描き、全体を frac 行ぶん上へずらす
+    let frac = ed.frac;
+    let drawn = rows + usize::from(frac > 0.0);
 
     // 画面に見えている範囲だけにハイライトのクエリをかける
     let view_start = ed.buf.line_start(ed.top);
-    let view_end = ed.buf.line_start((ed.top + rows).min(total));
+    let view_end = ed.buf.line_start((ed.top + drawn).min(total));
     let spans = match &ed.syntax {
         Some(syn) => syn.highlight(&ed.buf, view_start..view_end.max(view_start)),
         None => Vec::new(),
     };
     let show_matches = matches!(ed.mode, Mode::Search | Mode::Replace) || ed.search.highlight;
-    let view_last = if (ed.top + rows) >= total { ed.buf.len_bytes() + 1 } else { view_end };
+    let view_last = if (ed.top + drawn) >= total { ed.buf.len_bytes() + 1 } else { view_end };
     let matches: Vec<(usize, (usize, usize))> = if show_matches {
         ed.search.matches.iter().copied().enumerate().filter(|(_, (s, e))| *e > view_start && *s < view_last).collect()
     } else {
@@ -152,9 +155,9 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     };
     let replacing = ed.mode == Mode::Replace && !ed.query.text.is_empty();
 
-    for row in 0..rows {
+    for row in 0..drawn {
         let ln = ed.top + row;
-        let y = row as f32 * cell.h;
+        let y = (row as f32 - frac) * cell.h;
         if ln >= total {
             // ファイル末尾より後ろは Vim と同じく ~
             p.text("~", 0, y, TILDE);
@@ -213,6 +216,14 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             items.push(it);
             k += 1;
         }
+        // Visual で改行まで選んでいる行は、Vim と同じく行末を 1 セル反転して見せる（空行が選ばれていると分かるように）
+        if let Some((vs, ve, lw)) = visual {
+            let eol = abs + line.len();
+            let selected = if lw { ed.buf.pos_of(vs).0 <= ln && ln <= ed.buf.pos_of(ve.saturating_sub(1).max(vs)).0 } else { eol >= vs && eol < ve };
+            if selected && !(is_cursor_line && ed.cursor.byte >= line.len()) {
+                items.push(Item { g: " ".into(), width: 1, fg: BG, bg: Some(FG), underline: false });
+            }
+        }
         if !is_cursor_line || matches!(ed.mode, Mode::Command | Mode::Search | Mode::Replace) {
             p.draw(&items, GUTTER, y);
             continue;
@@ -248,6 +259,10 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
 
     // ---- 最下行: 左にモード・メッセージ・入力欄、右に位置（Vim の showmode と ruler と同じ形）
     let y = rows as f32 * cell.h;
+    if frac > 0.0 {
+        // はみ出した本文の最終行を最下行の地で隠す
+        p.out.push(Instance::fill(0.0, y, w as f32, h as f32 - y, BG));
+    }
     let name = ed.buf.path.as_ref().map_or("[No Name]".to_string(), |p| p.display().to_string());
     let ruler = format!(
         "{}{}   {}{}   {}{},{} ",
