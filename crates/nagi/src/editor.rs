@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use nagi_core::textops::{compile_search, find_all, next_match};
+use nagi_core::textops::{compile_search, find_matches, next_match};
 use nagi_core::{Buffer, Cursor, History, Motion, byte_at_col, display_col};
 use nagi_vim::Key;
 use unicode_segmentation::UnicodeSegmentation;
@@ -156,6 +156,8 @@ pub struct Editor {
     pub(crate) replaying: bool,
     /// 画面の行数（App が描画前に入れる）
     pub rows: usize,
+    /// バッファ全体の文字列（検索・括弧の対応・text object 用）。版が変わるまで使い回す
+    text_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<str>)>>,
 }
 
 impl Editor {
@@ -187,6 +189,7 @@ impl Editor {
             dot_rec: None,
             replaying: false,
             rows: 1,
+            text_cache: Default::default(),
         }
     }
 
@@ -198,6 +201,19 @@ impl Editor {
     /// 入力欄（IME の確定先）があるモードか
     pub fn has_prompt(&self) -> bool {
         matches!(self.mode, Mode::Command | Mode::Search | Mode::Replace)
+    }
+
+    /// バッファ全体の文字列。編集されるまでは同じものを返す（1 打ごとに作り直さない）
+    pub(crate) fn whole_text(&self) -> std::rc::Rc<str> {
+        let mut cache = self.text_cache.borrow_mut();
+        match &*cache {
+            Some((v, t)) if *v == self.buf.version => t.clone(),
+            _ => {
+                let t: std::rc::Rc<str> = self.buf.text().into();
+                *cache = Some((self.buf.version, t.clone()));
+                t
+            }
+        }
     }
 
     pub(crate) fn motion(&self) -> Motion<'_> {
@@ -382,11 +398,15 @@ impl Editor {
         if self.search.computed.as_ref() == Some(&key) {
             return;
         }
-        self.search.matches = match compile_search(&pattern, regex) {
-            Some(re) => find_all(&self.buf.text(), &re),
-            None => Vec::new(),
-        };
+        self.search.matches = find_matches(&self.whole_text(), &pattern, regex);
         self.search.computed = Some(key);
+    }
+
+    /// 確定した検索の、[start, end) の中の一致（画面の強調用）
+    pub fn visible_matches(&self, start: usize, end: usize) -> Vec<(usize, usize)> {
+        let Some((pattern, regex, _)) = &self.search.last else { return Vec::new() };
+        let text = self.buf.slice_string(start, end);
+        find_matches(&text, pattern, *regex).into_iter().map(|(s, e)| (s + start, e + start)).collect()
     }
 
     pub(crate) fn start_search(&mut self, forward: bool, replace: bool, initial: &str) {
@@ -614,10 +634,15 @@ impl Editor {
             s.parse(&mut buf);
             s
         });
+        // 一致の計算結果は前のバッファのもの。版の番号は新しいバッファでも 0 から始まるので、必ず捨てる
+        let mut search = std::mem::take(&mut self.search);
+        search.computed = None;
+        search.matches.clear();
+        search.current = None;
         let keep = Self {
             clipboard: self.clipboard.take(),
             registers: std::mem::take(&mut self.registers),
-            search: std::mem::take(&mut self.search),
+            search,
             rows: self.rows,
             message,
             ..Self::new(buf, syntax)

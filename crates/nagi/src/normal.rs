@@ -216,7 +216,7 @@ impl Editor {
                 return self.find(ch, forward != reverse, till, n);
             }
             M::MatchPair => {
-                let text = self.buf.text();
+                let text = self.whole_text();
                 let abs = self.abs();
                 let end = self.buf.line_start(c.line) + self.line_len(c.line);
                 let to = textops::match_pair(&text, abs, end)?;
@@ -348,7 +348,7 @@ impl Editor {
                 Some(if after > 0 { (ls + a, ls + b + 1 + after, false) } else { (ls + a - before, ls + b + 1, false) })
             }
             TextObj::Block(open) => {
-                let text = self.buf.text();
+                let text = self.whole_text();
                 let mut at = self.abs();
                 let mut range = textops::enclosing_block(&text, at, open)?;
                 for _ in 1..n {

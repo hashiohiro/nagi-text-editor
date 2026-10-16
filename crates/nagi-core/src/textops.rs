@@ -184,7 +184,27 @@ pub fn compile_search(pattern: &str, regex: bool) -> Option<Regex> {
         return None;
     }
     let src = if regex { pattern.to_string() } else { regex::escape(pattern) };
-    RegexBuilder::new(&src).case_insensitive(true).multi_line(true).build().ok()
+    // 英数字だけの検索語は ASCII の範囲で大文字小文字を同一視する。Unicode の対応表を使うと組み立てに
+    // 数百 µs かかり、1 打ごとに組み立て直す incsearch で効いてくる。日本語には大文字小文字がないので結果は同じ
+    let ascii = !regex && pattern.is_ascii();
+    RegexBuilder::new(&src).case_insensitive(true).multi_line(true).unicode(!ascii).build().ok()
+}
+
+/// 検索語のすべての一致（絶対 byte の範囲）。大文字小文字は区別しない。
+///
+/// 正規表現でない検索語は、組み立てが数 µs の aho-corasick で探す（regex は検索語ごとの組み立てに
+/// 数十〜数百 µs かかり、1 打ごとに組み立て直す incsearch で効く）。aho-corasick は ASCII の範囲でしか
+/// 大文字小文字を同一視しないので、大文字小文字のある非 ASCII 文字（É など）を含むときだけ regex を使う。
+pub fn find_matches(text: &str, pattern: &str, regex: bool) -> Vec<(usize, usize)> {
+    if pattern.is_empty() {
+        return Vec::new();
+    }
+    let caseless_beyond_ascii = pattern.chars().all(|c| c.is_ascii() || (!c.is_lowercase() && !c.is_uppercase()));
+    if !regex && caseless_beyond_ascii {
+        let Ok(ac) = aho_corasick::AhoCorasick::builder().ascii_case_insensitive(true).build([pattern]) else { return Vec::new() };
+        return ac.find_iter(text).map(|m| (m.start(), m.end())).collect();
+    }
+    compile_search(pattern, regex).map_or_else(Vec::new, |re| find_all(text, &re))
 }
 
 /// すべての一致（絶対 byte の範囲）。空の一致は除く
@@ -238,6 +258,11 @@ mod tests {
         assert_eq!(find_all(t, &re).len(), 2);
         let re = compile_search("a.b(", false).unwrap();
         assert!(find_all("a.b( axb(", &re).len() == 1);
+        assert_eq!(find_matches(t, "hover", false).len(), 3);
+        assert_eq!(find_matches(t, "日本語", false).len(), 2);
+        assert_eq!(find_matches("a.b( axb(", "a.b(", false).len(), 1);
+        assert_eq!(find_matches("CAFÉ café", "café", false).len(), 2, "É は regex で同一視");
+        assert_eq!(find_matches("ab12 AB34", "ab\\d", true).len(), 2);
         let m = find_all(t, &compile_search("hover", false).unwrap());
         assert_eq!(next_match(&m, 1, true, false), Some(1));
         assert_eq!(next_match(&m, 13, true, false), Some(0));

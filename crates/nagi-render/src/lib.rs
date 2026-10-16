@@ -184,6 +184,9 @@ struct Atlas {
     color_shelf: Shelf,
     /// None はラスタライズできなかった（空のグリフ）
     map: nagi_text::FastMap<GlyphKey, Option<AtlasGlyph>>,
+    /// 描画中にその場でラスタライズした時間と個数（計測用。`take_raster_stats` で取り出して 0 に戻す）
+    raster_time: std::time::Duration,
+    raster_count: u32,
 }
 
 impl Atlas {
@@ -221,6 +224,8 @@ impl Atlas {
             mono_shelf: Shelf { size: MONO_SIZE, x: 0, y: 0, row_h: 0 },
             color_shelf: Shelf { size: COLOR_SIZE, x: 0, y: 0, row_h: 0 },
             map: Default::default(),
+            raster_time: Default::default(),
+            raster_count: 0,
         })
     }
 
@@ -234,8 +239,11 @@ impl Atlas {
     }
 
     fn insert(&mut self, ctx: &ID3D11DeviceContext, fonts: &mut Fonts, key: GlyphKey) -> Option<AtlasGlyph> {
-        let img = fonts.rasterize(key)?;
-        self.upload(ctx, &img)
+        let t = std::time::Instant::now();
+        let g = fonts.rasterize(key).and_then(|img| self.upload(ctx, &img));
+        self.raster_time += t.elapsed();
+        self.raster_count += 1;
+        g
     }
 
     fn upload(&mut self, ctx: &ID3D11DeviceContext, img: &nagi_text::GlyphImage) -> Option<AtlasGlyph> {
@@ -327,6 +335,14 @@ impl Renderer {
     /// グリフをアトラスに用意して位置を返す
     pub fn glyph(&mut self, fonts: &mut Fonts, key: GlyphKey) -> Option<AtlasGlyph> {
         self.atlas.get(&self.gpu.ctx, fonts, key)
+    }
+
+    /// 前回取り出してから、描画中にその場でラスタライズした (時間, 個数)
+    pub fn take_raster_stats(&mut self) -> (std::time::Duration, u32) {
+        let r = (self.atlas.raster_time, self.atlas.raster_count);
+        self.atlas.raster_time = Default::default();
+        self.atlas.raster_count = 0;
+        r
     }
 
     /// まだアトラスに無いグリフを並列にラスタライズしてまとめて載せる

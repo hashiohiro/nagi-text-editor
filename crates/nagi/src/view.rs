@@ -108,14 +108,40 @@ impl Painter<'_> {
     }
 }
 
+/// 英数字・記号（ASCII の印字可能文字）をまとめてアトラスへ載せる。初めて打った文字をその場で
+/// ラスタライズすると 1 文字 0.5〜0.8ms かかり、その打鍵だけ遅くなるため。表示の後、空いた時間に呼ぶ
+pub fn prefetch_ascii(fonts: &mut Fonts, r: &mut Renderer) {
+    let mut keys = Vec::new();
+    let mut buf = [0u8; 4];
+    for c in '!'..='~' {
+        if let Some(k) = fonts.glyph_for(c.encode_utf8(&mut buf), 1) {
+            keys.push(k);
+        }
+    }
+    r.prefetch(fonts, &keys);
+}
+
 /// 画面に出るグリフを先にまとめてアトラスへ載せる（並列ラスタライズ）
 pub fn prefetch(ed: &Editor, fonts: &mut Fonts, r: &mut Renderer) {
-    let cell = fonts.cell();
-    let (_, h) = r.size();
-    let rows = ((h as f32 / cell.h) as usize).saturating_sub(1).max(1);
+    let rows = screen_rows(fonts, r);
+    prefetch_lines(ed, fonts, r, ed.top, ed.top + rows + 1);
+}
+
+fn screen_rows(fonts: &Fonts, r: &Renderer) -> usize {
+    ((r.size().1 as f32 / fonts.cell().h) as usize).saturating_sub(1).max(1)
+}
+
+/// 空いた時間に、画面の上下 1 画面ぶんのグリフを先に載せておく（スクロールや検索で飛んだ先で、
+/// 初めて出る漢字をその場でラスタライズすると 1 字 0.5〜1ms かかるため）
+pub fn prefetch_around(ed: &Editor, fonts: &mut Fonts, r: &mut Renderer) {
+    let rows = screen_rows(fonts, r);
+    prefetch_lines(ed, fonts, r, ed.top.saturating_sub(rows), ed.top + 2 * rows + 1);
+}
+
+fn prefetch_lines(ed: &Editor, fonts: &mut Fonts, r: &mut Renderer, from: usize, to: usize) {
     let total = ed.buf.line_count();
     let mut keys = Vec::new();
-    let mut lines: Vec<String> = (ed.top..(ed.top + rows + 1).min(total)).map(|l| ed.buf.line(l)).collect();
+    let mut lines: Vec<String> = (from.min(total)..to.min(total)).map(|l| ed.buf.line(l)).collect();
     lines.push("~ 0123456789,[No Name]-- INSERT VISUAL LINE --/?:→".into());
     for line in &lines {
         let items: Vec<(String, usize)> = nagi_text::graphemes(fonts, line).map(|(g, _, w)| (g.to_string(), w)).collect();
@@ -139,7 +165,12 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     let total = ed.buf.line_count();
     let debug = std::env::var_os("NAGI_DEBUG_BUILD").is_some();
     let t0 = std::time::Instant::now();
-    ed.refresh_matches();
+    // 検索・置換の入力中は件数（3/12）を出すので全体を数える。Normal で強調だけ残っているとき（hlsearch）は、
+    // 画面に見えている範囲だけを探す（編集のたびにファイル全体を探し直さない。n / N は自分で全体を数える）
+    let searching = matches!(ed.mode, Mode::Search | Mode::Replace);
+    if searching {
+        ed.refresh_matches();
+    }
     let t_matches = t0.elapsed();
     // スムーズスクロール中は 1 行多く描き、全体を frac 行ぶん上へずらす
     let frac = ed.frac;
@@ -154,8 +185,16 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     };
     let t_hl = t0.elapsed();
     let ed: &Editor = ed;
-    let show_matches = matches!(ed.mode, Mode::Search | Mode::Replace) || ed.search.highlight;
-    let all_matches: &[(usize, usize)] = if show_matches { &ed.search.matches } else { &[] };
+    let visible_matches;
+    let all_matches: &[(usize, usize)] = if searching {
+        &ed.search.matches
+    } else if ed.search.highlight {
+        let end = if ed.top + drawn >= total { ed.buf.len_bytes() } else { view_end };
+        visible_matches = ed.visible_matches(view_start, end);
+        &visible_matches
+    } else {
+        &[]
+    };
     let visual = match ed.mode {
         Mode::Visual { .. } => Some(ed.visual_range()),
         _ => None,
@@ -279,7 +318,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
 
     let t_lines = t0.elapsed();
     if debug {
-        eprintln!("build matches={:?} highlight={:?} lines={:?} n_matches={}", t_matches, t_hl - t_matches, t_lines - t_hl, ed.search.matches.len());
+        eprintln!("build matches={:?} highlight={:?} lines={:?} n_matches={}", t_matches, t_hl - t_matches, t_lines - t_hl, all_matches.len());
     }
     // ---- 最下行: 左にモード・メッセージ・入力欄、右に位置（Vim の showmode と ruler と同じ形）
     let y = rows as f32 * cell.h;

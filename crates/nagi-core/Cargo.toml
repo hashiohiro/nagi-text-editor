@@ -8,5 +8,7 @@ publish.workspace = true
 [dependencies]
 ropey.workspace = true
 regex = "1.13.1"
+# regex が内部で使っているものと同じ版（バイナリは増えない）。通常の検索を正規表現なしで速く探す
+aho-corasick = "1.1.5"
 unicode-width.workspace = true
 unicode-segmentation.workspace = true

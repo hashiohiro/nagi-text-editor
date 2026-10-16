@@ -82,6 +82,10 @@ const SCROLL_TIME: Duration = Duration::from_millis(110);
 const SNAP_AFTER: Duration = Duration::from_millis(120);
 /// `--replay` で 1 打ずつ流す間隔（速く打つ人の打鍵間隔くらい。詰めすぎるとフレームの待ちが毎回乗る）
 const REPLAY_EVERY: Duration = Duration::from_millis(30);
+/// `--replay` の間隔。`NAGI_REPLAY_MS` で変えられる（打鍵の間隔で速さが変わるかを調べる用）
+fn replay_every() -> Duration {
+    std::env::var("NAGI_REPLAY_MS").ok().and_then(|v| v.parse().ok()).map_or(REPLAY_EVERY, Duration::from_millis)
+}
 /// ドラッグで画面外に出たときの自動スクロールの間隔
 const AUTOSCROLL_EVERY: Duration = Duration::from_millis(40);
 
@@ -141,6 +145,8 @@ struct App {
     /// `--replay` の残りのキー（1 回のイベント処理で 1 打ずつ流す）
     replay: std::collections::VecDeque<VKey>,
     replay_deadline: Option<Instant>,
+    /// 上下の先読みを済ませた表示位置
+    prefetched_top: Option<usize>,
 }
 
 impl App {
@@ -183,6 +189,10 @@ impl App {
         clock::mark("first present");
         window.set_visible(true);
         clock::mark("window visible");
+        if let (Some(r), Some(f)) = (&mut self.renderer, &mut self.fonts) {
+            view::prefetch_ascii(f, r);
+            clock::mark("ascii prefetched");
+        }
         if self.opts.startup_report {
             clock::report();
         }
@@ -198,7 +208,7 @@ impl App {
         }
         if let Some(keys) = self.opts.replay.take() {
             self.replay = nagi_vim::parse_keys(&keys, &self.rc.leader.clone()).into();
-            self.replay_deadline = Some(Instant::now() + REPLAY_EVERY);
+            self.replay_deadline = Some(Instant::now() + replay_every());
         }
     }
 
@@ -298,17 +308,37 @@ impl App {
     /// 1 回のキー入力を処理して描き、かかった時間を記録する
     fn handle_keys(&mut self, keys: Vec<VKey>, el: &ActiveEventLoop) {
         let t0 = Instant::now();
+        let keys_label: String = keys.iter().map(|k| k.label()).collect();
         self.stop_scroll();
         for k in keys {
             if self.feed(k, el) {
                 return;
             }
         }
-        self.sync_ime();
         let edit = t0.elapsed();
         // request_redraw を経由せず、その場で描く（ADR 0005）
         let [sync, wait, build, present] = self.draw();
-        self.stats.push(stats::Sample { edit: stats::us(edit + sync), wait: stats::us(wait), build: stats::us(build), present: stats::us(present) });
+        // IME の有効・無効の切り替えは OS の呼び出しが重い（1〜20ms）ので、描いてから行う。
+        // 次のキーはこの後に処理されるので、日本語入力の始まりには間に合う
+        let t_ime = Instant::now();
+        self.sync_ime();
+        let ime = t_ime.elapsed();
+        let sample = stats::Sample { edit: stats::us(edit + sync), wait: stats::us(wait), build: stats::us(build), present: stats::us(present) };
+        if std::env::var_os("NAGI_DEBUG_STATS").is_some() {
+            let (rt, rn) = self.renderer.as_mut().map_or(Default::default(), |r| r.take_raster_stats());
+            eprintln!(
+                "stat {:?} total={} edit={} wait={} build={} present={} ime_after={} raster={}us/{rn}",
+                keys_label,
+                sample.total(),
+                sample.edit,
+                sample.wait,
+                sample.build,
+                sample.present,
+                ime.as_micros(),
+                rt.as_micros()
+            );
+        }
+        self.stats.push(sample);
     }
 
     /// 1 打をマッピングに通してからエディタに流す。終了したら true
@@ -598,7 +628,7 @@ impl ApplicationHandler for App {
                 if let Some(k) = self.replay.pop_front() {
                     self.handle_keys(vec![k], el);
                     if !self.replay.is_empty() {
-                        self.replay_deadline = Some(Instant::now() + REPLAY_EVERY);
+                        self.replay_deadline = Some(Instant::now() + replay_every());
                     }
                 }
             }
@@ -609,6 +639,15 @@ impl ApplicationHandler for App {
         // スクロール中は毎フレーム描く（draw はスワップチェーンの待機で垂直同期に合わせて止まる）
         if self.scroll_anim.is_some() {
             self.step_scroll(Instant::now());
+        }
+        // 手が空いたら、画面の上下のグリフを先に載せておく（表示位置が変わったときだけ）
+        if self.scroll_anim.is_none() {
+            if let (Some(ed), Some(f), Some(r)) = (&self.ed, &mut self.fonts, &mut self.renderer) {
+                if self.prefetched_top != Some(ed.top) {
+                    self.prefetched_top = Some(ed.top);
+                    view::prefetch_around(ed, f, r);
+                }
+            }
         }
         let deadline = [self.map_deadline, self.snap_deadline, self.autoscroll_deadline, self.replay_deadline].into_iter().flatten().min();
         el.set_control_flow(if self.scroll_anim.is_some() {
@@ -751,6 +790,7 @@ fn main() {
         stats: stats::Stats::default(),
         replay: Default::default(),
         replay_deadline: None,
+        prefetched_top: None,
     };
     event_loop.run_app(&mut app).unwrap();
 }
