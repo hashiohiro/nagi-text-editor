@@ -5,6 +5,7 @@
 //! 起動は並列（architecture.md §6.4）: GPU・フォント・ファイル読込を別スレッドで進め、
 //! メインスレッドはその間にイベントループと非表示のウィンドウを作る。最初のフレームを描いてから表示する。
 
+mod clipboard;
 mod clock;
 mod editor;
 mod view;
@@ -13,7 +14,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc;
 
-use editor::{Editor, Effect, Input, Mode};
+use editor::{Clipboard, Editor, Effect, Mode};
+use nagi_vim::{Feed, Key as VKey, Matcher, Rc};
+use std::time::{Duration, Instant};
 use nagi_core::Buffer;
 use nagi_render::{Gpu, Renderer};
 use nagi_text::{FontData, Fonts};
@@ -55,7 +58,11 @@ struct Pending {
     gpu: mpsc::Receiver<windows::core::Result<Gpu>>,
     fonts: mpsc::Receiver<Vec<FontData>>,
     file: mpsc::Receiver<Buffer>,
+    rc: mpsc::Receiver<Rc>,
 }
+
+/// マッピングの続きを待つ時間（Vim の timeoutlen の既定値）
+const TIMEOUT_LEN: Duration = Duration::from_millis(1000);
 
 struct App {
     opts: Opts,
@@ -69,6 +76,10 @@ struct App {
     mouse: (f64, f64),
     /// IME を許可しているか（案1: Insert だけ許可。ADR 0006）
     ime_allowed: bool,
+    rc: Rc,
+    matcher: Matcher,
+    /// マッピングの続きを待つ期限
+    map_deadline: Option<Instant>,
 }
 
 impl App {
@@ -87,6 +98,7 @@ impl App {
         let gpu = p.gpu.recv().unwrap().expect("D3D11 の初期化に失敗");
         let chain = p.fonts.recv().unwrap();
         let buf = p.file.recv().unwrap();
+        self.rc = p.rc.recv().unwrap();
         clock::mark("init joined");
 
         let fonts = Fonts::new(chain, (FONT_PX * self.scale).round() as f32);
@@ -98,6 +110,7 @@ impl App {
 
         window.set_title(&self.title_for(buf.path.as_deref()));
         self.ed = Some(Editor::new(buf));
+        self.apply_rc();
         self.fonts = Some(fonts);
         self.renderer = Some(renderer);
         self.window = Some(window.clone());
@@ -132,11 +145,19 @@ impl App {
     fn draw(&mut self) {
         let (Some(r), Some(f), Some(ed)) = (&mut self.renderer, &mut self.fonts, &mut self.ed) else { return };
         r.wait_frame();
+        ed.showcmd = self.matcher.pending().iter().map(|k| k.label()).collect();
         let insts = view::build(ed, f, r);
         clock::mark_once("first frame built");
         if let Err(e) = r.draw(&insts, view::BG) {
             eprintln!("draw: {e}");
         }
+    }
+
+    /// 設定（vimrc）の内容をエディタに反映する
+    fn apply_rc(&mut self) {
+        let Some(ed) = &mut self.ed else { return };
+        let clip = self.rc.has("clipboard=unnamedplus") || self.rc.has("clipboard=unnamed");
+        ed.clipboard = clip.then_some(Clipboard { get: clipboard::get, set: clipboard::set });
     }
 
     fn on_key(&mut self, ev: KeyEvent, el: &ActiveEventLoop) {
@@ -150,36 +171,96 @@ impl App {
         if ev.logical_key == Key::Named(NamedKey::Process) {
             return;
         }
-        let rows = self.rows();
-        let ctrl = self.modifiers.control_key();
-        let Some(ed) = &mut self.ed else { return };
+        let Some(ed) = &self.ed else { return };
         // 変換中のキーは IME のもの（Esc も変換の取り消しであって、モードの切り替えではない）
         if !ed.preedit.is_empty() {
             return;
         }
-        let input = match &ev.logical_key {
-            Key::Character(c) if ctrl => match c.chars().next() {
-                Some(ch) => Input::Ctrl(ch.to_ascii_lowercase()),
-                None => return,
+        let ctrl = self.modifiers.control_key();
+        let keys: Vec<VKey> = match &ev.logical_key {
+            Key::Character(c) if ctrl => c.chars().next().map(|ch| VKey::Ctrl(ch.to_ascii_lowercase())).into_iter().collect(),
+            Key::Character(_) => ev.text.as_deref().unwrap_or("").chars().map(VKey::Char).collect(),
+            Key::Named(n) => match n {
+                NamedKey::Space => vec![VKey::Char(' ')],
+                NamedKey::Escape => vec![VKey::Esc],
+                NamedKey::Enter => vec![VKey::Enter],
+                NamedKey::Tab => vec![VKey::Tab],
+                NamedKey::Backspace => vec![VKey::Backspace],
+                NamedKey::Delete => vec![VKey::Delete],
+                NamedKey::ArrowUp => vec![VKey::Up],
+                NamedKey::ArrowDown => vec![VKey::Down],
+                NamedKey::ArrowLeft => vec![VKey::Left],
+                NamedKey::ArrowRight => vec![VKey::Right],
+                NamedKey::Home => vec![VKey::Home],
+                NamedKey::End => vec![VKey::End],
+                NamedKey::PageUp => vec![VKey::PageUp],
+                NamedKey::PageDown => vec![VKey::PageDown],
+                _ => return,
             },
-            Key::Character(_) => match ev.text.as_deref() {
-                Some(t) => Input::Text(t),
-                None => return,
-            },
-            Key::Named(NamedKey::Space) => Input::Text(" "),
-            Key::Named(n) => Input::Named(*n),
             _ => return,
         };
-        if let Input::Ctrl('q') = input {
+        if keys == [VKey::Ctrl('q')] {
             el.exit();
             return;
         }
-        if let Effect::Quit = ed.key(input, rows) {
-            el.exit();
-            return;
+        for k in keys {
+            // マッピングは Normal モードだけ（ideavimrc は nnoremap だけを使っている）
+            let normal = self.ed.as_ref().is_some_and(|e| e.mode == Mode::Normal);
+            let out = if normal {
+                match self.matcher.feed(&self.rc.keymap, k) {
+                    Feed::Pending => {
+                        self.map_deadline = Some(Instant::now() + TIMEOUT_LEN);
+                        continue;
+                    }
+                    Feed::Emit(keys) => keys,
+                }
+            } else {
+                vec![k]
+            };
+            self.map_deadline = None;
+            if self.run_keys(out, el) {
+                return;
+            }
         }
         self.sync_ime();
         // request_redraw を経由せず、その場で描く（ADR 0005）
+        self.draw();
+    }
+
+    /// マッピング展開後のキーをエディタに流す。終了したら true
+    fn run_keys(&mut self, keys: Vec<VKey>, el: &ActiveEventLoop) -> bool {
+        let rows = self.rows();
+        for k in keys {
+            let Some(ed) = &mut self.ed else { return true };
+            match ed.key(k, rows) {
+                Effect::None => {}
+                Effect::Quit => {
+                    el.exit();
+                    return true;
+                }
+                Effect::ReloadRc => {
+                    let t = Instant::now();
+                    self.rc = nagi_vim::load_rc();
+                    self.apply_rc();
+                    let n = self.rc.keymap.normal.len();
+                    let us = t.elapsed().as_micros();
+                    if let Some(ed) = &mut self.ed {
+                        ed.message = format!("設定を読み直しました（マッピング {n} 件、{us}µs）");
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    /// timeoutlen が切れた: 待っていたキーを確定させる
+    fn on_map_timeout(&mut self, el: &ActiveEventLoop) {
+        self.map_deadline = None;
+        let keys = self.matcher.timeout(&self.rc.keymap);
+        if keys.is_empty() || self.run_keys(keys, el) {
+            return;
+        }
+        self.sync_ime();
         self.draw();
     }
 
@@ -247,6 +328,21 @@ impl App {
 }
 
 impl ApplicationHandler for App {
+    fn new_events(&mut self, el: &ActiveEventLoop, cause: winit::event::StartCause) {
+        if let winit::event::StartCause::ResumeTimeReached { .. } = cause {
+            if self.map_deadline.is_some_and(|d| Instant::now() >= d) {
+                self.on_map_timeout(el);
+            }
+        }
+    }
+
+    fn about_to_wait(&mut self, el: &ActiveEventLoop) {
+        el.set_control_flow(match self.map_deadline {
+            Some(d) => ControlFlow::WaitUntil(d),
+            None => ControlFlow::Wait,
+        });
+    }
+
     fn resumed(&mut self, el: &ActiveEventLoop) {
         if self.window.is_none() {
             self.startup(el);
@@ -317,12 +413,20 @@ fn main() {
         })
         .unwrap();
 
+    let (rtx, rc) = mpsc::channel();
+    spawn("rc")
+        .spawn(move || {
+            let rc = nagi_vim::load_rc();
+            clock::mark(format!("rc: {} mappings from {:?}", rc.keymap.normal.len(), rc.sources.first()));
+            rtx.send(rc).unwrap();
+        })
+        .unwrap();
     let event_loop = EventLoop::new().unwrap();
     clock::mark("event loop");
     event_loop.set_control_flow(ControlFlow::Wait);
     let mut app = App {
         opts,
-        pending: Some(Pending { gpu, fonts, file }),
+        pending: Some(Pending { gpu, fonts, file, rc }),
         window: None,
         renderer: None,
         fonts: None,
@@ -331,6 +435,9 @@ fn main() {
         scale: 1.0,
         mouse: (0.0, 0.0),
         ime_allowed: false,
+        rc: Rc::default(),
+        matcher: Matcher::default(),
+        map_deadline: None,
     };
     event_loop.run_app(&mut app).unwrap();
 }

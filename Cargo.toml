@@ -12,6 +12,7 @@ nagi-core = { path = "crates/nagi-core" }
 nagi-text = { path = "crates/nagi-text" }
 nagi-render = { path = "crates/nagi-render" }
 nagi-platform = { path = "crates/nagi-platform" }
+nagi-vim = { path = "crates/nagi-vim" }
 winit = "=0.30.13"
 windows = "0.62.2"
 windows-sys = "0.61.2"

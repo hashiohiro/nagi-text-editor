@@ -279,6 +279,37 @@ impl Motion<'_> {
         }
     }
 
+    /// `e`: 単語の末尾（今が末尾なら次の単語の末尾。行をまたぐ）
+    pub fn word_end(&self, cur: &mut Cursor) {
+        let mut line_no = cur.line;
+        let mut line = self.buf.line(line_no);
+        // 1 つ進めてから、空白を飛ばし、同じ種類の終わりまで進む
+        let mut gs: Vec<(usize, &str)> = line.grapheme_indices(true).collect();
+        let mut k = gs.iter().position(|(i, _)| *i == cur.byte).map_or(0, |k| k + 1);
+        loop {
+            while k < gs.len() && class(gs[k].1) == Class::Space {
+                k += 1;
+            }
+            if k < gs.len() {
+                let cls = class(gs[k].1);
+                while k + 1 < gs.len() && class(gs[k + 1].1) == cls {
+                    k += 1;
+                }
+                let b = gs[k].0;
+                cur.line = line_no;
+                self.set_byte(cur, &line, b);
+                return;
+            }
+            if line_no + 1 >= self.buf.line_count() {
+                return;
+            }
+            line_no += 1;
+            line = self.buf.line(line_no);
+            gs = line.grapheme_indices(true).collect();
+            k = 0;
+        }
+    }
+
     /// `b`: 前の単語の先頭（行をまたぐ）
     pub fn word_backward(&self, cur: &mut Cursor) {
         let mut line_no = cur.line;
@@ -355,5 +386,12 @@ mod tests {
         assert_eq!((c.line, c.byte), (1, 0));
         m.word_backward(&mut c);
         assert_eq!((c.line, c.byte), (0, 8));
+        let mut c = Cursor::default();
+        m.word_end(&mut c);
+        assert_eq!((c.line, c.byte), (0, 2));
+        m.word_end(&mut c);
+        assert_eq!((c.line, c.byte), (0, 6));
+        m.word_end(&mut c);
+        assert_eq!((c.line, c.byte), (0, 7));
     }
 }

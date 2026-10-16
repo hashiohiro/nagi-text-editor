@@ -1,0 +1,8 @@
+[package]
+name = "nagi-vim"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+# キーの表記、マッピング（vimrc の nnoremap など）、vimrc の読み込み。OS・GPU に依存しない。
+[dependencies]

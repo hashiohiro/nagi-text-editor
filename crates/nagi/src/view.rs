@@ -123,7 +123,8 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     let y = rows as f32 * cell.h;
     match ed.mode {
         Mode::Command => {
-            let c = text(&mut out, fonts, r, &format!(":{}", ed.cmdline), 0, y, FG, cols);
+            text(&mut out, fonts, r, &format!(":{}", ed.cmdline), 0, y, FG, cols);
+            let c = 1 + nagi_core::display_col(&ed.cmdline, ed.cmd_cursor, false);
             out.push(Instance::fill(c as f32 * cell.w, y, bar, cell.h, CURSOR));
         }
         _ => {
@@ -139,9 +140,10 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     }
     let name = ed.buf.path.as_ref().map_or("[No Name]".to_string(), |p| p.display().to_string());
     let pos = format!(
-        "{}{}   {}{}   {},{} ",
+        "{}{}{}   {}{}   {},{} ",
         if ed.count > 0 { ed.count.to_string() } else { String::new() },
         ed.pending.map(String::from).unwrap_or_default(),
+        ed.showcmd,
         name,
         if ed.buf.dirty { " [+]" } else { "" },
         ed.cursor.line + 1,

@@ -585,6 +585,7 @@ dependencies = [
  "nagi-core",
  "nagi-render",
  "nagi-text",
+ "nagi-vim",
  "unicode-segmentation",
  "windows",
  "winit",
@@ -616,6 +617,10 @@ dependencies = [
  "unicode-segmentation",
  "unicode-width",
 ]
+
+[[package]]
+name = "nagi-vim"
+version = "0.1.0"
 
 [[package]]
 name = "ndk"

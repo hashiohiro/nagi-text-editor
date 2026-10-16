@@ -12,10 +12,13 @@ path = "src/main.rs"
 nagi-core.workspace = true
 nagi-text.workspace = true
 nagi-render.workspace = true
+nagi-vim.workspace = true
 winit.workspace = true
 unicode-segmentation.workspace = true
 windows = { workspace = true, features = [
     "Win32_Foundation",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
     "Win32_System_Performance",
     "Win32_System_ProcessStatus",
     "Win32_System_SystemInformation",
