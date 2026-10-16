@@ -15,8 +15,31 @@ pub const TAB_WIDTH: usize = 4;
 mod history;
 pub use history::{Change, History};
 
+/// 構文木の更新用に記録する編集（位置は (行, 行内 byte)）
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EditLog {
+    pub start: usize,
+    pub old_end: usize,
+    pub new_end: usize,
+    pub start_pos: (usize, usize),
+    pub old_end_pos: (usize, usize),
+    pub new_end_pos: (usize, usize),
+}
+
+/// `start` から `text` を進んだ先の (行, 行内 byte)
+fn advance(start: (usize, usize), text: &str) -> (usize, usize) {
+    match text.rfind('\n') {
+        Some(i) => (start.0 + text.matches('\n').count(), text.len() - i - 1),
+        None => (start.0, start.1 + text.len()),
+    }
+}
+
 pub struct Buffer {
     rope: Rope,
+    /// 編集のたびに増える（表示やハイライトのキャッシュの鍵）
+    pub version: u64,
+    /// まだ構文木に反映していない編集
+    edits: Vec<EditLog>,
     /// 保存後に変更があったか
     pub dirty: bool,
     pub path: Option<PathBuf>,
@@ -28,7 +51,7 @@ pub struct Buffer {
 
 impl Buffer {
     pub fn from_str(text: &str) -> Self {
-        Self { rope: Rope::from_str(text), dirty: false, path: None, crlf: text.contains("\r\n"), bom: false }
+        Self { rope: Rope::from_str(text), version: 0, edits: Vec::new(), dirty: false, path: None, crlf: text.contains("\r\n"), bom: false }
     }
 
     pub fn open(path: &Path) -> io::Result<Self> {
@@ -100,6 +123,17 @@ impl Buffer {
     /// [start, end) を text で置き換え、その変更を返す（undo とハイライト更新に使う）
     pub fn edit(&mut self, start: usize, end: usize, text: &str) -> Change {
         let removed = self.slice_string(start, end);
+        let (line, byte) = self.pos_of(start);
+        let start_pos = (line, byte);
+        self.edits.push(EditLog {
+            start,
+            old_end: end,
+            new_end: start + text.len(),
+            start_pos,
+            old_end_pos: advance(start_pos, &removed),
+            new_end_pos: advance(start_pos, text),
+        });
+        self.version += 1;
         if end > start {
             self.rope.remove(start..end);
         }
@@ -108,6 +142,29 @@ impl Buffer {
         }
         self.dirty = true;
         Change { at: start, removed, inserted: text.to_string() }
+    }
+
+    pub fn has_edits(&self) -> bool {
+        !self.edits.is_empty()
+    }
+
+    /// まだ構文木に反映していない編集を取り出す
+    pub fn take_edits(&mut self) -> Vec<EditLog> {
+        std::mem::take(&mut self.edits)
+    }
+
+    /// `byte` を含むチャンクの、`byte` から後ろ（tree-sitter に分割して渡す用）
+    pub fn chunk_from(&self, byte: usize) -> &[u8] {
+        if byte >= self.rope.len() {
+            return &[];
+        }
+        let (chunk, start) = self.rope.chunk(byte);
+        &chunk.as_bytes()[byte - start..]
+    }
+
+    /// 範囲のテキストをチャンクごとに返す
+    pub fn chunks_in(&self, start: usize, end: usize) -> impl Iterator<Item = &[u8]> {
+        self.rope.slice(start.min(self.rope.len())..end.min(self.rope.len())).chunks().map(str::as_bytes)
     }
 
     /// 読み込み時の BOM と改行を保って書き出す（改行は編集時にファイルの改行コードで入れている）

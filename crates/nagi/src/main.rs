@@ -57,7 +57,7 @@ impl Opts {
 struct Pending {
     gpu: mpsc::Receiver<windows::core::Result<Gpu>>,
     fonts: mpsc::Receiver<Vec<FontData>>,
-    file: mpsc::Receiver<Buffer>,
+    file: mpsc::Receiver<(Buffer, Option<nagi_syntax::Syntax>)>,
     rc: mpsc::Receiver<Rc>,
 }
 
@@ -97,7 +97,7 @@ impl App {
         let p = self.pending.take().unwrap();
         let gpu = p.gpu.recv().unwrap().expect("D3D11 の初期化に失敗");
         let chain = p.fonts.recv().unwrap();
-        let buf = p.file.recv().unwrap();
+        let (buf, syntax) = p.file.recv().unwrap();
         self.rc = p.rc.recv().unwrap();
         clock::mark("init joined");
 
@@ -109,7 +109,7 @@ impl App {
         clock::mark("swap chain created");
 
         window.set_title(&self.title_for(buf.path.as_deref()));
-        self.ed = Some(Editor::new(buf));
+        self.ed = Some(Editor::new(buf, syntax));
         self.apply_rc();
         self.fonts = Some(fonts);
         self.renderer = Some(renderer);
@@ -146,6 +146,9 @@ impl App {
         let (Some(r), Some(f), Some(ed)) = (&mut self.renderer, &mut self.fonts, &mut self.ed) else { return };
         r.wait_frame();
         ed.showcmd = self.matcher.pending().iter().map(|k| k.label()).collect();
+        if let Some(s) = &mut ed.syntax {
+            s.sync(&mut ed.buf);
+        }
         let insts = view::build(ed, f, r);
         clock::mark_once("first frame built");
         if let Err(e) = r.draw(&insts, view::BG) {
@@ -409,7 +412,14 @@ fn main() {
                 None => Buffer::from_str(""),
             };
             clock::mark(format!("file: {} lines", buf.line_count()));
-            xtx.send(buf).unwrap();
+            // 初回の構文解析も読み込みスレッドで済ませる
+            let mut buf = buf;
+            let syntax = buf.path.as_deref().and_then(nagi_syntax::Lang::detect).and_then(nagi_syntax::Syntax::new).map(|mut s| {
+                s.parse(&mut buf);
+                clock::mark(format!("syntax: {} parsed", s.lang.name()));
+                s
+            });
+            xtx.send((buf, syntax)).unwrap();
         })
         .unwrap();
 

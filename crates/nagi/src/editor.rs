@@ -55,10 +55,12 @@ pub struct Editor {
     last_change: Option<usize>,
     /// マッピングの続きを待っているキー（showcmd。App が描画前に入れる）
     pub showcmd: String,
+    /// 構文木（対応言語のときだけ）
+    pub syntax: Option<nagi_syntax::Syntax>,
 }
 
 impl Editor {
-    pub fn new(buf: Buffer) -> Self {
+    pub fn new(buf: Buffer, syntax: Option<nagi_syntax::Syntax>) -> Self {
         Self {
             buf,
             hist: History::default(),
@@ -76,6 +78,7 @@ impl Editor {
             clipboard: None,
             last_change: None,
             showcmd: String::new(),
+            syntax,
         }
     }
 

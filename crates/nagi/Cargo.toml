@@ -13,6 +13,7 @@ nagi-core.workspace = true
 nagi-text.workspace = true
 nagi-render.workspace = true
 nagi-vim.workspace = true
+nagi-syntax.workspace = true
 winit.workspace = true
 unicode-segmentation.workspace = true
 windows = { workspace = true, features = [

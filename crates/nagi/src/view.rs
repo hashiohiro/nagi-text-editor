@@ -17,12 +17,41 @@ const TILDE: [f32; 4] = rgb(0x3a3a3a);
 const CURSOR: [f32; 4] = rgb(0xcccccc);
 const STATUS_FG: [f32; 4] = rgb(0x8a8a8a);
 
+/// ハイライトの色（ターミナルの 256 色に近い、控えめな数色）
+fn hl_color(h: nagi_syntax::Hl) -> [f32; 4] {
+    use nagi_syntax::Hl;
+    match h {
+        Hl::Keyword => rgb(0x87afd7),
+        Hl::String => rgb(0xafaf87),
+        Hl::Comment => rgb(0x6c6c6c),
+        Hl::Type | Hl::Attribute => rgb(0xd7af87),
+        Hl::Number | Hl::Escape => rgb(0xd7875f),
+        Hl::Function => FG,
+    }
+}
+
 /// 文字列を (col, row) から描く。戻り値は描き終えた列。
 fn text(out: &mut Vec<Instance>, fonts: &mut Fonts, r: &mut Renderer, s: &str, col: usize, y: f32, color: [f32; 4], max_cols: usize) -> usize {
+    text_with(out, fonts, r, s, col, y, max_cols, |_| color)
+}
+
+/// 書記素ごとに色を変えて描く。`color` には文字列内の byte 位置が渡る
+#[allow(clippy::too_many_arguments)]
+fn text_with(
+    out: &mut Vec<Instance>,
+    fonts: &mut Fonts,
+    r: &mut Renderer,
+    s: &str,
+    col: usize,
+    y: f32,
+    max_cols: usize,
+    color: impl Fn(usize) -> [f32; 4],
+) -> usize {
     let cell = fonts.cell();
     let mut c = col;
-    let items: Vec<(String, usize)> = nagi_text::graphemes(fonts, s).map(|(g, _, w)| (g.to_string(), w)).collect();
-    for (g, w) in items {
+    let items: Vec<(String, usize, usize)> = nagi_text::graphemes(fonts, s).map(|(g, b, w)| (g.to_string(), b, w)).collect();
+    for (g, b, w) in items {
+        let color = color(b);
         if c + w > max_cols {
             break;
         }
@@ -73,6 +102,15 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     // ターミナルにはできない細さ: 縦棒カーソルと下線は 2px / 1px で描く
     let bar = (cell.w / 6.0).round().max(2.0);
     let underline = (cell.h / 16.0).round().max(1.0);
+    // 画面に見えている範囲だけにハイライトのクエリをかける
+    let spans = match &ed.syntax {
+        Some(syn) => {
+            let start = ed.buf.line_start(ed.top);
+            let end = ed.buf.line_start((ed.top + rows).min(total));
+            syn.highlight(&ed.buf, start..end.max(start))
+        }
+        None => Vec::new(),
+    };
 
     for row in 0..rows {
         let ln = ed.top + row;
@@ -85,8 +123,16 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         let no = format!("{:>5} ", ln + 1);
         text(&mut out, fonts, r, &no, 0, y, LINE_NO, cols);
         let line = ed.buf.line(ln);
+        // この行の byte ごとの色。外側のキャプチャの後に内側が来るので、後から塗ったものが勝つ
+        let abs = ed.buf.line_start(ln);
+        let mut colors = vec![FG; line.len()];
+        for (rg, h) in spans.iter().filter(|(rg, _)| rg.end > abs && rg.start < abs + line.len()) {
+            let (a, b) = (rg.start.max(abs) - abs, rg.end.min(abs + line.len()) - abs);
+            colors[a..b].fill(hl_color(*h));
+        }
+        let at_color = |b: usize| colors.get(b).copied().unwrap_or(FG);
         if ln != ed.cursor.line || ed.mode == Mode::Command {
-            text(&mut out, fonts, r, &line, gutter, y, FG, cols);
+            text_with(&mut out, fonts, r, &line, gutter, y, cols, at_color);
             continue;
         }
         let at = ed.cursor.byte.min(line.len());
@@ -94,12 +140,12 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         match ed.mode {
             Mode::Insert => {
                 // 本文 → 変換中の文字列（下線）→ 残りの本文。カーソルは縦棒
-                let c = text(&mut out, fonts, r, &line[..at], gutter, y, FG, cols);
+                let c = text_with(&mut out, fonts, r, &line[..at], gutter, y, cols, at_color);
                 let pc = text(&mut out, fonts, r, &ed.preedit, c, y, FG, cols);
                 if !ed.preedit.is_empty() {
                     out.push(Instance::fill(c as f32 * cell.w, y + cell.h - underline, (pc - c) as f32 * cell.w, underline, FG));
                 }
-                text(&mut out, fonts, r, &line[at..], pc, y, FG, cols);
+                text_with(&mut out, fonts, r, &line[at..], pc, y, cols, |b| at_color(at + b));
                 let caret = match ed.preedit_cursor {
                     Some((a, _)) if !ed.preedit.is_empty() => c + nagi_core::display_col(&ed.preedit, a, false),
                     _ if !ed.preedit.is_empty() => pc,
@@ -112,9 +158,10 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
                 let g = unicode_first_grapheme(&line[at..]);
                 let cw = if g.is_empty() { 1 } else { nagi_core::grapheme_width(g, false) };
                 out.push(Instance::fill((gutter + ccol) as f32 * cell.w, y, cw as f32 * cell.w, cell.h, CURSOR));
-                let c = text(&mut out, fonts, r, &line[..at], gutter, y, FG, cols);
+                let c = text_with(&mut out, fonts, r, &line[..at], gutter, y, cols, at_color);
                 let c2 = text(&mut out, fonts, r, g, c, y, BG, cols);
-                text(&mut out, fonts, r, &line[at + g.len()..], c2, y, FG, cols);
+                let rest = at + g.len();
+                text_with(&mut out, fonts, r, &line[rest..], c2, y, cols, |b| at_color(rest + b));
             }
         }
     }
@@ -140,12 +187,13 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     }
     let name = ed.buf.path.as_ref().map_or("[No Name]".to_string(), |p| p.display().to_string());
     let pos = format!(
-        "{}{}{}   {}{}   {},{} ",
+        "{}{}{}   {}{}   {}{},{} ",
         if ed.count > 0 { ed.count.to_string() } else { String::new() },
         ed.pending.map(String::from).unwrap_or_default(),
         ed.showcmd,
         name,
         if ed.buf.dirty { " [+]" } else { "" },
+        ed.syntax.as_ref().map_or(String::new(), |s| format!("{}   ", s.lang.name())),
         ed.cursor.line + 1,
         nagi_core::display_col(&ed.buf.line(ed.cursor.line), ed.cursor.byte, false) + 1
     );
