@@ -76,6 +76,39 @@ pub struct GlyphImage {
     pub data: Vec<u8>,
 }
 
+/// 描画のたびに 1 文字ごとに引く表のためのハッシュ（rustc の FxHash と同じ方式）。
+/// 既定の SipHash は HashDoS に強い代わりに遅い。キーは自分で作る値だけなので、こちらで足りる。
+#[derive(Default, Clone, Copy)]
+pub struct FxHasher(u64);
+
+impl std::hash::Hasher for FxHasher {
+    fn write(&mut self, bytes: &[u8]) {
+        for &b in bytes {
+            self.write_u64(b as u64);
+        }
+    }
+    fn write_u8(&mut self, i: u8) {
+        self.write_u64(i as u64);
+    }
+    fn write_u16(&mut self, i: u16) {
+        self.write_u64(i as u64);
+    }
+    fn write_u32(&mut self, i: u32) {
+        self.write_u64(i as u64);
+    }
+    fn write_u64(&mut self, i: u64) {
+        self.0 = (self.0.rotate_left(5) ^ i).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+    }
+    fn write_usize(&mut self, i: usize) {
+        self.write_u64(i as u64);
+    }
+    fn finish(&self) -> u64 {
+        self.0
+    }
+}
+
+pub type FastMap<K, V> = HashMap<K, V, std::hash::BuildHasherDefault<FxHasher>>;
+
 /// グリフの識別子（face 番号＋グリフ ID＋セル幅）。アトラスのキーに使う。
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct GlyphKey {
@@ -90,8 +123,8 @@ pub struct Fonts {
     faces: Vec<Face>,
     /// MapCharacters で追加した face（ファミリー名 → faces の添字）
     extra: HashMap<String, usize>,
-    /// char → face（None は豆腐）
-    pick_cache: HashMap<char, Option<u16>>,
+    /// char → (face, グリフ ID)（None は豆腐）
+    pick_cache: FastMap<char, Option<(u16, u16)>>,
     ctx: ScaleContext,
     pub ambiguous_wide: bool,
 }
@@ -111,7 +144,7 @@ impl Fonts {
         for f in faces.iter_mut() {
             fit_face(f, px, cell);
         }
-        Self { px, cell, faces, extra: HashMap::new(), pick_cache: HashMap::new(), ctx: ScaleContext::new(), ambiguous_wide: false }
+        Self { px, cell, faces, extra: HashMap::new(), pick_cache: FastMap::default(), ctx: ScaleContext::new(), ambiguous_wide: false }
     }
 
     pub fn cell(&self) -> CellSize {
@@ -129,15 +162,14 @@ impl Fonts {
         if ch == ' ' || ch == '\u{3000}' || ch == '\t' {
             return None;
         }
-        let face = match self.pick_cache.get(&ch) {
+        let (face, glyph) = match self.pick_cache.get(&ch) {
             Some(f) => (*f)?,
             None => {
-                let f = self.pick(ch, grapheme);
+                let f = self.pick(ch, grapheme).map(|face| (face, self.faces[face as usize].font_ref().charmap().map(ch)));
                 self.pick_cache.insert(ch, f);
                 f?
             }
         };
-        let glyph = self.faces[face as usize].font_ref().charmap().map(ch);
         Some(GlyphKey { face, glyph, width: width as u8 })
     }
 

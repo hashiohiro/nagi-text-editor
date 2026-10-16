@@ -35,17 +35,29 @@ pub fn mark_once(label: &str) {
     mark(label);
 }
 
-pub fn report() {
+/// 記録した時刻（プロセス生成からの ms）
+pub fn at(label: &str) -> Option<f64> {
+    let tagged = format!("] {label}");
+    MARKS.lock().unwrap().iter().find(|(l, _)| l.ends_with(&tagged)).map(|(_, t)| *t)
+}
+
+/// (private, working set) の MB
+pub fn memory_mb() -> (f64, f64) {
     use windows::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX};
+    let mut m = PROCESS_MEMORY_COUNTERS_EX { cb: size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32, ..Default::default() };
+    unsafe {
+        let _ = GetProcessMemoryInfo(GetCurrentProcess(), &mut m as *mut _ as *mut PROCESS_MEMORY_COUNTERS, m.cb);
+    }
+    (m.PrivateUsage as f64 / 1048576.0, m.WorkingSetSize as f64 / 1048576.0)
+}
+
+pub fn report() {
     let mut marks = MARKS.lock().unwrap().clone();
     marks.sort_by(|a, b| a.1.total_cmp(&b.1));
     eprintln!("--- 起動（プロセス生成からの ms）---");
     for (l, t) in &marks {
         eprintln!("{t:>9.2}  {l}");
     }
-    let mut m = PROCESS_MEMORY_COUNTERS_EX { cb: size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32, ..Default::default() };
-    unsafe {
-        let _ = GetProcessMemoryInfo(GetCurrentProcess(), &mut m as *mut _ as *mut PROCESS_MEMORY_COUNTERS, m.cb);
-    }
-    eprintln!("memory: private={:.1}MB working_set={:.1}MB", m.PrivateUsage as f64 / 1048576.0, m.WorkingSetSize as f64 / 1048576.0);
+    let (private, ws) = memory_mb();
+    eprintln!("memory: private={private:.1}MB working_set={ws:.1}MB");
 }

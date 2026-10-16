@@ -1,8 +1,9 @@
 //! nagi（凪）: 静かで、余計なものがない、速いエディタ。
 //!
-//! 使い方: nagi [FILE] [--startup-report] [--exit-after-first-frame] [--keys KEYS]
+//! 使い方: nagi [FILE] [--startup-report] [--exit-after-first-frame] [--keys KEYS] [--replay KEYS]
 //!
-//! `--keys` は起動直後にキー列（Vim の表記。`/foo<CR>` など）を流し込む。画面の確認やデモ用。
+//! `--keys` は起動直後にキー列（Vim の表記。`/foo<CR>` など）を流し込み、最後に 1 回だけ描く。画面の確認やデモ用。
+//! `--replay` はキー列を 1 打ずつ、キー入力と同じ道筋（処理 → 描画 → 計測の記録）で流す。`:NagiStats` の確認用。
 //!
 //! 起動は並列（architecture.md §6.4）: GPU・フォント・ファイル読込を別スレッドで進め、
 //! メインスレッドはその間にイベントループと非表示のウィンドウを作る。最初のフレームを描いてから表示する。
@@ -13,6 +14,7 @@ mod clock;
 mod difftest;
 mod editor;
 mod normal;
+mod stats;
 mod view;
 
 use std::path::PathBuf;
@@ -38,17 +40,19 @@ const FONT_PX: f64 = 14.0;
 struct Opts {
     file: Option<PathBuf>,
     keys: Option<String>,
+    replay: Option<String>,
     startup_report: bool,
     exit_after_first_frame: bool,
 }
 
 impl Opts {
     fn parse() -> Self {
-        let mut o = Opts { file: None, keys: None, startup_report: false, exit_after_first_frame: false };
+        let mut o = Opts { file: None, keys: None, replay: None, startup_report: false, exit_after_first_frame: false };
         let mut args = std::env::args().skip(1);
         while let Some(a) = args.next() {
             match a.as_str() {
                 "--keys" => o.keys = args.next(),
+                "--replay" => o.replay = args.next(),
                 "--startup-report" => o.startup_report = true,
                 "--exit-after-first-frame" => {
                     o.exit_after_first_frame = true;
@@ -76,6 +80,8 @@ const WHEEL_LINES: f64 = 3.0;
 const SCROLL_TIME: Duration = Duration::from_millis(110);
 /// タッチパッドで止まってから行境界へ寄せるまでの時間
 const SNAP_AFTER: Duration = Duration::from_millis(120);
+/// `--replay` で 1 打ずつ流す間隔（速く打つ人の打鍵間隔くらい。詰めすぎるとフレームの待ちが毎回乗る）
+const REPLAY_EVERY: Duration = Duration::from_millis(30);
 /// ドラッグで画面外に出たときの自動スクロールの間隔
 const AUTOSCROLL_EVERY: Duration = Duration::from_millis(40);
 
@@ -131,6 +137,10 @@ struct App {
     /// 直前のクリック（時刻, 画面上のセル, 連続回数）。ダブル・トリプルクリックの判定用
     last_click: Option<(Instant, (usize, usize), u32)>,
     autoscroll_deadline: Option<Instant>,
+    stats: stats::Stats,
+    /// `--replay` の残りのキー（1 回のイベント処理で 1 打ずつ流す）
+    replay: std::collections::VecDeque<VKey>,
+    replay_deadline: Option<Instant>,
 }
 
 impl App {
@@ -186,6 +196,10 @@ impl App {
             self.sync_ime();
             self.draw();
         }
+        if let Some(keys) = self.opts.replay.take() {
+            self.replay = nagi_vim::parse_keys(&keys, &self.rc.leader.clone()).into();
+            self.replay_deadline = Some(Instant::now() + REPLAY_EVERY);
+        }
     }
 
     fn title_for(&self, path: Option<&std::path::Path>) -> String {
@@ -202,21 +216,28 @@ impl App {
         ((r.size().1 as f32 / f.cell().h) as usize).saturating_sub(status).max(1)
     }
 
-    fn draw(&mut self) {
-        let (Some(r), Some(f), Some(ed)) = (&mut self.renderer, &mut self.fonts, &mut self.ed) else { return };
+    /// 1 フレーム描く。戻り値は内訳（構文木の更新, スワップチェーンの待ち, 組み立て, 送出）
+    fn draw(&mut self) -> [Duration; 4] {
+        let (Some(r), Some(f), Some(ed)) = (&mut self.renderer, &mut self.fonts, &mut self.ed) else { return Default::default() };
+        let t0 = Instant::now();
+        // 構文木の更新は待ちの前に済ませる（待っている間に前のフレームが出る）
+        if let Some(s) = &mut ed.syntax {
+            s.sync(&mut ed.buf);
+        }
+        let t1 = Instant::now();
         r.wait_frame();
+        let t2 = Instant::now();
         let status = ed.status_rows();
         ed.rows = ((r.size().1 as f32 / f.cell().h) as usize).saturating_sub(status).max(1);
         ed.scroll_into_view();
         ed.showcmd = self.matcher.pending().iter().map(|k| k.label()).collect();
-        if let Some(s) = &mut ed.syntax {
-            s.sync(&mut ed.buf);
-        }
         let insts = view::build(ed, f, r);
         clock::mark_once("first frame built");
+        let t3 = Instant::now();
         if let Err(e) = r.draw(&insts, view::BG) {
             eprintln!("draw: {e}");
         }
+        [t1 - t0, t2 - t1, t3 - t2, t3.elapsed()]
     }
 
     /// 設定（vimrc）の内容をエディタに反映する
@@ -267,19 +288,27 @@ impl App {
             },
             _ => return,
         };
-        self.stop_scroll();
         if keys == [VKey::Ctrl('q')] {
             el.exit();
             return;
         }
+        self.handle_keys(keys, el);
+    }
+
+    /// 1 回のキー入力を処理して描き、かかった時間を記録する
+    fn handle_keys(&mut self, keys: Vec<VKey>, el: &ActiveEventLoop) {
+        let t0 = Instant::now();
+        self.stop_scroll();
         for k in keys {
             if self.feed(k, el) {
                 return;
             }
         }
         self.sync_ime();
+        let edit = t0.elapsed();
         // request_redraw を経由せず、その場で描く（ADR 0005）
-        self.draw();
+        let [sync, wait, build, present] = self.draw();
+        self.stats.push(stats::Sample { edit: stats::us(edit + sync), wait: stats::us(wait), build: stats::us(build), present: stats::us(present) });
     }
 
     /// 1 打をマッピングに通してからエディタに流す。終了したら true
@@ -312,6 +341,17 @@ impl App {
                 Effect::Quit => {
                     el.exit();
                     return true;
+                }
+                Effect::Stats { reset } => {
+                    let msg = if reset {
+                        self.stats.clear();
+                        "計測の記録を消しました".to_string()
+                    } else {
+                        self.stats.summary(clock::at("window visible"), clock::memory_mb().0)
+                    };
+                    if let Some(ed) = &mut self.ed {
+                        ed.message = msg;
+                    }
                 }
                 Effect::ReloadRc => {
                     let t = Instant::now();
@@ -553,6 +593,15 @@ impl ApplicationHandler for App {
             if self.autoscroll_deadline.is_some_and(|d| now >= d) {
                 self.on_autoscroll();
             }
+            if self.replay_deadline.is_some_and(|d| now >= d) {
+                self.replay_deadline = None;
+                if let Some(k) = self.replay.pop_front() {
+                    self.handle_keys(vec![k], el);
+                    if !self.replay.is_empty() {
+                        self.replay_deadline = Some(Instant::now() + REPLAY_EVERY);
+                    }
+                }
+            }
         }
     }
 
@@ -561,7 +610,7 @@ impl ApplicationHandler for App {
         if self.scroll_anim.is_some() {
             self.step_scroll(Instant::now());
         }
-        let deadline = [self.map_deadline, self.snap_deadline, self.autoscroll_deadline].into_iter().flatten().min();
+        let deadline = [self.map_deadline, self.snap_deadline, self.autoscroll_deadline, self.replay_deadline].into_iter().flatten().min();
         el.set_control_flow(if self.scroll_anim.is_some() {
             ControlFlow::Poll
         } else {
@@ -615,7 +664,9 @@ impl ApplicationHandler for App {
                 }
             },
             WindowEvent::MouseWheel { delta, .. } => self.on_wheel(delta),
-            WindowEvent::RedrawRequested => self.draw(),
+            WindowEvent::RedrawRequested => {
+                self.draw();
+            }
             _ => {}
         }
     }
@@ -697,6 +748,9 @@ fn main() {
         press: None,
         last_click: None,
         autoscroll_deadline: None,
+        stats: stats::Stats::default(),
+        replay: Default::default(),
+        replay_deadline: None,
     };
     event_loop.run_app(&mut app).unwrap();
 }

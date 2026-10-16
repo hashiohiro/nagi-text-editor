@@ -3,7 +3,6 @@
 //! 背景矩形・白黒グリフ・カラーグリフを 1 種類のインスタンスで表し、1 回の DrawInstanced で描く。
 //! グリフは必要になった時点でラスタライズしてアトラスに詰める。
 
-use std::collections::HashMap;
 
 use nagi_text::{Fonts, GlyphKey};
 use windows::Win32::Foundation::{HANDLE, HWND};
@@ -184,7 +183,7 @@ struct Atlas {
     mono_shelf: Shelf,
     color_shelf: Shelf,
     /// None はラスタライズできなかった（空のグリフ）
-    map: HashMap<GlyphKey, Option<AtlasGlyph>>,
+    map: nagi_text::FastMap<GlyphKey, Option<AtlasGlyph>>,
 }
 
 impl Atlas {
@@ -221,7 +220,7 @@ impl Atlas {
             color_srv,
             mono_shelf: Shelf { size: MONO_SIZE, x: 0, y: 0, row_h: 0 },
             color_shelf: Shelf { size: COLOR_SIZE, x: 0, y: 0, row_h: 0 },
-            map: HashMap::new(),
+            map: Default::default(),
         })
     }
 

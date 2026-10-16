@@ -32,6 +32,8 @@ pub enum Effect {
     Quit,
     /// 設定（vimrc）を読み直す
     ReloadRc,
+    /// `:NagiStats`（`!` 付きは記録を消す）
+    Stats { reset: bool },
 }
 
 /// OS のクリップボード（`set clipboard+=unnamedplus` のとき無名レジスタの代わりに使う）
@@ -650,6 +652,8 @@ impl Editor {
             }
             "action" => self.action(arg),
             "source" | "so" => return Effect::ReloadRc,
+            "NagiStats" => return Effect::Stats { reset: false },
+            "NagiStats!" => return Effect::Stats { reset: true },
             "echo" => self.message = arg.trim_matches(['"', '\'']).to_string(),
             "noh" | "nohlsearch" => self.search.highlight = false,
             // ideavimrc の `O`: `:call append(expand('.'), '')`（現在行の下に空行を足す）

@@ -3,6 +3,8 @@
 //! 1 行は「書記素ごとの部品（文字・文字色・背景色・下線）」の並びとして組み立ててから描く。
 //! 選択範囲・検索の一致・置換の予告表示・カーソル・IME の変換中の文字列は、どれもこの部品の差し替えで表す。
 
+use std::borrow::Cow;
+
 use nagi_render::{Instance, Renderer};
 use nagi_text::Fonts;
 use unicode_segmentation::UnicodeSegmentation;
@@ -36,9 +38,9 @@ fn hl_color(h: nagi_syntax::Hl) -> [f32; 4] {
     }
 }
 
-/// 1 書記素分の部品
-struct Item {
-    g: String,
+/// 1 書記素分の部品。文字は元の行を借りる（1 文字ごとに確保しない）
+struct Item<'a> {
+    g: Cow<'a, str>,
     width: usize,
     fg: [f32; 4],
     bg: Option<[f32; 4]>,
@@ -57,12 +59,17 @@ struct Painter<'a> {
 }
 
 impl Painter<'_> {
-    fn items(&self, s: &str, fg: [f32; 4]) -> Vec<Item> {
-        nagi_text::graphemes(self.fonts, s).map(|(g, _, w)| Item { g: g.to_string(), width: w, fg, bg: None, underline: false }).collect()
+    fn items<'s>(&self, s: &'s str, fg: [f32; 4]) -> Vec<Item<'s>> {
+        s.graphemes(true).map(|g| Item { g: Cow::Borrowed(g), width: self.cell_width(g), fg, bg: None, underline: false }).collect()
+    }
+
+    /// 書記素 1 つのセル幅（タブは 4）
+    fn cell_width(&self, g: &str) -> usize {
+        if g == "\t" { 4 } else { self.fonts.width(g) }
     }
 
     /// 部品の並びを (col, y) から描く。戻り値は描き終えた列
-    fn draw(&mut self, items: &[Item], col: usize, y: f32) -> usize {
+    fn draw(&mut self, items: &[Item<'_>], col: usize, y: f32) -> usize {
         let cell = self.fonts.cell();
         let mut c = col;
         for it in items {
@@ -130,7 +137,10 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     let underline = (cell.h / 16.0).round().max(1.0);
     let mut p = Painter { out: Vec::with_capacity(cols * rows + 64), fonts, r, cols, bar, underline };
     let total = ed.buf.line_count();
+    let debug = std::env::var_os("NAGI_DEBUG_BUILD").is_some();
+    let t0 = std::time::Instant::now();
     ed.refresh_matches();
+    let t_matches = t0.elapsed();
     // スムーズスクロール中は 1 行多く描き、全体を frac 行ぶん上へずらす
     let frac = ed.frac;
     let drawn = rows + usize::from(frac > 0.0);
@@ -142,17 +152,16 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         Some(syn) => syn.highlight(&ed.buf, view_start..view_end.max(view_start)),
         None => Vec::new(),
     };
+    let t_hl = t0.elapsed();
+    let ed: &Editor = ed;
     let show_matches = matches!(ed.mode, Mode::Search | Mode::Replace) || ed.search.highlight;
-    let view_last = if (ed.top + drawn) >= total { ed.buf.len_bytes() + 1 } else { view_end };
-    let matches: Vec<(usize, (usize, usize))> = if show_matches {
-        ed.search.matches.iter().copied().enumerate().filter(|(_, (s, e))| *e > view_start && *s < view_last).collect()
-    } else {
-        Vec::new()
-    };
+    let all_matches: &[(usize, usize)] = if show_matches { &ed.search.matches } else { &[] };
     let visual = match ed.mode {
         Mode::Visual { .. } => Some(ed.visual_range()),
         _ => None,
     };
+    // 行単位の Visual は、選んでいる行の範囲にしておく（1 文字ごとに位置を引き直さない）
+    let visual_lines = visual.map(|(vs, ve, _)| (ed.buf.pos_of(vs).0, ed.buf.pos_of(ve.saturating_sub(1).max(vs)).0));
     let replacing = ed.mode == Mode::Replace && !ed.query.text.is_empty();
 
     for row in 0..drawn {
@@ -172,40 +181,52 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             let (a, b) = (rg.start.max(abs) - abs, rg.end.min(abs + line.len()) - abs);
             colors[a..b].fill(hl_color(*hl));
         }
+        // この行にかかる一致（一致は位置順に並んでいる）。改行の位置にかかる一致も含める
+        let first = all_matches.partition_point(|&(_, e)| e <= abs);
+        let last = all_matches.partition_point(|&(s, _)| s <= abs + line.len());
+        let line_matches = &all_matches[first..last.max(first)];
+        let mut mi = 0;
+        let line_selected = match (visual, visual_lines) {
+            (Some((_, _, true)), Some((a, b))) => a <= ln && ln <= b,
+            _ => false,
+        };
         let is_cursor_line = ln == ed.cursor.line;
         let mut items: Vec<Item> = Vec::with_capacity(line.len());
         let mut cursor_item = None;
-        let gs: Vec<(usize, &str)> = line.grapheme_indices(true).collect();
-        let mut k = 0;
-        while k < gs.len() {
-            let (b, g) = gs[k];
+        let mut gs = line.grapheme_indices(true).peekable();
+        while let Some((b, g)) = gs.next() {
             let a = abs + b;
+            while mi < line_matches.len() && line_matches[mi].1 <= a && line_matches[mi].0 < a {
+                mi += 1;
+            }
             // 置換の予告表示: 一致をその場で置換後の文字列に差し替える（下線付き）
             if replacing {
-                if let Some((_, (ms, me))) = matches.iter().find(|(_, (ms, _))| *ms == a) {
-                    let rep = ed.replacement(*ms, *me);
-                    let mut rep_items = p.items(&rep, FG);
+                if let Some(&(ms, me)) = line_matches.get(mi).filter(|(ms, _)| *ms == a) {
+                    let rep = ed.replacement(ms, me);
+                    let mut rep_items: Vec<Item> = p.items(&rep, FG).into_iter().map(|i| Item { g: Cow::Owned(i.g.into_owned()), ..i }).collect();
                     rep_items.iter_mut().for_each(|i| i.underline = true);
                     items.extend(rep_items);
-                    while k < gs.len() && abs + gs[k].0 < *me {
-                        k += 1;
+                    while gs.peek().is_some_and(|(nb, _)| abs + nb < me) {
+                        gs.next();
                     }
+                    mi += 1;
                     continue;
                 }
             }
-            let width = p.width(g).max(1);
-            let mut it = Item { g: g.to_string(), width, fg: colors.get(b).copied().unwrap_or(FG), bg: None, underline: false };
-            if let Some((i, _)) = matches.iter().find(|(_, (ms, me))| a >= *ms && a < *me) {
-                if Some(*i) == ed.search.current && matches!(ed.mode, Mode::Search) {
-                    it.bg = Some(it.fg);
-                    it.fg = BG;
-                } else {
-                    it.bg = Some(MATCH_BG);
+            let width = p.cell_width(g);
+            let mut it = Item { g: Cow::Borrowed(g), width, fg: colors.get(b).copied().unwrap_or(FG), bg: None, underline: false };
+            if let Some(&(ms, me)) = line_matches.get(mi) {
+                if a >= ms && a < me {
+                    if Some(first + mi) == ed.search.current && matches!(ed.mode, Mode::Search) {
+                        it.bg = Some(it.fg);
+                        it.fg = BG;
+                    } else {
+                        it.bg = Some(MATCH_BG);
+                    }
                 }
             }
             if let Some((vs, ve, lw)) = visual {
-                let inside = if lw { ed.buf.pos_of(vs).0 <= ln && ln <= ed.buf.pos_of(ve.saturating_sub(1).max(vs)).0 } else { a >= vs && a < ve };
-                if inside {
+                if if lw { line_selected } else { a >= vs && a < ve } {
                     it.bg = Some(it.fg);
                     it.fg = BG;
                 }
@@ -214,14 +235,13 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
                 cursor_item = Some(items.len());
             }
             items.push(it);
-            k += 1;
         }
         // Visual で改行まで選んでいる行は、Vim と同じく行末を 1 セル反転して見せる（空行が選ばれていると分かるように）
         if let Some((vs, ve, lw)) = visual {
             let eol = abs + line.len();
-            let selected = if lw { ed.buf.pos_of(vs).0 <= ln && ln <= ed.buf.pos_of(ve.saturating_sub(1).max(vs)).0 } else { eol >= vs && eol < ve };
+            let selected = if lw { line_selected } else { eol >= vs && eol < ve };
             if selected && !(is_cursor_line && ed.cursor.byte >= line.len()) {
-                items.push(Item { g: " ".into(), width: 1, fg: BG, bg: Some(FG), underline: false });
+                items.push(Item { g: Cow::Borrowed(" "), width: 1, fg: BG, bg: Some(FG), underline: false });
             }
         }
         if !is_cursor_line || matches!(ed.mode, Mode::Command | Mode::Search | Mode::Replace) {
@@ -257,6 +277,10 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         }
     }
 
+    let t_lines = t0.elapsed();
+    if debug {
+        eprintln!("build matches={:?} highlight={:?} lines={:?} n_matches={}", t_matches, t_hl - t_matches, t_lines - t_hl, ed.search.matches.len());
+    }
     // ---- 最下行: 左にモード・メッセージ・入力欄、右に位置（Vim の showmode と ruler と同じ形）
     let y = rows as f32 * cell.h;
     if frac > 0.0 {
@@ -308,9 +332,12 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
                     _ => String::new(),
                 }
             };
-            p.text(&left, 0, y, FG);
+            let end = p.text(&left, 0, y, FG);
+            // 長いメッセージと重なるときは位置表示を出さない（メッセージを優先する）
             let pc = cols.saturating_sub(p.width(&ruler));
-            p.text(&ruler, pc, y, STATUS_FG);
+            if end + 2 <= pc {
+                p.text(&ruler, pc, y, STATUS_FG);
+            }
         }
     }
     p.out
