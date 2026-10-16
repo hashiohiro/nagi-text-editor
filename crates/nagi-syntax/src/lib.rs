@@ -18,12 +18,59 @@ pub enum Lang {
     JavaScript,
     Java,
     Kotlin,
+    Python,
+    Bash,
+    Batch,
+    PowerShell,
+    Ini,
+    Json,
+    Yaml,
+    Vim,
 }
+
+const ALL: [Lang; 13] = [
+    Lang::TypeScript,
+    Lang::Tsx,
+    Lang::JavaScript,
+    Lang::Java,
+    Lang::Kotlin,
+    Lang::Python,
+    Lang::Bash,
+    Lang::Batch,
+    Lang::PowerShell,
+    Lang::Ini,
+    Lang::Json,
+    Lang::Yaml,
+    Lang::Vim,
+];
+
+// tree-sitter-vim 0.4.0 は古い形式のバインディング（Language を値で返す宣言）なので使わず、
+// 同じクレートがビルドする C の関数を新しい形式（LanguageFn）で呼ぶ
+unsafe extern "C" {
+    fn tree_sitter_vim() -> *const ();
+}
+const VIM_LANGUAGE: tree_sitter_language::LanguageFn = unsafe { tree_sitter_language::LanguageFn::from_raw(tree_sitter_vim) };
 
 impl Lang {
     pub fn detect(path: &Path) -> Option<Lang> {
+        // 拡張子ではなくファイル名で決まるもの
+        let name = path.file_name()?.to_str()?.to_ascii_lowercase();
+        match name.as_str() {
+            ".vimrc" | "_vimrc" | ".ideavimrc" | "_ideavimrc" | ".gvimrc" | "nagi.vim" => return Some(Lang::Vim),
+            ".bashrc" | ".bash_profile" | ".profile" | ".zshrc" => return Some(Lang::Bash),
+            ".gitconfig" | ".editorconfig" | ".npmrc" => return Some(Lang::Ini),
+            _ => {}
+        }
         let ext = path.extension()?.to_str()?.to_ascii_lowercase();
         Some(match ext.as_str() {
+            "py" | "pyw" | "pyi" => Lang::Python,
+            "sh" | "bash" => Lang::Bash,
+            "bat" | "cmd" => Lang::Batch,
+            "ps1" | "psm1" | "psd1" => Lang::PowerShell,
+            "ini" | "cfg" | "conf" | "properties" => Lang::Ini,
+            "json" | "jsonc" | "json5" => Lang::Json,
+            "yml" | "yaml" => Lang::Yaml,
+            "vim" => Lang::Vim,
             "ts" | "mts" | "cts" => Lang::TypeScript,
             "tsx" => Lang::Tsx,
             "js" | "mjs" | "cjs" | "jsx" => Lang::JavaScript,
@@ -40,7 +87,31 @@ impl Lang {
             Lang::JavaScript => "JavaScript",
             Lang::Java => "Java",
             Lang::Kotlin => "Kotlin",
+            Lang::Python => "Python",
+            Lang::Bash => "Bash",
+            Lang::Batch => "Batch",
+            Lang::PowerShell => "PowerShell",
+            Lang::Ini => "INI",
+            Lang::Json => "JSON",
+            Lang::Yaml => "YAML",
+            Lang::Vim => "Vim",
         }
+    }
+
+    /// 設定・データの言語（キーを色分けする）
+    fn is_data(self) -> bool {
+        matches!(self, Lang::Ini | Lang::Json | Lang::Yaml | Lang::Vim)
+    }
+
+    /// 同じノードに複数のキャプチャがあるとき、後に書かれたものを優先する（Neovim 流のクエリ）。
+    /// tree-sitter 本家の grammar は先に書かれたものを優先する
+    fn last_wins(self) -> bool {
+        matches!(self, Lang::Yaml | Lang::Vim | Lang::Ini)
+    }
+
+    /// シェル（$変数 を色分けする）
+    fn is_shell(self) -> bool {
+        matches!(self, Lang::Bash | Lang::Batch | Lang::PowerShell)
     }
 
     fn language(self) -> Language {
@@ -50,6 +121,14 @@ impl Lang {
             Lang::JavaScript => tree_sitter_javascript::LANGUAGE.into(),
             Lang::Java => tree_sitter_java::LANGUAGE.into(),
             Lang::Kotlin => tree_sitter_kotlin_ng::LANGUAGE.into(),
+            Lang::Python => tree_sitter_python::LANGUAGE.into(),
+            Lang::Bash => tree_sitter_bash::LANGUAGE.into(),
+            Lang::Batch => tree_sitter_batch::LANGUAGE.into(),
+            Lang::PowerShell => tree_sitter_powershell::LANGUAGE.into(),
+            Lang::Ini => tree_sitter_ini::LANGUAGE.into(),
+            Lang::Json => tree_sitter_json::LANGUAGE.into(),
+            Lang::Yaml => tree_sitter_yaml::LANGUAGE.into(),
+            Lang::Vim => VIM_LANGUAGE.into(),
         }
     }
 
@@ -62,12 +141,20 @@ impl Lang {
             Lang::JavaScript => format!("{}\n{}", tree_sitter_javascript::HIGHLIGHT_QUERY, tree_sitter_javascript::JSX_HIGHLIGHT_QUERY),
             Lang::Java => tree_sitter_java::HIGHLIGHTS_QUERY.to_string(),
             Lang::Kotlin => include_str!("../queries/kotlin/highlights.scm").to_string(),
+            Lang::Python => tree_sitter_python::HIGHLIGHTS_QUERY.to_string(),
+            Lang::Bash => tree_sitter_bash::HIGHLIGHT_QUERY.to_string(),
+            Lang::Batch => tree_sitter_batch::HIGHLIGHTS_QUERY.to_string(),
+            Lang::PowerShell => tree_sitter_powershell::HIGHLIGHTS_QUERY.to_string(),
+            Lang::Ini => tree_sitter_ini::HIGHLIGHTS_QUERY.to_string(),
+            Lang::Json => tree_sitter_json::HIGHLIGHTS_QUERY.to_string(),
+            Lang::Yaml => tree_sitter_yaml::HIGHLIGHTS_QUERY.to_string(),
+            Lang::Vim => tree_sitter_vim::HIGHLIGHTS_QUERY.to_string(),
         }
     }
 
     /// 言語ごとに 1 回だけコンパイルしたクエリ
     pub fn highlights(self) -> &'static Result<Query, String> {
-        static Q: [OnceLock<Result<Query, String>>; 5] = [const { OnceLock::new() }; 5];
+        static Q: [OnceLock<Result<Query, String>>; ALL.len()] = [const { OnceLock::new() }; ALL.len()];
         Q[self as usize].get_or_init(|| Query::new(&self.language(), &self.highlights_source()).map_err(|e| format!("{e}")))
     }
 }
@@ -85,9 +172,14 @@ pub enum Hl {
     Escape,
 }
 
-fn classify(capture: &str) -> Option<Hl> {
+fn classify(capture: &str, lang: Lang) -> Option<Hl> {
     let head = capture.split('.').next().unwrap_or(capture);
     Some(match head {
+        // 設定・データの言語ではキーを、シェルでは $変数 を色分けする（プログラミング言語では地の色のまま）
+        "property" | "field" | "tag" if lang.is_data() => Hl::Keyword,
+        // JSON はキーを string.special.key として取り出す
+        _ if lang.is_data() && capture.split('.').any(|p| p == "key") => Hl::Keyword,
+        "variable" if lang.is_shell() && !capture.contains("builtin") => Hl::Type,
         "keyword" | "conditional" | "repeat" | "include" | "exception" => Hl::Keyword,
         "string" | "character" => {
             if capture.contains("escape") {
@@ -158,10 +250,13 @@ impl Syntax {
         let mut out: Vec<(Range<usize>, Hl)> = Vec::new();
         while let Some((m, i)) = caps.next() {
             let c = m.captures()[*i];
-            let Some(hl) = classify(names[c.index as usize]) else { continue };
+            let Some(hl) = classify(names[c.index as usize], self.lang) else { continue };
             let r = c.node.start_byte()..c.node.end_byte();
-            // 同じノードに複数のキャプチャがあれば、クエリで先に書かれたもの（tree-sitter の規約）を残す
-            if out.last().is_some_and(|(lr, _)| *lr == r) {
+            // 同じノードに複数のキャプチャがあるとき、どちらを残すかは grammar のクエリの書き方による
+            if let Some(last) = out.last_mut().filter(|(lr, _)| *lr == r) {
+                if self.lang.last_wins() {
+                    last.1 = hl;
+                }
                 continue;
             }
             out.push((r, hl));
@@ -192,7 +287,7 @@ mod tests {
 
     #[test]
     fn queries_compile() {
-        for lang in [Lang::TypeScript, Lang::Tsx, Lang::JavaScript, Lang::Java, Lang::Kotlin] {
+        for lang in ALL {
             if let Err(e) = lang.highlights() {
                 panic!("{}: {e}", lang.name());
             }
@@ -222,6 +317,24 @@ mod tests {
         assert!(k.contains(&("fun".into(), Hl::Keyword)), "{k:?}");
         assert!(k.contains(&("\"a\"".into(), Hl::String)), "{k:?}");
         assert!(k.contains(&("main".into(), Hl::Function)), "{k:?}");
+    }
+
+    #[test]
+    fn config_and_scripts() {
+        let k = kinds(Lang::Json, "{\"a\": 1, \"b\": \"x\"}");
+        assert!(k.contains(&("\"a\"".into(), Hl::Keyword)), "{k:?}");
+        assert!(k.contains(&("1".into(), Hl::Number)), "{k:?}");
+        let k = kinds(Lang::Vim, "\" c\nset clipboard+=unnamedplus\nnnoremap ew :w<CR>\n");
+        assert!(k.iter().any(|(_, h)| *h == Hl::Comment), "{k:?}");
+        assert!(k.iter().any(|(t, h)| t == "set" && *h == Hl::Keyword), "{k:?}");
+        let k = kinds(Lang::Python, "# c\ndef f(x):\n    return \"s\"\n");
+        assert!(k.contains(&("def".into(), Hl::Keyword)), "{k:?}");
+        let k = kinds(Lang::PowerShell, "# c\n$x = \"a\"\nWrite-Output $x\n");
+        assert!(k.iter().any(|(_, h)| *h == Hl::Comment), "{k:?}");
+        let k = kinds(Lang::Yaml, "a: 1\nb: [x, y]\n");
+        assert!(k.iter().any(|(t, h)| t == "a" && *h == Hl::Keyword), "{k:?}");
+        assert_eq!(Lang::detect(Path::new("C:/Users/x/.ideavimrc")), Some(Lang::Vim));
+        assert_eq!(Lang::detect(Path::new("run.BAT")), Some(Lang::Batch));
     }
 
     #[test]

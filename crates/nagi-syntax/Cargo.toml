@@ -8,7 +8,16 @@ publish.workspace = true
 [dependencies]
 nagi-core.workspace = true
 tree-sitter = "=0.27.1"
+tree-sitter-language = "0.1.9"
 tree-sitter-typescript = "=0.23.2"
 tree-sitter-javascript = "=0.25.0"
 tree-sitter-java = "=0.23.5"
 tree-sitter-kotlin-ng = "=1.1.0"
+tree-sitter-python = "=0.25.0"
+tree-sitter-bash = "=0.25.1"
+tree-sitter-batch = "=0.11.1"
+tree-sitter-powershell = "=0.26.4"
+tree-sitter-ini = "=1.4.0"
+tree-sitter-json = "=0.24.8"
+tree-sitter-yaml = "=0.7.2"
+tree-sitter-vim = "=0.4.0"
