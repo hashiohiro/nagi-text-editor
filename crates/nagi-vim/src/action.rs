@@ -52,8 +52,8 @@ pub fn ideavim(name: &str) -> Option<(Option<&'static str>, &'static str)> {
         // git（M5）
         "Vcs.ShowTabbedFileHistory" => (Some("git.file_history"), "ファイルの履歴"),
         "Annotate" => (Some("git.blame"), "blame"),
-        "ChangesView" => (Some("git.changes"), "変更の一覧"),
-        "CheckinProject" => (Some("git.commit"), "コミット"),
+        "ChangesView" => (Some("git.changes"), "変更の一覧（コミットのパネル）"),
+        "CheckinProject" => (Some("git.commit"), "コミット（コミットのパネル）"),
         "Vcs.Push" => (Some("git.push"), "push"),
         "Vcs.UpdateProject" => (Some("git.pull"), "pull"),
         // Nagi に相当する機能が無い（LSP・IDE 固有）

@@ -15,8 +15,10 @@ mod buffers;
 mod clipboard;
 mod clock;
 mod cmdline_complete;
+mod commit_panel;
 mod complete;
 mod diagnostics;
+mod diff_view;
 #[cfg(test)]
 mod difftest;
 mod editor;
@@ -412,6 +414,8 @@ impl App {
             Key::Named(n) => match n {
                 NamedKey::Space => vec![VKey::Char(' ')],
                 NamedKey::Escape => vec![VKey::Esc],
+                // Ctrl-Enter はコミット（Ctrl-m として渡す）
+                NamedKey::Enter if ctrl => vec![VKey::Ctrl('m')],
                 NamedKey::Enter => vec![VKey::Enter],
                 NamedKey::Tab => vec![VKey::Tab],
                 NamedKey::Backspace => vec![VKey::Backspace],
@@ -871,6 +875,7 @@ impl ApplicationHandler for App {
             ed.poll_make();
             ed.poll_cmd_files();
             ed.poll_git();
+            ed.poll_commit();
         }
         // ダイアログで選んだ名前で保存する（ダイアログが上書きを確かめている）
         if let Some(r) = self.save_dialog.as_ref().and_then(|rx| rx.try_recv().ok()) {

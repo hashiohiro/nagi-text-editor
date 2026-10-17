@@ -32,6 +32,10 @@ pub enum Mode {
     GrepPrompt,
     /// パネル（全文検索の結果）にいる（リストモード）
     List,
+    /// コミットのメッセージの欄
+    CommitMsg,
+    /// 左右並べの差分の画面
+    Diff,
 }
 
 /// リストモードでいるパネル
@@ -41,6 +45,8 @@ pub enum Side {
     Left,
     /// 全文検索の結果
     Bottom,
+    /// コミットのパネル
+    Commit,
 }
 
 pub enum Effect {
@@ -258,6 +264,12 @@ pub struct Editor {
     pub(crate) last_sub: Option<crate::ex_cmds::LastSub>,
     /// git（status・HEAD の版・差分・ポップアップ）
     pub(crate) git: crate::git_ui::GitState,
+    /// コミットのパネル（開いている間だけ）
+    pub commit: Option<crate::commit_panel::CommitPanel>,
+    /// 左右並べの差分（開いている間だけ）と、閉じたときに戻るモード
+    pub diff: Option<crate::diff_view::DiffView>,
+    pub(crate) diff_return: Option<Mode>,
+    pub(crate) diff_pending: Option<char>,
     /// 動いている診断のコマンドと、その結果
     pub(crate) make: Option<crate::diagnostics::MakeState>,
     pub diags: Vec<crate::diagnostics::Diag>,
@@ -348,6 +360,10 @@ impl Editor {
             cmd_files: None,
             make: None,
             git: Default::default(),
+            commit: None,
+            diff: None,
+            diff_return: None,
+            diff_pending: None,
             diags: Vec::new(),
             block_insert: None,
             reg_blocks: HashMap::new(),
@@ -483,7 +499,7 @@ impl Editor {
 
     /// 入力欄（IME の確定先）があるモードか
     pub fn has_prompt(&self) -> bool {
-        matches!(self.mode, Mode::Command | Mode::Search | Mode::Replace | Mode::Finder | Mode::GrepPrompt)
+        matches!(self.mode, Mode::Command | Mode::Search | Mode::Replace | Mode::Finder | Mode::GrepPrompt | Mode::CommitMsg)
     }
 
     pub(crate) fn motion(&self) -> Motion<'_> {
@@ -624,7 +640,16 @@ impl Editor {
             Mode::List => match self.list_side {
                 Side::Left => self.tree_key(key),
                 Side::Bottom => self.list_key(key),
+                Side::Commit => self.commit_list_key(key),
             },
+            Mode::CommitMsg => {
+                self.commit_msg_key(key);
+                Effect::None
+            }
+            Mode::Diff => {
+                self.diff_key(key);
+                Effect::None
+            }
         };
         // 検索や :{行} で閉じた折りたたみの途中へ跳んだら開く
         if !self.folds.is_empty() && self.mode == Mode::Normal {
@@ -1189,6 +1214,9 @@ impl Editor {
             "Idea" | "IntelliJ" => self.open_in_intellij(),
             "Make" | "make" => self.make(arg),
             "GitHunk" => self.open_hunk_popup(),
+            "Git" | "G" | "Gcommit" => self.open_commit_panel(),
+            "Gdiff" | "Gd" => self.diff_current(),
+            "Gpush" => self.push_from_anywhere(),
             "GitStage" => self.stage_hunk(),
             "GitRevert" => self.revert_hunk(),
             "eslint" | "Lint" => self.make("npx eslint -f unix ."),
@@ -1244,6 +1272,8 @@ impl Editor {
             Some((Some("jump.back"), _)) => self.jump(true, 1),
             Some((Some("nav.error_next"), _)) => self.next_error(true),
             Some((Some("git.hunk_next"), _)) => self.hunk_jump(true, 1),
+            Some((Some("git.commit" | "git.changes"), _)) => self.open_commit_panel(),
+            Some((Some("git.push"), _)) => self.push_from_anywhere(),
             Some((Some("git.hunk_prev"), _)) => self.hunk_jump(false, 1),
             Some((Some("git.hunk_popup"), _)) => self.open_hunk_popup(),
             Some((Some("git.hunk_revert"), _)) => self.revert_hunk(),
@@ -1325,6 +1355,7 @@ impl Editor {
             }
             Mode::Finder => self.finder_insert(text),
             Mode::GrepPrompt => self.grep_insert(text),
+            Mode::CommitMsg => self.commit_msg_insert(text),
             _ => {}
         }
     }

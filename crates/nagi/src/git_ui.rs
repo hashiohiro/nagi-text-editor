@@ -66,6 +66,12 @@ impl Editor {
         self.refresh_status();
     }
 
+    /// status を取りに行っている途中か（試験で待つため）
+    #[cfg(test)]
+    pub(crate) fn git_status_pending(&self) -> bool {
+        self.git.status_rx.is_some()
+    }
+
     pub(crate) fn refresh_status(&mut self) {
         let Some(root) = self.git.root.clone() else { return };
         let (tx, rx) = channel();
@@ -107,6 +113,7 @@ impl Editor {
                     self.git.status = Some(s);
                     // 状態が変わったので差分も計算し直す（追加したファイルは全体が新しい行）
                     self.git.hunks.clear();
+                    self.sync_commit_items();
                 }
                 changed = true;
             }

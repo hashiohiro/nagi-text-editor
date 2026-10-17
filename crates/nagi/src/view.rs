@@ -381,7 +381,7 @@ fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
                 items.push(Item { g: Cow::Borrowed(" "), width: 1, fg: BG, bg: Some(FG), underline: false });
             }
         }
-        if !is_cursor_line || matches!(ed.mode, Mode::Command | Mode::Search | Mode::Replace | Mode::Finder | Mode::GrepPrompt | Mode::List) {
+        if !is_cursor_line || matches!(ed.mode, Mode::Command | Mode::Search | Mode::Replace | Mode::Finder | Mode::GrepPrompt | Mode::List | Mode::CommitMsg | Mode::Diff) {
             p.draw(&items, rect.x + GUTTER, y);
             continue;
         }
@@ -454,6 +454,17 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             g.scroll = g.selected;
         } else if g.selected >= g.scroll + h {
             g.scroll = g.selected + 1 - h;
+        }
+    }
+    if let (Some(r), Some(c)) = (ed.commit_rect(), &mut ed.commit) {
+        // 選んでいる項目（見出しの行を含めた位置）が見える範囲に入るように送る
+        let h = r.h.saturating_sub(3).max(1);
+        let tracked = c.tracked();
+        let at = c.selected + 1 + usize::from(c.selected >= tracked);
+        if at < c.scroll {
+            c.scroll = at;
+        } else if at >= c.scroll + h {
+            c.scroll = at + 1 - h;
         }
     }
     if let Some(f) = &mut ed.finder {
@@ -529,6 +540,13 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     if let (Some(r), Some(t)) = (ed.tree_rect(), &ed.tree) {
         draw_tree(&mut p, t, r, ed.mode == Mode::List && ed.list_side == crate::editor::Side::Left, ed.buf.path.as_deref());
     }
+    if let (Some(r), Some(c)) = (ed.commit_rect(), &ed.commit) {
+        draw_commit_panel(&mut p, ed, c, r);
+    }
+    if let Some(d) = &ed.diff {
+        let (x, w) = ed.windows_x();
+        draw_diff_view(&mut p, d, Rect { x, y: 0, w, h: ed.windows_rows() });
+    }
     if let (Some(r), Some(g)) = (ed.panel_rect(), &ed.grep) {
         draw_grep_panel(&mut p, g, r, matches!(ed.mode, Mode::List | Mode::GrepPrompt));
     }
@@ -547,7 +565,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     match ed.stripe {
         Some(crate::editor::Side::Left) => draw_stripe_left(&mut p, ed.windows_rows(), ed.tree.is_some()),
         Some(crate::editor::Side::Bottom) => draw_stripe_bottom(&mut p, rows, cols, ed.grep.is_some()),
-        None => {}
+        Some(crate::editor::Side::Commit) | None => {}
     }
     // ---- 最下行: 左にモード・メッセージ・入力欄、右に位置（Vim の showmode と ruler と同じ形）
     let y = rows as f32 * cell.h;
@@ -589,6 +607,24 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             let info = format!("{}{} 件{} ", if g.regex { "[.*]  " } else { "" }, g.hits.len(), if g.searching() { " …" } else { "" });
             let pc = cols.saturating_sub(p.width(&info));
             p.text(&info, pc, y, STATUS_FG);
+        }
+        Mode::List if ed.list_side == crate::editor::Side::Commit => {
+            p.text(if ed.message.is_empty() { "-- コミット --" } else { &ed.message }, 0, y, FG);
+        }
+        Mode::CommitMsg => {
+            p.text(if ed.message.is_empty() { "-- コミットメッセージ --   Esc 一覧へ   Ctrl-Enter コミット" } else { &ed.message }, 0, y, FG);
+        }
+        Mode::Diff => {
+            let d = ed.diff.as_ref();
+            let n = d.map_or(0, |d| d.hunk_rows.len());
+            let i = d.map_or(0, |d| d.hunk_rows.iter().rposition(|&r| r <= d.cursor).map_or(0, |i| i + 1));
+            let left = if ed.message.is_empty() { format!("-- 差分 --   変更 {i}/{n}") } else { ed.message.clone() };
+            let end = p.text(&left, 0, y, FG);
+            let help = "]c 次  [c 前  s ステージ  u 戻す  Enter 開く  q 閉じる ";
+            let pc = cols.saturating_sub(p.width(help));
+            if end + 2 <= pc {
+                p.text(help, pc, y, STATUS_FG);
+            }
         }
         Mode::List if ed.list_side == crate::editor::Side::Left => {
             p.text(if ed.message.is_empty() { "-- ツリー --" } else { &ed.message }, 0, y, FG);
@@ -687,6 +723,211 @@ fn draw_stripe_bottom(p: &mut Painter, rows: usize, cols: usize, open: bool) {
         p.out.push(Instance::fill(0.0, y, w as f32 * cell.w, cell.h, FG));
     }
     p.text(label, 0, y, if open { BG } else { STATUS_FG });
+}
+
+/// コミットのパネル（下）。左に変えたファイル（チェックボックス付き）、右にメッセージと amend とボタン
+fn draw_commit_panel(p: &mut Painter, ed: &Editor, c: &crate::commit_panel::CommitPanel, r: Rect) {
+    use nagi_workers::git::FileState;
+    let cell = p.fonts.cell();
+    let (x0, y0, wpx) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
+    p.out.push(Instance::fill(x0, y0, wpx, r.h as f32 * cell.h, BG));
+    p.out.push(Instance::fill(x0, y0, wpx, 1.0, LINE_NO));
+    let focused = ed.mode == Mode::List && ed.list_side == crate::editor::Side::Commit;
+    let editing = ed.mode == Mode::CommitMsg;
+    // 見出し
+    let end = p.text("コミット", r.x + 1, y0, if focused || editing { FG } else { STATUS_FG });
+    let head = format!(
+        "   変更 {} ファイル   {}{}",
+        c.items.len(),
+        ed.git_branch_label().unwrap_or_default(),
+        c.busy_label.as_ref().map_or(String::new(), |b| format!("   {b}"))
+    );
+    p.text(&head, end, y0, STATUS_FG);
+    let body = r.h.saturating_sub(3).max(1);
+    let left_w = (r.w * 55 / 100).max(30);
+    let saved = p.cols;
+    p.cols = r.x + left_w;
+    if let Some((dest, list)) = &c.confirm_push {
+        // 送る前の確認
+        let mut y = y0 + cell.h;
+        p.text(&format!(" プッシュ: {dest}"), r.x, y, FG);
+        y += cell.h;
+        p.text(&format!(" 送るコミット {} 件", list.len()), r.x, y, STATUS_FG);
+        for l in list.iter().take(body.saturating_sub(3)) {
+            y += cell.h;
+            p.text(&format!("   {l}"), r.x, y, FG);
+        }
+        p.text(" Enter / y で送る   Esc でやめる", r.x, y0 + (body as f32) * cell.h, FG);
+    } else {
+        // 一覧（見出しの行を含めて並べる）
+        let tracked = c.tracked();
+        let mut lines: Vec<Option<usize>> = Vec::new();
+        lines.push(None);
+        lines.extend((0..tracked).map(Some));
+        if tracked < c.items.len() {
+            lines.push(None);
+            lines.extend((tracked..c.items.len()).map(Some));
+        }
+        let mut header = 0;
+        for (k, l) in lines.iter().enumerate().skip(c.scroll).take(body) {
+            let y = y0 + (1 + k - c.scroll) as f32 * cell.h;
+            match l {
+                None => {
+                    let label = if header == 0 && k == 0 { format!(" ▾ 変更 ({tracked})") } else { format!(" ▾ 未追跡 ({})", c.items.len() - tracked) };
+                    p.text(&label, r.x, y, STATUS_FG);
+                }
+                Some(i) => {
+                    let it = &c.items[*i];
+                    let sel = *i == c.selected;
+                    let reversed = sel && focused;
+                    if reversed {
+                        p.out.push(Instance::fill(x0, y, left_w as f32 * cell.w, cell.h, FG));
+                    } else if sel {
+                        p.out.push(Instance::fill(x0, y, left_w as f32 * cell.w, cell.h, MATCH_BG));
+                    }
+                    let (fg, dim) = if reversed { (BG, BG) } else { (FG, STATUS_FG) };
+                    let state_color = if reversed {
+                        BG
+                    } else {
+                        match it.change.state {
+                            FileState::Added => GIT_ADD,
+                            FileState::Deleted | FileState::Conflicted => GIT_DEL,
+                            FileState::Untracked => STATUS_FG,
+                            FileState::Renamed => rgb(0xd7af5f),
+                            FileState::Modified => GIT_MOD,
+                        }
+                    };
+                    let (dir, name) = it.change.path.rsplit_once('/').map_or(("", it.change.path.as_str()), |(d, n)| (d, n));
+                    let mut c2 = p.text(&format!("   [{}] ", if it.checked { 'x' } else { ' ' }), r.x, y, fg);
+                    c2 = p.text(&it.change.state.letter().to_string(), c2, y, state_color);
+                    c2 = p.text(&format!("  {name}"), c2, y, fg);
+                    p.text(&format!("   {dir}"), c2, y, dim);
+                }
+            }
+            if l.is_none() {
+                header += 1;
+            }
+        }
+    }
+    p.cols = saved;
+    // 区切り
+    let dx = (r.x + left_w) as f32 * cell.w + cell.w * 0.5;
+    p.out.push(Instance::fill(dx, y0 + cell.h, 1.0, body as f32 * cell.h, LINE_NO));
+    // 右: メッセージの欄
+    let mx = r.x + left_w + 2;
+    let mw = (r.x + r.w).saturating_sub(mx + 1);
+    let saved = p.cols;
+    p.cols = mx + mw;
+    let checked = c.items.iter().filter(|i| i.checked).count();
+    p.text(&format!("コミットメッセージ（{checked} ファイルを選択中）"), mx, y0 + cell.h, STATUS_FG);
+    let box_top = y0 + 2.0 * cell.h;
+    // 欄の下に amend の行とボタンの行を置く
+    let box_rows = body.saturating_sub(4).max(1);
+    let (bx, bw, bh) = (mx as f32 * cell.w - 2.0, mw as f32 * cell.w + 4.0, box_rows as f32 * cell.h);
+    let border = if editing { FG } else { LINE_NO };
+    p.out.push(Instance::fill(bx, box_top - 1.0, bw, 1.0, border));
+    p.out.push(Instance::fill(bx, box_top + bh, bw, 1.0, border));
+    p.out.push(Instance::fill(bx, box_top - 1.0, 1.0, bh + 2.0, border));
+    p.out.push(Instance::fill(bx + bw - 1.0, box_top - 1.0, 1.0, bh + 2.0, border));
+    if c.msg.is_empty() && !editing {
+        p.text("c でメッセージを書く（1 行目が件名）", mx, box_top, STATUS_FG);
+    }
+    let (cl, cc) = c.cursor_pos();
+    let first = cl.saturating_sub(box_rows.saturating_sub(1));
+    for (k, line) in c.msg.split('\n').enumerate().skip(first).take(box_rows) {
+        let y = box_top + (k - first) as f32 * cell.h;
+        p.text(line, mx, y, FG);
+        if editing && k == cl {
+            let col = mx + p.width(&line[..cc.min(line.len())]);
+            let pre = if ed.preedit.is_empty() { 0 } else { p.width(&ed.preedit) };
+            if pre > 0 {
+                let mut items = p.items(&ed.preedit, FG);
+                items.iter_mut().for_each(|i| i.underline = true);
+                p.draw(&items, col, y);
+            }
+            p.caret(col + pre, y);
+        }
+    }
+    // amend とボタン
+    let by = box_top + bh + 4.0;
+    p.text(&format!("[{}] 直前のコミットを直す（amend） A", if c.amend { 'x' } else { ' ' }), mx, by, STATUS_FG);
+    // ボタンはその下の行に右寄せ（狭ければ短い名前に）
+    let by2 = by + cell.h;
+    let right = mx + mw;
+    let (main_label, push_label) = if mw >= 52 { (" コミット  Ctrl-Enter ", " コミットしてプッシュ…  P ") } else { (" コミット ", " プッシュも… ") };
+    let mw2 = p.width(main_label);
+    let pw = p.width(push_label);
+    if mx + pw + mw2 + 2 <= right {
+        let mxs = right - mw2;
+        p.out.push(Instance::fill(mxs as f32 * cell.w, by2, mw2 as f32 * cell.w, cell.h, FG));
+        p.text(main_label, mxs, by2, BG);
+        let pxs = mxs - pw - 2;
+        p.out.push(Instance::fill(pxs as f32 * cell.w, by2, pw as f32 * cell.w, cell.h, MATCH_BG));
+        p.text(push_label, pxs, by2, FG);
+    }
+    p.cols = saved;
+    // 下の行: キーの案内
+    let hy = y0 + (r.h - 1) as f32 * cell.h;
+    p.text(" Space 選択  a すべて  Enter 開く  d 差分  u 戻す  c メッセージへ  Ctrl-Enter コミット  P コミットしてプッシュ  r 読み直す  q 閉じる", r.x, hy, STATUS_FG);
+}
+
+/// 左右並べの差分（窓の領域全体）。足した行は緑、消した行は赤、変えた行は青の地、対の行は変わった部分を濃く
+fn draw_diff_view(p: &mut Painter, d: &crate::diff_view::DiffView, r: Rect) {
+    use crate::diff_view::RowKind;
+    let cell = p.fonts.cell();
+    let (x0, y0) = (r.x as f32 * cell.w, r.y as f32 * cell.h);
+    p.out.push(Instance::fill(x0, y0, r.w as f32 * cell.w, r.h as f32 * cell.h, BG));
+    let half = r.w.saturating_sub(1) / 2;
+    let rx = r.x + half + 1;
+    p.text(&format!(" {}", d.left_title), r.x, y0, STATUS_FG);
+    p.text(&format!(" {}", d.right_title), rx, y0, FG);
+    p.out.push(Instance::fill(x0, y0 + cell.h - 1.0, r.w as f32 * cell.w, 1.0, LINE_NO));
+    let body = r.h.saturating_sub(1);
+    let mod_bg = rgb(0x17202e);
+    let fill_bg = rgb(0x141414);
+    for (k, row) in d.rows.iter().enumerate().skip(d.top).take(body) {
+        let y = y0 + (1 + k - d.top) as f32 * cell.h;
+        let (lbg, rbg) = match row.kind {
+            RowKind::Eq => (BG, BG),
+            RowKind::Add => (fill_bg, DIFF_ADD_BG),
+            RowKind::Del => (DIFF_DEL_BG, fill_bg),
+            RowKind::Mod => (mod_bg, mod_bg),
+        };
+        p.out.push(Instance::fill(x0, y, half as f32 * cell.w, cell.h, lbg));
+        p.out.push(Instance::fill(rx as f32 * cell.w, y, (r.w - half - 1) as f32 * cell.w, cell.h, rbg));
+        let spans = match (&row.left, &row.right, row.kind) {
+            (Some(l), Some(n), RowKind::Mod) => {
+                let (a, b) = nagi_core::linediff::changed_span(&l.1, &n.1);
+                (Some(a), Some(b))
+            }
+            _ => (None, None),
+        };
+        let cursor = k == d.cursor;
+        for (side, col, w, span, word) in [(&row.left, r.x, half, spans.0, DIFF_WORD_DEL_BG), (&row.right, rx, r.w - half - 1, spans.1, DIFF_WORD_BG)] {
+            let saved = p.cols;
+            p.cols = col + w;
+            if let Some((n, text)) = side {
+                let num = format!("{:>5} ", n + 1);
+                let c = if cursor {
+                    p.out.push(Instance::fill(col as f32 * cell.w, y, 5.0 * cell.w, cell.h, FG));
+                    p.text(&num, col, y, BG)
+                } else {
+                    p.text(&num, col, y, LINE_NO)
+                };
+                let mut items = Vec::new();
+                for (b, g) in text.grapheme_indices(true) {
+                    let width = p.cell_width(g);
+                    let hit = span.as_ref().is_some_and(|s| b >= s.start && b < s.end);
+                    items.push(Item { g: Cow::Borrowed(g), width, fg: FG, bg: if hit { Some(word) } else { None }, underline: false });
+                }
+                p.draw(&items, c, y);
+            } else if cursor {
+                p.out.push(Instance::fill(col as f32 * cell.w, y, 5.0 * cell.w, cell.h, MATCH_BG));
+            }
+            p.cols = saved;
+        }
+    }
+    p.out.push(Instance::fill((r.x + half) as f32 * cell.w + cell.w * 0.5, y0 + cell.h, 1.0, body as f32 * cell.h, LINE_NO));
 }
 
 /// 行頭のマーカーから出る差分のポップアップ（変更のまとまりの下。古い行は赤、新しい行は緑の地、変わった部分を濃く）
