@@ -179,7 +179,126 @@ fn load_refresh(url: &str, user: &str) -> Option<String> {
 
 /// ブラウザで開く
 fn open_browser(url: &str) -> R<()> {
+    // 自動テスト: ブラウザの代わりに curl でログイン画面の転送をたどる（偽の Salesforce が戻り先へ転送する）
+    if std::env::var("NAGI_SF_BROWSER").as_deref() == Ok("curl") {
+        return win(Command::new(curl_exe()).args(["-s", "-L", "-o", "NUL", url])).stdout(Stdio::null()).stderr(Stdio::null()).spawn().map(|_| ()).map_err(|e| e.to_string());
+    }
     win(Command::new("rundll32.exe").args(["url.dll,FileProtocolHandler", url])).spawn().map(|_| ()).map_err(|e| format!("ブラウザを開けません: {e}"))
+}
+
+/// 自動テスト用の偽の Salesforce（OAuth の認可・トークン、REST API の sobjects / describe / query に答える）
+#[doc(hidden)]
+pub mod mock {
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default, Debug)]
+    pub struct Seen {
+        /// 認可（ブラウザでのログイン）を受けた回数
+        pub authorize: usize,
+        /// トークンの要求（grant_type ごと）
+        pub grants: Vec<String>,
+        /// PKCE の照合に通ったか
+        pub pkce_ok: bool,
+        /// API に来た Authorization
+        pub bearers: Vec<String>,
+        pub queries: Vec<String>,
+    }
+
+    pub struct Mock {
+        pub base: String,
+        pub seen: Arc<Mutex<Seen>>,
+    }
+
+    fn query_param(path: &str, k: &str) -> Option<String> {
+        path.split_once('?')?.1.split('&').find_map(|kv| {
+            let (a, b) = kv.split_once('=')?;
+            (a == k).then(|| super::urldecode(b))
+        })
+    }
+
+    /// 127.0.0.1 の空いたポートで待つ（スレッドで答え続ける）
+    pub fn start() -> Mock {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://127.0.0.1:{}", l.local_addr().unwrap().port());
+        let seen = Arc::new(Mutex::new(Seen::default()));
+        let (b2, s2) = (base.clone(), seen.clone());
+        std::thread::spawn(move || {
+            let mut challenge = String::new();
+            let mut refreshes = 0;
+            for s in l.incoming().flatten() {
+                let mut r = BufReader::new(s.try_clone().unwrap());
+                let mut line = String::new();
+                if r.read_line(&mut line).is_err() {
+                    continue;
+                }
+                let (method, path) = {
+                    let mut it = line.split_whitespace();
+                    (it.next().unwrap_or("").to_string(), it.next().unwrap_or("").to_string())
+                };
+                let mut len = 0;
+                let mut auth = String::new();
+                loop {
+                    let mut h = String::new();
+                    if r.read_line(&mut h).is_err() || h.trim().is_empty() {
+                        break;
+                    }
+                    let low = h.to_ascii_lowercase();
+                    if let Some(v) = low.strip_prefix("content-length:") {
+                        len = v.trim().parse().unwrap_or(0);
+                    }
+                    if low.starts_with("authorization:") {
+                        auth = h.split_once(':').map_or("", |x| x.1).trim().to_string();
+                    }
+                }
+                let mut body = vec![0u8; len];
+                let _ = r.read_exact(&mut body);
+                let body = String::from_utf8_lossy(&body).into_owned();
+                let mut seen = s2.lock().unwrap();
+                let (status, extra, json) = if path.starts_with("/services/oauth2/authorize") {
+                    seen.authorize += 1;
+                    challenge = query_param(&path, "code_challenge").unwrap_or_default();
+                    let to = format!("{}?code=CODE123&state={}", query_param(&path, "redirect_uri").unwrap_or_default(), query_param(&path, "state").unwrap_or_default());
+                    ("302 Found", format!("Location: {to}\r\n"), String::new())
+                } else if path.starts_with("/services/oauth2/token") && method == "POST" {
+                    let form = |k: &str| body.split('&').find_map(|kv| kv.split_once('=').filter(|x| x.0 == k).map(|x| super::urldecode(x.1)));
+                    let grant = form("grant_type").unwrap_or_default();
+                    seen.grants.push(grant.clone());
+                    if grant == "authorization_code" {
+                        let v = form("code_verifier").unwrap_or_default();
+                        seen.pkce_ok = super::base64url(&super::sha256(v.as_bytes()).unwrap()) == challenge && form("code").as_deref() == Some("CODE123");
+                        ("200 OK", String::new(), format!(r#"{{"access_token":"tok1","refresh_token":"REFRESH-SECRET","instance_url":"{b2}"}}"#))
+                    } else {
+                        refreshes += 1;
+                        ("200 OK", String::new(), format!(r#"{{"access_token":"tok{}","instance_url":"{b2}"}}"#, refreshes + 1))
+                    }
+                } else {
+                    seen.bearers.push(auth.clone());
+                    if path.ends_with("/sobjects") {
+                        ("200 OK", String::new(), r#"{"sobjects":[{"name":"Account","custom":false,"queryable":true},{"name":"Invoice__c","custom":true,"queryable":true},{"name":"Secret","custom":false,"queryable":false}]}"#.into())
+                    } else if path.contains("/sobjects/Account/describe") {
+                        ("200 OK", String::new(), r#"{"fields":[{"name":"Id","type":"id","label":"取引先 ID","length":18,"nillable":false,"referenceTo":[]},{"name":"Name","type":"string","label":"取引先名","length":255,"nillable":false,"referenceTo":[]},{"name":"OwnerId","type":"reference","label":"所有者","length":18,"nillable":false,"referenceTo":["User"]}]}"#.into())
+                    } else if path.contains("/query/next1") {
+                        ("200 OK", String::new(), r#"{"totalSize":3,"done":true,"records":[{"attributes":{"type":"Account"},"Id":"001C","Name":"丙","Owner":null}]}"#.into())
+                    } else if path.contains("/query?q=") {
+                        seen.queries.push(query_param(&path, "q").unwrap_or_default());
+                        (
+                            "200 OK",
+                            String::new(),
+                            format!(r#"{{"totalSize":3,"done":false,"nextRecordsUrl":"/services/data/{}/query/next1","records":[{{"attributes":{{"type":"Account"}},"Id":"001A","Name":"甲","Owner":{{"attributes":{{"type":"User"}},"Name":"佐藤"}}}},{{"attributes":{{"type":"Account"}},"Id":"001B","Name":"乙","Owner":{{"attributes":{{"type":"User"}},"Name":"鈴木"}}}}]}}"#, super::API),
+                        )
+                    } else {
+                        ("404 Not Found", String::new(), r#"[{"message":"not found"}]"#.into())
+                    }
+                };
+                drop(seen);
+                let mut s = s;
+                let _ = s.write_all(format!("HTTP/1.1 {status}\r\n{extra}Content-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{json}", json.len()).as_bytes());
+            }
+        });
+        Mock { base, seen }
+    }
 }
 
 /// 戻り先で受けた要求の行から code と state を取り出す
@@ -514,6 +633,80 @@ mod tests {
         let enc = dpapi(b"secret", true).unwrap();
         assert_ne!(enc, b"secret");
         assert_eq!(dpapi(&enc, false).unwrap(), b"secret");
+    }
+
+    /// 偽の Salesforce に対して: ブラウザでのログイン（PKCE）→ トークンの暗号化保存 → オブジェクト・項目 → SOQL（続きのページ）
+    /// → 2 回目はブラウザを開かずリフレッシュトークンでつなぐ
+    #[test]
+    fn oauth_and_query_against_mock() {
+        use crate::db::{Client, Kind, Reply, Req};
+        let m = mock::start();
+        let dir = std::env::temp_dir().join(format!("nagi-sf-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // SAFETY: テストの中だけで使う
+        unsafe {
+            std::env::set_var("NAGI_SF_DIR", &dir);
+            std::env::set_var("NAGI_SF_BROWSER", "curl");
+        }
+        let url = format!("salesforce:{}", m.base);
+        assert_eq!(Kind::of(&url), Some(Kind::Salesforce));
+        let c = Client::connect(&url, "me@example.com", "", std::sync::Arc::new(|| {})).unwrap();
+        let next = |c: &Client| loop {
+            match c.rx.recv_timeout(std::time::Duration::from_secs(30)).expect("応答が無い") {
+                Reply::Note(_) => continue,
+                r => break r,
+            }
+        };
+        assert!(matches!(next(&c), Reply::Connected { product, .. } if product.starts_with("Salesforce")));
+        {
+            let s = m.seen.lock().unwrap();
+            assert_eq!(s.authorize, 1, "ブラウザ（の代わりの curl）で 1 回ログイン");
+            assert!(s.pkce_ok, "PKCE の照合に通る");
+        }
+        // リフレッシュトークンは暗号化して保存（平文で残らない）
+        let saved: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().collect();
+        assert_eq!(saved.len(), 1);
+        let bytes = std::fs::read(saved[0].path()).unwrap();
+        assert!(!String::from_utf8_lossy(&bytes).contains("REFRESH-SECRET"));
+        c.send(Req::Objects(String::new()));
+        match next(&c) {
+            Reply::Objects(o) => assert_eq!(o.tables, vec![("Account".to_string(), "TABLE".to_string()), ("Invoice__c".into(), "VIEW".into())], "queryable だけ。カスタムは分ける"),
+            r => panic!("{r:?}"),
+        }
+        c.send(Req::Columns(String::new(), "Account".into()));
+        match next(&c) {
+            Reply::Columns(cols) => {
+                assert!(cols[0].pk && cols[0].name == "Id");
+                assert_eq!((cols[2].name.as_str(), cols[2].fk.as_str()), ("OwnerId", "User"));
+                assert_eq!(cols[1].ty, "string(255) 取引先名");
+            }
+            r => panic!("{r:?}"),
+        }
+        c.query("SELECT Id, Name, Owner.Name FROM Account", 500);
+        match next(&c) {
+            Reply::Rows { cols, rows, more, .. } => {
+                assert_eq!(cols, vec!["Id", "Name", "Owner.Name"]);
+                assert_eq!(rows.len(), 3, "続きのページもたどる");
+                assert_eq!(rows[0], vec![Some("001A".to_string()), Some("甲".into()), Some("佐藤".into())]);
+                assert_eq!(rows[2][2], None);
+                assert!(!more);
+            }
+            r => panic!("{r:?}"),
+        }
+        c.query("DELETE FROM Account", 10);
+        assert!(matches!(next(&c), Reply::Error(e) if e.contains("SELECT だけ")));
+        assert!(m.seen.lock().unwrap().bearers.iter().all(|b| b == "Bearer tok1"));
+        drop(c);
+        // 2 回目: ブラウザを開かず、保存したリフレッシュトークンでつなぐ
+        let c = Client::connect(&url, "me@example.com", "", std::sync::Arc::new(|| {})).unwrap();
+        assert!(matches!(next(&c), Reply::Connected { .. }));
+        let s = m.seen.lock().unwrap();
+        assert_eq!(s.authorize, 1, "2 回目はブラウザを開かない");
+        assert_eq!(s.grants, vec!["authorization_code", "refresh_token"]);
+        drop(s);
+        // ログアウトで消える
+        assert!(forget(&url, "me@example.com"));
+        assert!(std::fs::read_dir(&dir).unwrap().next().is_none());
     }
 
     #[test]

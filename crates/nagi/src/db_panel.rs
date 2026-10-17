@@ -1569,6 +1569,46 @@ pub(crate) mod tests {
         panic!("待ちきれない: {}", e.message);
     }
 
+    /// 偽の Salesforce で: 足す → つなぐ（ブラウザの代わりに curl）→ 木 → o で SOQL → 結果のタブ
+    #[test]
+    fn salesforce_flow() {
+        let m = nagi_workers::salesforce::mock::start();
+        let dir = std::env::temp_dir().join(format!("nagi-sfui-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        // SAFETY: テストの中だけで使う
+        unsafe {
+            std::env::set_var("NAGI_SF_DIR", &dir);
+            std::env::set_var("NAGI_SF_BROWSER", "curl");
+            std::env::set_var("NAGI_DB_DIR", &dir);
+        }
+        let mut e = Editor::new(nagi_core::Buffer::from_str("x\n"), None);
+        e.set_screen(160, 50);
+        e.db_add(&format!("sf salesforce:{} me@example.com", m.base));
+        let i = e.db.as_ref().unwrap().sources.len() - 1;
+        assert_eq!(e.db.as_ref().unwrap().kind(i), Some(Kind::Salesforce));
+        e.focus_right(RightTab::Database);
+        e.db.as_mut().unwrap().selected = e.db.as_ref().unwrap().rows.iter().position(|r| *r == DbRow::Source(i)).unwrap();
+        keys(&mut e, "<CR>");
+        wait(&mut e, &|e| e.db.as_ref().unwrap().conns[i].objects.values().any(|o| !o.tables.is_empty()));
+        let p = e.db.as_ref().unwrap();
+        let labels: Vec<String> = p.rows.iter().map(|r| p.row_label(r).2).collect();
+        assert!(labels.contains(&"オブジェクト".to_string()) && labels.contains(&"カスタムオブジェクト".to_string()), "{labels:?}");
+        assert!(e.db_results.log.iter().any(|l| l.text.contains("ブラウザ")), "ログインの知らせが出力に残る");
+        // Account の上で o → SOQL が流れて結果のタブに出る（絞り込みの欄は出さない）
+        let k = p.rows.iter().position(|r| matches!(r, DbRow::Object(_, _, t, _, _) if t == "Account")).unwrap();
+        e.db.as_mut().unwrap().selected = k;
+        keys(&mut e, "o");
+        wait(&mut e, &|e| e.db_results.active_tab().is_some_and(|t| !t.running));
+        let t = e.db_results.active_tab().unwrap();
+        assert_eq!(t.cols, vec!["Id", "Name", "Owner.Name"]);
+        assert_eq!(t.rows.len(), 3);
+        assert!(!t.filterable);
+        assert!(m.seen.lock().unwrap().queries.iter().any(|q| q.contains("FIELDS(STANDARD) FROM Account")));
+        // コンソールの帯に Tx は出さない
+        e.open_console(i, None);
+        assert!(!e.console_bar(120).iter().any(|b| b.3 == BarItem::Tx));
+    }
+
     /// SQLite で: フォームで足す → つなぐ → コンソールで表を作る（確認あり）→ 手動 Tx → 木 → 絞り込み
     #[test]
     fn sqlite_flow() {
