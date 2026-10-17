@@ -552,7 +552,22 @@ impl App {
             w.set_ime_allowed(want);
             self.ime_allowed = want;
         }
-        if want {
+        if want && ed.mode == Mode::CommitMsg {
+            // コミットのメッセージの欄のカーソル
+            if let (Some(r), Some(c)) = (ed.commit_rect(), &ed.commit) {
+                let cell = f.cell();
+                let l = commit_panel::layout(r.h);
+                let (cl, cc) = c.cursor_pos();
+                let first = cl.saturating_sub(l.msg_h.saturating_sub(1));
+                let line = c.msg.split('\n').nth(cl).unwrap_or("");
+                let col = r.x + 1 + nagi_core::display_col(line, cc.min(line.len()), false);
+                let row = r.y + l.msg + cl - first;
+                w.set_ime_cursor_area(
+                    winit::dpi::PhysicalPosition::new((col as f32 * cell.w) as i32, (row as f32 * cell.h) as i32),
+                    winit::dpi::PhysicalSize::new(cell.w as u32, cell.h as u32),
+                );
+            }
+        } else if want {
             let cell = f.cell();
             let (col, row) = if ed.has_prompt() {
                 // 最下行の入力欄のカーソル位置
@@ -642,7 +657,11 @@ impl App {
         let cell = f.cell();
         let (col, row) = ((self.mouse.0 / cell.w as f64) as usize, (self.mouse.1 / cell.h as f64) as usize);
         match ed.stripe {
-            Some(editor::Side::Left) if col < STRIPE_W && row < ed.windows_rows() => ed.toggle_tree(),
+            Some(editor::Side::Left) if col < STRIPE_W && row < ed.windows_rows() => match tree_panel::stripe_at(row) {
+                Some(tree_panel::LeftTab::Project) => ed.toggle_tree(),
+                Some(tree_panel::LeftTab::Commit) => ed.toggle_commit(),
+                None => return false,
+            },
             Some(editor::Side::Bottom) if row + 1 == ed.screen.1 && col < 8 => {
                 if ed.grep.is_some() {
                     ed.close_grep();
@@ -691,6 +710,35 @@ impl App {
                 self.sync_ime();
                 self.draw();
                 return;
+            }
+        }
+        // 左の欄の 1 行目ならタブを切り替える。コミットのパネルなら、その行を押す
+        if let (Some(f), Some(ed)) = (&self.fonts, &mut self.ed) {
+            let cell = f.cell();
+            let (row, col) = ((self.mouse.1 as f32 / cell.h) as usize, (self.mouse.0.max(0.0) as f32 / cell.w) as usize);
+            if let Some(r) = ed.left_rect().filter(|r| r.contains(row, col)) {
+                let handled = if row == r.y {
+                    if let Some(tab) = tree_panel::tab_at(col - r.x) {
+                        ed.select_left_tab(tab);
+                    }
+                    true
+                } else if ed.commit_rect().is_some() {
+                    let now = Instant::now();
+                    let clicks = match self.last_click {
+                        Some((t, c, n)) if now - t <= double_click_time() && c == (row, usize::MAX - 2) => n % 3 + 1,
+                        _ => 1,
+                    };
+                    self.last_click = Some((now, (row, usize::MAX - 2), clicks));
+                    ed.commit_click(row - r.y, col - r.x, clicks);
+                    true
+                } else {
+                    false
+                };
+                if handled {
+                    self.sync_ime();
+                    self.draw();
+                    return;
+                }
             }
         }
         // ツリーの上なら、ツリーの行を選ぶ（フォルダは開閉、ファイルはダブルクリックで開く）

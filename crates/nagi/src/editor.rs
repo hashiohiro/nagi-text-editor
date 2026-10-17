@@ -268,6 +268,8 @@ pub struct Editor {
     pub(crate) last_sub: Option<crate::ex_cmds::LastSub>,
     /// git（status・HEAD の版・差分・ポップアップ）
     pub(crate) git: crate::git_ui::GitState,
+    /// 左の欄で出しているタブ（ツリーとコミットのパネルが両方開いているとき）
+    pub left_tab: crate::tree_panel::LeftTab,
     /// ブランチのポップアップ（開いている間だけ）
     pub branch_popup: Option<crate::branches::BranchPopup>,
     /// 裏で動かしているフェッチ・pull（見出し, 結果）
@@ -376,6 +378,7 @@ impl Editor {
             blame: None,
             log: None,
             branch_popup: None,
+            left_tab: Default::default(),
             git_job: None,
             diff: None,
             diff_return: None,
@@ -608,6 +611,14 @@ impl Editor {
     pub fn key(&mut self, key: Key) -> Effect {
         // 先頭部分だけを表示している間は、全体が届くのを待ってから処理する（先頭部分を編集してしまわない）
         self.finish_load();
+        // Alt-1 プロジェクト、Alt-0 コミット（IntelliJ と同じ。どのモードからでも）
+        if matches!(key, Key::Alt('1') | Key::Alt('0')) && matches!(self.mode, Mode::Normal | Mode::Insert | Mode::List | Mode::CommitMsg) {
+            if self.mode == Mode::Insert {
+                self.key(Key::Esc);
+            }
+            self.select_left_tab(if key == Key::Alt('1') { crate::tree_panel::LeftTab::Project } else { crate::tree_panel::LeftTab::Commit });
+            return Effect::None;
+        }
         // マクロの記録を止める q（Normal と Visual で、ほかのキーの途中でないとき）
         if self.recording.is_some()
             && self.macro_depth == 0

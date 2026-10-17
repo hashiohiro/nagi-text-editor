@@ -473,7 +473,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     }
     if let (Some(r), Some(c)) = (ed.commit_rect(), &mut ed.commit) {
         // 選んでいる項目（見出しの行を含めた位置）が見える範囲に入るように送る
-        let h = r.h.saturating_sub(3).max(1);
+        let h = crate::commit_panel::layout(r.h).list_h;
         let tracked = c.tracked();
         let at = c.selected + 1 + usize::from(c.selected >= tracked);
         if at < c.scroll {
@@ -587,7 +587,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         draw_cmd_complete(&mut p, ed, c, rows, cols);
     }
     match ed.stripe {
-        Some(crate::editor::Side::Left) => draw_stripe_left(&mut p, ed.windows_rows(), ed.tree.is_some()),
+        Some(crate::editor::Side::Left) => draw_stripe_left(&mut p, ed.windows_rows(), ed.left_visible()),
         Some(crate::editor::Side::Bottom) => draw_stripe_bottom(&mut p, rows, cols, ed.grep.is_some()),
         Some(crate::editor::Side::Commit) | None => {}
     }
@@ -633,7 +633,12 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             p.text(&info, pc, y, STATUS_FG);
         }
         Mode::List if ed.list_side == crate::editor::Side::Commit => {
-            p.text(if ed.message.is_empty() { "-- コミット --" } else { &ed.message }, 0, y, FG);
+            let end = p.text(if ed.message.is_empty() { "-- コミット --" } else { &ed.message }, 0, y, FG);
+            let help = "Space 選択  d 差分  u 戻す  c メッセージ  Ctrl-Enter コミット  P プッシュも  Alt-1 プロジェクト  q 閉じる ";
+            let pc = cols.saturating_sub(p.width(help));
+            if end + 2 <= pc {
+                p.text(help, pc, y, STATUS_FG);
+            }
         }
         Mode::CommitMsg => {
             p.text(if ed.message.is_empty() { "-- コミットメッセージ --   Esc 一覧へ   Ctrl-Enter コミット" } else { &ed.message }, 0, y, FG);
@@ -676,7 +681,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             }
         }
         Mode::List if ed.list_side == crate::editor::Side::Left => {
-            p.text(if ed.message.is_empty() { "-- ツリー --" } else { &ed.message }, 0, y, FG);
+            p.text(if ed.message.is_empty() { "-- プロジェクト --" } else { &ed.message }, 0, y, FG);
         }
         Mode::List if ed.grep.is_some() => {
             let g = ed.grep.as_ref().unwrap();
@@ -741,22 +746,25 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     p.out
 }
 
-/// 左のストライプ（マウスを左端に寄せている間だけ）。幅 2 セルの帯に「ツリー」を縦に書く。開いているパネルは反転
-fn draw_stripe_left(p: &mut Painter, rows: usize, open: bool) {
+/// 左のストライプ（マウスを左端に寄せている間だけ）。幅 2 セルの帯に「プロジェクト」「コミット」を縦に書く。出しているタブは反転
+fn draw_stripe_left(p: &mut Painter, rows: usize, shown: Option<crate::tree_panel::LeftTab>) {
     let cell = p.fonts.cell();
     let w = 2.0 * cell.w;
     p.out.push(Instance::fill(0.0, 0.0, w, rows as f32 * cell.h, BG));
     p.out.push(Instance::fill(w, 0.0, 1.0, rows as f32 * cell.h, LINE_NO));
-    let label = "ツリー";
-    let n = label.chars().count();
-    if open {
-        p.out.push(Instance::fill(0.0, 0.0, w, n as f32 * cell.h, FG));
-    }
-    for (k, c) in label.chars().enumerate() {
-        // 縦書きでは長音を縦の線にする
-        let c = if c == 'ー' { '｜' } else { c };
-        let mut buf = [0u8; 4];
-        p.text(c.encode_utf8(&mut buf), 0, k as f32 * cell.h, if open { BG } else { STATUS_FG });
+    for (label, tab, top) in crate::tree_panel::STRIPE {
+        let open = shown == Some(tab);
+        let n = label.chars().count();
+        let y0 = top as f32 * cell.h;
+        if open {
+            p.out.push(Instance::fill(0.0, y0, w, n as f32 * cell.h, FG));
+        }
+        for (k, c) in label.chars().enumerate() {
+            // 縦書きでは長音を縦の線にする
+            let c = if c == 'ー' { '｜' } else { c };
+            let mut buf = [0u8; 4];
+            p.text(c.encode_utf8(&mut buf), 0, y0 + k as f32 * cell.h, if open { BG } else { STATUS_FG });
+        }
     }
 }
 
@@ -774,55 +782,69 @@ fn draw_stripe_bottom(p: &mut Painter, rows: usize, cols: usize, open: bool) {
     p.text(label, 0, y, if open { BG } else { STATUS_FG });
 }
 
-/// コミットのパネル（下）。左に変えたファイル（チェックボックス付き）、右にメッセージと amend とボタン
+/// 左の欄の 1 行目: タブ（プロジェクト・コミット）。出しているタブは明るい字と下線
+fn draw_left_tabs(p: &mut Painter, r: Rect, active: crate::tree_panel::LeftTab, focused: bool, extra: &str) {
+    let cell = p.fonts.cell();
+    let y = r.y as f32 * cell.h;
+    let mut x = r.x;
+    for (label, tab) in crate::tree_panel::TABS {
+        let on = tab == active;
+        let end = p.text(label, x, y, if on && focused { FG } else if on { rgb(0xc8c8c8) } else { STATUS_FG });
+        if on {
+            p.out.push(Instance::fill(x as f32 * cell.w, y + cell.h - 2.0, (end - x) as f32 * cell.w, 2.0, if focused { GIT_MOD } else { STATUS_FG }));
+        }
+        x = end;
+    }
+    if !extra.is_empty() {
+        p.text(&format!(" {extra}"), x, y, LINE_NO);
+    }
+    p.out.push(Instance::fill(r.x as f32 * cell.w, y + cell.h - 1.0, r.w as f32 * cell.w, 1.0, LINE_NO));
+}
+
+/// コミットのパネル（左の欄の「コミット」タブ）。上から ブランチ、変えたファイル、メッセージの欄、amend、ボタン
 fn draw_commit_panel(p: &mut Painter, ed: &Editor, c: &crate::commit_panel::CommitPanel, r: Rect) {
     use nagi_workers::git::FileState;
     let cell = p.fonts.cell();
     let (x0, y0, wpx) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
     p.out.push(Instance::fill(x0, y0, wpx, r.h as f32 * cell.h, BG));
-    p.out.push(Instance::fill(x0, y0, wpx, 1.0, LINE_NO));
+    p.out.push(Instance::fill(((r.x + r.w) as f32 + 0.5) * cell.w, y0, 1.0, r.h as f32 * cell.h, LINE_NO));
     let focused = ed.mode == Mode::List && ed.list_side == crate::editor::Side::Commit;
     let editing = ed.mode == Mode::CommitMsg;
-    // 見出し
-    let end = p.text("コミット", r.x + 1, y0, if focused || editing { FG } else { STATUS_FG });
-    let head = format!(
-        "   変更 {} ファイル   {}{}",
-        c.items.len(),
+    let l = crate::commit_panel::layout(r.h);
+    let row_y = |k: usize| y0 + k as f32 * cell.h;
+    let saved = p.cols;
+    p.cols = r.x + r.w;
+    draw_left_tabs(p, r, crate::tree_panel::LeftTab::Commit, focused || editing, "");
+    // ブランチと件数（動いている git があればその名前）
+    let info = format!(
+        " {}   変更 {}{}",
         ed.git_branch_label().unwrap_or_default(),
+        c.items.len(),
         c.busy_label.as_ref().map_or(String::new(), |b| format!("   {b}"))
     );
-    p.text(&head, end, y0, STATUS_FG);
-    let body = r.h.saturating_sub(3).max(1);
-    let left_w = (r.w * 55 / 100).max(30);
-    let saved = p.cols;
-    p.cols = r.x + left_w;
+    p.text(&info, r.x, row_y(l.info), STATUS_FG);
     if let Some((dest, list)) = &c.confirm_push {
-        // 送る前の確認
-        let mut y = y0 + cell.h;
-        p.text(&format!(" プッシュ: {dest}"), r.x, y, FG);
-        y += cell.h;
-        p.text(&format!(" 送るコミット {} 件", list.len()), r.x, y, STATUS_FG);
-        for l in list.iter().take(body.saturating_sub(3)) {
-            y += cell.h;
-            p.text(&format!("   {l}"), r.x, y, FG);
+        // 送る前の確認（一覧の場所に出す）
+        p.text(&format!(" プッシュ: {dest}"), r.x, row_y(l.list), FG);
+        p.text(&format!(" 送るコミット {} 件", list.len()), r.x, row_y(l.list + 1), STATUS_FG);
+        for (k, s) in list.iter().take(l.list_h.saturating_sub(3)).enumerate() {
+            p.text(&format!("   {s}"), r.x, row_y(l.list + 2 + k), FG);
         }
-        p.text(" Enter / y で送る   Esc でやめる", r.x, y0 + (body as f32) * cell.h, FG);
+        p.text(" Enter / y で送る   Esc でやめる", r.x, row_y(l.list + l.list_h - 1), FG);
     } else {
         // 一覧（見出しの行を含めて並べる）
         let tracked = c.tracked();
-        let mut lines: Vec<Option<usize>> = Vec::new();
-        lines.push(None);
+        let mut lines: Vec<Option<usize>> = vec![None];
         lines.extend((0..tracked).map(Some));
         if tracked < c.items.len() {
             lines.push(None);
             lines.extend((tracked..c.items.len()).map(Some));
         }
-        let mut header = 0;
-        for (k, l) in lines.iter().enumerate().skip(c.scroll).take(body) {
-            let y = y0 + (1 + k - c.scroll) as f32 * cell.h;
-            match l {
+        for (k, li) in lines.iter().enumerate().skip(c.scroll).take(l.list_h) {
+            let y = row_y(l.list + k - c.scroll);
+            match li {
                 None => {
-                    let label = if header == 0 && k == 0 { format!(" ▾ 変更 ({tracked})") } else { format!(" ▾ 未追跡 ({})", c.items.len() - tracked) };
+                    let label = if k == 0 { format!(" ▾ 変更 ({tracked})") } else { format!(" ▾ 未追跡 ({})", c.items.len() - tracked) };
                     p.text(&label, r.x, y, STATUS_FG);
                 }
                 Some(i) => {
@@ -830,9 +852,9 @@ fn draw_commit_panel(p: &mut Painter, ed: &Editor, c: &crate::commit_panel::Comm
                     let sel = *i == c.selected;
                     let reversed = sel && focused;
                     if reversed {
-                        p.out.push(Instance::fill(x0, y, left_w as f32 * cell.w, cell.h, FG));
+                        p.out.push(Instance::fill(x0, y, wpx, cell.h, FG));
                     } else if sel {
-                        p.out.push(Instance::fill(x0, y, left_w as f32 * cell.w, cell.h, MATCH_BG));
+                        p.out.push(Instance::fill(x0, y, wpx, cell.h, MATCH_BG));
                     }
                     let (fg, dim) = if reversed { (BG, BG) } else { (FG, STATUS_FG) };
                     let state_color = if reversed {
@@ -849,41 +871,35 @@ fn draw_commit_panel(p: &mut Painter, ed: &Editor, c: &crate::commit_panel::Comm
                     let (dir, name) = it.change.path.rsplit_once('/').map_or(("", it.change.path.as_str()), |(d, n)| (d, n));
                     let mut c2 = p.text(&format!("   [{}] ", if it.checked { 'x' } else { ' ' }), r.x, y, fg);
                     c2 = p.text(&it.change.state.letter().to_string(), c2, y, state_color);
-                    c2 = p.text(&format!("  {name}"), c2, y, fg);
-                    p.text(&format!("   {dir}"), c2, y, dim);
+                    c2 = p.text(&format!(" {name}"), c2, y, fg);
+                    p.text(&format!("  {dir}"), c2, y, dim);
                 }
             }
-            if l.is_none() {
-                header += 1;
-            }
+        }
+        if c.items.is_empty() {
+            p.text("   変更はありません", r.x, row_y(l.list + 1), STATUS_FG);
         }
     }
-    p.cols = saved;
-    // 区切り
-    let dx = (r.x + left_w) as f32 * cell.w + cell.w * 0.5;
-    p.out.push(Instance::fill(dx, y0 + cell.h, 1.0, body as f32 * cell.h, LINE_NO));
-    // 右: メッセージの欄
-    let mx = r.x + left_w + 2;
-    let mw = (r.x + r.w).saturating_sub(mx + 1);
-    let saved = p.cols;
-    p.cols = mx + mw;
+    // メッセージの欄
+    p.out.push(Instance::fill(x0, row_y(l.title) - cell.h * 0.5, wpx, 1.0, LINE_NO));
     let checked = c.items.iter().filter(|i| i.checked).count();
-    p.text(&format!("コミットメッセージ（{checked} ファイルを選択中）"), mx, y0 + cell.h, STATUS_FG);
-    let box_top = y0 + 2.0 * cell.h;
-    // 欄の下に amend の行とボタンの行を置く
-    let box_rows = body.saturating_sub(4).max(1);
-    let (bx, bw, bh) = (mx as f32 * cell.w - 2.0, mw as f32 * cell.w + 4.0, box_rows as f32 * cell.h);
+    p.text(&format!(" コミットメッセージ（{checked} ファイル）"), r.x, row_y(l.title), STATUS_FG);
+    let mx = r.x + 1;
+    let mw = r.w.saturating_sub(2);
+    let box_top = row_y(l.msg);
+    let (bx, bw, bh) = (mx as f32 * cell.w - 2.0, mw as f32 * cell.w + 4.0, l.msg_h as f32 * cell.h);
     let border = if editing { FG } else { LINE_NO };
     p.out.push(Instance::fill(bx, box_top - 1.0, bw, 1.0, border));
     p.out.push(Instance::fill(bx, box_top + bh, bw, 1.0, border));
     p.out.push(Instance::fill(bx, box_top - 1.0, 1.0, bh + 2.0, border));
     p.out.push(Instance::fill(bx + bw - 1.0, box_top - 1.0, 1.0, bh + 2.0, border));
+    p.cols = mx + mw;
     if c.msg.is_empty() && !editing {
-        p.text("c でメッセージを書く（1 行目が件名）", mx, box_top, STATUS_FG);
+        p.text("c で書く（1 行目が件名）", mx, box_top, STATUS_FG);
     }
     let (cl, cc) = c.cursor_pos();
-    let first = cl.saturating_sub(box_rows.saturating_sub(1));
-    for (k, line) in c.msg.split('\n').enumerate().skip(first).take(box_rows) {
+    let first = cl.saturating_sub(l.msg_h.saturating_sub(1));
+    for (k, line) in c.msg.split('\n').enumerate().skip(first).take(l.msg_h) {
         let y = box_top + (k - first) as f32 * cell.h;
         p.text(line, mx, y, FG);
         if editing && k == cl {
@@ -897,27 +913,17 @@ fn draw_commit_panel(p: &mut Painter, ed: &Editor, c: &crate::commit_panel::Comm
             p.caret(col + pre, y);
         }
     }
-    // amend とボタン
-    let by = box_top + bh + 4.0;
-    p.text(&format!("[{}] 直前のコミットを直す（amend） A", if c.amend { 'x' } else { ' ' }), mx, by, STATUS_FG);
-    // ボタンはその下の行に右寄せ（狭ければ短い名前に）
-    let by2 = by + cell.h;
-    let right = mx + mw;
-    let (main_label, push_label) = if mw >= 52 { (" コミット  Ctrl-Enter ", " コミットしてプッシュ…  P ") } else { (" コミット ", " プッシュも… ") };
-    let mw2 = p.width(main_label);
-    let pw = p.width(push_label);
-    if mx + pw + mw2 + 2 <= right {
-        let mxs = right - mw2;
-        p.out.push(Instance::fill(mxs as f32 * cell.w, by2, mw2 as f32 * cell.w, cell.h, FG));
-        p.text(main_label, mxs, by2, BG);
-        let pxs = mxs - pw - 2;
-        p.out.push(Instance::fill(pxs as f32 * cell.w, by2, pw as f32 * cell.w, cell.h, MATCH_BG));
-        p.text(push_label, pxs, by2, FG);
+    p.cols = r.x + r.w;
+    // amend とボタン（右寄せ）
+    let ay = row_y(l.amend);
+    p.text(&format!(" [{}] 直前のコミットを直す（A）", if c.amend { 'x' } else { ' ' }), r.x, ay, STATUS_FG);
+    let by = row_y(l.buttons);
+    for (label, x, w, push) in crate::commit_panel::buttons(r.w) {
+        let bg = if push { MATCH_BG } else { FG };
+        p.out.push(Instance::fill((r.x + x) as f32 * cell.w, by, w as f32 * cell.w, cell.h, bg));
+        p.text(label, r.x + x, by, if push { FG } else { BG });
     }
     p.cols = saved;
-    // 下の行: キーの案内
-    let hy = y0 + (r.h - 1) as f32 * cell.h;
-    p.text(" Space 選択  a すべて  Enter 開く  d 差分  u 戻す  c メッセージへ  Ctrl-Enter コミット  P コミットしてプッシュ  r 読み直す  q 閉じる", r.x, hy, STATUS_FG);
 }
 
 /// ブランチのポップアップ（画面の上の中央。IntelliJ の Git Branches と同じ並び）
@@ -1346,7 +1352,7 @@ fn draw_completion(p: &mut Painter, ed: &Editor, c: &crate::complete::Completion
     }
 }
 
-/// ファイルツリー。1 行目は根の名前、2 行目から字下げした木（フォルダは青で `▸` `▾`）。右端に 1px の区切り線
+/// ファイルツリー。1 行目はタブと根の名前、2 行目から字下げした木（フォルダは青で `▸` `▾`）。右端に 1px の区切り線
 fn draw_tree(p: &mut Painter, t: &crate::tree_panel::TreePanel, r: Rect, focused: bool, current: Option<&std::path::Path>) {
     let cell = p.fonts.cell();
     let (x, y0, w) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
@@ -1355,7 +1361,7 @@ fn draw_tree(p: &mut Painter, t: &crate::tree_panel::TreePanel, r: Rect, focused
     let saved = p.cols;
     p.cols = r.x + r.w;
     let name = t.root.file_name().map_or(t.root.display().to_string(), |n| n.to_string_lossy().into_owned());
-    p.text(&format!("{name}/{}", if t.loading() { " …" } else { "" }), r.x, y0, STATUS_FG);
+    draw_left_tabs(p, r, crate::tree_panel::LeftTab::Project, focused, &format!("{name}/{}", if t.loading() { " …" } else { "" }));
     let current = current.and_then(|c| std::path::absolute(c).ok());
     for k in 0..r.h.saturating_sub(1) {
         let Some(row) = t.rows.get(t.scroll + k) else { break };

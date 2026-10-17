@@ -62,11 +62,6 @@ impl GrepPanel {
     }
 }
 
-/// コミットのパネルの高さ（画面の本文の 40%、12 行以上）
-pub fn commit_height(rows: usize) -> usize {
-    (rows * 2 / 5).max(12).min(rows.saturating_sub(4)).max(1)
-}
-
 /// パネルの高さ（画面の本文の 35%、6〜画面 - 4 行）
 pub fn panel_height(rows: usize) -> usize {
     (rows * 35 / 100).max(6).min(rows.saturating_sub(4)).max(1)
@@ -81,20 +76,15 @@ impl Editor {
         Some(Rect { x: 0, y: rows - h, w: cols, h })
     }
 
-    /// コミットのパネルの矩形（全文検索のパネルより少し高い）
+    /// コミットのパネルの矩形（左の欄。1 行目はタブ）
     pub fn commit_rect(&self) -> Option<Rect> {
-        self.commit.as_ref()?;
-        let (cols, rows) = self.screen;
-        let h = commit_height(rows);
-        Some(Rect { x: 0, y: rows - h, w: cols, h })
+        (self.left_visible()? == crate::tree_panel::LeftTab::Commit).then(|| self.left_rect()).flatten()
     }
 
     /// 窓に使える行数（下のパネルの分を除く）
     pub(crate) fn windows_rows(&self) -> usize {
         let rows = self.screen.1;
-        if self.commit.is_some() {
-            rows - commit_height(rows)
-        } else if self.grep.is_some() {
+        if self.grep.is_some() {
             rows - panel_height(rows)
         } else {
             rows

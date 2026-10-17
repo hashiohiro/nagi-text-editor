@@ -1,7 +1,7 @@
-//! git の画面の 2 段目: コミットのパネル（下にドッキング。IntelliJ のコミットの画面と同じ形）。
+//! git の画面の 2 段目: コミットのパネル（左の欄の「コミット」タブ。IntelliJ のコミットの画面と同じ形）。
 //!
-//! 左に変えたファイルと未追跡のファイルをチェックボックス付きで並べ（リストモード）、右にコミットのメッセージを
-//! 複数行で書く。コミットは選んだファイルだけ（ステージの状態によらない。IntelliJ と同じ）。
+//! 上に変えたファイルと未追跡のファイルをチェックボックス付きで並べ（リストモード）、下にコミットのメッセージを
+//! 複数行で書き、その下に amend とボタン。コミットは選んだファイルだけ（ステージの状態によらない。IntelliJ と同じ）。
 //! 「コミットしてプッシュ」は、コミットの後に送るコミットの一覧を出して確かめてから送る。
 //! git は裏のスレッドで動かし、終わったら UI を起こす。
 
@@ -59,6 +59,47 @@ impl CommitPanel {
     }
 }
 
+/// 左の欄の中の並び（行は矩形の上から数える）
+#[derive(Clone, Copy, Debug)]
+pub struct Layout {
+    /// ブランチと件数の行
+    pub info: usize,
+    /// ファイルの一覧の先頭と行数
+    pub list: usize,
+    pub list_h: usize,
+    /// 「コミットメッセージ」の見出し
+    pub title: usize,
+    /// メッセージの欄の先頭と行数
+    pub msg: usize,
+    pub msg_h: usize,
+    pub amend: usize,
+    pub buttons: usize,
+}
+
+pub fn layout(h: usize) -> Layout {
+    // 1 行目はタブ。下から ボタン・amend・欄・見出しの順に取り、残りを一覧に
+    let msg_h = (h / 4).clamp(3, 8);
+    let buttons = h.saturating_sub(1);
+    let amend = buttons.saturating_sub(1);
+    // 欄の下の枠線のぶん 1 行あける
+    let msg = amend.saturating_sub(msg_h + 1);
+    let title = msg.saturating_sub(1);
+    let list = 2;
+    let list_h = title.saturating_sub(list + 1).max(1);
+    Layout { info: 1, list, list_h, title, msg, msg_h, amend, buttons }
+}
+
+/// ボタン（見出し, 横の位置, 幅, プッシュもするか）。幅 `w` の欄の右寄せ
+pub fn buttons(w: usize) -> [(&'static str, usize, usize, bool); 2] {
+    let main = " コミット ";
+    let push = " プッシュも… ";
+    let mw = nagi_core::display_col(main, main.len(), false);
+    let pw = nagi_core::display_col(push, push.len(), false);
+    let mx = w.saturating_sub(mw + 1);
+    let px = mx.saturating_sub(pw + 1);
+    [(push, px, pw, true), (main, mx, mw, false)]
+}
+
 fn run_git<F: FnOnce() -> Result<String, String> + Send + 'static>(waker: Option<std::sync::Arc<dyn Fn() + Send + Sync>>, f: F) -> Receiver<Result<String, String>> {
     let (tx, rx) = channel();
     let _ = std::thread::Builder::new().name("git-job".into()).spawn(move || {
@@ -81,8 +122,7 @@ impl Editor {
             self.message = "git のリポジトリではありません".into();
             return;
         }
-        // 下のパネルは 1 つだけ
-        self.grep = None;
+        self.left_tab = crate::tree_panel::LeftTab::Commit;
         if self.commit.is_none() {
             self.commit = Some(CommitPanel {
                 items: Vec::new(),
@@ -269,6 +309,47 @@ impl Editor {
             .map(|_| String::new())
         });
         p.running = Some((Job::Revert, rx));
+    }
+
+    /// マウス: 左の欄の中の (行, 列) を押した（行・列は矩形の中の位置）
+    pub(crate) fn commit_click(&mut self, row: usize, col: usize, clicks: u32) {
+        let Some(r) = self.commit_rect() else { return };
+        let l = layout(r.h);
+        let Some(p) = &mut self.commit else { return };
+        if row >= l.list && row < l.list + l.list_h {
+            // 見出しの行を含めた並びから項目を探す
+            let tracked = p.tracked();
+            let at = p.scroll + row - l.list;
+            let item = if at == 0 {
+                None
+            } else if at <= tracked {
+                Some(at - 1)
+            } else if at == tracked + 1 {
+                None
+            } else {
+                Some(at - 2)
+            };
+            self.list_side = Side::Commit;
+            self.mode = Mode::List;
+            let Some(i) = item.filter(|&i| i < p.items.len()) else { return };
+            p.selected = i;
+            // チェックボックスの上なら切り替え、ダブルクリックで差分
+            if (3..6).contains(&col) {
+                p.items[i].checked = !p.items[i].checked;
+            } else if clicks >= 2 {
+                self.commit_list_key(Key::Char('d'));
+            }
+        } else if row >= l.msg && row < l.msg + l.msg_h {
+            self.mode = Mode::CommitMsg;
+        } else if row == l.amend {
+            p.amend = !p.amend;
+        } else if row == l.buttons {
+            for (_, x, w, push) in buttons(r.w) {
+                if col >= x && col < x + w {
+                    self.commit(push);
+                }
+            }
+        }
     }
 
     /// パネルにいる間（リストモード）のキー
@@ -482,5 +563,29 @@ mod tests {
         wait(&mut e);
         assert_eq!(std::fs::read_to_string(dir.join("b.txt")).unwrap(), "b\n");
         assert!(e.commit.as_ref().unwrap().items.is_empty());
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+    use crate::tree_panel::{LeftTab, stripe_at, tab_at};
+
+    #[test]
+    fn left_panel_layout() {
+        // 上から タブ・ブランチ・一覧・見出し・欄・amend・ボタンの順で、重ならない
+        for h in [12, 20, 40, 60] {
+            let l = layout(h);
+            assert!(l.list + l.list_h < l.title, "{h}: {l:?}");
+            assert!(l.title < l.msg && l.msg + l.msg_h < l.amend && l.amend < l.buttons && l.buttons < h, "{h}: {l:?}");
+        }
+        // タブ「 プロジェクト 」は 14 セル、その右が「 コミット 」
+        assert_eq!(tab_at(1), Some(LeftTab::Project));
+        assert_eq!(tab_at(15), Some(LeftTab::Commit));
+        assert_eq!(tab_at(30), None);
+        assert_eq!((stripe_at(0), stripe_at(8), stripe_at(20)), (Some(LeftTab::Project), Some(LeftTab::Commit), None));
+        // ボタンは右寄せで重ならない
+        let [(_, px, pw, true), (_, mx, _, false)] = buttons(36) else { panic!() };
+        assert!(px + pw < mx);
     }
 }

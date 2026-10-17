@@ -42,9 +42,41 @@ pub struct TreePanel {
     pending_w: bool,
 }
 
-/// ツリーの幅（30 列。狭い画面では 1/3 まで）
+/// 左の欄（プロジェクト・コミット）の幅（36 列。狭い画面では 1/3 まで）
 pub fn tree_width(cols: usize) -> usize {
-    30.min(cols / 3).max(10)
+    36.min(cols / 3).max(10)
+}
+
+/// 左の欄のタブ（IntelliJ の左のツールウィンドウと同じく、どちらか 1 つを出す）
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum LeftTab {
+    #[default]
+    Project,
+    Commit,
+}
+
+/// タブの見出し（1 行目に並べる）
+pub const TABS: [(&str, LeftTab); 2] = [(" プロジェクト ", LeftTab::Project), (" コミット ", LeftTab::Commit)];
+
+/// 左のストライプのラベル（縦書き。見出し, タブ, 上端の行）
+pub const STRIPE: [(&str, LeftTab, usize); 2] = [("プロジェクト", LeftTab::Project, 0), ("コミット", LeftTab::Commit, 7)];
+
+/// 左のストライプの `row` にあるラベル
+pub fn stripe_at(row: usize) -> Option<LeftTab> {
+    STRIPE.iter().find(|(l, _, top)| row >= *top && row < top + l.chars().count()).map(|s| s.1)
+}
+
+/// 1 行目の `col` にあるタブ
+pub fn tab_at(col: usize) -> Option<LeftTab> {
+    let mut x = 0;
+    for (label, tab) in TABS {
+        let w = nagi_core::display_col(label, label.len(), false);
+        if col >= x && col < x + w {
+            return Some(tab);
+        }
+        x += w;
+    }
+    None
 }
 
 impl TreePanel {
@@ -129,16 +161,31 @@ impl Editor {
         self.waker.clone().unwrap_or_else(|| std::sync::Arc::new(|| {}))
     }
 
-    pub fn tree_rect(&self) -> Option<Rect> {
-        self.tree.as_ref()?;
+    /// 左の欄に出しているタブ（両方開いていれば、最後に選んだ方）
+    pub fn left_visible(&self) -> Option<LeftTab> {
+        match (self.tree.is_some(), self.commit.is_some()) {
+            (true, true) => Some(self.left_tab),
+            (true, false) => Some(LeftTab::Project),
+            (false, true) => Some(LeftTab::Commit),
+            (false, false) => None,
+        }
+    }
+
+    /// 左の欄の矩形（1 行目はタブ）
+    pub fn left_rect(&self) -> Option<Rect> {
+        self.left_visible()?;
         let (cols, _) = self.screen;
         Some(Rect { x: 0, y: 0, w: tree_width(cols), h: self.windows_rows() })
     }
 
-    /// 窓に使える範囲の左端と幅（ツリーの分と区切りの 1 列を除く）
+    pub fn tree_rect(&self) -> Option<Rect> {
+        (self.left_visible()? == LeftTab::Project).then(|| self.left_rect()).flatten()
+    }
+
+    /// 窓に使える範囲の左端と幅（左の欄の分と区切りの 1 列を除く）
     pub(crate) fn windows_x(&self) -> (usize, usize) {
         let cols = self.screen.0;
-        match self.tree {
+        match self.left_visible() {
             Some(_) => {
                 let w = tree_width(cols) + 1;
                 (w, cols.saturating_sub(w))
@@ -176,6 +223,7 @@ impl Editor {
             t.load(&root, &waker);
             self.tree = Some(t);
         }
+        self.left_tab = LeftTab::Project;
         let t = self.tree.as_mut().unwrap();
         t.reveal = current;
         t.advance_reveal(&waker);
@@ -187,10 +235,27 @@ impl Editor {
 
     /// `<leader>.`: 閉じていれば開いて移り、開いていて移っていれば閉じる
     pub(crate) fn toggle_tree(&mut self) {
-        if self.tree.is_some() && self.mode == Mode::List && self.list_side == crate::editor::Side::Left {
+        if self.left_visible() == Some(LeftTab::Project) && self.mode == Mode::List && self.list_side == crate::editor::Side::Left {
             self.close_tree();
         } else {
             self.open_tree();
+        }
+    }
+
+    /// 左のストライプの「コミット」: 閉じていれば開いて移り、出していて移っていれば閉じる
+    pub(crate) fn toggle_commit(&mut self) {
+        if self.left_visible() == Some(LeftTab::Commit) && matches!(self.mode, Mode::List | Mode::CommitMsg) && (self.mode == Mode::CommitMsg || self.list_side == crate::editor::Side::Commit) {
+            self.close_commit_panel();
+        } else {
+            self.open_commit_panel();
+        }
+    }
+
+    /// タブを選ぶ（開いていなければ開く）
+    pub(crate) fn select_left_tab(&mut self, tab: LeftTab) {
+        match tab {
+            LeftTab::Project => self.open_tree(),
+            LeftTab::Commit => self.open_commit_panel(),
         }
     }
 
@@ -383,7 +448,7 @@ mod tests {
         e.toggle_tree();
         settle(&mut e);
         assert_eq!(e.mode, Mode::List);
-        assert_eq!(e.windows_x(), (31, 89), "ツリーの分だけ窓が右へ寄る");
+        assert_eq!(e.windows_x(), (37, 83), "ツリーの分だけ窓が右へ寄る");
         let t = e.tree.as_ref().unwrap();
         let names: Vec<String> = t.rows.iter().map(|r| format!("{}{}", "  ".repeat(r.depth), r.name)).collect();
         // フォルダが先、.gitignore の target は出さない、.git も出さない。今のファイルまで展開して選ぶ
