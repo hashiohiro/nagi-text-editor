@@ -224,6 +224,10 @@ impl App {
             view::prefetch_ascii(f, r);
             clock::mark("ascii prefetched");
         }
+        // 試験用: 表示倍率が変わったときと同じ処理をこの倍率で行う（OS の設定を変えずに確かめる）
+        if let Some(s) = std::env::var("NAGI_DEBUG_SCALE").ok().and_then(|v| v.parse().ok()) {
+            self.set_scale(s);
+        }
         if self.opts.startup_report {
             clock::report();
         }
@@ -258,6 +262,18 @@ impl App {
     }
 
     /// 1 フレーム描く。戻り値は内訳（構文木の更新, スワップチェーンの待ち, 組み立て, 送出）
+    /// 表示倍率に文字の大きさを合わせ、アトラスを作り直す（ウィンドウの大きさは winit が続けて Resized で知らせる）
+    fn set_scale(&mut self, scale: f64) {
+        self.scale = scale;
+        if let (Some(f), Some(r)) = (&mut self.fonts, &mut self.renderer) {
+            f.set_px((FONT_PX * scale).round() as f32);
+            r.clear_glyphs();
+            view::prefetch_ascii(f, r);
+            self.prefetched_top = None;
+        }
+        self.draw();
+    }
+
     fn draw(&mut self) -> [Duration; 4] {
         let (Some(r), Some(f), Some(ed)) = (&mut self.renderer, &mut self.fonts, &mut self.ed) else { return Default::default() };
         let t0 = Instant::now();
@@ -725,8 +741,7 @@ impl ApplicationHandler for App {
                 self.draw();
             }
             WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                self.scale = scale_factor;
-                // フォントを作り直すのは M1 の後続で（アトラスの作り直しが要る）
+                self.set_scale(scale_factor);
             }
             WindowEvent::ModifiersChanged(m) => self.modifiers = m.state(),
             WindowEvent::KeyboardInput { event, .. } => self.on_key(event, el),

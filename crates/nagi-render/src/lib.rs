@@ -337,6 +337,15 @@ impl Renderer {
         self.atlas.get(&self.gpu.ctx, fonts, key)
     }
 
+    /// アトラスを空にする（文字の大きさが変わったとき）。テクスチャはそのまま上書きして使う
+    pub fn clear_glyphs(&mut self) {
+        let a = &mut self.atlas;
+        a.map.clear();
+        for shelf in [&mut a.mono_shelf, &mut a.color_shelf] {
+            (shelf.x, shelf.y, shelf.row_h) = (0, 0, 0);
+        }
+    }
+
     /// 前回取り出してから、描画中にその場でラスタライズした (時間, 個数)
     pub fn take_raster_stats(&mut self) -> (std::time::Duration, u32) {
         let r = (self.atlas.raster_time, self.atlas.raster_count);

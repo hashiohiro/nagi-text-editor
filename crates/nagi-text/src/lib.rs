@@ -151,6 +151,15 @@ impl Fonts {
         self.cell
     }
 
+    /// 文字の大きさを変える（表示倍率が変わったとき）。描いたグリフは作り直しになる
+    pub fn set_px(&mut self, px: f32) {
+        self.px = px;
+        self.cell = cell_metrics(&self.faces[0], px);
+        for f in self.faces.iter_mut() {
+            fit_face(f, px, self.cell);
+        }
+    }
+
     /// 書記素のセル幅（1 か 2）
     pub fn width(&self, grapheme: &str) -> usize {
         if self.ambiguous_wide { grapheme.width_cjk() } else { grapheme.width() }.clamp(1, 2)
