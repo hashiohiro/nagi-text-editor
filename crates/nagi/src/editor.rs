@@ -25,6 +25,8 @@ pub enum Mode {
     Search,
     /// 置換（最下行の 2 行）
     Replace,
+    /// ファジーファインダー（最下行に検索語、その上に候補）
+    Finder,
 }
 
 pub enum Effect {
@@ -62,7 +64,7 @@ impl Prompt {
     }
 
     /// 編集キーを処理する。処理したら true
-    fn key(&mut self, k: Key) -> bool {
+    pub(crate) fn key(&mut self, k: Key) -> bool {
         let prev = |t: &str, i: usize| t[..i].chars().next_back().map_or(0, char::len_utf8);
         match k {
             Key::Char(c) => self.insert(c.encode_utf8(&mut [0; 4])),
@@ -209,6 +211,9 @@ pub struct Editor {
     pub(crate) layout: crate::panes::Layout,
     /// 画面の本文の範囲（列, 行）。最下行は含まない（App が描画前に入れる）
     pub(crate) screen: (usize, usize),
+    pub finder: Option<crate::finder::Finder>,
+    /// 一度集めたプロジェクトのファイル一覧（根 → 相対パス）
+    pub(crate) file_cache: HashMap<PathBuf, Vec<String>>,
 }
 
 impl Editor {
@@ -251,6 +256,8 @@ impl Editor {
             prev_win: None,
             layout: crate::panes::Layout::Leaf(0),
             screen: (80, 24),
+            finder: None,
+            file_cache: HashMap::new(),
         }
     }
 
@@ -364,7 +371,7 @@ impl Editor {
 
     /// 入力欄（IME の確定先）があるモードか
     pub fn has_prompt(&self) -> bool {
-        matches!(self.mode, Mode::Command | Mode::Search | Mode::Replace)
+        matches!(self.mode, Mode::Command | Mode::Search | Mode::Replace | Mode::Finder)
     }
 
     pub(crate) fn motion(&self) -> Motion<'_> {
@@ -471,6 +478,10 @@ impl Editor {
             }
             Mode::Replace => {
                 self.replace_key(key);
+                Effect::None
+            }
+            Mode::Finder => {
+                self.finder_key(key);
                 Effect::None
             }
         };
@@ -941,6 +952,9 @@ impl Editor {
             "e" | "edit" if !arg.is_empty() => self.edit_file(PathBuf::from(arg)),
             "e!" | "edit!" => self.reload(),
             "ls" | "buffers" | "files" => self.list_buffers(),
+            "Files" => self.open_finder(crate::finder::Source::Files),
+            "Buffers" => self.open_finder(crate::finder::Source::Buffers),
+            "Recent" | "History" => self.open_finder(crate::finder::Source::Recent),
             "b" | "buffer" if !arg.is_empty() => self.goto_buffer(arg),
             "bn" | "bnext" => self.cycle_buffer(true, arg.parse().unwrap_or(1)),
             "bp" | "bprevious" | "bN" | "bNext" => self.cycle_buffer(false, arg.parse().unwrap_or(1)),
@@ -1051,6 +1065,9 @@ impl Editor {
             Some((Some("jump.last_change"), _)) => self.jump_last_change(),
             Some((Some("search.buffer"), _)) => self.start_search(true, false, ""),
             Some((Some("replace.buffer"), _)) => self.start_search(true, true, ""),
+            Some((Some("finder.files" | "finder.everything"), _)) => self.open_finder(crate::finder::Source::Files),
+            Some((Some("finder.recent"), _)) => self.open_finder(crate::finder::Source::Recent),
+            Some((Some("buffer.close"), _)) => self.delete_buffer("", false),
             Some((Some(cmd), desc)) => self.message = format!("未実装: {desc}（{cmd}）"),
             Some((None, desc)) => self.message = format!("Nagi には無い機能: {desc}"),
             None => self.message = format!("不明なアクション: {name}"),
@@ -1117,6 +1134,7 @@ impl Editor {
                 }
             }
             Mode::Command => self.cmdline.insert(text),
+            Mode::Finder => self.finder_insert(text),
             _ => {}
         }
     }

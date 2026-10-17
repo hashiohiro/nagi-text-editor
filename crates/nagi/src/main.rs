@@ -15,6 +15,7 @@ mod clock;
 #[cfg(test)]
 mod difftest;
 mod editor;
+mod finder;
 mod normal;
 mod stats;
 mod view;
@@ -502,9 +503,15 @@ impl App {
                 let (p, row) = match ed.mode {
                     Mode::Replace if ed.replace_field == 1 => (&ed.repl, rows + 1),
                     Mode::Command => (&ed.cmdline, rows),
+                    Mode::Finder => match &ed.finder {
+                        Some(f) => (&f.query, rows),
+                        None => (&ed.query, rows),
+                    },
                     _ => (&ed.query, rows),
                 };
-                (1 + nagi_core::display_col(&p.text, p.cursor, false), row)
+                // 入力欄の前の印（`:` `/` は 1 セル、ファインダーの `> ` は 2 セル）
+                let lead = if ed.mode == Mode::Finder { 2 } else { 1 };
+                (lead + nagi_core::display_col(&p.text, p.cursor, false), row)
             } else {
                 // 画面の幅より右は見えないので、そこまでの幅だけ数える（数 MB の行で全体を数えない）
                 let line = ed.buf.line_head(ed.cursor.line, ed.cursor.byte.min(4096) + 4).0;
@@ -718,6 +725,7 @@ impl ApplicationHandler for App {
                 clock::mark_once("file: full buffer swapped in");
             }
             ed.poll_search();
+            ed.poll_finder();
         }
         if self.ed.as_mut().is_some_and(|ed| ed.poll_syntax()) {
             if let Some(s) = self.ed.as_ref().and_then(|ed| ed.syntax.as_ref()) {

@@ -1,0 +1,12 @@
+[package]
+name = "nagi-workers"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+# UI スレッドの外で行う仕事（ファイル一覧、全文検索、ファイル監視）。結果はチャネルで返し、届いたら UI を起こす
+[dependencies]
+ignore = "0.4.33"
+
+[dev-dependencies]
+nagi-core.workspace = true

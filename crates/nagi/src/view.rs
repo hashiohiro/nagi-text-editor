@@ -326,7 +326,7 @@ fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
                 items.push(Item { g: Cow::Borrowed(" "), width: 1, fg: BG, bg: Some(FG), underline: false });
             }
         }
-        if !is_cursor_line || matches!(ed.mode, Mode::Command | Mode::Search | Mode::Replace) {
+        if !is_cursor_line || matches!(ed.mode, Mode::Command | Mode::Search | Mode::Replace | Mode::Finder) {
             p.draw(&items, rect.x + GUTTER, y);
             continue;
         }
@@ -384,6 +384,15 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     let bar = (cell.w / 6.0).round().max(2.0);
     let underline = (cell.h / 16.0).round().max(1.0);
     let mut p = Painter { out: Vec::with_capacity(cols * rows + 64), fonts, r, cols, bar, underline };
+    if let Some(f) = &mut ed.finder {
+        // 選んでいる候補が見える範囲に入るように送る
+        let h = finder_height(rows);
+        if f.selected < f.scroll {
+            f.scroll = f.selected;
+        } else if f.selected >= f.scroll + h {
+            f.scroll = f.selected + 1 - h;
+        }
+    }
     let ed: &Editor = ed;
     let split = ed.is_split();
     let rects = ed.window_rects();
@@ -443,6 +452,9 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             p.cols = saved;
         }
     }
+    if let Some(f) = &ed.finder {
+        draw_finder(&mut p, f, rows, cols);
+    }
     // ---- 最下行: 左にモード・メッセージ・入力欄、右に位置（Vim の showmode と ruler と同じ形）
     let y = rows as f32 * cell.h;
     // はみ出した本文の最終行（スムーズスクロール中）を最下行の地で隠す
@@ -472,6 +484,13 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     };
     match ed.mode {
         Mode::Command => prompt_line(&mut p, ":", &ed.cmdline.text, ed.cmdline.cursor, &ed.preedit, y, true),
+        Mode::Finder if ed.finder.is_some() => {
+            let f = ed.finder.as_ref().unwrap();
+            prompt_line(&mut p, "> ", &f.query.text, f.query.cursor, &ed.preedit, y, true);
+            let info = format!("{}  {}/{}{} ", f.source.label(), f.hits.len(), f.items.len(), if f.walking() { " …" } else { "" });
+            let pc = cols.saturating_sub(p.width(&info));
+            p.text(&info, pc, y, STATUS_FG);
+        }
         Mode::Search => {
             let lead = if ed.search.forward { "/" } else { "?" };
             prompt_line(&mut p, lead, &ed.query.text, ed.query.cursor, &ed.preedit, y, true);
@@ -506,6 +525,45 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         }
     }
     p.out
+}
+
+/// ファインダーの候補を出す高さ（画面の 4 割、少なくとも 8 行）
+fn finder_height(rows: usize) -> usize {
+    (rows * 2 / 5).max(8).min(rows)
+}
+
+/// 当たった文字の色（ハイライトのキーワードと同じ控えめな青）
+const FINDER_MATCH: [f32; 4] = rgb(0x87afd7);
+
+/// ファインダーの候補。最下行のすぐ上が一番良い候補で、上へ行くほど点数が下がる（fzf と同じ並び）
+fn draw_finder(p: &mut Painter, f: &crate::finder::Finder, rows: usize, cols: usize) {
+    let cell = p.fonts.cell();
+    let h = finder_height(rows);
+    let top = rows - h;
+    // 下の本文を隠し、上端に 1px の線を引く
+    p.out.push(Instance::fill(0.0, top as f32 * cell.h, cols as f32 * cell.w, h as f32 * cell.h, BG));
+    p.out.push(Instance::fill(0.0, top as f32 * cell.h, cols as f32 * cell.w, 1.0, LINE_NO));
+    let q = nagi_core::fuzzy::Query::new(&f.query.text);
+    for k in 0..h {
+        let Some(&(i, _)) = f.hits.get(f.scroll + k) else { break };
+        let text = &f.items[i as usize];
+        let y = (rows - 1 - k) as f32 * cell.h;
+        let selected = f.scroll + k == f.selected;
+        let hit: std::collections::HashSet<usize> = if q.is_empty() { Default::default() } else { q.positions(text).into_iter().collect() };
+        if selected {
+            p.out.push(Instance::fill(0.0, y, cols as f32 * cell.w, cell.h, FG));
+        }
+        let (fg, accent) = if selected { (BG, BG) } else { (FG, FINDER_MATCH) };
+        let mut items = p.items(if selected { "> " } else { "  " }, fg);
+        let mut ci = 0;
+        for g in text.graphemes(true) {
+            let m = hit.contains(&ci);
+            let width = p.cell_width(g);
+            items.push(Item { g: Cow::Borrowed(g), width, fg: if m { accent } else { fg }, bg: None, underline: m && selected });
+            ci += g.chars().count();
+        }
+        p.draw(&items, 0, y);
+    }
 }
 
 /// 最下行の入力欄（`:` `/` `?` `→`）。`active` なら縦棒カーソルと IME の変換中の文字列を出す

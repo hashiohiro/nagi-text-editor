@@ -143,6 +143,7 @@ impl Editor {
         } else {
             self.push_doc(buf);
         }
+        crate::finder::remember_recent(&path);
         self.message = message;
     }
 
