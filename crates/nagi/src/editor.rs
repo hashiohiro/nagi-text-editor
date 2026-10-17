@@ -112,6 +112,9 @@ impl Drop for CountJob {
     }
 }
 
+/// 先頭部分だけを表示している間の最下行
+const LOADING: &str = "読み込み中…";
+
 /// これより小さいファイルは、全件をその場で数える
 const SYNC_COUNT_LIMIT: usize = 1 << 20;
 
@@ -175,6 +178,8 @@ pub struct Editor {
     pub showcmd: String,
     /// 構文木（対応言語のときだけ）
     pub syntax: Option<nagi_syntax::Syntax>,
+    /// 大きなファイルの全体（先頭部分だけを先に表示している間。届いたら `poll_load` で差し替える）
+    loading: Option<std::sync::mpsc::Receiver<Buffer>>,
     /// 裏で解析中の構文木（届いたら `poll_syntax` で受け取る）
     pending_syntax: Option<std::sync::mpsc::Receiver<nagi_syntax::Syntax>>,
     /// 裏の解析が終わったときに UI スレッドを起こす（App が入れる）
@@ -218,6 +223,7 @@ impl Editor {
             showcmd: String::new(),
             syntax,
             pending_syntax: None,
+            loading: None,
             waker: None,
             pending_keys: Vec::new(),
             anchor: 0,
@@ -228,6 +234,63 @@ impl Editor {
             rows: 1,
             text_cache: Default::default(),
         }
+    }
+
+    /// 先頭部分だけを表示しているバッファの、全体が `rx` に届くのを待つ。届いたらイベントループを起こす
+    pub fn wait_full_buffer(&mut self, rx: std::sync::mpsc::Receiver<Buffer>) {
+        let (tx, rx2) = std::sync::mpsc::channel();
+        let waker = self.waker.clone();
+        std::thread::spawn(move || {
+            if let Ok(b) = rx.recv() {
+                if tx.send(b).is_ok() {
+                    if let Some(w) = waker {
+                        w();
+                    }
+                }
+            }
+        });
+        self.loading = Some(rx2);
+        self.message = LOADING.into();
+    }
+
+    /// 全体が届いていれば差し替える。差し替えたら true（描き直す）
+    pub fn poll_load(&mut self) -> bool {
+        let Some(rx) = &self.loading else { return false };
+        match rx.try_recv() {
+            Ok(b) => {
+                self.swap_full_buffer(b);
+                true
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.loading = None;
+                false
+            }
+        }
+    }
+
+    /// 全体が届くまで待って差し替える（キーを処理する前）
+    fn finish_load(&mut self) {
+        if let Some(rx) = self.loading.take() {
+            if let Ok(b) = rx.recv() {
+                self.swap_full_buffer(b);
+            }
+        }
+    }
+
+    fn swap_full_buffer(&mut self, b: Buffer) {
+        self.loading = None;
+        // 先頭部分は全体の頭と同じ内容なので、カーソルと表示位置はそのまま使える。版の番号は同じ 0 から
+        // 始まるので、版を鍵にした計算結果（全体の文字列・検索の件数）は捨てる
+        self.buf = b;
+        *self.text_cache.borrow_mut() = None;
+        self.search.computed = None;
+        self.search.matches.clear();
+        self.search.job = None;
+        if self.message == LOADING {
+            self.message.clear();
+        }
+        self.start_syntax();
     }
 
     /// 構文解析を裏のスレッドで始める。大きなファイルでは数百 ms〜秒かかるので、表示や入力を待たせない。
@@ -352,6 +415,7 @@ impl Editor {
 
     /// 文字列を挿入する。改行はこのファイルの改行コードにする
     pub fn insert_text(&mut self, s: &str) {
+        self.finish_load();
         let nl = self.buf.newline();
         let text: String = s.replace("\r\n", "\n").replace('\r', "\n").replace('\n', nl);
         let at = self.abs();
@@ -377,6 +441,8 @@ impl Editor {
     }
 
     pub fn key(&mut self, key: Key) -> Effect {
+        // 先頭部分だけを表示している間は、全体が届くのを待ってから処理する（先頭部分を編集してしまわない）
+        self.finish_load();
         if !self.replaying {
             if let Some(rec) = &mut self.dot_rec {
                 rec.push(key);
@@ -1019,6 +1085,7 @@ impl Editor {
 
     /// IME の確定（winit の Ime::Commit）。Insert なら挿入、入力欄なら欄に入れる
     pub fn ime_commit(&mut self, text: &str) {
+        self.finish_load();
         self.preedit.clear();
         self.preedit_cursor = None;
         if !self.replaying {

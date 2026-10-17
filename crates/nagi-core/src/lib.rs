@@ -67,6 +67,24 @@ impl textops::Source for Buffer {
     }
 }
 
+/// 末尾で途中までしか無い UTF-8 の文字の byte 数（0〜3）
+fn incomplete_tail(b: &[u8]) -> usize {
+    for back in 1..=b.len().min(3) {
+        let c = b[b.len() - back];
+        if c & 0xC0 == 0x80 {
+            continue; // 続きの byte。さらに前を見る
+        }
+        let need = match c {
+            0xC0..=0xDF => 2,
+            0xE0..=0xEF => 3,
+            0xF0..=0xF7 => 4,
+            _ => 1,
+        };
+        return if need > back { back } else { 0 };
+    }
+    0
+}
+
 impl Buffer {
     pub fn from_str(text: &str) -> Self {
         Self { rope: Rope::from_str(text), version: 0, edits: Vec::new(), dirty: false, path: None, crlf: text.contains("\r\n"), bom: false }
@@ -82,6 +100,90 @@ impl Buffer {
         let mut b = Self::from_str(&text);
         b.path = Some(path.to_path_buf());
         b.bom = bom;
+        Ok(b)
+    }
+
+    /// 大きなファイルを読む。読み込みと UTF-8 の確認（読み込み用のスレッド）と、rope の組み立て（このスレッド）を
+    /// 並べて進める。最初の 1MB を読んだところで、先頭部分だけのバッファを `head` に渡す（表示を先に出すため）。
+    /// 小さなファイルは `open` と同じで、`head` は呼ばない
+    pub fn open_with_head(path: &Path, head: impl FnOnce(Buffer)) -> io::Result<Self> {
+        use std::io::Read;
+        const STREAM_LIMIT: u64 = 8 << 20;
+        const CHUNK: u64 = 1 << 20;
+        const HEAD_BYTES: usize = 256 << 10;
+        let mut file = std::fs::File::open(path)?;
+        if file.metadata()?.len() < STREAM_LIMIT {
+            return Self::open(path);
+        }
+        // 読む → UTF-8 と改行コードを確かめる → rope に組み立てる、の 3 段を別々のスレッドで並べる
+        let (btx, brx) = std::sync::mpsc::sync_channel::<Vec<u8>>(8);
+        let reader = std::thread::Builder::new().name("read".into()).spawn(move || -> io::Result<()> {
+            loop {
+                let mut buf = Vec::with_capacity(CHUNK as usize);
+                if (&mut file).take(CHUNK).read_to_end(&mut buf)? == 0 || btx.send(buf).is_err() {
+                    return Ok(());
+                }
+            }
+        })?;
+        let (tx, rx) = std::sync::mpsc::sync_channel::<String>(8);
+        let checker = std::thread::Builder::new().name("utf8".into()).spawn(move || -> (bool, bool) {
+            let (mut carry, mut first, mut crlf, mut bom) = (Vec::new(), true, false, false);
+            let mut chunks = brx.into_iter().peekable();
+            while let Some(next) = chunks.next() {
+                let eof = chunks.peek().is_none();
+                let mut buf = std::mem::take(&mut carry);
+                buf.extend_from_slice(&next);
+                if first {
+                    first = false;
+                    if buf.starts_with(b"\xEF\xBB\xBF") {
+                        buf.drain(..3);
+                        bom = true;
+                    }
+                }
+                // 塊の終わりで切れた文字は次の塊へ回す
+                if !eof {
+                    carry = buf.split_off(buf.len() - incomplete_tail(&buf));
+                }
+                let s = match String::from_utf8(buf) {
+                    Ok(s) => s,
+                    Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+                };
+                // CRLF を塊の境目で切ると、rope が \r と \n を別々の改行として数える。末尾の \r は次の塊へ回す
+                let mut s = s;
+                if !eof && s.ends_with('\r') {
+                    s.pop();
+                    carry.insert(0, b'\r');
+                }
+                crlf = crlf || s.contains("\r\n");
+                if !s.is_empty() && tx.send(s).is_err() {
+                    break;
+                }
+            }
+            (bom, crlf)
+        })?;
+        let mut builder = ropey::RopeBuilder::new();
+        let mut head = Some(head);
+        for chunk in rx {
+            if let Some(h) = head.take() {
+                // 先頭部分は行の途中で切らない
+                let mut end = chunk.len().min(HEAD_BYTES);
+                while !chunk.is_char_boundary(end) {
+                    end -= 1;
+                }
+                let end = chunk[..end].rfind('\n').map_or(end, |i| i + 1);
+                let mut b = Self::from_str(&chunk[..end]);
+                b.path = Some(path.to_path_buf());
+                h(b);
+            }
+            builder.append(&chunk);
+        }
+        let (bom, crlf) = checker.join().map_err(|_| io::Error::other("読み込みスレッドが止まった"))?;
+        reader.join().map_err(|_| io::Error::other("読み込みスレッドが止まった"))??;
+        let mut b = Self::from_str("");
+        b.rope = builder.finish();
+        b.crlf = crlf;
+        b.bom = bom;
+        b.path = Some(path.to_path_buf());
         Ok(b)
     }
 
@@ -447,6 +549,35 @@ impl Motion<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 分けて読んだ大きなファイルが、まとめて読んだのと同じ内容・改行コード・BOM になる。
+    /// 1MB の境目で多 byte 文字や CRLF が切れても、壊れた byte があってもよい
+    #[test]
+    fn open_with_head_matches_open() {
+        let dir = std::env::temp_dir().join("nagi-load-test");
+        std::fs::create_dir_all(&dir).unwrap();
+        let cases: [(&str, Vec<u8>); 3] = [
+            ("lf", "あいう漢字 line\n".repeat(500_000).into_bytes()),
+            ("crlf-bom", [b"\xEF\xBB\xBF".as_slice(), "x\r\n".repeat(3_000_000).as_bytes()].concat()),
+            ("invalid", {
+                let mut v = "ok 日本\n".repeat(900_000).into_bytes();
+                v.splice(5_000_000..5_000_000, [0xFF, 0xFE]);
+                v
+            }),
+        ];
+        for (name, bytes) in cases {
+            let path = dir.join(name);
+            std::fs::write(&path, &bytes).unwrap();
+            let want = Buffer::open(&path).unwrap();
+            let mut head = None;
+            let got = Buffer::open_with_head(&path, |h| head = Some(h)).unwrap();
+            assert!(got.text() == want.text(), "{name}: 内容が違う（{} / {} byte）", got.len_bytes(), want.len_bytes());
+            assert_eq!((got.crlf, got.bom, got.line_count()), (want.crlf, want.bom, want.line_count()), "{name}");
+            let head = head.expect("大きなファイルは先頭を先に渡す");
+            assert!(want.text().starts_with(&head.text()) && head.text().ends_with('\n'), "{name}: 先頭は行の途中で切らない");
+            let _ = std::fs::remove_file(&path);
+        }
+    }
 
     #[test]
     fn line_count_ignores_trailing_newline() {

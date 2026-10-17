@@ -390,12 +390,15 @@ impl Finder {
     pub fn next_near<S: Source + ?Sized>(&self, src: &S, at: usize, forward: bool, include_at: bool, reach: usize) -> Option<(usize, usize)> {
         let len = src.len();
         let at = at.min(len);
+        // 端を越える分は反対側の端から続ける（wrapscan。ファイルの末尾近くで下へ探すと先頭の一致に回る）
         if forward {
-            let from = if include_at { at } else { at + 1 };
-            return self.first_in(src, from, (from + reach).min(len));
+            let from = (if include_at { at } else { at + 1 }).min(len);
+            let over = (from + reach).saturating_sub(len);
+            return self.first_in(src, from, (from + reach).min(len)).or_else(|| self.first_in(src, 0, over.min(from)));
         }
         let hi = (if include_at { at + 1 } else { at }).min(len);
-        self.last_in(src, hi.saturating_sub(reach), hi)
+        let over = reach.saturating_sub(hi);
+        self.last_in(src, hi.saturating_sub(reach), hi).or_else(|| self.last_in(src, len.saturating_sub(over).max(hi), len))
     }
 
     /// 始まりが [lo, hi) にある最初の一致。窓を倍にしながら先へ進む
@@ -455,6 +458,22 @@ pub fn next_match(matches: &[(usize, usize)], at: usize, forward: bool, include_
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 近くだけ探す `next_near` は、範囲内なら `next` と同じ一致を返し、範囲外なら None。端では反対側へ回る
+    #[test]
+    fn finder_next_near() {
+        let text = format!("needle{}needle{}", "x".repeat(10_000), "y".repeat(10_000));
+        let f = Finder::new("needle", false).unwrap();
+        let second = 6 + 10_000;
+        assert_eq!(f.next_near(text.as_str(), 0, true, false, 20_000), Some((second, second + 6)));
+        assert_eq!(f.next_near(text.as_str(), 0, true, false, 5_000), None, "範囲外");
+        // 末尾近くから下へ: 先頭の一致に回る
+        assert_eq!(f.next_near(text.as_str(), text.len() - 10, true, false, 100), Some((0, 6)));
+        // 先頭近くから上へ: 末尾側の一致に回る
+        assert_eq!(f.next_near(text.as_str(), 3, false, false, 20_000), Some((0, 6)));
+        assert_eq!(f.next_near(text.as_str(), 0, false, false, 20_000), Some((second, second + 6)));
+        assert_eq!(f.next_near(text.as_str(), 0, false, false, 100), None);
+    }
 
     /// 近くから探す `Finder::next` は、全件を並べてから選ぶやり方と同じ一致を返す
     #[test]

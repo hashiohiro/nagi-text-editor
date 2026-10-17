@@ -75,7 +75,10 @@ impl Opts {
 struct Pending {
     gpu: mpsc::Receiver<windows::core::Result<Gpu>>,
     fonts: mpsc::Receiver<Vec<FontData>>,
-    file: mpsc::Receiver<Buffer>,
+    /// 開くファイル（大きなファイルは先頭部分だけで、true が付く）
+    file: mpsc::Receiver<(Buffer, bool)>,
+    /// 大きなファイルの全体
+    rest: mpsc::Receiver<Buffer>,
     rc: mpsc::Receiver<Rc>,
 }
 
@@ -176,7 +179,7 @@ impl App {
         // GPU の準備（最も遅い）を待つ間に、フォントとファイルを受け取って最初の画面のグリフをラスタライズしておく
         let p = self.pending.take().unwrap();
         let chain = p.fonts.recv().unwrap();
-        let buf = p.file.recv().unwrap();
+        let (buf, partial) = p.file.recv().unwrap();
         self.rc = p.rc.recv().unwrap();
         let mut fonts = Fonts::new(chain, (FONT_PX * self.scale).round() as f32);
         window.set_title(&self.title_for(buf.path.as_deref()));
@@ -187,7 +190,12 @@ impl App {
             ed.waker = Some(Arc::new(move || {
                 let _ = proxy.send_event(());
             }));
-            ed.start_syntax();
+            if partial {
+                // 構文解析は全体が届いてから
+                ed.wait_full_buffer(p.rest);
+            } else {
+                ed.start_syntax();
+            }
         }
         let size = window.inner_size();
         let glyphs = view::rasterize_first_screen(self.ed.as_ref().unwrap(), &mut fonts, size.height);
@@ -639,6 +647,9 @@ impl ApplicationHandler for App {
     /// 裏の処理（構文解析か、検索の全件数え）が終わった。描き直すと受け取る
     fn user_event(&mut self, _el: &ActiveEventLoop, _event: ()) {
         if let Some(ed) = &mut self.ed {
+            if ed.poll_load() {
+                clock::mark_once("file: full buffer swapped in");
+            }
             ed.poll_search();
         }
         if self.ed.as_mut().is_some_and(|ed| ed.poll_syntax()) {
@@ -771,11 +782,18 @@ fn main() {
         })
         .unwrap();
     let (xtx, file) = mpsc::channel();
+    let (rest_tx, rest) = mpsc::channel();
     let path = opts.file.clone();
     spawn("file")
         .spawn(move || {
+            // 大きなファイルは、先頭部分を読んだところで先に渡して表示し、全体は後から渡す
+            let mut sent_head = false;
             let buf = match &path {
-                Some(p) => Buffer::open(p).unwrap_or_else(|e| {
+                Some(p) => Buffer::open_with_head(p, |head| {
+                    clock::mark(format!("file: head {} lines", head.line_count()));
+                    sent_head = xtx.send((head, true)).is_ok();
+                })
+                .unwrap_or_else(|e| {
                     let mut b = Buffer::from_str("");
                     b.path = Some(p.clone());
                     eprintln!("{}: {e}", p.display());
@@ -784,7 +802,11 @@ fn main() {
                 None => Buffer::from_str(""),
             };
             clock::mark(format!("file: {} lines", buf.line_count()));
-            xtx.send(buf).unwrap();
+            if sent_head {
+                let _ = rest_tx.send(buf);
+            } else {
+                let _ = xtx.send((buf, false));
+            }
         })
         .unwrap();
 
@@ -802,7 +824,7 @@ fn main() {
     event_loop.set_control_flow(ControlFlow::Wait);
     let mut app = App {
         opts,
-        pending: Some(Pending { gpu, fonts, file, rc }),
+        pending: Some(Pending { gpu, fonts, file, rest, rc }),
         proxy: Some(proxy),
         window: None,
         renderer: None,
