@@ -16,6 +16,7 @@ mod clock;
 mod difftest;
 mod editor;
 mod finder;
+mod grep_panel;
 mod normal;
 mod stats;
 mod view;
@@ -507,10 +508,18 @@ impl App {
                         Some(f) => (&f.query, rows),
                         None => (&ed.query, rows),
                     },
+                    Mode::GrepPrompt => match &ed.grep {
+                        Some(g) => (&g.query, rows),
+                        None => (&ed.query, rows),
+                    },
                     _ => (&ed.query, rows),
                 };
                 // 入力欄の前の印（`:` `/` は 1 セル、ファインダーの `> ` は 2 セル）
-                let lead = if ed.mode == Mode::Finder { 2 } else { 1 };
+                let lead = match ed.mode {
+                    Mode::Finder => 2,
+                    Mode::GrepPrompt => nagi_core::display_col(grep_panel::GREP_LEAD, grep_panel::GREP_LEAD.len(), false),
+                    _ => 1,
+                };
                 (lead + nagi_core::display_col(&p.text, p.cursor, false), row)
             } else {
                 // 画面の幅より右は見えないので、そこまでの幅だけ数える（数 MB の行で全体を数えない）
@@ -564,6 +573,23 @@ impl App {
 
     fn on_press(&mut self) {
         self.sync_screen();
+        // パネルの上なら、パネルの行を選ぶ（ダブルクリックで開く）
+        if let (Some(f), Some(ed)) = (&self.fonts, &mut self.ed) {
+            let cell = f.cell();
+            let row = (self.mouse.1 as f32 / cell.h) as usize;
+            if let Some(r) = ed.panel_rect().filter(|r| row >= r.y && row < r.y + r.h) {
+                let now = Instant::now();
+                let clicks = match self.last_click {
+                    Some((t, c, n)) if now - t <= double_click_time() && c == (row, usize::MAX) => n % 3 + 1,
+                    _ => 1,
+                };
+                self.last_click = Some((now, (row, usize::MAX), clicks));
+                ed.panel_click(row - r.y, clicks);
+                self.sync_ime();
+                self.draw();
+                return;
+            }
+        }
         let on_text = self.focus_under_mouse();
         let rows = self.sync_screen();
         if !on_text {
@@ -726,6 +752,7 @@ impl ApplicationHandler for App {
             }
             ed.poll_search();
             ed.poll_finder();
+            ed.poll_grep();
         }
         if self.ed.as_mut().is_some_and(|ed| ed.poll_syntax()) {
             if let Some(s) = self.ed.as_ref().and_then(|ed| ed.syntax.as_ref()) {

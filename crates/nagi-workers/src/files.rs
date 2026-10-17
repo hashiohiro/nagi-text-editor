@@ -49,6 +49,7 @@ pub fn walk(root: &Path, waker: Waker) -> FileWalk {
     let root = root.to_path_buf();
     let stop = cancel.clone();
     let _ = std::thread::Builder::new().name("files".into()).spawn(move || {
+        let done = waker.clone();
         let walker = ignore::WalkBuilder::new(&root).hidden(true).git_ignore(true).git_global(true).git_exclude(true).require_git(false).build_parallel();
         walker.run(|| {
             let mut b = Batch { buf: Vec::with_capacity(BATCH), tx: tx.clone(), waker: waker.clone() };
@@ -70,6 +71,9 @@ pub fn walk(root: &Path, waker: Waker) -> FileWalk {
                 ignore::WalkState::Continue
             })
         });
+        // 送り口をすべて閉じてから起こす（受け取る側が「集め終えた」と分かるように）
+        drop(tx);
+        done();
     });
     FileWalk { rx, cancel }
 }

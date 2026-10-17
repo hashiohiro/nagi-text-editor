@@ -118,14 +118,15 @@ impl Editor {
 
     /// 窓と矩形（画面の本文の範囲 `screen` を分けたもの）
     pub fn window_rects(&self) -> Vec<(usize, Rect)> {
-        let (cols, rows) = self.screen;
+        // 下にパネルを開いている間は、その分を除いた範囲を窓で分ける
+        let (cols, rows) = (self.screen.0, self.windows_rows());
         let mut out = Vec::new();
         self.layout.rects(Rect { x: 0, y: 0, w: cols, h: rows }, &mut out);
         out
     }
 
     pub fn active_rect(&self) -> Rect {
-        self.window_rects().into_iter().find(|(w, _)| *w == self.cur_win).map_or(Rect { x: 0, y: 0, w: self.screen.0, h: self.screen.1 }, |(_, r)| r)
+        self.window_rects().into_iter().find(|(w, _)| *w == self.cur_win).map_or(Rect { x: 0, y: 0, w: self.screen.0, h: self.windows_rows() }, |(_, r)| r)
     }
 
     /// 窓の本文の行数（分割中は状態行の 1 行を除く）
@@ -260,6 +261,11 @@ impl Editor {
                 .map(|(w, _)| *w);
             match pick {
                 Some(w) => self.focus_window(w),
+                // 一番下の窓から下へは、パネルがあればパネルへ
+                None if dir == 'j' && self.grep.is_some() => {
+                    self.focus_panel();
+                    return;
+                }
                 None => return,
             }
         }

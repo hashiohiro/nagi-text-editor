@@ -326,7 +326,7 @@ fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
                 items.push(Item { g: Cow::Borrowed(" "), width: 1, fg: BG, bg: Some(FG), underline: false });
             }
         }
-        if !is_cursor_line || matches!(ed.mode, Mode::Command | Mode::Search | Mode::Replace | Mode::Finder) {
+        if !is_cursor_line || matches!(ed.mode, Mode::Command | Mode::Search | Mode::Replace | Mode::Finder | Mode::GrepPrompt | Mode::List) {
             p.draw(&items, rect.x + GUTTER, y);
             continue;
         }
@@ -384,6 +384,15 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     let bar = (cell.w / 6.0).round().max(2.0);
     let underline = (cell.h / 16.0).round().max(1.0);
     let mut p = Painter { out: Vec::with_capacity(cols * rows + 64), fonts, r, cols, bar, underline };
+    if let (Some(r), Some(g)) = (ed.panel_rect(), &mut ed.grep) {
+        // 選んでいる結果が見える範囲に入るように送る（1 行目は見出し）
+        let h = r.h.saturating_sub(1).max(1);
+        if g.selected < g.scroll {
+            g.scroll = g.selected;
+        } else if g.selected >= g.scroll + h {
+            g.scroll = g.selected + 1 - h;
+        }
+    }
     if let Some(f) = &mut ed.finder {
         // 選んでいる候補が見える範囲に入るように送る
         let h = finder_height(rows);
@@ -452,6 +461,9 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             p.cols = saved;
         }
     }
+    if let (Some(r), Some(g)) = (ed.panel_rect(), &ed.grep) {
+        draw_grep_panel(&mut p, g, r, matches!(ed.mode, Mode::List | Mode::GrepPrompt));
+    }
     if let Some(f) = &ed.finder {
         draw_finder(&mut p, f, rows, cols);
     }
@@ -484,6 +496,22 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     };
     match ed.mode {
         Mode::Command => prompt_line(&mut p, ":", &ed.cmdline.text, ed.cmdline.cursor, &ed.preedit, y, true),
+        Mode::GrepPrompt if ed.grep.is_some() => {
+            let g = ed.grep.as_ref().unwrap();
+            prompt_line(&mut p, crate::grep_panel::GREP_LEAD, &g.query.text, g.query.cursor, &ed.preedit, y, true);
+            let info = format!("{}{} 件{} ", if g.regex { "[.*]  " } else { "" }, g.hits.len(), if g.searching() { " …" } else { "" });
+            let pc = cols.saturating_sub(p.width(&info));
+            p.text(&info, pc, y, STATUS_FG);
+        }
+        Mode::List if ed.grep.is_some() => {
+            let g = ed.grep.as_ref().unwrap();
+            let end = p.text(if ed.message.is_empty() { "-- 検索結果 --" } else { &ed.message }, 0, y, FG);
+            let info = format!("{}/{} ", (g.selected + 1).min(g.hits.len()), g.hits.len());
+            let pc = cols.saturating_sub(p.width(&info));
+            if end + 2 <= pc {
+                p.text(&info, pc, y, STATUS_FG);
+            }
+        }
         Mode::Finder if ed.finder.is_some() => {
             let f = ed.finder.as_ref().unwrap();
             prompt_line(&mut p, "> ", &f.query.text, f.query.cursor, &ed.preedit, y, true);
@@ -525,6 +553,49 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         }
     }
     p.out
+}
+
+/// 全文検索のパネル。1 行目は見出し（検索語と件数）、2 行目から `path:行: 本文`（ripgrep の vimgrep と同じ形）
+fn draw_grep_panel(p: &mut Painter, g: &crate::grep_panel::GrepPanel, r: Rect, focused: bool) {
+    let cell = p.fonts.cell();
+    let (x, y0, w) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
+    p.out.push(Instance::fill(x, y0, w, r.h as f32 * cell.h, BG));
+    p.out.push(Instance::fill(x, y0, w, 1.0, LINE_NO));
+    let head = match &g.error {
+        Some(e) => format!("正規表現の誤り: {}", e.lines().last().unwrap_or("")),
+        None => format!(
+            "全文検索: {}{}   {} 件 / {} ファイル{}{}",
+            g.query.text,
+            if g.regex { "  [.*]" } else { "" },
+            g.hits.len(),
+            g.files(),
+            if g.hits.len() >= nagi_workers::grep::MAX_HITS { "（上限）" } else { "" },
+            if g.searching() { " …" } else { "" }
+        ),
+    };
+    p.text(&head, r.x, y0, STATUS_FG);
+    for k in 0..r.h.saturating_sub(1) {
+        let Some(h) = g.hits.get(g.scroll + k) else { break };
+        let y = (r.y + 1 + k) as f32 * cell.h;
+        let selected = g.scroll + k == g.selected;
+        // 選んだ行は、パネルにいる（か検索語を打っている）ときは反転、そうでなければ控えめな地の色
+        let reversed = selected && focused;
+        if reversed {
+            p.out.push(Instance::fill(x, y, w, cell.h, FG));
+        } else if selected {
+            p.out.push(Instance::fill(x, y, w, cell.h, MATCH_BG));
+        }
+        let (fg, dim, accent) = if reversed { (BG, BG, BG) } else { (FG, STATUS_FG, FINDER_MATCH) };
+        let num = format!(":{}: ", h.line);
+        let mut items = p.items(&h.path, dim);
+        items.extend(p.items(&num, dim));
+        for (b, gr) in h.text.grapheme_indices(true) {
+            let m = b >= h.range.0 && b < h.range.1;
+            let width = p.cell_width(gr);
+            items.push(Item { g: Cow::Borrowed(gr), width, fg: if m { accent } else { fg }, bg: None, underline: m && reversed });
+        }
+        p.draw(&items, r.x, y);
+    }
 }
 
 /// ファインダーの候補を出す高さ（画面の 4 割、少なくとも 8 行）

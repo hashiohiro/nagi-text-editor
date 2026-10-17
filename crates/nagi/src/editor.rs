@@ -27,6 +27,10 @@ pub enum Mode {
     Replace,
     /// ファジーファインダー（最下行に検索語、その上に候補）
     Finder,
+    /// 全文検索の検索語を最下行で打っている
+    GrepPrompt,
+    /// パネル（全文検索の結果）にいる（リストモード）
+    List,
 }
 
 pub enum Effect {
@@ -212,6 +216,8 @@ pub struct Editor {
     /// 画面の本文の範囲（列, 行）。最下行は含まない（App が描画前に入れる）
     pub(crate) screen: (usize, usize),
     pub finder: Option<crate::finder::Finder>,
+    /// 全文検索のパネル（開いている間だけ）
+    pub grep: Option<crate::grep_panel::GrepPanel>,
     /// 一度集めたプロジェクトのファイル一覧（根 → 相対パス）
     pub(crate) file_cache: HashMap<PathBuf, Vec<String>>,
 }
@@ -257,6 +263,7 @@ impl Editor {
             layout: crate::panes::Layout::Leaf(0),
             screen: (80, 24),
             finder: None,
+            grep: None,
             file_cache: HashMap::new(),
         }
     }
@@ -371,7 +378,7 @@ impl Editor {
 
     /// 入力欄（IME の確定先）があるモードか
     pub fn has_prompt(&self) -> bool {
-        matches!(self.mode, Mode::Command | Mode::Search | Mode::Replace | Mode::Finder)
+        matches!(self.mode, Mode::Command | Mode::Search | Mode::Replace | Mode::Finder | Mode::GrepPrompt)
     }
 
     pub(crate) fn motion(&self) -> Motion<'_> {
@@ -484,6 +491,11 @@ impl Editor {
                 self.finder_key(key);
                 Effect::None
             }
+            Mode::GrepPrompt => {
+                self.grep_prompt_key(key);
+                Effect::None
+            }
+            Mode::List => self.list_key(key),
         };
         self.scroll_into_view();
         effect
@@ -955,6 +967,11 @@ impl Editor {
             "Files" => self.open_finder(crate::finder::Source::Files),
             "Buffers" => self.open_finder(crate::finder::Source::Buffers),
             "Recent" | "History" => self.open_finder(crate::finder::Source::Recent),
+            "Grep" | "grep" | "Rg" | "rg" => self.open_grep(arg),
+            "cn" | "cnext" => self.next_hit(true, arg.parse().unwrap_or(1)),
+            "cp" | "cprevious" | "cN" | "cNext" => self.next_hit(false, arg.parse().unwrap_or(1)),
+            "ccl" | "cclose" => self.close_grep(),
+            "cope" | "copen" => self.focus_panel(),
             "b" | "buffer" if !arg.is_empty() => self.goto_buffer(arg),
             "bn" | "bnext" => self.cycle_buffer(true, arg.parse().unwrap_or(1)),
             "bp" | "bprevious" | "bN" | "bNext" => self.cycle_buffer(false, arg.parse().unwrap_or(1)),
@@ -1068,6 +1085,7 @@ impl Editor {
             Some((Some("finder.files" | "finder.everything"), _)) => self.open_finder(crate::finder::Source::Files),
             Some((Some("finder.recent"), _)) => self.open_finder(crate::finder::Source::Recent),
             Some((Some("buffer.close"), _)) => self.delete_buffer("", false),
+            Some((Some("search.project"), _)) => self.open_grep(""),
             Some((Some(cmd), desc)) => self.message = format!("未実装: {desc}（{cmd}）"),
             Some((None, desc)) => self.message = format!("Nagi には無い機能: {desc}"),
             None => self.message = format!("不明なアクション: {name}"),
@@ -1135,6 +1153,7 @@ impl Editor {
             }
             Mode::Command => self.cmdline.insert(text),
             Mode::Finder => self.finder_insert(text),
+            Mode::GrepPrompt => self.grep_insert(text),
             _ => {}
         }
     }
