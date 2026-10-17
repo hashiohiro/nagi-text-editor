@@ -2,6 +2,7 @@
 
 pub mod files;
 pub mod grep;
+pub mod watch;
 
 /// UI のイベントループを起こす関数
 pub type Waker = std::sync::Arc<dyn Fn() + Send + Sync>;

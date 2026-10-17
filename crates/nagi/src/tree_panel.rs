@@ -207,16 +207,35 @@ impl Editor {
         let waker = self.waker_or_noop();
         let Some(t) = &mut self.tree else { return false };
         let mut changed = false;
+        let mut loaded = Vec::new();
         while let Ok((dir, list)) = t.rx.try_recv() {
             t.loading.remove(&dir);
-            t.children.insert(dir, list);
+            t.children.insert(dir.clone(), list);
+            loaded.push(dir);
             changed = true;
         }
         if changed {
             t.rebuild();
             t.advance_reveal(&waker);
         }
+        // 読み込んだフォルダの中身の増減を見張る（変わったら読み直す）
+        for d in loaded {
+            self.watch_listing(&d);
+        }
         changed
+    }
+
+    /// 見張っているフォルダの中身が変わった: ツリーで読み込んでいれば読み直す
+    pub(crate) fn tree_reload_dir(&mut self, dir: &Path) -> bool {
+        let waker = self.waker_or_noop();
+        let Some(t) = &mut self.tree else { return false };
+        let low = dir.to_string_lossy().to_lowercase();
+        let Some(k) = t.children.keys().find(|k| k.to_string_lossy().to_lowercase() == low).cloned() else { return false };
+        // 読み直している間も今の中身を出しておき、届いたら差し替える
+        if t.loading.insert(k.clone()) {
+            nagi_workers::files::list_dir(k, t.tx.clone(), waker);
+        }
+        false
     }
 
     pub(crate) fn tree_key(&mut self, key: Key) -> Effect {

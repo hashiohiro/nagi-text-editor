@@ -49,6 +49,17 @@ pub struct Buffer {
     pub crlf: bool,
     /// 読み込み時に UTF-8 の BOM があった（保存時に維持する）
     pub bom: bool,
+    /// 最後に読み込んだ・保存したときのファイルの (更新時刻, 大きさ)。外部での変更を見分ける
+    pub disk: Option<DiskStamp>,
+}
+
+/// ファイルの (更新時刻, 大きさ)
+pub type DiskStamp = (std::time::SystemTime, u64);
+
+/// `path` の今の (更新時刻, 大きさ)
+pub fn disk_stamp(path: &Path) -> Option<DiskStamp> {
+    let m = std::fs::metadata(path).ok()?;
+    Some((m.modified().ok()?, m.len()))
 }
 
 /// 検索は rope から窓ごとに切り出して行う（ファイル全体の文字列を作らない）
@@ -116,10 +127,11 @@ fn incomplete_tail(b: &[u8]) -> usize {
 
 impl Buffer {
     pub fn from_str(text: &str) -> Self {
-        Self { rope: Rope::from_str(text), version: 0, edits: Vec::new(), dirty: false, path: None, crlf: text.contains("\r\n"), bom: false }
+        Self { rope: Rope::from_str(text), version: 0, edits: Vec::new(), dirty: false, path: None, crlf: text.contains("\r\n"), bom: false, disk: None }
     }
 
     pub fn open(path: &Path) -> io::Result<Self> {
+        let disk = disk_stamp(path);
         let bytes = std::fs::read(path)?;
         let (bom, body) = match bytes.strip_prefix(b"\xEF\xBB\xBF") {
             Some(rest) => (true, rest),
@@ -129,6 +141,7 @@ impl Buffer {
         let mut b = Self::from_str(&text);
         b.path = Some(path.to_path_buf());
         b.bom = bom;
+        b.disk = disk;
         Ok(b)
     }
 
@@ -213,6 +226,7 @@ impl Buffer {
         b.crlf = crlf;
         b.bom = bom;
         b.path = Some(path.to_path_buf());
+        b.disk = disk_stamp(path);
         Ok(b)
     }
 
@@ -268,7 +282,7 @@ impl Buffer {
 
     /// 同じ内容の別のバッファ（rope の複製は O(1)）。裏のスレッドで構文解析するときに渡す
     pub fn snapshot(&self) -> Buffer {
-        Buffer { rope: self.rope.clone(), version: self.version, edits: Vec::new(), dirty: false, path: self.path.clone(), crlf: self.crlf, bom: self.bom }
+        Buffer { rope: self.rope.clone(), version: self.version, edits: Vec::new(), dirty: false, path: self.path.clone(), crlf: self.crlf, bom: self.bom, disk: self.disk }
     }
 
     pub fn len_bytes(&self) -> usize {
@@ -372,6 +386,7 @@ impl Buffer {
         std::fs::write(&tmp, &out)?;
         std::fs::rename(&tmp, &path)?;
         self.dirty = false;
+        self.disk = disk_stamp(&path);
         Ok(out.len())
     }
 }

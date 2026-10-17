@@ -80,6 +80,8 @@ pub struct Finder {
     /// 画面に出している範囲の先頭（hits の添字）
     pub scroll: usize,
     walk: Option<FileWalk>,
+    /// 覚えた一覧を出しながら集め直している間の新しい一覧（集め終えたら差し替える）
+    fresh: Option<Vec<String>>,
     recent_rx: Option<std::sync::mpsc::Receiver<Vec<PathBuf>>>,
     /// hits を数えたときの検索語と、そのときの候補の数
     scored_query: String,
@@ -158,18 +160,21 @@ impl Editor {
             selected: 0,
             scroll: 0,
             walk: None,
+            fresh: None,
             recent_rx: None,
             scored_query: String::new(),
             scored_upto: 0,
         };
         match source {
-            Source::Files => match self.file_cache.get(&root) {
-                Some(list) => f.items = list.clone(),
-                None => {
-                    let waker = self.waker.clone().unwrap_or_else(|| std::sync::Arc::new(|| {}));
-                    f.walk = Some(nagi_workers::files::walk(&root, waker));
+            Source::Files => {
+                // 覚えた一覧があればすぐ出し、裏で集め直して（作った・消したファイルを反映して）差し替える
+                if let Some(list) = self.file_cache.get(&root) {
+                    f.items = list.clone();
+                    f.fresh = Some(Vec::new());
                 }
-            },
+                let waker = self.waker.clone().unwrap_or_else(|| std::sync::Arc::new(|| {}));
+                f.walk = Some(nagi_workers::files::walk(&root, waker));
+            }
             Source::Buffers => {
                 // 直前のバッファを先頭に、作業中のバッファは最後に（すぐ戻れるように）
                 let mut list = self.buffer_list();
@@ -215,14 +220,28 @@ impl Editor {
         if let Some(w) = &f.walk {
             loop {
                 match w.rx.try_recv() {
-                    Ok(batch) => {
-                        f.items.extend(batch);
-                        changed = true;
-                    }
+                    Ok(batch) => match &mut f.fresh {
+                        Some(fresh) => fresh.extend(batch),
+                        None => {
+                            f.items.extend(batch);
+                            changed = true;
+                        }
+                    },
                     Err(std::sync::mpsc::TryRecvError::Empty) => break,
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                         // 集め終えた: 短い順に並べ直して覚えておく（検索語が空のときに短いパスが上に来る）
                         f.walk = None;
+                        if let Some(fresh) = f.fresh.take() {
+                            // 選んでいた候補は、差し替えた後も同じものを選ぶ
+                            let sel = f.hits.get(f.selected).map(|&(i, _)| f.items[i as usize].clone());
+                            f.items = fresh;
+                            f.hits.clear();
+                            f.items.sort_by(|a, b| a.len().cmp(&b.len()).then_with(|| a.cmp(b)));
+                            f.scored_upto = 0;
+                            f.scored_query.clear();
+                            f.refilter();
+                            f.selected = sel.and_then(|s| f.hits.iter().position(|&(i, _)| f.items[i as usize] == s)).unwrap_or(0);
+                        }
                         f.items.sort_by(|a, b| a.len().cmp(&b.len()).then_with(|| a.cmp(b)));
                         f.scored_upto = 0;
                         f.scored_query.clear();
@@ -370,12 +389,18 @@ mod tests {
         keys(&mut e, "<CR>");
         assert_eq!(e.mode, Mode::Normal);
         assert_eq!(e.buf.line(0), "panes");
-        // 2 回目は覚えた一覧をすぐ使う。Ctrl-v で左右に分けて開く
+        // 2 回目は覚えた一覧をすぐ出す（裏で集め直している間も）。Ctrl-v で左右に分けて開く
         e.open_finder(Source::Files);
-        assert!(!e.finder.as_ref().unwrap().walking());
+        assert_eq!(e.finder.as_ref().unwrap().items.len(), 3);
         keys(&mut e, "main<C-v>");
         assert!(e.is_split());
         assert_eq!(e.buf.line(0), "main");
+        // 作ったファイルは、開き直すと（裏で集め直した後に）一覧に入る
+        std::fs::write(dir.join("src/new_file.rs"), "").unwrap();
+        e.open_finder(Source::Files);
+        wait_walk(&mut e);
+        assert_eq!(e.finder.as_ref().unwrap().items.len(), 4);
+        keys(&mut e, "<Esc>");
         // Esc で閉じても何も変えない
         e.open_finder(Source::Files);
         keys(&mut e, "read<Esc>");

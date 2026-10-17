@@ -9,6 +9,7 @@
 //! 起動は並列（architecture.md §6.4）: GPU・フォント・ファイル読込を別スレッドで進め、
 //! メインスレッドはその間にイベントループと非表示のウィンドウを作る。最初のフレームを描いてから表示する。
 
+mod autoread;
 mod buffers;
 mod clipboard;
 mod clock;
@@ -239,6 +240,12 @@ impl App {
             view::prefetch_ascii(f, r);
             clock::mark("ascii prefetched");
         }
+        // 外部での変更と設定ファイルの見張りは、表示の後に始める（起動を待たせない）
+        let rc_files = self.rc.sources.clone();
+        if let Some(ed) = &mut self.ed {
+            ed.start_watch(&rc_files);
+            clock::mark("watch started");
+        }
         // 試験用: 表示倍率が変わったときと同じ処理をこの倍率で行う（OS の設定を変えずに確かめる）
         if let Some(s) = std::env::var("NAGI_DEBUG_SCALE").ok().and_then(|v| v.parse().ok()) {
             self.set_scale(s);
@@ -326,6 +333,18 @@ impl App {
             eprintln!("draw: {e}");
         }
         [t1 - t0, t2 - t1, t3 - t2, t3.elapsed()]
+    }
+
+    /// 設定（vimrc）を読み直して反映する（`:source` と、設定ファイルが書き換わったとき）
+    fn reload_rc(&mut self) {
+        let t = Instant::now();
+        self.rc = nagi_vim::load_rc();
+        self.apply_rc();
+        let n = self.rc.keymap.normal.len();
+        let us = t.elapsed().as_micros();
+        if let Some(ed) = &mut self.ed {
+            ed.message = format!("設定を読み直しました（マッピング {n} 件、{us}µs）");
+        }
     }
 
     /// 設定（vimrc）の内容をエディタに反映する
@@ -465,16 +484,7 @@ impl App {
                         ed.message = msg;
                     }
                 }
-                Effect::ReloadRc => {
-                    let t = Instant::now();
-                    self.rc = nagi_vim::load_rc();
-                    self.apply_rc();
-                    let n = self.rc.keymap.normal.len();
-                    let us = t.elapsed().as_micros();
-                    if let Some(ed) = &mut self.ed {
-                        ed.message = format!("設定を読み直しました（マッピング {n} 件、{us}µs）");
-                    }
-                }
+                Effect::ReloadRc => self.reload_rc(),
             }
         }
         false
@@ -775,6 +785,9 @@ impl ApplicationHandler for App {
             ed.poll_finder();
             ed.poll_grep();
             ed.poll_tree();
+        }
+        if self.ed.as_mut().is_some_and(|ed| ed.poll_watch().1) {
+            self.reload_rc();
         }
         if self.ed.as_mut().is_some_and(|ed| ed.poll_syntax()) {
             if let Some(s) = self.ed.as_ref().and_then(|ed| ed.syntax.as_ref()) {

@@ -61,6 +61,10 @@ impl Editor {
         self.docs[self.cur_doc] = Slot::Parked(Box::new(prev));
         self.alt_doc = Some(self.cur_doc);
         self.cur_doc = id;
+        // 脇にある間に外部の変更で読み直したバッファは、構文木を作り直す
+        if self.syntax.is_none() && self.pending_syntax.is_none() {
+            self.start_syntax();
+        }
     }
 
     /// `d` を Editor の欄へ入れ、出ていたものを返す
@@ -144,6 +148,7 @@ impl Editor {
             self.push_doc(buf);
         }
         crate::finder::remember_recent(&path);
+        self.watch_file(&path);
         self.message = message;
     }
 

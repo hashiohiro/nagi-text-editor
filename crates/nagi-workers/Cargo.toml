@@ -10,6 +10,8 @@ ignore = "0.4.33"
 grep-searcher = "0.1.17"
 grep-regex = "0.1.14"
 grep-matcher = "0.1.9"
+# 9.0 は rc なので見送る（architecture.md §12）
+notify = { version = "8.2.0", default-features = false }
 
 [dev-dependencies]
 nagi-core.workspace = true

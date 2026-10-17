@@ -233,6 +233,10 @@ pub struct Editor {
     pub list_side: Side,
     /// 一度集めたプロジェクトのファイル一覧（根 → 相対パス）
     pub(crate) file_cache: HashMap<PathBuf, Vec<String>>,
+    /// ファイルの見張り（外部での変更と設定ファイル）
+    pub(crate) watcher: Option<nagi_workers::watch::Watcher>,
+    pub(crate) rc_files: Vec<PathBuf>,
+    pub(crate) reloads: crate::autoread::Reloads,
 }
 
 impl Editor {
@@ -280,6 +284,9 @@ impl Editor {
             tree: None,
             list_side: Side::Bottom,
             file_cache: HashMap::new(),
+            watcher: None,
+            rc_files: Vec::new(),
+            reloads: Default::default(),
         }
     }
 
