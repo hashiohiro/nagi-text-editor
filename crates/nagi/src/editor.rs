@@ -264,6 +264,8 @@ pub struct Editor {
     pub(crate) last_sub: Option<crate::ex_cmds::LastSub>,
     /// git（status・HEAD の版・差分・ポップアップ）
     pub(crate) git: crate::git_ui::GitState,
+    /// blame（出している間だけ）
+    pub blame: Option<crate::blame::Blame>,
     /// コミットのパネル（開いている間だけ）
     pub commit: Option<crate::commit_panel::CommitPanel>,
     /// 左右並べの差分（開いている間だけ）と、閉じたときに戻るモード
@@ -361,6 +363,7 @@ impl Editor {
             make: None,
             git: Default::default(),
             commit: None,
+            blame: None,
             diff: None,
             diff_return: None,
             diff_pending: None,
@@ -1110,6 +1113,9 @@ impl Editor {
                 // 保存したファイルの定義を索引し直す（裏で）。git の状態も取り直す
                 self.reindex_saved();
                 self.refresh_status();
+                if self.blame_active() {
+                    self.load_blame();
+                }
                 true
             }
             Err(e) => {
@@ -1216,6 +1222,7 @@ impl Editor {
             "GitHunk" => self.open_hunk_popup(),
             "Git" | "G" | "Gcommit" => self.open_commit_panel(),
             "Gdiff" | "Gd" => self.diff_current(),
+            "Gblame" | "Gb" => self.toggle_blame(),
             "Gpush" => self.push_from_anywhere(),
             "GitStage" => self.stage_hunk(),
             "GitRevert" => self.revert_hunk(),
@@ -1273,6 +1280,7 @@ impl Editor {
             Some((Some("nav.error_next"), _)) => self.next_error(true),
             Some((Some("git.hunk_next"), _)) => self.hunk_jump(true, 1),
             Some((Some("git.commit" | "git.changes"), _)) => self.open_commit_panel(),
+            Some((Some("git.blame"), _)) => self.toggle_blame(),
             Some((Some("git.push"), _)) => self.push_from_anywhere(),
             Some((Some("git.hunk_prev"), _)) => self.hunk_jump(false, 1),
             Some((Some("git.hunk_popup"), _)) => self.open_hunk_popup(),
@@ -1369,7 +1377,7 @@ impl Editor {
             shown.last().copied().unwrap_or(0)
         };
         let text = self.buf.line(line);
-        let col = col.saturating_sub(GUTTER);
+        let col = col.saturating_sub(self.gutter());
         let byte = if self.mode == Mode::Insert && col >= display_col(&text, text.len(), false) {
             text.len()
         } else {

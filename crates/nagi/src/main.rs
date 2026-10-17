@@ -10,6 +10,7 @@
 //! メインスレッドはその間にイベントループと非表示のウィンドウを作る。最初のフレームを描いてから表示する。
 
 mod autoread;
+mod blame;
 mod block;
 mod buffers;
 mod clipboard;
@@ -577,7 +578,7 @@ impl App {
                 // 画面の幅より右は見えないので、そこまでの幅だけ数える（数 MB の行で全体を数えない）
                 let line = ed.buf.line_head(ed.cursor.line, ed.cursor.byte.min(4096) + 4).0;
                 let rect = ed.active_rect();
-                (rect.x + editor::GUTTER + nagi_core::display_col(&line, ed.cursor.byte.min(line.len()), false), rect.y + ed.cursor.line.saturating_sub(ed.top))
+                (rect.x + ed.gutter() + nagi_core::display_col(&line, ed.cursor.byte.min(line.len()), false), rect.y + ed.cursor.line.saturating_sub(ed.top))
             };
             w.set_ime_cursor_area(
                 winit::dpi::PhysicalPosition::new((col as f32 * cell.w) as i32, (row as f32 * cell.h) as i32),
@@ -876,6 +877,7 @@ impl ApplicationHandler for App {
             ed.poll_cmd_files();
             ed.poll_git();
             ed.poll_commit();
+            ed.poll_blame();
         }
         // ダイアログで選んだ名前で保存する（ダイアログが上書きを確かめている）
         if let Some(r) = self.save_dialog.as_ref().and_then(|rx| rx.try_recv().ok()) {

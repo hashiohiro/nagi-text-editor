@@ -209,6 +209,10 @@ struct Pane<'a> {
 /// 窓 1 つを `rect`（本文の行だけ。状態行は含まない）に描く
 fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
     let cell = p.fonts.cell();
+    // 作業中の窓に blame を出しているときは、行番号の左にその欄を足す
+    let gutter = if pane.active { ed.gutter() } else { GUTTER };
+    let bw = gutter - GUTTER;
+    let now = crate::blame::now_secs();
     let saved_cols = p.cols;
     p.cols = rect.x + rect.w;
     let total = pane.buf.line_count();
@@ -279,10 +283,21 @@ fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
             Some(false) => DIAG_WARN,
             None => LINE_NO,
         };
-        p.text(&format!("{:>5} ", ln + 1), rect.x, y, num_color);
+        // blame の欄（コミットが変わる行だけ文字。新しいほど明るい）
+        if bw > 0 {
+            if let Some((text, level, wip)) = ed.blame_cell(ln, now) {
+                let color = if wip { GIT_MOD } else { [rgb(0x6c6c6c), rgb(0x8a8a8a), rgb(0xaaaaaa), rgb(0xd0d0d0)][level as usize] };
+                let saved = p.cols;
+                p.cols = rect.x + bw - 1;
+                p.text(&format!(" {text}"), rect.x, y, color);
+                p.cols = saved;
+            }
+            p.out.push(Instance::fill((rect.x + bw) as f32 * cell.w - cell.w * 0.5, y, 1.0, cell.h, MATCH_BG));
+        }
+        p.text(&format!("{:>5} ", ln + 1), rect.x + bw, y, num_color);
         // git の変更マーカー（行番号の左端の細い帯。消した位置は赤い短い線）
         if let Some(m) = pane.marks.get(&ln) {
-            let x = rect.x as f32 * cell.w + 1.0;
+            let x = (rect.x + bw) as f32 * cell.w + 1.0;
             match m {
                 crate::git_ui::Marker::Add => p.out.push(Instance::fill(x, y, 3.0, cell.h, GIT_ADD)),
                 crate::git_ui::Marker::Mod => p.out.push(Instance::fill(x, y, 3.0, cell.h, GIT_MOD)),
@@ -291,12 +306,12 @@ fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
         }
         // 閉じた折りたたみは 1 行で「+-- 12 行: 頭の行」と薄く出す（Vim の Folded と同じ形）
         if let Some((s, e)) = pane.folds.outer_at(ln).filter(|f| f.0 == ln) {
-            let x = (rect.x + GUTTER) as f32 * cell.w;
-            p.out.push(Instance::fill(x, y, (rect.w.saturating_sub(GUTTER)) as f32 * cell.w, cell.h, MATCH_BG));
+            let x = (rect.x + gutter) as f32 * cell.w;
+            p.out.push(Instance::fill(x, y, (rect.w.saturating_sub(gutter)) as f32 * cell.w, cell.h, MATCH_BG));
             let label = format!("+--{:>3} 行: {}", e - s + 1, heads[row].0.trim());
             let saved = p.cols;
             p.cols = rect.x + rect.w;
-            let end = p.text(&label, rect.x + GUTTER, y, STATUS_FG);
+            let end = p.text(&label, rect.x + gutter, y, STATUS_FG);
             let _ = end;
             p.cols = saved;
             if pane.active && pane.cursor.line == ln && !matches!(ed.mode, Mode::Command | Mode::Search | Mode::Replace | Mode::Finder | Mode::GrepPrompt | Mode::List) {
@@ -382,7 +397,7 @@ fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
             }
         }
         if !is_cursor_line || matches!(ed.mode, Mode::Command | Mode::Search | Mode::Replace | Mode::Finder | Mode::GrepPrompt | Mode::List | Mode::CommitMsg | Mode::Diff) {
-            p.draw(&items, rect.x + GUTTER, y);
+            p.draw(&items, rect.x + gutter, y);
             continue;
         }
         if ed.mode == Mode::Insert {
@@ -396,23 +411,23 @@ fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
             };
             let before: usize = items[..at].iter().map(|i| i.width).sum();
             items.splice(at..at, pre);
-            p.draw(&items, rect.x + GUTTER, y);
-            p.caret(rect.x + GUTTER + before + caret_in_pre, y);
+            p.draw(&items, rect.x + gutter, y);
+            p.caret(rect.x + gutter + before + caret_in_pre, y);
         } else {
             // ブロックカーソル（文字を反転）。空行や行末では 1 セルの塗り
             // 選択の中では反転をもう一度反転して元の色に戻す（ターミナルの Vim と同じ見え方。行単位の Visual でも位置が分かる）
             match cursor_item {
                 Some(i) if (visual.is_some() || block.is_some()) && items[i].fg == BG && items[i].bg.is_some() => {
                     items[i].fg = items[i].bg.take().unwrap_or(FG);
-                    p.draw(&items, rect.x + GUTTER, y);
+                    p.draw(&items, rect.x + gutter, y);
                 }
                 Some(i) => {
                     items[i].bg = Some(CURSOR);
                     items[i].fg = BG;
-                    p.draw(&items, rect.x + GUTTER, y);
+                    p.draw(&items, rect.x + gutter, y);
                 }
                 None => {
-                    let c = p.draw(&items, rect.x + GUTTER, y);
+                    let c = p.draw(&items, rect.x + gutter, y);
                     // 切った行でカーソルが見えている部分より右にあるときは描かない
                     if !cut {
                         let color = if eol_selected { CURSOR_IN_SELECTION } else { CURSOR };
@@ -555,6 +570,8 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     }
     if ed.git.popup.is_some() && ed.mode == Mode::Normal {
         draw_hunk_popup(&mut p, ed, rows, cols);
+    } else if ed.blame_active() && ed.mode == Mode::Normal {
+        draw_blame_popup(&mut p, ed, rows);
     }
     if let (Some(c), Mode::Insert) = (&ed.completion, ed.mode) {
         draw_completion(&mut p, ed, c, rows, cols);
@@ -930,6 +947,40 @@ fn draw_diff_view(p: &mut Painter, d: &crate::diff_view::DiffView, r: Rect) {
     p.out.push(Instance::fill((r.x + half) as f32 * cell.w + cell.w * 0.5, y0 + cell.h, 1.0, body as f32 * cell.h, LINE_NO));
 }
 
+/// blame: カーソルの行のコミットの詳しい内容（カーソルの行の下に枠で）
+fn draw_blame_popup(p: &mut Painter, ed: &Editor, rows: usize) {
+    let Some(c) = ed.blame_at_cursor() else { return };
+    if c.uncommitted() {
+        return;
+    }
+    let cell = p.fonts.cell();
+    let rect = ed.active_rect();
+    if ed.cursor.line < ed.top {
+        return;
+    }
+    let row = rect.y + (ed.cursor.line - ed.top) + 1;
+    let lines = [
+        format!(" {}   {}   {}", &c.hash[..7], c.author, crate::blame::relative_time(c.time, crate::blame::now_secs())),
+        format!(" {}", c.summary),
+        " :Gblame で閉じる".to_string(),
+    ];
+    let h = lines.len();
+    let top = if row + h <= rows { row } else { row.saturating_sub(h + 1) };
+    let x0 = rect.x + crate::blame::BLAME_W + 2;
+    let w = lines.iter().map(|l| p.width(l)).max().unwrap_or(10) + 2;
+    let w = w.min(rect.w.saturating_sub(crate::blame::BLAME_W + 3));
+    let (x, y) = (x0 as f32 * cell.w, top as f32 * cell.h);
+    p.out.push(Instance::fill(x - 1.0, y - 1.0, w as f32 * cell.w + 2.0, h as f32 * cell.h + 2.0, STATUS_FG));
+    p.out.push(Instance::fill(x, y, w as f32 * cell.w, h as f32 * cell.h, rgb(0x141414)));
+    let saved = p.cols;
+    p.cols = x0 + w;
+    for (k, l) in lines.iter().enumerate() {
+        let color = if k == 1 { rgb(0xe8e8e8) } else { STATUS_FG };
+        p.text(l, x0, y + k as f32 * cell.h, color);
+    }
+    p.cols = saved;
+}
+
 /// 行頭のマーカーから出る差分のポップアップ（変更のまとまりの下。古い行は赤、新しい行は緑の地、変わった部分を濃く）
 fn draw_hunk_popup(p: &mut Painter, ed: &Editor, rows: usize, cols: usize) {
     const MAX_LINES: usize = 12;
@@ -941,8 +992,8 @@ fn draw_hunk_popup(p: &mut Painter, ed: &Editor, rows: usize, cols: usize) {
         return;
     }
     let below = rect.y + (last - ed.top) + 1;
-    let x0 = rect.x + GUTTER - 1;
-    let w = rect.w.saturating_sub(GUTTER).min(110).max(40).min(cols.saturating_sub(x0));
+    let x0 = rect.x + ed.gutter() - 1;
+    let w = rect.w.saturating_sub(ed.gutter()).min(110).max(40).min(cols.saturating_sub(x0));
     let n_old = old.len().min(MAX_LINES);
     let n_new = new.len().min(MAX_LINES);
     let h_rows = 1 + n_old + n_new;
@@ -1031,7 +1082,7 @@ fn draw_completion(p: &mut Painter, ed: &Editor, c: &crate::complete::Completion
     }
     let row = rect.y + (sl - ed.top);
     let line = ed.buf.line_head(sl, sb + 4).0;
-    let col = (rect.x + GUTTER + nagi_core::display_col(&line, sb.min(line.len()), false)).saturating_sub(1);
+    let col = (rect.x + ed.gutter() + nagi_core::display_col(&line, sb.min(line.len()), false)).saturating_sub(1);
     let n = c.items.len().min(MAX);
     // 選んでいる候補が見える範囲
     let first = c.sel.map_or(0, |s| s.saturating_sub(MAX - 1));
