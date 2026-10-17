@@ -55,88 +55,74 @@ pub fn find_in_line(line: &str, from: usize, ch: char, forward: bool, till: bool
     None
 }
 
-const PAIRS: [(char, char); 3] = [('(', ')'), ('[', ']'), ('{', '}')];
+const PAIRS: [(u8, u8); 3] = [(b'(', b')'), (b'[', b']'), (b'{', b'}')];
+
+/// 括弧はどれも ASCII なので、UTF-8 の byte のまま数えてよい（多 byte 文字の byte は 0x80 以上）
+fn depth_scan(depth: &mut i32, up: u8, down: u8) -> impl FnMut(usize, u8) -> bool + '_ {
+    move |_, c| {
+        if c == up {
+            *depth += 1;
+        } else if c == down {
+            *depth -= 1;
+            return *depth == 0;
+        }
+        false
+    }
+}
 
 /// `%`: `at` 以降で行内の最初の括弧を探し、対応する括弧の位置を返す
-pub fn match_pair(text: &str, at: usize, line_end: usize) -> Option<usize> {
-    let (start, open, close, forward) = text[at..line_end].char_indices().find_map(|(i, c)| {
-        PAIRS.iter().find_map(|&(o, cl)| {
-            if c == o {
-                Some((at + i, o, cl, true))
-            } else if c == cl {
-                Some((at + i, o, cl, false))
-            } else {
-                None
-            }
-        })
-    })?;
-    let mut depth = 0i32;
+pub fn match_pair<S: Source + ?Sized>(text: &S, at: usize, line_end: usize) -> Option<usize> {
+    let mut found = None;
+    text.scan_fwd(at, b"([{)]}\n", &mut |i, c| {
+        if i >= line_end {
+            return true;
+        }
+        found = PAIRS.iter().find_map(|&(o, cl)| (c == o || c == cl).then_some((i, o, cl, c == o)));
+        found.is_some()
+    });
+    let (start, open, close, forward) = found?;
+    let mut depth = 0;
     if forward {
-        for (i, c) in text[start..].char_indices() {
-            if c == open {
-                depth += 1;
-            } else if c == close {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(start + i);
-                }
-            }
-        }
+        text.scan_fwd(start, &[open, close], &mut depth_scan(&mut depth, open, close))
     } else {
-        for (i, c) in text[..=start].char_indices().rev() {
-            if c == close {
-                depth += 1;
-            } else if c == open {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(i);
-                }
-            }
-        }
+        text.scan_back(start + 1, &[open, close], &mut depth_scan(&mut depth, close, open))
     }
-    None
 }
 
 /// 開き括弧 `open` で囲まれた、`at` を含む最も内側の範囲 (開き括弧の位置, 閉じ括弧の位置)
-pub fn enclosing_block(text: &str, at: usize, open: char) -> Option<(usize, usize)> {
-    let close = match open {
-        '(' => ')',
-        '[' => ']',
-        '{' => '}',
-        '<' => '>',
+pub fn enclosing_block<S: Source + ?Sized>(text: &S, at: usize, open: char) -> Option<(usize, usize)> {
+    let (open, close) = match open {
+        '(' => (b'(', b')'),
+        '[' => (b'[', b']'),
+        '{' => (b'{', b'}'),
+        '<' => (b'<', b'>'),
         _ => return None,
     };
     // カーソルが開き括弧の上なら、その括弧から始める
-    let mut depth = 0i32;
-    let mut start = None;
-    if text[at..].starts_with(open) {
-        start = Some(at);
+    let start = if byte_at(text, at) == Some(open) {
+        at
     } else {
-        for (i, c) in text[..at].char_indices().rev() {
+        let mut depth = 0i32;
+        text.scan_back(at, &[open, close], &mut |_, c| {
             if c == close {
                 depth += 1;
             } else if c == open {
                 if depth == 0 {
-                    start = Some(i);
-                    break;
+                    return true;
                 }
                 depth -= 1;
             }
-        }
-    }
-    let start = start?;
-    let mut depth = 0i32;
-    for (i, c) in text[start..].char_indices() {
-        if c == open {
-            depth += 1;
-        } else if c == close {
-            depth -= 1;
-            if depth == 0 {
-                return Some((start, start + i));
-            }
-        }
-    }
-    None
+            false
+        })?
+    };
+    let mut depth = 0;
+    let end = text.scan_fwd(start, &[open, close], &mut depth_scan(&mut depth, open, close))?;
+    Some((start, end))
+}
+
+/// `i` の byte
+pub fn byte_at<S: Source + ?Sized>(text: &S, i: usize) -> Option<u8> {
+    text.window(i, i + 1).1.bytes().next()
 }
 
 /// 引用符 `q` で囲まれた、`at` を含む範囲（行内）。(開きの位置, 閉じの位置)
@@ -230,6 +216,26 @@ pub trait Source {
     fn window(&self, lo: usize, hi: usize) -> (usize, std::borrow::Cow<'_, str>);
     /// `p` を含む行の先頭。`LINE_CONTEXT` より遠ければ `p` のまま
     fn line_start_near(&self, p: usize) -> usize;
+    /// `at` から後ろへ、`needles` のどれかに当たる byte を順に `f` へ渡し、`f` が true を返した位置
+    fn scan_fwd(&self, at: usize, needles: &[u8], f: &mut dyn FnMut(usize, u8) -> bool) -> Option<usize>;
+    /// `at` より前を逆順に見る。ほかは `scan_fwd` と同じ
+    fn scan_back(&self, at: usize, needles: &[u8], f: &mut dyn FnMut(usize, u8) -> bool) -> Option<usize>;
+}
+
+/// `hay` の中で `needles` のどれかに当たる位置を順に（`rev` なら逆順に）`f` へ渡し、`f` が true を返した位置。
+/// 3 種類までは memchr で間を飛ばす
+pub fn scan_bytes(hay: &[u8], needles: &[u8], rev: bool, f: &mut dyn FnMut(usize, u8) -> bool) -> Option<usize> {
+    let mut hit = |i: usize| f(i, hay[i]);
+    match (needles, rev) {
+        (&[a], false) => memchr::memchr_iter(a, hay).find(|&i| hit(i)),
+        (&[a], true) => memchr::memchr_iter(a, hay).rev().find(|&i| hit(i)),
+        (&[a, b], false) => memchr::memchr2_iter(a, b, hay).find(|&i| hit(i)),
+        (&[a, b], true) => memchr::memchr2_iter(a, b, hay).rev().find(|&i| hit(i)),
+        (&[a, b, c], false) => memchr::memchr3_iter(a, b, c, hay).find(|&i| hit(i)),
+        (&[a, b, c], true) => memchr::memchr3_iter(a, b, c, hay).rev().find(|&i| hit(i)),
+        (_, false) => (0..hay.len()).find(|&i| needles.contains(&hay[i]) && hit(i)),
+        (_, true) => (0..hay.len()).rev().find(|&i| needles.contains(&hay[i]) && hit(i)),
+    }
 }
 
 /// 窓を行頭から切り出すために戻る最大の長さ（`^` や `\b` を正しく判定するため）
@@ -238,6 +244,13 @@ pub const LINE_CONTEXT: usize = 4096;
 impl Source for str {
     fn len(&self) -> usize {
         str::len(self)
+    }
+    fn scan_fwd(&self, at: usize, needles: &[u8], f: &mut dyn FnMut(usize, u8) -> bool) -> Option<usize> {
+        let at = at.min(self.len());
+        scan_bytes(&self.as_bytes()[at..], needles, false, &mut |i, c| f(at + i, c)).map(|i| at + i)
+    }
+    fn scan_back(&self, at: usize, needles: &[u8], f: &mut dyn FnMut(usize, u8) -> bool) -> Option<usize> {
+        scan_bytes(&self.as_bytes()[..at.min(self.len())], needles, true, f)
     }
     fn window(&self, lo: usize, hi: usize) -> (usize, std::borrow::Cow<'_, str>) {
         let (lo, hi) = (floor_boundary(self, lo), floor_boundary(self, hi));

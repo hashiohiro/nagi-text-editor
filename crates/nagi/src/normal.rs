@@ -121,7 +121,7 @@ impl Editor {
     // ---------------------------------------------------------------- 移動
 
     fn line_len(&self, l: usize) -> usize {
-        self.buf.line(l).len()
+        self.buf.line_len(l)
     }
 
     /// 絶対位置 `abs` の書記素の長さ
@@ -219,10 +219,9 @@ impl Editor {
                 return self.find(ch, forward != reverse, till, n);
             }
             M::MatchPair => {
-                let text = self.whole_text();
                 let abs = self.abs();
                 let end = self.buf.line_start(c.line) + self.line_len(c.line);
-                let to = textops::match_pair(&text, abs, end)?;
+                let to = textops::match_pair(&self.buf, abs, end)?;
                 let (l, b) = self.buf.pos_of(to);
                 c.line = l;
                 c.byte = b;
@@ -351,12 +350,11 @@ impl Editor {
                 Some(if after > 0 { (ls + a, ls + b + 1 + after, false) } else { (ls + a - before, ls + b + 1, false) })
             }
             TextObj::Block(open) => {
-                let text = self.whole_text();
                 let mut at = self.abs();
-                let mut range = textops::enclosing_block(&text, at, open)?;
+                let mut range = textops::enclosing_block(&self.buf, at, open)?;
                 for _ in 1..n {
                     at = range.0.saturating_sub(1);
-                    match textops::enclosing_block(&text, at, open) {
+                    match textops::enclosing_block(&self.buf, at, open) {
                         Some(r) => range = r,
                         None => break,
                     }
@@ -368,10 +366,11 @@ impl Editor {
                 let mut s = a + 1;
                 let mut e = b;
                 // 複数行のブロックの内側は、括弧の行を除いた行全体（Vim と同じ）
-                if text[s..].starts_with(['\n', '\r']) {
-                    s += if text[s..].starts_with("\r\n") { 2 } else { 1 };
-                    let line_start = text[..e].rfind('\n').map_or(0, |i| i + 1);
-                    if text[line_start..e].trim().is_empty() && line_start >= s {
+                let (al, ab) = self.buf.pos_of(a);
+                if ab + 1 == self.line_len(al) {
+                    s = self.buf.line_start(al + 1);
+                    let line_start = self.buf.line_start(self.buf.pos_of(e).0);
+                    if self.buf.slice_string(line_start, e).trim().is_empty() && line_start >= s {
                         e = line_start;
                     }
                 }

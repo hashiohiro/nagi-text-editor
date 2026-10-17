@@ -196,8 +196,6 @@ pub struct Editor {
     pub(crate) replaying: bool,
     /// 画面の行数（App が描画前に入れる）
     pub rows: usize,
-    /// バッファ全体の文字列（検索・括弧の対応・text object 用）。版が変わるまで使い回す
-    text_cache: std::cell::RefCell<Option<(u64, std::sync::Arc<str>)>>,
 }
 
 impl Editor {
@@ -232,7 +230,6 @@ impl Editor {
             dot_rec: None,
             replaying: false,
             rows: 1,
-            text_cache: Default::default(),
         }
     }
 
@@ -281,9 +278,8 @@ impl Editor {
     fn swap_full_buffer(&mut self, b: Buffer) {
         self.loading = None;
         // 先頭部分は全体の頭と同じ内容なので、カーソルと表示位置はそのまま使える。版の番号は同じ 0 から
-        // 始まるので、版を鍵にした計算結果（全体の文字列・検索の件数）は捨てる
+        // 始まるので、版を鍵にした計算結果（検索の件数）は捨てる
         self.buf = b;
-        *self.text_cache.borrow_mut() = None;
         self.search.computed = None;
         self.search.matches.clear();
         self.search.job = None;
@@ -342,19 +338,6 @@ impl Editor {
     /// 入力欄（IME の確定先）があるモードか
     pub fn has_prompt(&self) -> bool {
         matches!(self.mode, Mode::Command | Mode::Search | Mode::Replace)
-    }
-
-    /// バッファ全体の文字列。編集されるまでは同じものを返す（1 打ごとに作り直さない）
-    pub(crate) fn whole_text(&self) -> std::sync::Arc<str> {
-        let mut cache = self.text_cache.borrow_mut();
-        match &*cache {
-            Some((v, t)) if *v == self.buf.version => t.clone(),
-            _ => {
-                let t: std::sync::Arc<str> = self.buf.text().into();
-                *cache = Some((self.buf.version, t.clone()));
-                t
-            }
-        }
     }
 
     pub(crate) fn motion(&self) -> Motion<'_> {

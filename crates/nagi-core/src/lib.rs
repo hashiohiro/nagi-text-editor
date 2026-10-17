@@ -65,6 +65,34 @@ impl textops::Source for Buffer {
         let (_, col) = self.pos_of(p);
         if col <= textops::LINE_CONTEXT { p - col } else { p }
     }
+    fn scan_fwd(&self, at: usize, needles: &[u8], f: &mut dyn FnMut(usize, u8) -> bool) -> Option<usize> {
+        let at = at.min(self.rope.len());
+        let (mut chunks, mut start) = self.rope.chunks_at(at);
+        let mut skip = at - start;
+        while let Some(c) = chunks.next() {
+            let base = start + skip;
+            if let Some(i) = textops::scan_bytes(&c.as_bytes()[skip..], needles, false, &mut |i, b| f(base + i, b)) {
+                return Some(base + i);
+            }
+            start += c.len();
+            skip = 0;
+        }
+        None
+    }
+    fn scan_back(&self, at: usize, needles: &[u8], f: &mut dyn FnMut(usize, u8) -> bool) -> Option<usize> {
+        let at = at.min(self.rope.len());
+        // `at` を含む塊の前半を見てから、それより前の塊を逆順に見る（prev は `at` を含む塊の一つ前を返す）
+        let (mut chunks, mut start) = self.rope.chunks_at(at);
+        let mut part = chunks.clone().next().map_or("", |c| &c[..at - start]);
+        loop {
+            let base = start;
+            if let Some(i) = textops::scan_bytes(part.as_bytes(), needles, true, &mut |i, b| f(base + i, b)) {
+                return Some(base + i);
+            }
+            part = chunks.prev()?;
+            start -= part.len();
+        }
+    }
 }
 
 /// 末尾で途中までしか無い UTF-8 の文字の byte 数（0〜3）
@@ -549,6 +577,39 @@ impl Motion<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 括弧の対応を rope の塊ごとに数えても、全体の文字列で数えたのと同じになる
+    #[test]
+    fn bracket_scan_matches_str() {
+        use textops::{enclosing_block, match_pair, Source};
+        // 塊の境目をまたぐように長くし、多 byte 文字も混ぜる
+        let unit = "fn 関数(a: [u8; 3]) {\n    if (x) { y(\"日本語\") }\n    <T>\n}\n";
+        let text = unit.repeat(400);
+        let buf = Buffer::from_str(&text);
+        let t: &str = &text;
+        for at in (0..text.len()).step_by(7).filter(|&i| text.is_char_boundary(i)) {
+            let (l, _) = buf.pos_of(at);
+            let end = buf.line_start(l) + buf.line_len(l);
+            assert_eq!(match_pair(&buf, at, end), match_pair(t, at, end), "% at {at}");
+            for open in ['(', '[', '{', '<'] {
+                assert_eq!(enclosing_block(&buf, at, open), enclosing_block(t, at, open), "{open} at {at}");
+            }
+            let mut a = Vec::new();
+            let mut b = Vec::new();
+            for needles in [&b"("[..], b"()", b"(){", b"([{)]}\n"] {
+                a.clear();
+                b.clear();
+                buf.scan_back(at, needles, &mut |i, c| { a.push((i, c)); a.len() > 300 });
+                t.scan_back(at, needles, &mut |i, c| { b.push((i, c)); b.len() > 300 });
+                assert_eq!(a, b, "scan_back at {at}");
+                a.clear();
+                b.clear();
+                buf.scan_fwd(at, needles, &mut |i, c| { a.push((i, c)); a.len() > 300 });
+                t.scan_fwd(at, needles, &mut |i, c| { b.push((i, c)); b.len() > 300 });
+                assert_eq!(a, b, "scan_fwd at {at}");
+            }
+        }
+    }
 
     /// 分けて読んだ大きなファイルが、まとめて読んだのと同じ内容・改行コード・BOM になる。
     /// 1MB の境目で多 byte 文字や CRLF が切れても、壊れた byte があってもよい
