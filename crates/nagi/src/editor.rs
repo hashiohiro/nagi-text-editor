@@ -984,6 +984,17 @@ impl Editor {
         }
     }
 
+    /// `g-` / `g+` / `:earlier` / `:later`
+    pub(crate) fn undo_time(&mut self, later: bool, count: usize) {
+        match self.hist.travel(&mut self.buf, later, count) {
+            Some(at) => {
+                self.set_abs(at.min(self.buf.len_bytes()));
+                self.clamp_normal();
+            }
+            None => self.message = if later { "これ以上は進めません".into() } else { "これ以上は戻せません".into() },
+        }
+    }
+
     /// Ex コマンドを実行する（コマンドパレットから）
     pub(crate) fn run_ex(&mut self, cmd: &str) -> Effect {
         self.ex(cmd)
@@ -1069,6 +1080,8 @@ impl Editor {
             // ideavimrc の `O`: `:call append(expand('.'), '')`（現在行の下に空行を足す）
             "call" if arg.starts_with("append(") => self.append_blank_line(),
             "marks" => self.list_marks(),
+            "earlier" | "ea" => self.undo_time(false, arg.parse().unwrap_or(1)),
+            "later" | "lat" => self.undo_time(true, arg.parse().unwrap_or(1)),
             "delm" | "delmarks" => self.delete_marks(arg, false),
             "delm!" | "delmarks!" => self.delete_marks(arg, true),
             n if n.starts_with('!') => self.message = format!("未実装: 外部コマンド（{cmd}）"),

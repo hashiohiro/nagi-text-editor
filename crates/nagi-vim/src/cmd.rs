@@ -96,6 +96,8 @@ pub enum Action {
     Record(char),
     /// `@{reg}`（`@@` は直前のマクロ）
     Play(char),
+    /// `g-` / `g+`（undo の木を時間の順に）
+    UndoTime { later: bool },
     /// `&`（直前の :s を今の行に）と `g&`（フラグごと全体に）
     RepeatSub { all: bool },
     Esc,
@@ -385,6 +387,8 @@ pub fn parse_normal(keys: &[Key]) -> Parse {
             None => return Parse::Incomplete,
             Some(Key::Char(';')) => Action::LastChange,
             Some(Key::Char('&')) => Action::RepeatSub { all: true },
+            Some(Key::Char('-')) => Action::UndoTime { later: false },
+            Some(Key::Char('+')) => Action::UndoTime { later: true },
             Some(_) => return Parse::Invalid,
         },
         _ => return Parse::Invalid,

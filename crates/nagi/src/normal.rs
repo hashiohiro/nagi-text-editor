@@ -721,6 +721,7 @@ impl Editor {
                 self.message.clear();
             }
             Action::Play(c) => return self.play_macro(c, n),
+            Action::UndoTime { later } => self.undo_time(later, n),
             Action::RepeatSub { all } => {
                 let range = if all { (0, self.buf.line_count().saturating_sub(1)) } else { (self.cursor.line, self.cursor.line) };
                 self.repeat_sub(range, all);
