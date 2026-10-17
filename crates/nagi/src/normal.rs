@@ -385,8 +385,35 @@ impl Editor {
         }
     }
 
+    /// 範囲が行を丸ごと覆うなら（始まりが行の最初の空白でない文字以前、終わりが行末）行単位にする。
+    /// 本体の中身のように `{` の直後の改行から始まるときは、次の行から（Vim の i{ と同じ）
+    fn widen_to_lines(&self, mut s: usize, mut e: usize) -> (usize, usize, bool) {
+        let (sl, sb) = self.buf.pos_of(s);
+        if sb == self.line_len(sl) && sl + 1 < self.buf.line_count() && e > s {
+            s = self.buf.line_start(sl + 1);
+        }
+        let (sl, sb) = self.buf.pos_of(s);
+        let (el, eb) = self.buf.pos_of(e);
+        let first = {
+            let line = self.buf.line(sl);
+            line.len() - line.trim_start_matches([' ', '\t']).len()
+        };
+        // 終わりが行頭（中身の後ろの閉じ括弧の行）なら、その手前の行まで
+        let before_close = eb > 0 && self.buf.slice_string(self.buf.line_start(el), e).trim().is_empty();
+        if before_close && el > sl {
+            e = self.buf.line_start(el);
+        }
+        let (el, eb) = self.buf.pos_of(e);
+        if sb <= first && (eb == 0 && el > sl || eb >= self.line_len(el)) && el >= sl {
+            let last = if eb == 0 && el > sl { el - 1 } else { el };
+            let (a, b) = self.lines_range(sl, last);
+            return (a, b, true);
+        }
+        (s, e, false)
+    }
+
     /// text object の範囲 (start, end, 行単位か)
-    fn object(&self, inner: bool, obj: TextObj, n: usize) -> Option<(usize, usize, bool)> {
+    fn object(&mut self, inner: bool, obj: TextObj, n: usize) -> Option<(usize, usize, bool)> {
         let ls = self.buf.line_start(self.cursor.line);
         // 行の文字列は単語と引用符のときだけ作る（括弧と段落は rope の上で探す）
         let line = || self.buf.line(self.cursor.line);
@@ -442,6 +469,23 @@ impl Editor {
                     }
                 }
                 Some((s, e, false))
+            }
+            TextObj::Function | TextObj::Class | TextObj::Argument => {
+                let kind = match obj {
+                    TextObj::Function => nagi_syntax::ObjKind::Function,
+                    TextObj::Class => nagi_syntax::ObjKind::Class,
+                    _ => nagi_syntax::ObjKind::Argument,
+                };
+                // 構文木を今の内容に合わせてから探す（大きなファイルで裏の再解析中なら、位置をずらした木で）
+                if let Some(s) = &mut self.syntax {
+                    s.sync(&mut self.buf);
+                }
+                let Some(syn) = &self.syntax else {
+                    self.message = "このファイルには構文木が無いので使えません".into();
+                    return None;
+                };
+                let r = syn.text_object(self.abs(), kind, inner, &self.buf)?;
+                Some(self.widen_to_lines(r.start, r.end))
             }
             TextObj::Paragraph => {
                 let total = self.buf.line_count();
@@ -1086,4 +1130,53 @@ fn regex_escape(s: &str) -> String {
         out.push(c);
     }
     out
+}
+
+#[cfg(test)]
+mod ts_textobj_tests {
+    use crate::editor::Editor;
+    use nagi_core::Buffer;
+
+    fn ed(src: &str, lang: nagi_syntax::Lang) -> Editor {
+        let mut buf = Buffer::from_str(src);
+        let mut syn = nagi_syntax::Syntax::new(lang).unwrap();
+        syn.parse(&mut buf);
+        Editor::new(buf, Some(syn))
+    }
+
+    fn keys(e: &mut Editor, k: &str) {
+        for key in nagi_vim::parse_keys(k, " ") {
+            e.key(key);
+        }
+    }
+
+    const RS: &str = "use x;\n\nfn add(a: i32, b: i32) -> i32 {\n    let c = a + b;\n    c\n}\n\nstruct P {\n    x: i32,\n}\n";
+
+    #[test]
+    fn function_class_argument() {
+        // af: 関数を行ごと
+        let mut e = ed(RS, nagi_syntax::Lang::Rust);
+        keys(&mut e, "4Gdaf");
+        assert_eq!(e.buf.text(), "use x;\n\n\nstruct P {\n    x: i32,\n}\n");
+        assert_eq!(e.registers.get(&'"').map(|r| r.1), Some(true), "行単位");
+        // if: 本体の中の行
+        let mut e = ed(RS, nagi_syntax::Lang::Rust);
+        keys(&mut e, "4Gdif");
+        assert_eq!(e.buf.text(), "use x;\n\nfn add(a: i32, b: i32) -> i32 {\n}\n\nstruct P {\n    x: i32,\n}\n");
+        // ia / aa: 引数
+        let mut e = ed(RS, nagi_syntax::Lang::Rust);
+        keys(&mut e, "3Gfbcian: u8<Esc>");
+        assert_eq!(e.buf.line(2), "fn add(a: i32, n: u8) -> i32 {");
+        keys(&mut e, "Fadaa");
+        assert_eq!(e.buf.line(2), "fn add(n: u8) -> i32 {");
+        // ac: 構造体を行ごと（Visual でも同じ範囲）
+        let mut e = ed(RS, nagi_syntax::Lang::Rust);
+        keys(&mut e, "9Gvacd");
+        assert_eq!(e.buf.text(), "use x;\n\nfn add(a: i32, b: i32) -> i32 {\n    let c = a + b;\n    c\n}\n\n");
+        // 構文木の無いファイルでは知らせる
+        let mut e = Editor::new(Buffer::from_str("plain\n"), None);
+        keys(&mut e, "daf");
+        assert!(e.message.contains("構文木"));
+        assert_eq!(e.buf.line(0), "plain");
+    }
 }

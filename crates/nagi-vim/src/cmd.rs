@@ -43,6 +43,10 @@ pub enum TextObj {
     /// ( [ { <（開き括弧で持つ）
     Block(char),
     Paragraph,
+    /// tree-sitter の関数（if / af）・クラス（ic / ac）・引数（ia / aa）
+    Function,
+    Class,
+    Argument,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -250,6 +254,9 @@ fn text_obj(p: &mut P) -> Option<Option<(bool, TextObj)>> {
             '{' | '}' | 'B' => TextObj::Block('{'),
             '<' | '>' => TextObj::Block('<'),
             'p' => TextObj::Paragraph,
+            'f' => TextObj::Function,
+            'c' => TextObj::Class,
+            'a' => TextObj::Argument,
             _ => return None,
         },
         Some(_) => return None,

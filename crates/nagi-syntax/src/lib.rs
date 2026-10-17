@@ -369,6 +369,144 @@ fn input_edit(e: EditLog) -> InputEdit {
     }
 }
 
+/// tree-sitter の text object の種類（`if/af` `ic/ac` `ia/aa`）
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ObjKind {
+    Function,
+    Class,
+    Argument,
+}
+
+/// 関数とみなす節（言語をまたいで種類の名前で見分ける）
+const FUNCTION_KINDS: &[&str] = &[
+    "function_item",
+    "function_declaration",
+    "function_definition",
+    "function_expression",
+    "function",
+    "generator_function_declaration",
+    "method_declaration",
+    "method_definition",
+    "constructor_declaration",
+    "arrow_function",
+    "closure_expression",
+    "lambda",
+    "lambda_expression",
+    "lambda_literal",
+    "anonymous_function",
+    "secondary_constructor",
+];
+
+const CLASS_KINDS: &[&str] = &[
+    "class_declaration",
+    "class_definition",
+    "class",
+    "abstract_class_declaration",
+    "struct_item",
+    "enum_item",
+    "union_item",
+    "impl_item",
+    "trait_item",
+    "mod_item",
+    "interface_declaration",
+    "enum_declaration",
+    "record_declaration",
+    "annotation_type_declaration",
+    "object_declaration",
+    "companion_object",
+];
+
+/// 引数・仮引数の並び（この直下の名前付きの子が 1 つの引数）
+const ARG_LIST_KINDS: &[&str] = &[
+    "arguments",
+    "argument_list",
+    "parameters",
+    "formal_parameters",
+    "parameter_list",
+    "type_arguments",
+    "type_parameters",
+    "value_arguments",
+    "function_value_parameters",
+    "closure_parameters",
+    "lambda_parameters",
+];
+
+impl Syntax {
+    /// `at` を含む text object の範囲（byte）。`inner` は中身だけ（関数とクラスは本体の内側、引数は区切りを含めない）
+    pub fn text_object(&self, at: usize, kind: ObjKind, inner: bool, buf: &Buffer) -> Option<Range<usize>> {
+        let tree = self.tree.as_ref()?;
+        let mut node = tree.root_node().descendant_for_byte_range(at, at)?;
+        loop {
+            let found = match kind {
+                ObjKind::Function => FUNCTION_KINDS.contains(&node.kind()),
+                ObjKind::Class => CLASS_KINDS.contains(&node.kind()),
+                ObjKind::Argument => node.is_named() && node.parent().is_some_and(|p| ARG_LIST_KINDS.contains(&p.kind())),
+            };
+            if found {
+                break;
+            }
+            node = node.parent()?;
+        }
+        if kind == ObjKind::Argument {
+            return Some(argument_range(node, inner, buf));
+        }
+        if !inner {
+            return Some(node.start_byte()..node.end_byte());
+        }
+        // 中身: 本体（body）の括弧の内側。括弧が無い言語（Python）は本体そのもの
+        let body = node.child_by_field_name("body").or_else(|| {
+            let mut c = node.walk();
+            let last = node.named_children(&mut c).last();
+            last
+        })?;
+        let (s, e) = (body.start_byte(), body.end_byte());
+        if e < s + 2 {
+            return Some(s..e);
+        }
+        let (first, last) = (buf.slice_string(s, s + 1), buf.slice_string(e - 1, e));
+        if (first == "{" && last == "}") || (first == "(" && last == ")") {
+            Some(s + 1..e - 1)
+        } else {
+            Some(s..e)
+        }
+    }
+}
+
+/// 引数の範囲。外側（aa）は後ろの区切り（`, ` まで）を含め、最後の引数なら前の区切りを含める
+fn argument_range(node: Node, inner: bool, buf: &Buffer) -> Range<usize> {
+    let (s, e) = (node.start_byte(), node.end_byte());
+    if inner {
+        return s..e;
+    }
+    let mut next = node.next_sibling();
+    while let Some(n) = next {
+        if n.kind() == "," {
+            // 区切りの後ろの空白も含める
+            let mut end = n.end_byte();
+            while matches!(buf.slice_string(end, (end + 1).min(buf.len_bytes())).as_str(), " " | "\t") {
+                end += 1;
+            }
+            return s..end;
+        }
+        if n.is_named() {
+            break;
+        }
+        next = n.next_sibling();
+    }
+    // 最後の引数: 前の区切りから
+    let mut prev = node.prev_sibling();
+    while let Some(p) = prev {
+        if p.kind() == "," {
+            return p.start_byte()..e;
+        }
+        if p.is_named() {
+            break;
+        }
+        prev = p.prev_sibling();
+    }
+    s..e
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -442,6 +580,30 @@ mod tests {
         assert!(k.contains(&("\"a\"".into(), Hl::String)), "{k:?}");
         assert!(k.contains(&("string".into(), Hl::Type)), "{k:?}");
         assert!(k.contains(&("1".into(), Hl::Number)), "{k:?}");
+    }
+
+    fn obj(lang: Lang, src: &str, at_text: &str, kind: ObjKind, inner: bool) -> String {
+        let mut buf = Buffer::from_str(src);
+        let mut syn = Syntax::new(lang).unwrap();
+        syn.parse(&mut buf);
+        let at = src.find(at_text).unwrap();
+        let r = syn.text_object(at, kind, inner, &buf).unwrap();
+        src[r].to_string()
+    }
+
+    #[test]
+    fn text_objects() {
+        let rs = "fn add(a: i32, b: i32) -> i32 {\n    let c = a + b;\n    c\n}\nstruct P { x: i32 }\n";
+        assert_eq!(obj(Lang::Rust, rs, "let c", ObjKind::Function, false), &rs[..rs.find("\nstruct").unwrap()]);
+        assert_eq!(obj(Lang::Rust, rs, "let c", ObjKind::Function, true), "\n    let c = a + b;\n    c\n");
+        assert_eq!(obj(Lang::Rust, rs, "b: i32", ObjKind::Argument, true), "b: i32");
+        assert_eq!(obj(Lang::Rust, rs, "a: i32", ObjKind::Argument, false), "a: i32, ");
+        assert_eq!(obj(Lang::Rust, rs, "b: i32", ObjKind::Argument, false), ", b: i32");
+        assert_eq!(obj(Lang::Rust, rs, "x: i32", ObjKind::Class, true), " x: i32 ");
+        let ts = "class A {\n  m(x, y) { return f(x, g(y)); }\n}\n";
+        assert_eq!(obj(Lang::TypeScript, ts, "return", ObjKind::Function, false), "m(x, y) { return f(x, g(y)); }");
+        assert_eq!(obj(Lang::TypeScript, ts, "g(y)", ObjKind::Argument, false), ", g(y)");
+        assert_eq!(obj(Lang::TypeScript, ts, "return", ObjKind::Class, true), "\n  m(x, y) { return f(x, g(y)); }\n");
     }
 
     #[test]
