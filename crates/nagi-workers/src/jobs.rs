@@ -53,10 +53,46 @@ fn pump(r: impl Read + Send + 'static, tx: Sender<JobMsg>, waker: Waker) -> std:
     })
 }
 
+/// JAVA_HOME が使えない（指す先に java.exe が無い）とき、代わりに使う JDK（~/.jdks のいちばん新しいもの、無ければ PATH の java）。
+/// 使えるなら None（そのまま）
+pub fn java_home_fix() -> Option<std::path::PathBuf> {
+    let exe = |d: &Path| d.join("bin").join("java.exe").is_file() || d.join("bin").join("java").is_file();
+    if std::env::var_os("JAVA_HOME").is_some_and(|h| exe(Path::new(&h))) {
+        return None;
+    }
+    let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(std::path::PathBuf::from).unwrap_or_default();
+    let mut jdks: Vec<std::path::PathBuf> = std::fs::read_dir(home.join(".jdks")).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.join("bin").join("javac.exe").is_file()).collect();
+    jdks.sort();
+    if let Some(j) = jdks.pop() {
+        return Some(j);
+    }
+    // PATH の java の 2 つ上（…\bin\java.exe → …）。javac があるものだけ（JRE では Maven がコンパイルできない）
+    std::env::var_os("PATH").and_then(|p| {
+        std::env::split_paths(&p).find(|d| d.join("javac.exe").is_file() && d.join("java.exe").is_file()).and_then(|d| d.parent().map(Path::to_path_buf))
+    })
+}
+
 /// `command` を `cwd` で動かす
 pub fn run(command: &str, cwd: &Path, waker: Waker) -> std::io::Result<Job> {
+    run_env(command, cwd, &[], waker)
+}
+
+/// 環境変数を足して動かす
+pub fn run_env(command: &str, cwd: &Path, env: &[(String, String)], waker: Waker) -> std::io::Result<Job> {
     let mut cmd = Command::new("cmd");
-    cmd.arg("/C").arg(command).current_dir(cwd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    cmd.arg("/C");
+    // cmd は引数の " をそのまま読むので、Rust の引用（" → \"）をかけずに渡す（pom.xml のパスの引用符が壊れた）
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.raw_arg(command);
+    }
+    #[cfg(not(windows))]
+    cmd.arg(command);
+    cmd.current_dir(cwd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;

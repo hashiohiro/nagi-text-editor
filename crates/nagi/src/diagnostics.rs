@@ -128,10 +128,17 @@ impl Editor {
     /// コマンドを `root` で動かし、診断（`output` なら出力の全行）を下のパネルに出す
     pub(crate) fn run_job(&mut self, cmd: &str, root: &Path, title: &str, output: bool) {
         let waker = self.waker.clone().unwrap_or_else(|| std::sync::Arc::new(|| {}));
-        match nagi_workers::jobs::run(cmd, root, waker) {
+        // JAVA_HOME が使えなければ（古い JRE を指したままなど）、見つけた JDK をこのコマンドのときだけ使う
+        let fix = nagi_workers::jobs::java_home_fix();
+        let env: Vec<(String, String)> = fix.iter().map(|j| ("JAVA_HOME".to_string(), j.display().to_string())).collect();
+        match nagi_workers::jobs::run_env(cmd, root, &env, waker) {
             Ok(job) => {
                 self.diags.clear();
                 self.open_result_panel(title);
+                if let (Some(j), Some(g)) = (&fix, &mut self.grep) {
+                    let text = format!("JAVA_HOME が使えないので、このコマンドでは {} を使います", j.display());
+                    g.hits.push(nagi_workers::grep::Hit { path: String::new(), line: 0, range: (0, 0), text });
+                }
                 if let Some(g) = &mut self.grep {
                     g.root = root.to_path_buf();
                 }
