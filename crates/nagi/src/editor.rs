@@ -271,6 +271,9 @@ pub struct Editor {
     /// 左の欄・下のパネルを隠しているか（中身は残す）
     pub left_hidden: bool,
     pub bottom_hidden: bool,
+    /// ドラッグで変えた左の欄の幅・下のパネルの高さ（None は既定の大きさ）
+    pub left_w: Option<usize>,
+    pub bottom_h: Option<usize>,
     /// マウスを載せているボタン
     pub hover_button: Option<crate::toggles::Button>,
     /// 左の欄で出しているタブ（ツリーとコミットのパネルが両方開いているとき）
@@ -387,6 +390,8 @@ impl Editor {
             left_hidden: false,
             bottom_hidden: false,
             hover_button: None,
+            left_w: None,
+            bottom_h: None,
             git_job: None,
             diff: None,
             diff_return: None,

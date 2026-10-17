@@ -74,7 +74,7 @@ impl Editor {
             return None;
         }
         let (cols, rows) = self.screen;
-        let h = panel_height(rows);
+        let h = self.bottom_height();
         Some(Rect { x: 0, y: rows - h, w: cols, h })
     }
 
@@ -87,7 +87,7 @@ impl Editor {
     pub(crate) fn windows_rows(&self) -> usize {
         let rows = self.screen.1;
         if self.bottom_visible() {
-            rows - panel_height(rows)
+            rows - self.bottom_height()
         } else {
             rows
         }

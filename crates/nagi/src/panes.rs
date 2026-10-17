@@ -2,7 +2,8 @@
 //!
 //! 作業中の窓のカーソルと表示位置は Editor の欄（cursor・top・frac）にそのまま置き、ほかの窓は `Win` として脇に置く。
 //! 窓を移るときに入れ替えるのは、バッファ（buffers.rs）と同じ考え方。
-//! 大きさは Vim の equalalways と同じく、同じ並びの窓で等分する。
+//! 大きさは Vim の equalalways と同じく、窓を足したり閉じたりしたら同じ並びの窓で等分する。
+//! 区切り（左右の間の線、上下の間の状態行）をマウスでドラッグすると比率が変わる（resize.rs）。
 
 use nagi_core::Cursor;
 
@@ -27,7 +28,30 @@ pub(crate) enum WinSlot {
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Layout {
     Leaf(usize),
-    Split { vertical: bool, kids: Vec<Layout> },
+    /// `weights` は子の大きさの比率（等しければ等分）
+    Split { vertical: bool, kids: Vec<Layout>, weights: Vec<f32> },
+}
+
+/// 並びの子の大きさ（セル）。等しい比率なら余りを前の子から 1 つずつ配る（前からの割り方と同じ）
+pub(crate) fn split_sizes(avail: usize, weights: &[f32]) -> Vec<usize> {
+    let n = weights.len();
+    if weights.windows(2).all(|w| w[0] == w[1]) {
+        return (0..n).map(|i| avail / n + usize::from(i < avail % n)).collect();
+    }
+    let total: f32 = weights.iter().sum();
+    let mut acc = 0.0;
+    let mut prev = 0;
+    weights
+        .iter()
+        .enumerate()
+        .map(|(i, w)| {
+            acc += w;
+            let end = if i + 1 == n { avail } else { ((avail as f32) * acc / total).round() as usize };
+            let size = end.saturating_sub(prev);
+            prev = end;
+            size
+        })
+        .collect()
 }
 
 /// セル単位の矩形。分割中は最後の行が窓ごとの状態行
@@ -57,14 +81,13 @@ impl Layout {
     fn rects(&self, area: Rect, out: &mut Vec<(usize, Rect)>) {
         match self {
             Layout::Leaf(w) => out.push((*w, area)),
-            Layout::Split { vertical, kids } => {
+            Layout::Split { vertical, kids, weights } => {
                 let n = kids.len();
                 let (total, gap) = if *vertical { (area.w, 1) } else { (area.h, 0) };
                 let avail = total.saturating_sub(gap * (n - 1));
+                let sizes = split_sizes(avail, weights);
                 let mut at = 0;
-                for (i, k) in kids.iter().enumerate() {
-                    // 余りは前の窓から 1 つずつ配る
-                    let size = avail / n + usize::from(i < avail % n);
+                for (k, &size) in kids.iter().zip(&sizes) {
                     let r = if *vertical { Rect { x: area.x + at, w: size, ..area } } else { Rect { y: area.y + at, h: size, ..area } };
                     k.rects(r, out);
                     at += size + gap;
@@ -78,14 +101,16 @@ impl Layout {
         match self {
             Layout::Leaf(w) if *w == target => {
                 let kids = if before { vec![Layout::Leaf(new), Layout::Leaf(target)] } else { vec![Layout::Leaf(target), Layout::Leaf(new)] };
-                *self = Layout::Split { vertical, kids };
+                *self = Layout::Split { vertical, kids, weights: vec![1.0, 1.0] };
                 true
             }
             Layout::Leaf(_) => false,
-            Layout::Split { vertical: v, kids } => {
+            Layout::Split { vertical: v, kids, weights } => {
                 if *v == vertical {
                     if let Some(i) = kids.iter().position(|k| *k == Layout::Leaf(target)) {
                         kids.insert(if before { i } else { i + 1 }, Layout::Leaf(new));
+                        // equalalways: 足したら等分に戻す
+                        *weights = vec![1.0; kids.len()];
                         return true;
                     }
                 }
@@ -96,9 +121,10 @@ impl Layout {
 
     /// 窓 `w` を外す。並びに 1 つだけ残ったら、その並びをほどく
     fn remove(&mut self, w: usize) -> bool {
-        let Layout::Split { kids, .. } = self else { return false };
+        let Layout::Split { kids, weights, .. } = self else { return false };
         let removed = if let Some(i) = kids.iter().position(|k| *k == Layout::Leaf(w)) {
             kids.remove(i);
+            *weights = vec![1.0; kids.len()];
             true
         } else {
             kids.iter_mut().any(|k| k.remove(w))

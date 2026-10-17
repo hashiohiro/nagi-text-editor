@@ -178,7 +178,8 @@ impl Editor {
     pub fn left_rect(&self) -> Option<Rect> {
         self.left_visible()?;
         let (cols, _) = self.screen;
-        Some(Rect { x: 0, y: 0, w: tree_width(cols), h: self.windows_rows() })
+        let _ = cols;
+        Some(Rect { x: 0, y: 0, w: self.left_width(), h: self.windows_rows() })
     }
 
     pub fn tree_rect(&self) -> Option<Rect> {
@@ -190,7 +191,7 @@ impl Editor {
         let cols = self.screen.0;
         match self.left_visible() {
             Some(_) => {
-                let w = tree_width(cols) + 1;
+                let w = self.left_width() + 1;
                 (w, cols.saturating_sub(w))
             }
             None => (0, cols),

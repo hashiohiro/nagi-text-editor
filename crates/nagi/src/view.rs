@@ -810,6 +810,9 @@ fn draw_left_tabs(p: &mut Painter, r: Rect, active: crate::tree_panel::LeftTab, 
     let cell = p.fonts.cell();
     let y = r.y as f32 * cell.h;
     let mut x = r.x;
+    // 右端の隠すボタンの手前で切る（細くしたとき）
+    let saved_cols = p.cols;
+    p.cols = (r.x + r.w).saturating_sub(3);
     for (label, tab) in crate::tree_panel::TABS {
         let on = tab == active;
         let end = p.text(label, x, y, if on && focused { FG } else if on { rgb(0xc8c8c8) } else { STATUS_FG });
@@ -818,6 +821,7 @@ fn draw_left_tabs(p: &mut Painter, r: Rect, active: crate::tree_panel::LeftTab, 
         }
         x = end;
     }
+    p.cols = saved_cols;
     if !extra.is_empty() {
         let saved = p.cols;
         p.cols = (r.x + r.w).saturating_sub(3);

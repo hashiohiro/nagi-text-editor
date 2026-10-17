@@ -33,6 +33,7 @@ mod log_view;
 mod macros;
 mod marks;
 mod nav;
+mod resize;
 mod save_dialog;
 mod toggles;
 mod tree_panel;
@@ -187,6 +188,10 @@ struct App {
     /// 直前のクリック（時刻, 画面上のセル, 連続回数）。ダブル・トリプルクリックの判定用
     last_click: Option<(Instant, (usize, usize), u32)>,
     autoscroll_deadline: Option<Instant>,
+    /// ドラッグしている区切り
+    sep_drag: Option<resize::Sep>,
+    /// 今のマウスのカーソルの形（区切りの上では ↔ / ↕）
+    cursor_icon: winit::window::CursorIcon,
     stats: stats::Stats,
     /// `--replay` の残りのキー（1 回のイベント処理で 1 打ずつ流す）
     replay: std::collections::VecDeque<VKey>,
@@ -648,6 +653,18 @@ impl App {
         } else {
             None
         };
+        // 区切りの上ではカーソルを ↔ / ↕ に
+        let icon = match ed.sep_at(row, col as usize) {
+            Some(s) if s.horizontal_drag() => winit::window::CursorIcon::ColResize,
+            Some(_) => winit::window::CursorIcon::RowResize,
+            None => winit::window::CursorIcon::Default,
+        };
+        if icon != self.cursor_icon {
+            self.cursor_icon = icon;
+            if let Some(w) = &self.window {
+                w.set_cursor(icon);
+            }
+        }
         // 出す・隠すのボタンの上なら明るくして名前を出す。ボタンは左端にもあるので、
         // ストライプがまだ出ていなければボタンを優先し、もう出ていればストライプを優先する
         let mut hover = ed.button_at(row, col as usize);
@@ -709,6 +726,30 @@ impl App {
         self.sync_screen();
         if self.press_stripe() {
             return;
+        }
+        // 区切りをつかむ（ダブルクリックで元の大きさに）。下のパネルの見出しは、つかみつつ従来どおりパネルへ移る
+        if let (Some(f), Some(ed)) = (&self.fonts, &mut self.ed) {
+            let cell = f.cell();
+            let (row, col) = ((self.mouse.1 as f32 / cell.h) as usize, (self.mouse.0.max(0.0) as f32 / cell.w) as usize);
+            if ed.button_at(row, col).is_none() {
+                if let Some(sep) = ed.sep_at(row, col) {
+                    let now = Instant::now();
+                    let key = (row, usize::MAX - 3);
+                    let double = matches!(self.last_click, Some((t, c, _)) if now - t <= double_click_time() && c == key);
+                    self.last_click = Some((now, key, if double { 2 } else { 1 }));
+                    if double {
+                        ed.reset_sep(&sep);
+                        self.last_click = None;
+                        self.draw();
+                        return;
+                    }
+                    let bottom = sep == resize::Sep::Bottom;
+                    self.sep_drag = Some(sep);
+                    if !bottom {
+                        return;
+                    }
+                }
+            }
         }
         // 出す・隠すのボタン
         if let (Some(f), Some(ed)) = (&self.fonts, &mut self.ed) {
@@ -840,6 +881,21 @@ impl App {
             self.autoscroll_deadline = Some(Instant::now());
         }
         if before != (ed.cursor, ed.mode) {
+            self.sync_ime();
+            self.draw();
+        }
+    }
+
+    /// 区切りのドラッグ
+    fn on_sep_drag(&mut self) {
+        let (Some(f), Some(ed), Some(sep)) = (&self.fonts, &mut self.ed, &self.sep_drag) else { return };
+        let cell = f.cell();
+        // 区切りの線はセルの真ん中にあるので、マウスのあるセルに区切りを置く（当たり判定と同じ数え方）
+        let row = (self.mouse.1.max(0.0) as f32 / cell.h) as usize;
+        let col = (self.mouse.0.max(0.0) as f32 / cell.w) as usize;
+        let before = (ed.left_width(), ed.bottom_height(), ed.window_rects());
+        ed.drag_sep(sep, row, col);
+        if before != (ed.left_width(), ed.bottom_height(), ed.window_rects()) {
             self.sync_ime();
             self.draw();
         }
@@ -1051,7 +1107,9 @@ impl ApplicationHandler for App {
                     eprintln!("[{:.1}] move {:.0},{:.0}", clock::since_process_start_ms(), position.x, position.y);
                 }
                 self.mouse = (position.x, position.y);
-                if self.press.is_some() {
+                if self.sep_drag.is_some() {
+                    self.on_sep_drag();
+                } else if self.press.is_some() {
                     self.on_drag();
                 } else {
                     self.update_stripe();
@@ -1065,6 +1123,7 @@ impl ApplicationHandler for App {
                 ElementState::Pressed => self.on_press(),
                 ElementState::Released => {
                     self.press = None;
+                    self.sep_drag = None;
                     self.autoscroll_deadline = None;
                 }
             },
@@ -1158,6 +1217,8 @@ fn main() {
         snap_deadline: None,
         press: None,
         last_click: None,
+        sep_drag: None,
+        cursor_icon: winit::window::CursorIcon::Default,
         autoscroll_deadline: None,
         stats: stats::Stats::default(),
         replay: Default::default(),
