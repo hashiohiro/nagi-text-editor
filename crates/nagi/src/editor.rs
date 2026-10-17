@@ -289,6 +289,8 @@ pub struct Editor {
     /// ドラッグで変えた左の欄の幅・下のパネルの高さ（None は既定の大きさ）
     pub left_w: Option<usize>,
     pub bottom_h: Option<usize>,
+    /// 最後に描いた入力欄の縦棒カーソル（列, y の px）。IME の候補の窓の位置に使う
+    pub prompt_caret: std::cell::Cell<Option<(usize, f32)>>,
     /// マウスを載せている SQL コンソールの帯のボタン
     pub hover_bar: Option<crate::db_panel::BarItem>,
     /// マウスを載せているボタン
@@ -408,6 +410,7 @@ impl Editor {
             bottom_hidden: false,
             hover_button: None,
             hover_bar: None,
+            prompt_caret: Default::default(),
             left_w: None,
             db: None,
             maven: None,
@@ -654,6 +657,11 @@ impl Editor {
     pub fn key(&mut self, key: Key) -> Effect {
         // 先頭部分だけを表示している間は、全体が届くのを待ってから処理する（先頭部分を編集してしまわない）
         self.finish_load();
+        // 入力欄での Ctrl+V（Shift+Insert）は貼り付け。ファインダーの Ctrl+V は縦に分割して開く
+        if (key == Key::Paste || (key == Key::Ctrl('v') && self.mode != Mode::Finder)) && self.paste_target() {
+            self.paste_clipboard();
+            return Effect::None;
+        }
         // データを変える SQL の確認（y で実行）
         if self.db_confirm_key(key) {
             return Effect::None;
@@ -1456,6 +1464,38 @@ impl Editor {
         };
         self.preedit_cursor = cursor.map(|(a, b)| (fix(a), fix(b)));
         self.preedit = text;
+    }
+
+    /// 貼り付けを受ける入力欄にいるか（Vim の Insert の Ctrl-V は別）
+    fn paste_target(&self) -> bool {
+        self.has_prompt()
+            || matches!(self.mode, Mode::Branches)
+            || (self.mode == Mode::Log && self.log.as_ref().is_some_and(|l| l.filtering))
+            || (self.right_focused() && self.db.as_ref().is_some_and(|p| p.password.is_some()))
+    }
+
+    /// クリップボードの文字を、今の入力欄に入れる（コミットメッセージ以外は 1 行にする）
+    pub(crate) fn paste_clipboard(&mut self) {
+        let text = match &self.clipboard {
+            Some(cb) => (cb.get)(),
+            None => crate::clipboard::get(),
+        };
+        let Some(text) = text.filter(|t| !t.is_empty()) else {
+            self.message = "クリップボードが空です".into();
+            return;
+        };
+        let text = if self.mode == Mode::CommitMsg {
+            text.replace("\r\n", "\n")
+        } else {
+            text.trim_end_matches(['\r', '\n']).replace("\r\n", " ").replace(['\n', '\r'], " ")
+        };
+        if self.right_focused() {
+            if let Some((_, pr)) = self.db.as_mut().and_then(|p| p.password.as_mut()) {
+                pr.insert(&text);
+                return;
+            }
+        }
+        self.ime_commit(&text);
     }
 
     /// IME の確定（winit の Ime::Commit）。Insert なら挿入、入力欄なら欄に入れる

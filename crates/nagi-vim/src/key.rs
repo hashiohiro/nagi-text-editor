@@ -22,6 +22,8 @@ pub enum Key {
     PageUp,
     PageDown,
     F(u8),
+    /// Shift+Insert（貼り付け）
+    Paste,
 }
 
 impl Key {
@@ -56,6 +58,7 @@ impl Key {
             Key::PageUp => "<PageUp>".into(),
             Key::PageDown => "<PageDown>".into(),
             Key::F(n) => format!("<F{n}>"),
+            Key::Paste => "<S-Insert>".into(),
         }
     }
 }
@@ -77,6 +80,7 @@ fn named(name: &str, leader: &str) -> Option<Vec<Key>> {
         "end" => Key::End,
         "pageup" => Key::PageUp,
         "pagedown" => Key::PageDown,
+        "s-insert" => Key::Paste,
         "lt" => Key::Char('<'),
         "bar" => Key::Char('|'),
         "bslash" => Key::Char('\\'),

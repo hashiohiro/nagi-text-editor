@@ -357,6 +357,13 @@ impl App {
         ed.scroll_into_view();
         ed.showcmd = self.matcher.pending().iter().map(|k| k.label()).collect();
         let insts = view::build(ed, f, r);
+        // 入力欄の縦棒の所に IME の候補の窓を出す
+        if self.ime_allowed {
+            if let (Some(w), Some((col, y))) = (&self.window, ed.prompt_caret.get()) {
+                let cell = f.cell();
+                w.set_ime_cursor_area(winit::dpi::PhysicalPosition::new((col as f32 * cell.w) as i32, y as i32), winit::dpi::PhysicalSize::new(cell.w as u32, cell.h as u32));
+            }
+        }
         clock::mark_once("first frame built");
         // バッファを切り替えたら題名も変える
         if self.title_path.as_ref() != ed.buf.path.as_ref() {
@@ -437,6 +444,8 @@ impl App {
                 NamedKey::Tab => vec![VKey::Tab],
                 NamedKey::Backspace => vec![VKey::Backspace],
                 NamedKey::Delete => vec![VKey::Delete],
+                // Shift+Insert は貼り付け（入力欄では Ctrl+V と同じ）
+                NamedKey::Insert if self.modifiers.shift_key() => vec![VKey::Paste],
                 NamedKey::ArrowUp => vec![VKey::Up],
                 NamedKey::ArrowDown => vec![VKey::Down],
                 NamedKey::ArrowLeft => vec![VKey::Left],

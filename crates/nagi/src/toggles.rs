@@ -194,5 +194,10 @@ mod tests {
         e.press_button(Button::HideRight);
         assert_eq!(e.right_visible(), None);
         let _ = (r, c);
+        // 入力欄の Ctrl+V は貼り付け（1 行にする）
+        e.clipboard = Some(crate::editor::Clipboard { get: || Some("abc\r\ndef\r\n".into()), set: |_| {} });
+        e.key(nagi_vim::Key::Char(':'));
+        e.key(nagi_vim::Key::Ctrl('v'));
+        assert_eq!(e.cmdline.text, "abc def");
     }
 }

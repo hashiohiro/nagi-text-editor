@@ -70,6 +70,8 @@ struct Painter<'a> {
     /// ターミナルにはできない細さ: 縦棒カーソルと下線は数 px で描く
     bar: f32,
     underline: f32,
+    /// 最後に描いた縦棒カーソル（列, y）。IME の候補の窓をそこに出す
+    caret_at: Option<(usize, f32)>,
 }
 
 impl Painter<'_> {
@@ -113,6 +115,7 @@ impl Painter<'_> {
     }
 
     fn caret(&mut self, col: usize, y: f32) {
+        self.caret_at = Some((col, y));
         let cell = self.fonts.cell();
         self.out.push(Instance::fill(col as f32 * cell.w, y, self.bar, cell.h, CURSOR));
     }
@@ -458,7 +461,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     ed.set_screen(cols, rows);
     let bar = (cell.w / 6.0).round().max(2.0);
     let underline = (cell.h / 16.0).round().max(1.0);
-    let mut p = Painter { out: Vec::with_capacity(cols * rows + 64), fonts, r, cols, bar, underline };
+    let mut p = Painter { out: Vec::with_capacity(cols * rows + 64), fonts, r, cols, bar, underline, caret_at: None };
     if let (Some(r), Some(t)) = (ed.tree_rect(), &mut ed.tree) {
         let h = r.h.saturating_sub(1).max(1);
         if t.selected < t.scroll {
@@ -609,7 +612,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     }
     if let (Some(l), None) = (&ed.log, &ed.diff) {
         let (x, w) = ed.windows_x();
-        draw_log_view(&mut p, l, Rect { x, y: 0, w, h: ed.windows_rows() });
+        draw_log_view(&mut p, l, Rect { x, y: 0, w, h: ed.windows_rows() }, &ed.preedit);
     }
     if let Some(d) = &ed.diff {
         let (x, w) = ed.windows_x();
@@ -636,7 +639,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         draw_finder(&mut p, f, rows, cols);
     }
     if let Some(b) = &ed.branch_popup {
-        draw_branch_popup(&mut p, b, rows, cols);
+        draw_branch_popup(&mut p, b, rows, cols, &ed.preedit);
     }
     if ed.git.popup.is_some() && ed.mode == Mode::Normal {
         draw_hunk_popup(&mut p, ed, rows, cols);
@@ -837,6 +840,8 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             }
         }
     }
+    // 入力欄の縦棒の位置（IME の候補の窓をそこに出す）
+    ed.prompt_caret.set(p.caret_at);
     p.out
 }
 
@@ -999,10 +1004,7 @@ fn draw_right_panel(p: &mut Painter, ed: &Editor, r: Rect) {
             if d.filter.text.is_empty() && !d.filtering {
                 p.text("テーブルや列を絞り込み", c, fy, LINE_NO);
             } else {
-                let end = p.text(&d.filter.text, c, fy, FG);
-                if d.filtering && focused {
-                    p.caret(end, fy);
-                }
+                field(p, &d.filter.text, d.filter.cursor, &ed.preedit, c, fy, d.filtering && focused);
             }
             p.out.push(Instance::fill(x0, fy + cell.h - 1.0, wpx, 1.0, rgb(0x2a2a2a)));
             top = 2;
@@ -1067,8 +1069,11 @@ fn draw_right_panel(p: &mut Painter, ed: &Editor, r: Rect) {
             p.out.push(Instance::fill(x0, y, wpx, cell.h, rgb(0x1c1c1c)));
             let user = &d.sources[*i].user;
             let c = p.text(&format!(" {user} のパスワード: "), r.x, y, STATUS_FG);
-            let c = p.text(&"●".repeat(prompt.text.chars().count()), c, y, FG);
-            p.caret(c, y);
+            let before = prompt.text[..prompt.cursor.min(prompt.text.len())].chars().count();
+            let after = prompt.text.chars().count() - before;
+            let x = p.text(&"●".repeat(before), c, y, FG);
+            p.text(&"●".repeat(after), x, y, FG);
+            p.caret(x, y);
         } else if let Some(i) = d.setup_ask {
             let lines = [
                 format!(" {} にはドライバーが要ります", d.sources[i].name),
@@ -1083,16 +1088,15 @@ fn draw_right_panel(p: &mut Painter, ed: &Editor, r: Rect) {
             // 見出しは表示の幅（12 セル）でそろえる
             let pad = |p: &Painter, l: &str| format!("{l}{}", " ".repeat(12usize.saturating_sub(p.width(l))));
             for (k, (label, prompt)) in f.fields.iter().enumerate() {
-                let v = if k == 0 { format!("‹ {} ›", prompt.text) } else { prompt.text.clone() };
+                let v = if k == 0 { format!("‹ {} ›", prompt.text) } else if k == f.at { String::new() } else { prompt.text.clone() };
                 lines.push(format!(" {}{}  {v}", pad(p, label), if k == f.at { "▸" } else { " " }));
             }
             lines.push(" Tab 次の欄 ・ 最後の欄で Enter 保存してつなぐ ・ Esc やめる".to_string());
-            let caret = (f.at > 0).then(|| (f.at + 1, f.fields[f.at].1.text.clone()));
             let (bx, by) = draw_panel_box(p, r, &lines, f.at + 1);
-            if let Some((row, text)) = caret {
+            if f.at > 0 {
                 let label_w = 1 + 12.max(p.width(f.fields[f.at].0)) + p.width("▸  ");
-                let x = bx + label_w + p.width(&text);
-                p.caret(x, by + row as f32 * cell.h);
+                let pr = &f.fields[f.at].1;
+                field(p, &pr.text, pr.cursor, &ed.preedit, bx + label_w, by + (f.at + 1) as f32 * cell.h, true);
             }
         }
     }
@@ -1215,24 +1219,30 @@ fn sort_of(order: &str) -> Option<(String, bool)> {
 }
 
 /// 絞り込みの行（WHERE と ORDER BY）。入力中ならカーソル
-fn draw_filter_row(p: &mut Painter, r: Rect, y: f32, where_: &str, order: &str, editing: Option<&(crate::result_grid::Field, crate::editor::Prompt)>, right: &str) {
+fn draw_filter_row(p: &mut Painter, r: Rect, y: f32, where_: &str, order: &str, editing: Option<&(crate::result_grid::Field, crate::editor::Prompt)>, right: &str, preedit: &str) {
     use crate::result_grid::Field;
     let cell = p.fonts.cell();
     let mut c = p.text(" WHERE ", r.x, y, FINDER_MATCH);
-    let wv = editing.filter(|e| e.0 == Field::Where).map_or(where_.to_string(), |e| e.1.text.clone());
     let w_box = 36;
     p.out.push(Instance::fill(c as f32 * cell.w, y + 1.0, w_box as f32 * cell.w, cell.h - 2.0, rgb(0x141414)));
-    let end = p.text(&wv, c + 1, y, FG);
-    if editing.is_some_and(|e| e.0 == Field::Where) {
-        p.caret(end, y);
+    match editing.filter(|e| e.0 == Field::Where) {
+        Some((_, pr)) => {
+            field(p, &pr.text, pr.cursor, preedit, c + 1, y, true);
+        }
+        None => {
+            p.text(where_, c + 1, y, FG);
+        }
     }
     c += w_box + 2;
     let c2 = p.text("ORDER BY ", c, y, FINDER_MATCH);
-    let ov = editing.filter(|e| e.0 == Field::Order).map_or(order.to_string(), |e| e.1.text.clone());
     p.out.push(Instance::fill(c2 as f32 * cell.w, y + 1.0, 28.0 * cell.w, cell.h - 2.0, rgb(0x141414)));
-    let end = p.text(&ov, c2 + 1, y, FG);
-    if editing.is_some_and(|e| e.0 == Field::Order) {
-        p.caret(end, y);
+    match editing.filter(|e| e.0 == Field::Order) {
+        Some((_, pr)) => {
+            field(p, &pr.text, pr.cursor, preedit, c2 + 1, y, true);
+        }
+        None => {
+            p.text(order, c2 + 1, y, FG);
+        }
     }
     let rw = p.width(right);
     p.text(right, (r.x + r.w).saturating_sub(rw + 3), y, STATUS_FG);
@@ -1286,7 +1296,7 @@ fn draw_db_results(p: &mut Painter, ed: &Editor, r: Rect) {
             let mut y = y0 + cell.h;
             let right = format!("{}   {}", t.range_label(), t.info);
             if t.filterable {
-                draw_filter_row(p, r, y, &t.where_, &t.order, res.editing.as_ref(), &right);
+                draw_filter_row(p, r, y, &t.where_, &t.order, res.editing.as_ref(), &right, &ed.preedit);
                 y += cell.h;
             } else {
                 let rw = p.width(&right);
@@ -1343,7 +1353,7 @@ fn draw_db_table(p: &mut Painter, ed: &Editor, te: &crate::db_table::TableEditor
     p.text(&right, (r.x + r.w).saturating_sub(rw + 1), y0, STATUS_FG);
     // 2 行目: 絞り込み
     let fy = y0 + cell.h;
-    draw_filter_row(p, r, fy, &te.where_, &te.order, te.filter_edit.as_ref(), "");
+    draw_filter_row(p, r, fy, &te.where_, &te.order, te.filter_edit.as_ref(), "", &ed.preedit);
     p.out.push(Instance::fill(x0, fy + cell.h - 1.0, wpx, 1.0, rgb(0x2a2a2a)));
     let marks: Vec<char> = te.cols.iter().map(|n| te.colinfo.iter().find(|c| &c.name == n).map_or(' ', |c| if c.pk { 'K' } else if !c.fk.is_empty() { 'F' } else { ' ' })).collect();
     let value = |d: usize, c: usize| te.value(d, c);
@@ -1564,7 +1574,7 @@ fn draw_commit_panel(p: &mut Painter, ed: &Editor, c: &crate::commit_panel::Comm
 }
 
 /// ブランチのポップアップ（画面の上の中央。IntelliJ の Git Branches と同じ並び）
-fn draw_branch_popup(p: &mut Painter, b: &crate::branches::BranchPopup, rows: usize, cols: usize) {
+fn draw_branch_popup(p: &mut Painter, b: &crate::branches::BranchPopup, rows: usize, cols: usize, preedit: &str) {
     use crate::branches::Entry;
     let cell = p.fonts.cell();
     let w = 56.min(cols.saturating_sub(4));
@@ -1579,13 +1589,12 @@ fn draw_branch_popup(p: &mut Painter, b: &crate::branches::BranchPopup, rows: us
     p.cols = x0 + w;
     // 上の欄: 名前を打っているときはその欄、そうでなければ絞り込み
     let (label, text) = match &b.naming {
-        Some((crate::branches::Naming::New(from), pr)) => (format!(" 新しいブランチ{}: ", from.as_ref().map_or(String::new(), |f| format!("（{f} から）"))), pr.text.clone()),
-        Some((crate::branches::Naming::Rename(old), pr)) => (format!(" {old} の新しい名前: "), pr.text.clone()),
-        None => (" 🔍 ".to_string(), b.query.text.clone()),
+        Some((crate::branches::Naming::New(from), pr)) => (format!(" 新しいブランチ{}: ", from.as_ref().map_or(String::new(), |f| format!("（{f} から）"))), pr),
+        Some((crate::branches::Naming::Rename(old), pr)) => (format!(" {old} の新しい名前: "), pr),
+        None => (" / ".to_string(), &b.query),
     };
     let c = p.text(&label, x0, y, STATUS_FG);
-    let c = p.text(&text, c, y, FG);
-    p.out.push(Instance::fill(c as f32 * cell.w, y + 2.0, 2.0, cell.h - 4.0, FG));
+    field(p, &text.text, text.cursor, preedit, c, y, true);
     p.out.push(Instance::fill(x, y + cell.h - 1.0, w as f32 * cell.w, 1.0, LINE_NO));
     // 一覧（選んだ行が見えるように流す）
     let scroll = (b.selected + 1).saturating_sub(list_h);
@@ -1645,7 +1654,7 @@ fn draw_branch_popup(p: &mut Painter, b: &crate::branches::BranchPopup, rows: us
 }
 
 /// 履歴（窓の領域全体）。左にブランチ、中央にグラフ付きのコミット、右に選んだコミットの中身
-fn draw_log_view(p: &mut Painter, l: &crate::log_view::LogView, r: Rect) {
+fn draw_log_view(p: &mut Painter, l: &crate::log_view::LogView, r: Rect, preedit: &str) {
     const LANES: [[f32; 4]; 5] = [rgb(0x87afd7), rgb(0xd7af87), rgb(0x87af87), rgb(0xd787af), rgb(0xafafd7)];
     let cell = p.fonts.cell();
     let (x0, y0) = (r.x as f32 * cell.w, r.y as f32 * cell.h);
@@ -1664,7 +1673,13 @@ fn draw_log_view(p: &mut Painter, l: &crate::log_view::LogView, r: Rect) {
         n,
         if l.loading { " …" } else { "" }
     );
-    p.text(&head, r.x, y0, if l.filtering { FG } else { STATUS_FG });
+    if l.filtering {
+        let c = p.text(" /", r.x, y0, FG);
+        let end = field(p, &l.filter.text, l.filter.cursor, preedit, c, y0, true);
+        p.text(&format!("   {n} 件"), end, y0, STATUS_FG);
+    } else {
+        p.text(&head, r.x, y0, STATUS_FG);
+    }
     p.out.push(Instance::fill(x0, y0 + cell.h - 1.0, r.w as f32 * cell.w, 1.0, LINE_NO));
     let body = r.h.saturating_sub(1);
     // 左: ブランチ
@@ -2129,6 +2144,27 @@ fn draw_finder(p: &mut Painter, f: &crate::finder::Finder, rows: usize, cols: us
 }
 
 /// 最下行の入力欄（`:` `/` `?` `→`）。`active` なら縦棒カーソルと IME の変換中の文字列を出す
+/// 入力欄の文字（カーソルの位置に IME の変換中の文字を下線付きで入れ、縦棒を描く）。描いた最後の列を返す
+fn field(p: &mut Painter, text: &str, cursor: usize, preedit: &str, col: usize, y: f32, active: bool) -> usize {
+    let cursor = cursor.min(text.len());
+    let mut items = p.items(&text[..cursor], FG);
+    let caret = col + items.iter().map(|i| i.width).sum::<usize>();
+    let mut pre_w = 0;
+    if active && !preedit.is_empty() {
+        let mut pre = p.items(preedit, FG);
+        pre.iter_mut().for_each(|i| i.underline = true);
+        pre_w = pre.iter().map(|i| i.width).sum();
+        items.extend(pre);
+    }
+    items.extend(p.items(&text[cursor..], FG));
+    let end = col + items.iter().map(|i| i.width).sum::<usize>();
+    p.draw(&items, col, y);
+    if active {
+        p.caret(caret + pre_w, y);
+    }
+    end
+}
+
 fn prompt_line(p: &mut Painter, lead: &str, text: &str, cursor: usize, preedit: &str, y: f32, active: bool) {
     let c = p.text(lead, 0, y, if active { FG } else { STATUS_FG });
     let mut items = p.items(&text[..cursor], FG);
