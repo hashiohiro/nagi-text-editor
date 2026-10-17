@@ -1,9 +1,10 @@
 //! nagi（凪）: 静かで、余計なものがない、速いエディタ。
 //!
-//! 使い方: nagi [FILE] [--startup-report] [--exit-after-first-frame] [--keys KEYS] [--replay KEYS]
+//! 使い方: nagi [FILE] [--startup-report] [--exit-after-first-frame] [--keys KEYS] [--replay KEYS] [--replay-file PATH]
 //!
 //! `--keys` は起動直後にキー列（Vim の表記。`/foo<CR>` など）を流し込み、最後に 1 回だけ描く。画面の確認やデモ用。
 //! `--replay` はキー列を 1 打ずつ、キー入力と同じ道筋（処理 → 描画 → 計測の記録）で流す。`:NagiStats` の確認用。
+//! `--replay-file` は同じキー列を UTF-8 のファイルから読む（シェルの引用符や文字コードを通さない。末尾の改行は無視）。
 //!
 //! 起動は並列（architecture.md §6.4）: GPU・フォント・ファイル読込を別スレッドで進め、
 //! メインスレッドはその間にイベントループと非表示のウィンドウを作る。最初のフレームを描いてから表示する。
@@ -53,6 +54,11 @@ impl Opts {
             match a.as_str() {
                 "--keys" => o.keys = args.next(),
                 "--replay" => o.replay = args.next(),
+                "--replay-file" => match args.next().map(|p| std::fs::read_to_string(&p).map_err(|e| format!("{p}: {e}"))) {
+                    Some(Ok(k)) => o.replay = Some(k.trim_end_matches(['\r', '\n']).to_string()),
+                    Some(Err(e)) => eprintln!("--replay-file: {e}"),
+                    None => eprintln!("--replay-file: ファイルを指定してください"),
+                },
                 "--startup-report" => o.startup_report = true,
                 "--exit-after-first-frame" => {
                     o.exit_after_first_frame = true;
@@ -344,7 +350,7 @@ impl App {
         if std::env::var_os("NAGI_DEBUG_STATS").is_some() {
             let (rt, rn) = self.renderer.as_mut().map_or(Default::default(), |r| r.take_raster_stats());
             eprintln!(
-                "stat {:?} total={} edit={} wait={} build={} present={} ime_after={} raster={}us/{rn}",
+                "stat {:?} total={} edit={} wait={} build={} present={} ime_after={} raster={}us/{rn} mode={:?}",
                 keys_label,
                 sample.total(),
                 sample.edit,
@@ -352,7 +358,8 @@ impl App {
                 sample.build,
                 sample.present,
                 ime.as_micros(),
-                rt.as_micros()
+                rt.as_micros(),
+                self.ed.as_ref().map(|e| e.mode)
             );
         }
         self.stats.push(sample);
@@ -629,8 +636,11 @@ fn double_click_time() -> Duration {
 }
 
 impl ApplicationHandler for App {
-    /// 裏の構文解析（最初の解析か、編集後の再解析）が終わった。描き直すと受け取る
+    /// 裏の処理（構文解析か、検索の全件数え）が終わった。描き直すと受け取る
     fn user_event(&mut self, _el: &ActiveEventLoop, _event: ()) {
+        if let Some(ed) = &mut self.ed {
+            ed.poll_search();
+        }
         if self.ed.as_mut().is_some_and(|ed| ed.poll_syntax()) {
             if let Some(s) = self.ed.as_ref().and_then(|ed| ed.syntax.as_ref()) {
                 clock::mark_once(&format!("syntax: {} parsed", s.lang.name()));

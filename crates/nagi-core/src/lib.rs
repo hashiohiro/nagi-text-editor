@@ -50,6 +50,23 @@ pub struct Buffer {
     pub bom: bool,
 }
 
+/// 検索は rope から窓ごとに切り出して行う（ファイル全体の文字列を作らない）
+impl textops::Source for Buffer {
+    fn len(&self) -> usize {
+        self.rope.len()
+    }
+    fn window(&self, lo: usize, hi: usize) -> (usize, std::borrow::Cow<'_, str>) {
+        let lo = self.rope.floor_char_boundary(lo.min(self.rope.len()));
+        let hi = self.rope.floor_char_boundary(hi.min(self.rope.len())).max(lo);
+        (lo, std::borrow::Cow::Owned(self.slice_string(lo, hi)))
+    }
+    fn line_start_near(&self, p: usize) -> usize {
+        let p = self.rope.floor_char_boundary(p.min(self.rope.len()));
+        let (_, col) = self.pos_of(p);
+        if col <= textops::LINE_CONTEXT { p - col } else { p }
+    }
+}
+
 impl Buffer {
     pub fn from_str(text: &str) -> Self {
         Self { rope: Rope::from_str(text), version: 0, edits: Vec::new(), dirty: false, path: None, crlf: text.contains("\r\n"), bom: false }

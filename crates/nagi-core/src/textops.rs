@@ -191,20 +191,31 @@ pub fn compile_search(pattern: &str, regex: bool) -> Option<Regex> {
 }
 
 /// 検索語のすべての一致（絶対 byte の範囲）。大文字小文字は区別しない。
-///
-/// 正規表現でない検索語は、組み立てが数 µs の aho-corasick で探す（regex は検索語ごとの組み立てに
-/// 数十〜数百 µs かかり、1 打ごとに組み立て直す incsearch で効く）。aho-corasick は ASCII の範囲でしか
-/// 大文字小文字を同一視しないので、大文字小文字のある非 ASCII 文字（É など）を含むときだけ regex を使う。
 pub fn find_matches(text: &str, pattern: &str, regex: bool) -> Vec<(usize, usize)> {
-    if pattern.is_empty() {
-        return Vec::new();
-    }
-    let caseless_beyond_ascii = pattern.chars().all(|c| c.is_ascii() || (!c.is_lowercase() && !c.is_uppercase()));
-    if !regex && caseless_beyond_ascii {
-        let Ok(ac) = aho_corasick::AhoCorasick::builder().ascii_case_insensitive(true).build([pattern]) else { return Vec::new() };
-        return ac.find_iter(text).map(|m| (m.start(), m.end())).collect();
-    }
-    compile_search(pattern, regex).map_or_else(Vec::new, |re| find_all(text, &re))
+    find_matches_in(text, pattern, regex)
+}
+
+/// `find_matches_in` の、`cancel` が立ったら途中でやめる版（やめたら None）
+pub fn find_matches_cancellable<S: Source + ?Sized>(src: &S, pattern: &str, regex: bool, cancel: &std::sync::atomic::AtomicBool) -> Option<Vec<(usize, usize)>> {
+    use std::sync::atomic::Ordering::Relaxed;
+    let Some(f) = Finder::new(pattern, regex) else { return Some(Vec::new()) };
+    let mut out = Vec::new();
+    f.each_from_while(src, 0, || !cancel.load(Relaxed), |m| {
+        out.push(m);
+        true
+    });
+    (!cancel.load(Relaxed)).then_some(out)
+}
+
+/// `find_matches` の、ファイル全体の文字列を作らずにバッファから探す版
+pub fn find_matches_in<S: Source + ?Sized>(src: &S, pattern: &str, regex: bool) -> Vec<(usize, usize)> {
+    let Some(f) = Finder::new(pattern, regex) else { return Vec::new() };
+    let mut out = Vec::new();
+    f.each_from(src, 0, |m| {
+        out.push(m);
+        true
+    });
+    out
 }
 
 /// すべての一致（絶対 byte の範囲）。空の一致は除く
@@ -212,21 +223,259 @@ pub fn find_all(text: &str, re: &Regex) -> Vec<(usize, usize)> {
     re.find_iter(text).filter(|m| !m.is_empty()).map(|m| (m.start(), m.end())).collect()
 }
 
+/// 検索する文字列の出どころ。ファイル全体の文字列を作らずに、窓ごとに切り出して探せるようにする
+pub trait Source {
+    fn len(&self) -> usize;
+    /// [lo, hi) を切り出す（両端は文字の境目へ切り下げる）。戻り値は（実際の lo, 文字列）
+    fn window(&self, lo: usize, hi: usize) -> (usize, std::borrow::Cow<'_, str>);
+    /// `p` を含む行の先頭。`LINE_CONTEXT` より遠ければ `p` のまま
+    fn line_start_near(&self, p: usize) -> usize;
+}
+
+/// 窓を行頭から切り出すために戻る最大の長さ（`^` や `\b` を正しく判定するため）
+pub const LINE_CONTEXT: usize = 4096;
+
+impl Source for str {
+    fn len(&self) -> usize {
+        str::len(self)
+    }
+    fn window(&self, lo: usize, hi: usize) -> (usize, std::borrow::Cow<'_, str>) {
+        let (lo, hi) = (floor_boundary(self, lo), floor_boundary(self, hi));
+        (lo, std::borrow::Cow::Borrowed(&self[lo..hi.max(lo)]))
+    }
+    fn line_start_near(&self, p: usize) -> usize {
+        let p = floor_boundary(self, p);
+        let lo = floor_boundary(self, p.saturating_sub(LINE_CONTEXT));
+        match self[lo..p].rfind('\n') {
+            Some(i) => lo + i + 1,
+            None if lo == 0 => 0,
+            None => p,
+        }
+    }
+}
+
+/// 検索語の探し手。大文字小文字は区別しない。
+///
+/// 正規表現でない検索語は、組み立てが数 µs の aho-corasick で探す（regex は検索語ごとの組み立てに
+/// 数十〜数百 µs かかり、1 打ごとに組み立て直す incsearch で効く）。aho-corasick は ASCII の範囲でしか
+/// 大文字小文字を同一視しないので、大文字小文字のある非 ASCII 文字（É など）を含むときだけ regex を使う。
+///
+/// 探すときはファイル全体の文字列を作らず、窓（最初は 64KB、見つからなければ倍に）ごとに切り出して探す。
+/// incsearch や n / N の移動先は、カーソルの近くだけを見れば済む
+pub enum Finder {
+    Ac(aho_corasick::AhoCorasick),
+    Re(Regex),
+}
+
+/// 最初の窓の幅（見つからなければ倍にしていく）
+const FIRST_WINDOW: usize = 1 << 16;
+/// 窓の幅の上限
+const MAX_WINDOW: usize = 1 << 22;
+/// 窓の端で始まる一致を拾うために、窓の先まで見る長さ（これより長い一致は窓の端で取りこぼしうる）
+const SPAN_MARGIN: usize = 4096;
+
+fn floor_boundary(text: &str, mut i: usize) -> usize {
+    i = i.min(text.len());
+    while !text.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+fn next_boundary(text: &str, i: usize) -> usize {
+    text[i.min(text.len())..].chars().next().map_or(text.len(), |c| i + c.len_utf8())
+}
+
+impl Finder {
+    pub fn new(pattern: &str, regex: bool) -> Option<Self> {
+        if pattern.is_empty() {
+            return None;
+        }
+        let caseless_beyond_ascii = pattern.chars().all(|c| c.is_ascii() || (!c.is_lowercase() && !c.is_uppercase()));
+        if !regex && caseless_beyond_ascii {
+            return aho_corasick::AhoCorasick::builder().ascii_case_insensitive(true).build([pattern]).ok().map(Finder::Ac);
+        }
+        compile_search(pattern, regex).map(Finder::Re)
+    }
+
+    /// 文字列 `text` の [from, text.len()) にある一致を順に `f` へ渡す（`f` が false を返したら止める）。空の一致は除く
+    fn each_in(&self, text: &str, from: usize, mut f: impl FnMut((usize, usize)) -> bool) {
+        let from = floor_boundary(text, from);
+        match self {
+            Finder::Ac(ac) => {
+                for m in ac.find_iter(aho_corasick::Input::new(text).span(from..text.len())) {
+                    if !f((m.start(), m.end())) {
+                        return;
+                    }
+                }
+            }
+            Finder::Re(re) => {
+                let mut p = from;
+                while p <= text.len() {
+                    let Some(m) = re.find_at(text, p) else { return };
+                    if m.is_empty() {
+                        if m.start() >= text.len() {
+                            return;
+                        }
+                        p = next_boundary(text, m.start());
+                        continue;
+                    }
+                    if !f((m.start(), m.end())) {
+                        return;
+                    }
+                    p = m.end();
+                }
+            }
+        }
+    }
+
+    /// 始まりが [lo, hi) にある一致を順に `f` へ渡す。窓は行頭から切り出す。`f` が false を返したら false
+    fn each_window<S: Source + ?Sized>(&self, src: &S, lo: usize, hi: usize, mut f: impl FnMut((usize, usize)) -> bool) -> bool {
+        let base = src.line_start_near(lo);
+        let (b, text) = src.window(base, (hi + SPAN_MARGIN).min(src.len()));
+        let mut cont = true;
+        self.each_in(&text, lo.saturating_sub(b), |(s, e)| {
+            let (s, e) = (s + b, e + b);
+            if s < lo {
+                return true;
+            }
+            if s >= hi {
+                return false;
+            }
+            cont = f((s, e));
+            cont
+        });
+        cont
+    }
+
+    /// `from` から先の一致を順に `f` へ渡す（`f` が false を返したら止める）
+    pub fn each_from<S: Source + ?Sized>(&self, src: &S, from: usize, f: impl FnMut((usize, usize)) -> bool) {
+        self.each_from_while(src, from, || true, f);
+    }
+
+    /// `each_from` の、窓ごとに `go` を確かめ、false なら途中でやめる版（裏で数えている検索の取り消し用）
+    pub fn each_from_while<S: Source + ?Sized>(&self, src: &S, from: usize, go: impl Fn() -> bool, mut f: impl FnMut((usize, usize)) -> bool) {
+        let len = src.len();
+        let mut lo = from;
+        let mut last_end = 0;
+        while lo < len && go() {
+            let hi = (lo + MAX_WINDOW).min(len);
+            let cont = self.each_window(src, lo, hi, |m| {
+                last_end = m.1;
+                f(m)
+            });
+            if !cont {
+                return;
+            }
+            // 窓の終わりをまたいだ一致の途中からは数え直さない（全体を 1 回で探したのと同じ数え方にする）
+            lo = hi.max(last_end);
+        }
+    }
+
+    /// `at` より後ろ（前）で最初の一致。`include_at` なら `at` から始まる一致も含める。
+    /// 端に来たら反対側から続ける（wrapscan）。`at` の近くから探し、一致が無くてもファイルを 1 回なめるだけで済ませる
+    pub fn next<S: Source + ?Sized>(&self, src: &S, at: usize, forward: bool, include_at: bool) -> Option<(usize, usize)> {
+        let len = src.len();
+        let at = at.min(len);
+        if forward {
+            let from = if include_at { at } else { at + 1 };
+            return self.first_in(src, from, len).or_else(|| self.first_in(src, 0, from.min(len)));
+        }
+        let hi = if include_at { at + 1 } else { at };
+        self.last_in(src, 0, hi.min(len)).or_else(|| self.last_in(src, hi.min(len), len))
+    }
+
+    /// `next` の、`at` から `reach` byte の範囲だけを見る版（端で反対側へは回らない）。
+    /// 大きなファイルの incsearch で、1 打ごとにファイル全体をなめないために使う
+    pub fn next_near<S: Source + ?Sized>(&self, src: &S, at: usize, forward: bool, include_at: bool, reach: usize) -> Option<(usize, usize)> {
+        let len = src.len();
+        let at = at.min(len);
+        if forward {
+            let from = if include_at { at } else { at + 1 };
+            return self.first_in(src, from, (from + reach).min(len));
+        }
+        let hi = (if include_at { at + 1 } else { at }).min(len);
+        self.last_in(src, hi.saturating_sub(reach), hi)
+    }
+
+    /// 始まりが [lo, hi) にある最初の一致。窓を倍にしながら先へ進む
+    fn first_in<S: Source + ?Sized>(&self, src: &S, mut lo: usize, hi: usize) -> Option<(usize, usize)> {
+        let mut window = FIRST_WINDOW;
+        while lo < hi {
+            let end = (lo + window).min(hi);
+            let mut found = None;
+            self.each_window(src, lo, end, |m| {
+                found = Some(m);
+                false
+            });
+            if found.is_some() {
+                return found;
+            }
+            lo = end;
+            window = (window * 2).min(MAX_WINDOW);
+        }
+        None
+    }
+
+    /// 始まりが [floor, hi) にある最後の一致。`hi` の手前の窓から、重ねずに倍の幅で手前へ進む
+    fn last_in<S: Source + ?Sized>(&self, src: &S, floor: usize, mut hi: usize) -> Option<(usize, usize)> {
+        let mut window = FIRST_WINDOW;
+        while hi > floor {
+            let lo = hi.saturating_sub(window).max(floor);
+            let mut last = None;
+            self.each_window(src, lo, hi, |m| {
+                last = Some(m);
+                true
+            });
+            if last.is_some() {
+                return last;
+            }
+            hi = lo;
+            window = (window * 2).min(MAX_WINDOW);
+        }
+        None
+    }
+}
+
 /// `at` より後ろ（前）で最初の一致の番号。端に来たら反対側から続ける（wrapscan）
 pub fn next_match(matches: &[(usize, usize)], at: usize, forward: bool, include_at: bool) -> Option<usize> {
     if matches.is_empty() {
         return None;
     }
+    // 一致は位置順に並んでいるので二分探索（大きなファイルでは数百万件になる）
     if forward {
-        matches.iter().position(|m| if include_at { m.0 >= at } else { m.0 > at }).or(Some(0))
+        let i = matches.partition_point(|m| if include_at { m.0 < at } else { m.0 <= at });
+        Some(if i < matches.len() { i } else { 0 })
     } else {
-        matches.iter().rposition(|m| if include_at { m.0 <= at } else { m.0 < at }).or(Some(matches.len() - 1))
+        let i = matches.partition_point(|m| if include_at { m.0 <= at } else { m.0 < at });
+        Some(if i > 0 { i - 1 } else { matches.len() - 1 })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 近くから探す `Finder::next` は、全件を並べてから選ぶやり方と同じ一致を返す
+    #[test]
+    fn finder_next_matches_full_scan() {
+        let unit = "alpha Beta 日本語 beta\nfoo.bar ALPHA\n\n  gamma alphabet ";
+        let text = unit.repeat(3000); // 窓（64KB）をまたぐ大きさ
+        let buf = crate::Buffer::from_str(&text);
+        for (pat, re) in [("alpha", false), ("BETA", false), ("日本", false), ("a.b", false), ("^foo", true), ("al?pha", true), ("zzz", false)] {
+            let all = find_matches(&text, pat, re);
+            assert_eq!(find_matches_in(&buf, pat, re), all, "buffer: {pat}");
+            let f = Finder::new(pat, re).unwrap();
+            for at in (0..text.len()).step_by(7919).chain([0, text.len() - 1, text.len()]) {
+                let at = floor_boundary(&text, at);
+                for (fwd, inc) in [(true, false), (true, true), (false, false), (false, true)] {
+                    let want = next_match(&all, at, fwd, inc).map(|i| all[i]);
+                    assert_eq!(f.next(text.as_str(), at, fwd, inc), want, "{pat} at={at} fwd={fwd} inc={inc}");
+                    assert_eq!(f.next(&buf, at, fwd, inc), want, "buffer: {pat} at={at} fwd={fwd} inc={inc}");
+                }
+            }
+        }
+    }
 
     #[test]
     fn find_and_pairs() {

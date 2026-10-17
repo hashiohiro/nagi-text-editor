@@ -188,12 +188,10 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     let total = ed.buf.line_count();
     let debug = std::env::var_os("NAGI_DEBUG_BUILD").is_some();
     let t0 = std::time::Instant::now();
-    // 検索・置換の入力中は件数（3/12）を出すので全体を数える。Normal で強調だけ残っているとき（hlsearch）は、
-    // 画面に見えている範囲だけを探す（編集のたびにファイル全体を探し直さない。n / N は自分で全体を数える）
+    // 強調は画面に見えている範囲だけを探す（入力中も、確定後の hlsearch も）。
+    // 件数（3/12）のための全件は、検索の処理が別に（大きなファイルでは裏で）数える
     let searching = matches!(ed.mode, Mode::Search | Mode::Replace);
-    if searching {
-        ed.refresh_matches();
-    }
+    let highlight = searching || ed.search.highlight;
     let t_matches = t0.elapsed();
     // スムーズスクロール中は 1 行多く描き、全体を frac 行ぶん上へずらす
     let frac = ed.frac;
@@ -219,13 +217,11 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     let t_hl = t0.elapsed();
     let ed: &Editor = ed;
     let visible_matches: Vec<(usize, usize)>;
-    let all_matches: &[(usize, usize)] = if searching {
-        &ed.search.matches
-    } else if ed.search.highlight && heads.iter().any(|h| h.2) {
+    let all_matches: &[(usize, usize)] = if highlight && heads.iter().any(|h| h.2) {
         // 長い行は見えている部分だけを探す
         visible_matches = heads.iter().flat_map(|(s, abs, _)| ed.visible_matches(*abs, *abs + s.len())).collect();
         &visible_matches
-    } else if ed.search.highlight {
+    } else if highlight {
         let end = if ed.top + drawn >= total { ed.buf.len_bytes() } else { view_end };
         visible_matches = ed.visible_matches(view_start, end);
         &visible_matches
@@ -293,7 +289,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             let mut it = Item { g: Cow::Borrowed(g), width, fg: colors.get(b).copied().unwrap_or(FG), bg: None, underline: false };
             if let Some(&(ms, me)) = line_matches.get(mi) {
                 if a >= ms && a < me {
-                    if Some(first + mi) == ed.search.current && matches!(ed.mode, Mode::Search) {
+                    if Some((ms, me)) == ed.search.current && matches!(ed.mode, Mode::Search) {
                         it.bg = Some(it.fg);
                         it.fg = BG;
                     } else {
@@ -377,11 +373,12 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         ed.cursor.line + 1,
         ruler_col(ed)
     );
-    let n = ed.search.matches.len();
     let re = if ed.search.regex { "  [.*]" } else { "" };
-    let count = match ed.search.current {
-        Some(i) if n > 0 => format!("{}/{n}{re} ", i + 1),
+    let count = match (ed.search.current, ed.match_count()) {
         _ if ed.query.text.is_empty() => format!("{re} "),
+        (Some(_), Some((Some(i), n))) => format!("{}/{n}{re} ", i + 1),
+        // 全件は裏で数えている途中
+        (Some(_), _) => format!("?/…{re} "),
         _ => format!("0/0{re} "),
     };
     match ed.mode {

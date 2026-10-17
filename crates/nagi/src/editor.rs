@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use nagi_core::textops::{compile_search, find_matches, next_match};
+use nagi_core::textops::{Finder, compile_search, find_matches, find_matches_cancellable, find_matches_in, next_match};
 use nagi_core::{Buffer, Cursor, History, Motion, byte_at_col, display_col};
 use nagi_vim::Key;
 use unicode_segmentation::UnicodeSegmentation;
@@ -96,6 +96,28 @@ impl Prompt {
     }
 }
 
+/// 一致を数えた対象（バッファの版, 検索語, 正規表現か）
+type SearchKey = (u64, String, bool);
+
+/// 裏で全件を数えている検索。落とすと（検索語が変わると）数えるのをやめる
+struct CountJob {
+    key: SearchKey,
+    rx: std::sync::mpsc::Receiver<Vec<(usize, usize)>>,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Drop for CountJob {
+    fn drop(&mut self) {
+        self.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// これより小さいファイルは、全件をその場で数える
+const SYNC_COUNT_LIMIT: usize = 1 << 20;
+
+/// incsearch で 1 打ごとに探す範囲（カーソルの前後）。これより遠い一致は、裏で数えた全件から決める
+const INCSEARCH_REACH: usize = 1 << 20;
+
 /// 検索・置換の状態
 #[derive(Default)]
 pub struct Search {
@@ -104,11 +126,20 @@ pub struct Search {
     pub regex: bool,
     /// 入力を始めたときのカーソルと表示位置（Esc で戻す）
     origin: Option<(Cursor, usize)>,
-    /// 一致（絶対 byte の範囲）。`computed` のバッファと検索語に対して計算したもの
+    /// すべての一致（絶対 byte の範囲）。`computed` のバッファと検索語に対して数えたもの。
+    /// 件数（3/12）と全件置換にだけ使う。移動先は `Finder::next` で近くから探す
     pub matches: Vec<(usize, usize)>,
-    /// 今の一致の番号
-    pub current: Option<usize>,
-    computed: Option<(u64, String, bool)>,
+    /// 今の一致（絶対 byte の範囲）
+    pub current: Option<(usize, usize)>,
+    computed: Option<SearchKey>,
+    /// 裏で数えている全件（大きなファイルでは数十〜百 ms 以上かかるので、打鍵を待たせない）
+    job: Option<CountJob>,
+    /// 全件が届いたら最下行の件数を出し直す
+    count_message: bool,
+    /// incsearch で近くに一致が無かった（全件が届いたら、そこから移動先を決める）
+    move_when_counted: bool,
+    /// 一致が無かった検索語（バッファの版, 語）。正規表現でない語は、これを打ち足しても一致しないので探さない
+    no_match: Option<(u64, String)>,
     /// 最後に確定した検索（検索語, 正規表現か, 下方向か）。n / N / hlsearch 用
     pub last: Option<(String, bool, bool)>,
     /// 一致を強調するか（hlsearch。:noh で消える）
@@ -161,7 +192,7 @@ pub struct Editor {
     /// 画面の行数（App が描画前に入れる）
     pub rows: usize,
     /// バッファ全体の文字列（検索・括弧の対応・text object 用）。版が変わるまで使い回す
-    text_cache: std::cell::RefCell<Option<(u64, std::rc::Rc<str>)>>,
+    text_cache: std::cell::RefCell<Option<(u64, std::sync::Arc<str>)>>,
 }
 
 impl Editor {
@@ -251,12 +282,12 @@ impl Editor {
     }
 
     /// バッファ全体の文字列。編集されるまでは同じものを返す（1 打ごとに作り直さない）
-    pub(crate) fn whole_text(&self) -> std::rc::Rc<str> {
+    pub(crate) fn whole_text(&self) -> std::sync::Arc<str> {
         let mut cache = self.text_cache.borrow_mut();
         match &*cache {
             Some((v, t)) if *v == self.buf.version => t.clone(),
             _ => {
-                let t: std::rc::Rc<str> = self.buf.text().into();
+                let t: std::sync::Arc<str> = self.buf.text().into();
                 *cache = Some((self.buf.version, t.clone()));
                 t
             }
@@ -428,32 +459,115 @@ impl Editor {
 
     // ---------------------------------------------------------------- 検索・置換
 
-    /// 検索語の一致を（バッファか検索語が変わっていれば）計算し直す
-    pub fn refresh_matches(&mut self) {
-        let (pattern, regex) = match self.mode {
-            Mode::Search | Mode::Replace => (self.query.text.clone(), self.search.regex),
-            _ => match (&self.search.last, self.search.highlight) {
-                (Some((p, r, _)), true) => (p.clone(), *r),
-                _ => {
-                    self.search.matches.clear();
-                    self.search.computed = None;
-                    return;
-                }
-            },
-        };
-        let key = (self.buf.version, pattern.clone(), regex);
-        if self.search.computed.as_ref() == Some(&key) {
-            return;
+    /// 今の検索語（入力中ならその語、Normal なら最後に確定した語）
+    fn active_pattern(&self) -> Option<(String, bool)> {
+        match self.mode {
+            Mode::Search | Mode::Replace if !self.query.text.is_empty() => Some((self.query.text.clone(), self.search.regex)),
+            Mode::Search | Mode::Replace => None,
+            _ => self.search.last.as_ref().map(|(p, r, _)| (p.clone(), *r)),
         }
-        self.search.matches = find_matches(&self.whole_text(), &pattern, regex);
-        self.search.computed = Some(key);
     }
 
-    /// 確定した検索の、[start, end) の中の一致（画面の強調用）
+    fn active_key(&self) -> Option<SearchKey> {
+        self.active_pattern().map(|(p, r)| (self.buf.version, p, r))
+    }
+
+    /// 全件を（バッファか検索語が変わっていれば）数え直す。大きなファイルでは裏のスレッドで数え、
+    /// 届いたら `poll_search` で受け取る
+    pub fn refresh_matches(&mut self) {
+        let Some(key) = self.active_key() else {
+            self.search.matches.clear();
+            self.search.computed = None;
+            self.search.job = None;
+            return;
+        };
+        if self.search.computed.as_ref() == Some(&key) || self.search.job.as_ref().is_some_and(|j| j.key == key) {
+            return;
+        }
+        if self.buf.len_bytes() < SYNC_COUNT_LIMIT || self.waker.is_none() {
+            self.search.matches = find_matches_in(&self.buf, &key.1, key.2);
+            self.search.computed = Some(key);
+            self.search.job = None;
+            return;
+        }
+        // 裏では今の内容の複製（rope の複製は O(1)）を数える
+        let snap = self.buf.snapshot();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (pattern, regex, waker, stop) = (key.1.clone(), key.2, self.waker.clone(), cancel.clone());
+        std::thread::spawn(move || {
+            let Some(ms) = find_matches_cancellable(&snap, &pattern, regex, &stop) else { return };
+            if tx.send(ms).is_ok() {
+                if let Some(w) = waker {
+                    w();
+                }
+            }
+        });
+        // 前の検索語の数えは、ここで落とすと止まる
+        self.search.job = Some(CountJob { key, rx, cancel });
+    }
+
+    /// 裏で数えていた全件が届いていれば受け取る。受け取ったら true（描き直す）
+    pub fn poll_search(&mut self) -> bool {
+        let Some(job) = &self.search.job else { return false };
+        let Ok(ms) = job.rx.try_recv() else { return false };
+        let key = job.key.clone();
+        self.search.job = None;
+        self.search.matches = ms;
+        self.search.computed = Some(key);
+        if self.search.move_when_counted {
+            self.search.move_when_counted = false;
+            self.update_incsearch();
+        }
+        if self.search.count_message {
+            self.show_count();
+        }
+        true
+    }
+
+    /// 件数（今の一致が何番目か, 全件）。全件をまだ数え終えていなければ None
+    pub fn match_count(&self) -> Option<(Option<usize>, usize)> {
+        let key = self.active_key()?;
+        if self.search.computed.as_ref() != Some(&key) {
+            return None;
+        }
+        let ms = &self.search.matches;
+        let index = self.search.current.map(|c| ms.partition_point(|m| m.0 < c.0)).filter(|&i| ms.get(i).is_some_and(|m| m.0 == self.search.current.unwrap().0));
+        Some((index, ms.len()))
+    }
+
+    /// 今の検索語で、`at` の近く（INCSEARCH_REACH 以内）の一致
+    fn find_near(&self, at: usize, forward: bool, include_at: bool) -> Option<(usize, usize)> {
+        let (pattern, regex) = self.active_pattern()?;
+        Finder::new(&pattern, regex)?.next_near(&self.buf, at, forward, include_at, INCSEARCH_REACH)
+    }
+
+    /// 今の検索語で、`at` から最寄りの一致
+    fn find_next(&mut self, at: usize, forward: bool, include_at: bool) -> Option<(usize, usize)> {
+        let (pattern, regex) = self.active_pattern()?;
+        let version = self.buf.version;
+        // 一致の無かった語を打ち足しただけなら、探さなくても一致しない（大きなファイルを 1 打ごとになめない）
+        let extends_failed = |(v, p): &(u64, String)| *v == version && pattern.len() >= p.len() && pattern.as_bytes()[..p.len()].eq_ignore_ascii_case(p.as_bytes());
+        if !regex && self.search.no_match.as_ref().is_some_and(extends_failed) {
+            return None;
+        }
+        // 全件を数え終えていれば、その中から二分探索で選ぶ
+        if self.match_count().is_some() {
+            let ms = &self.search.matches;
+            return next_match(ms, at, forward, include_at).map(|i| ms[i]);
+        }
+        let found = Finder::new(&pattern, regex)?.next(&self.buf, at, forward, include_at);
+        if found.is_none() && !regex {
+            self.search.no_match = Some((version, pattern));
+        }
+        found
+    }
+
+    /// 今の検索語の、[start, end) の中の一致（画面の強調用）
     pub fn visible_matches(&self, start: usize, end: usize) -> Vec<(usize, usize)> {
-        let Some((pattern, regex, _)) = &self.search.last else { return Vec::new() };
+        let Some((pattern, regex)) = self.active_pattern() else { return Vec::new() };
         let text = self.buf.slice_string(start, end);
-        find_matches(&text, pattern, *regex).into_iter().map(|(s, e)| (s + start, e + start)).collect()
+        find_matches(&text, &pattern, regex).into_iter().map(|(s, e)| (s + start, e + start)).collect()
     }
 
     pub(crate) fn start_search(&mut self, forward: bool, replace: bool, initial: &str) {
@@ -473,9 +587,20 @@ impl Editor {
         let Some((origin, top)) = self.search.origin else { return };
         self.refresh_matches();
         let at = self.buf.line_start(origin.line) + origin.byte;
-        self.search.current = next_match(&self.search.matches, at, self.search.forward, self.mode == Mode::Replace);
+        let include_at = self.mode == Mode::Replace;
+        self.search.move_when_counted = false;
+        self.search.current = if self.search.job.is_some() {
+            // 全件を裏で数えている大きなファイル: 近くだけ探し、無ければ全件が届いてから決める
+            let near = self.find_near(at, self.search.forward, include_at);
+            self.search.move_when_counted = near.is_none();
+            near
+        } else if self.match_count().is_some() {
+            next_match(&self.search.matches, at, self.search.forward, include_at).map(|i| self.search.matches[i])
+        } else {
+            self.find_next(at, self.search.forward, include_at)
+        };
         match self.search.current {
-            Some(i) => self.set_abs(self.search.matches[i].0),
+            Some((s, _)) => self.set_abs(s),
             None => {
                 self.cursor = origin;
                 self.top = top;
@@ -506,6 +631,17 @@ impl Editor {
                     }
                     return;
                 }
+                if self.search.move_when_counted {
+                    // 近くに無く、全件もまだ届いていない。裏で数えている残りを待って、そこから決める
+                    if let Some(job) = self.search.job.take() {
+                        if let Ok(ms) = job.rx.recv() {
+                            self.search.matches = ms;
+                            self.search.computed = Some(job.key.clone());
+                        }
+                    }
+                    self.update_incsearch();
+                    self.search.move_when_counted = false;
+                }
                 self.mode = Mode::Normal;
                 self.search.last = Some((pattern.clone(), self.search.regex, self.search.forward));
                 self.search.highlight = true;
@@ -530,9 +666,21 @@ impl Editor {
     }
 
     fn show_count(&mut self) {
-        if let Some(i) = self.search.current {
-            let (p, _, f) = self.search.last.clone().unwrap_or_default();
-            self.message = format!("{}{p}  [{}/{}]", if f { '/' } else { '?' }, i + 1, self.search.matches.len());
+        if self.search.current.is_none() {
+            return;
+        }
+        let (p, _, f) = self.search.last.clone().unwrap_or_default();
+        let lead = if f { '/' } else { '?' };
+        match self.match_count() {
+            Some((Some(i), n)) => {
+                self.message = format!("{lead}{p}  [{}/{n}]", i + 1);
+                self.search.count_message = false;
+            }
+            _ => {
+                // 全件はまだ数えている途中。届いたら出し直す
+                self.message = format!("{lead}{p}  [?/…]");
+                self.search.count_message = true;
+            }
         }
     }
 
@@ -546,18 +694,18 @@ impl Editor {
         self.refresh_matches();
         let fwd = forward != reverse;
         let mut at = self.abs();
-        let mut idx = None;
+        let mut found = None;
         for _ in 0..count.max(1) {
-            idx = next_match(&self.search.matches, at, fwd, false);
-            if let Some(i) = idx {
-                at = self.search.matches[i].0;
+            found = self.find_next(at, fwd, false);
+            if let Some((s, _)) = found {
+                at = s;
             }
         }
-        match idx {
-            Some(i) => {
-                self.search.current = Some(i);
+        match found {
+            Some(m) => {
+                self.search.current = Some(m);
                 self.show_count();
-                Some(self.search.matches[i].0)
+                Some(m.0)
             }
             None => {
                 let p = self.search.last.as_ref().map(|l| l.0.clone()).unwrap_or_default();
@@ -581,18 +729,16 @@ impl Editor {
             }
             // 今の 1 件を置き換えて次へ
             Key::Enter => {
-                self.refresh_matches();
-                let Some(i) = self.search.current else { return };
-                let (s, e) = self.search.matches[i];
+                let Some((s, e)) = self.search.current else { return };
                 let rep = self.replacement(s, e);
                 self.hist.begin();
                 self.edit(s, e, &rep);
                 self.hist.close();
                 self.refresh_matches();
                 let after = s + rep.len();
-                self.search.current = next_match(&self.search.matches, after, true, true);
+                self.search.current = self.find_next(after, true, true);
                 match self.search.current {
-                    Some(i) => self.set_abs(self.search.matches[i].0),
+                    Some((s, _)) => self.set_abs(s),
                     None => {
                         self.message = "置換が終わりました".into();
                         self.mode = Mode::Normal;
@@ -603,8 +749,12 @@ impl Editor {
             }
             // すべて置き換える（1 回の u で戻る）
             Key::Alt('a') => {
-                self.refresh_matches();
-                let ms = self.search.matches.clone();
+                // 全件置換は全件が要る。裏で数え終えていなければ、ここで数える
+                let ms = match (self.match_count(), self.active_pattern()) {
+                    (Some(_), _) => self.search.matches.clone(),
+                    (None, Some((p, r))) => find_matches_in(&self.buf, &p, r),
+                    (None, None) => Vec::new(),
+                };
                 if ms.is_empty() {
                     return;
                 }
@@ -682,6 +832,7 @@ impl Editor {
         search.computed = None;
         search.matches.clear();
         search.current = None;
+        search.job = None;
         let keep = Self {
             clipboard: self.clipboard.take(),
             registers: std::mem::take(&mut self.registers),
@@ -1015,6 +1166,36 @@ mod tests {
         let mut e = Editor::new(Buffer::from_str(text), None);
         e.rows = 3;
         e
+    }
+
+    /// 大きなファイルの incsearch: 近く（1MB 以内）に無い一致へは、裏で数えた全件が届いてから移動する。
+    /// 件数も届いてから出る
+    #[test]
+    fn incsearch_far_match_waits_for_count() {
+        let mut text = "filler line without the word\n".repeat(80_000); // 約 2.3MB
+        text.push_str("needle here\n");
+        let mut e = ed(&text);
+        e.waker = Some(std::sync::Arc::new(|| {}));
+        for k in "/needle".chars() {
+            e.key(Key::Char(k));
+        }
+        assert_eq!(e.search.current, None, "近くには無い");
+        assert!(e.search.move_when_counted);
+        let t = std::time::Instant::now();
+        while !e.poll_search() {
+            assert!(t.elapsed() < std::time::Duration::from_secs(10));
+            std::thread::yield_now();
+        }
+        assert_eq!(e.cursor.line, 80_000);
+        assert_eq!(e.match_count(), Some((Some(0), 1)));
+        e.key(Key::Enter);
+        assert_eq!(e.mode, Mode::Normal);
+        assert_eq!(e.message, "/needle  [1/1]");
+        // n は近くから探す（全件はもう数えてある）
+        e.key(Key::Char('g'));
+        e.key(Key::Char('g'));
+        e.key(Key::Char('n'));
+        assert_eq!(e.cursor.line, 80_000);
     }
 
     #[test]
