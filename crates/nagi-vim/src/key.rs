@@ -25,6 +25,16 @@ pub enum Key {
 }
 
 impl Key {
+    /// `parse_keys` で読み戻せる表記（マクロをレジスタに文字列で入れるため）
+    pub fn notation(&self) -> String {
+        match self {
+            Key::Char('<') => "<lt>".into(),
+            Key::Char(c) => c.to_string(),
+            Key::Ctrl(c) => format!("<C-{c}>"),
+            k => k.label(),
+        }
+    }
+
     /// 画面表示用（showcmd）
     pub fn label(&self) -> String {
         match self {

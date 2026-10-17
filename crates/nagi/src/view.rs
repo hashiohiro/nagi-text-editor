@@ -556,11 +556,16 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             let left = if !ed.message.is_empty() {
                 ed.message.clone()
             } else {
-                match ed.mode {
-                    Mode::Insert => "-- INSERT --".into(),
-                    Mode::Visual { line: false } => "-- VISUAL --".into(),
-                    Mode::Visual { line: true } => "-- VISUAL LINE --".into(),
-                    _ => String::new(),
+                let mode = match ed.mode {
+                    Mode::Insert => "-- INSERT --",
+                    Mode::Visual { line: false } => "-- VISUAL --",
+                    Mode::Visual { line: true } => "-- VISUAL LINE --",
+                    _ => "",
+                };
+                // マクロの記録中は Vim と同じく「recording @a」を出す
+                match &ed.recording {
+                    Some((r, _)) => format!("{mode}recording @{r}"),
+                    None => mode.to_string(),
                 }
             };
             let end = p.text(&left, 0, y, FG);

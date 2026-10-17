@@ -133,6 +133,12 @@ const CASES: &[(&str, (usize, usize), &str)] = &[
     ("マーク 行の削除", (9, 1), "magg2dd'ax"),
     ("'< '>", (9, 3), "vjj<Esc>gg'>x"),
     ("`< 位置", (9, 3), "vjl<Esc>gg`<x"),
+    ("マクロ", (9, 1), "qaxjq2@a"),
+    ("マクロ @@", (9, 1), "qadwjq@a@@"),
+    ("マクロ Insert", (1, 1), "qqA;<Esc>jq3@q"),
+    ("マクロ qA 追記", (9, 1), "qaxqqAjq@a"),
+    ("マクロ 検索", (1, 1), "qa/let<CR>rLq@a"),
+    ("マクロ \"ap", (9, 1), "qaxq\"ap"),
     ("? 検索", (11, 1), "?name<CR>x"),
     ("*", (2, 9), "*x"),
     ("dn", (1, 1), "/bar<CR>ggdn"),
@@ -146,7 +152,7 @@ fn nvim() -> Option<PathBuf> {
     p.exists().then_some(p)
 }
 
-/// Vim の :normal に渡す文字列（`<Esc>` → `\<Esc>`）
+/// Vim の feedkeys に渡す文字列（`<Esc>` → `\<Esc>`）
 fn vim_keys(keys: &str) -> String {
     let mut out = String::new();
     let mut chars = keys.chars().peekable();
@@ -183,7 +189,8 @@ fn run_nvim(nvim: &PathBuf, dir: &std::path::Path, start: (usize, usize), keys: 
         .arg("-c")
         .arg(format!("call cursor({}, {})", start.0, start.1))
         .arg("-c")
-        .arg(format!("exe \"normal {}\"", vim_keys(keys)))
+        // 打ったキーとして渡す（:normal だと q の記録に残らない）。x ですぐ実行し、Insert は最後に抜ける
+        .arg(format!("call feedkeys(\"{}\", 'xt')", vim_keys(keys)))
         .arg("-c")
         .arg(format!("call writefile([line('.') . ',' . col('.')], '{}')", cur.display().to_string().replace('\\', "/")))
         .arg("-c")

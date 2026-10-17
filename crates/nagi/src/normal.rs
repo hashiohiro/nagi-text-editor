@@ -637,7 +637,7 @@ impl Editor {
         }
     }
 
-    fn get_register(&self, reg: Option<char>) -> (String, bool) {
+    pub(crate) fn get_register(&self, reg: Option<char>) -> (String, bool) {
         let from_clip = |t: String| {
             let t = t.replace("\r\n", "\n");
             // 自分が入れた内容なら、行単位かどうかも引き継ぐ
@@ -716,6 +716,11 @@ impl Editor {
             Action::Dot => self.repeat_dot(cmd.count),
             Action::Window(c) => self.window_command(c, cmd.count),
             Action::SetMark(c) => self.set_mark(c),
+            Action::Record(c) => {
+                self.recording = Some((c, Vec::new()));
+                self.message.clear();
+            }
+            Action::Play(c) => return self.play_macro(c, n),
             Action::Jump { older } => self.jump(older, n),
             Action::AltBuffer => match cmd.count {
                 Some(n) => self.goto_buffer(&n.to_string()),

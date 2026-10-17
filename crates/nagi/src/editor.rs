@@ -248,6 +248,12 @@ pub struct Editor {
     pub(crate) jump_idx: usize,
     /// ジャンプとして記録しない間（窓の移動や、ジャンプリストでの移動）
     pub(crate) jump_lock: bool,
+    /// 記録中のマクロ（レジスタ, 打ったキー）
+    pub recording: Option<(char, Vec<Key>)>,
+    /// 直前に再生したマクロ（`@@`）
+    pub(crate) last_macro: Option<char>,
+    /// 再生の入れ子の深さ（再生中のキーは記録しない。深すぎる再帰は止める）
+    pub(crate) macro_depth: usize,
 }
 
 impl Editor {
@@ -304,6 +310,9 @@ impl Editor {
             jumps: Vec::new(),
             jump_idx: 0,
             jump_lock: false,
+            recording: None,
+            last_macro: None,
+            macro_depth: 0,
         }
     }
 
@@ -507,6 +516,21 @@ impl Editor {
     pub fn key(&mut self, key: Key) -> Effect {
         // 先頭部分だけを表示している間は、全体が届くのを待ってから処理する（先頭部分を編集してしまわない）
         self.finish_load();
+        // マクロの記録を止める q（Normal と Visual で、ほかのキーの途中でないとき）
+        if self.recording.is_some()
+            && self.macro_depth == 0
+            && key == Key::Char('q')
+            && matches!(self.mode, Mode::Normal | Mode::Visual { .. })
+            && self.pending_keys.is_empty()
+        {
+            self.stop_recording();
+            return Effect::None;
+        }
+        if self.macro_depth == 0 {
+            if let Some((_, ks)) = &mut self.recording {
+                ks.push(key);
+            }
+        }
         if !self.replaying {
             if let Some(rec) = &mut self.dot_rec {
                 rec.push(key);
@@ -1192,6 +1216,11 @@ impl Editor {
         if !self.replaying {
             if let Some(rec) = &mut self.dot_rec {
                 rec.extend(text.chars().map(Key::Char));
+            }
+        }
+        if self.macro_depth == 0 {
+            if let Some((_, ks)) = &mut self.recording {
+                ks.extend(text.chars().map(Key::Char));
             }
         }
         match self.mode {

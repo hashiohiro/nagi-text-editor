@@ -92,6 +92,10 @@ pub enum Action {
     SetMark(char),
     /// `Ctrl-o` / `Ctrl-i`（ジャンプリストを戻る・進む）
     Jump { older: bool },
+    /// `q{reg}`（マクロの記録を始める。止める `q` はエディタが受ける）
+    Record(char),
+    /// `@{reg}`（`@@` は直前のマクロ）
+    Play(char),
     Esc,
 }
 
@@ -342,6 +346,16 @@ pub fn parse_normal(keys: &[Key]) -> Parse {
         Key::Ctrl('^' | '6') => Action::AltBuffer,
         Key::Ctrl('o') => Action::Jump { older: true },
         Key::Ctrl('i') | Key::Tab => Action::Jump { older: false },
+        Key::Char('q') => match p.next() {
+            None => return Parse::Incomplete,
+            Some(Key::Char(c)) if c.is_ascii_alphanumeric() || c == '"' => Action::Record(c),
+            Some(_) => return Parse::Invalid,
+        },
+        Key::Char('@') => match p.next() {
+            None => return Parse::Incomplete,
+            Some(Key::Char(c)) if c.is_ascii_alphanumeric() || matches!(c, '@' | '"' | ':') => Action::Play(c),
+            Some(_) => return Parse::Invalid,
+        },
         Key::Char('m') => match p.next() {
             None => return Parse::Incomplete,
             Some(Key::Char(c)) if c.is_ascii_alphabetic() => Action::SetMark(c),

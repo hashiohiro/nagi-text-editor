@@ -18,6 +18,7 @@ mod difftest;
 mod editor;
 mod finder;
 mod grep_panel;
+mod macros;
 mod marks;
 mod tree_panel;
 mod normal;
