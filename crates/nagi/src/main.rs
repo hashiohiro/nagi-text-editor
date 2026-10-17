@@ -416,6 +416,8 @@ impl App {
             Key::Character(c) if ctrl => c.chars().next().map(|ch| VKey::Ctrl(ch.to_ascii_lowercase())).into_iter().collect(),
             Key::Character(_) => ev.text.as_deref().unwrap_or("").chars().map(VKey::Char).collect(),
             Key::Named(n) => match n {
+                // Ctrl+Space は候補を出す（IntelliJ と同じ）
+                NamedKey::Space if ctrl => vec![VKey::Ctrl(' ')],
                 NamedKey::Space => vec![VKey::Char(' ')],
                 NamedKey::Escape => vec![VKey::Esc],
                 // Ctrl-Enter はコミット（Ctrl-m として渡す）

@@ -65,6 +65,7 @@ const EX_COMMANDS: &[(&str, &str)] = &[
     ("Idea", "IntelliJ で開く"),
     ("source", "設定（ideavimrc）を読み直す"),
     ("NagiStats", "入力の遅延の計測"),
+    ("Git", "コミット（左の欄のコミットのタブ）"),
     ("Gcommit", "コミット（変更の一覧とメッセージ）"),
     ("Gdiff", "今のファイルと HEAD の差分"),
     ("Gblame", "行ごとのコミット（出す・消す）"),
@@ -79,6 +80,39 @@ const EX_COMMANDS: &[(&str, &str)] = &[
     ("GitStage", "カーソルの変更をステージ"),
     ("GitRevert", "カーソルの変更を戻す"),
 ];
+
+/// 打った名前に合うコマンド（大文字小文字は区別しない）。頭が合うものを先に、途中に含むものを後に。
+/// 日本語を打ったら説明文からも探す。打った名前とまったく同じ 1 件だけなら（`force` でなければ）出さない
+pub fn match_commands(body: &str, force: bool) -> Vec<(String, String)> {
+    let low = body.to_lowercase();
+    let mut head = Vec::new();
+    let mut mid = Vec::new();
+    for (c, d) in EX_COMMANDS {
+        let lc = c.to_lowercase();
+        if lc.starts_with(&low) {
+            head.push((c.to_string(), d.to_string()));
+        } else if !low.is_empty() && (lc.contains(&low) || (!body.is_ascii() && d.contains(body))) {
+            mid.push((c.to_string(), d.to_string()));
+        }
+    }
+    head.extend(mid);
+    if !force && head.len() == 1 && head[0].0.eq_ignore_ascii_case(body) {
+        head.clear();
+    }
+    head
+}
+
+/// 実行するコマンド名: 知っている名前と大文字小文字だけ違うなら、その名前に直す（:gblame → Gblame）
+pub fn canonical_cmd(name: &str) -> &str {
+    if name.is_empty() || EX_COMMANDS.iter().any(|(c, _)| *c == name) {
+        return name;
+    }
+    let mut hits = EX_COMMANDS.iter().filter(|(c, _)| c.eq_ignore_ascii_case(name));
+    match (hits.next(), hits.next()) {
+        (Some((c, _)), None) => c,
+        _ => name,
+    }
+}
 
 /// ファイル名を取るコマンド
 const FILE_ARG: &[&str] = &["e", "edit", "w", "write", "w!", "sp", "split", "vs", "vsplit", "saveas", "sav", "tabe"];
@@ -131,8 +165,14 @@ impl Editor {
     }
 
     fn cmd_candidates(&self, text: &str) -> Option<CmdComplete> {
+        self.cmd_candidates_forced(text, false)
+    }
+
+    /// `force` なら、打った名前と同じ 1 件でも出す（Ctrl+Space）
+    pub(crate) fn cmd_candidates_forced(&self, text: &str, force: bool) -> Option<CmdComplete> {
         // 範囲（数字・% ・ ' など）は飛ばす
-        let body_at = text.find(|c: char| c.is_ascii_alphabetic()).unwrap_or(text.len());
+        // 日本語で説明文から探すこともあるので、ASCII 以外の文字でも名前の始まりとする
+        let body_at = text.find(|c: char| c.is_ascii_alphabetic() || !c.is_ascii()).unwrap_or(text.len());
         if text[..body_at].chars().any(|c| !(c.is_ascii_digit() || matches!(c, '%' | '.' | '$' | ',' | '\'' | '<' | '>' | '+' | '-' | ' '))) {
             return None;
         }
@@ -140,12 +180,7 @@ impl Editor {
         match body.split_once(' ') {
             None => {
                 // コマンド名を打っている
-                let low = body.to_lowercase();
-                let items: Vec<(String, String)> = EX_COMMANDS
-                    .iter()
-                    .filter(|(c, _)| c.to_lowercase().starts_with(&low) && (*c != body || body.is_empty()))
-                    .map(|(c, d)| (c.to_string(), d.to_string()))
-                    .collect();
+                let items = match_commands(body, force);
                 (!items.is_empty()).then(|| CmdComplete { items, sel: None, start: body_at, original: body.to_string() })
             }
             Some((name, arg)) => {
@@ -254,5 +289,36 @@ mod tests {
         assert_eq!(e.cmd_complete.as_ref().unwrap().items.len(), 2);
         keys(&mut e, "<Esc>");
         assert!(e.cmd_complete.is_none());
+    }
+
+    #[test]
+    fn ignore_case_and_ctrl_space() {
+        let names = |e: &Editor| e.cmd_complete.as_ref().map(|c| c.items.iter().map(|i| i.0.clone()).collect::<Vec<_>>()).unwrap_or_default();
+        let mut e = Editor::new(Buffer::from_str("x\n"), None);
+        // 小文字でも大文字のコマンドを出す。頭が合うものが先、途中に含むものが後
+        keys(&mut e, ":gbl");
+        assert_eq!(names(&e), vec!["Gblame"]);
+        keys(&mut e, "<C-u>blame");
+        assert_eq!(names(&e), vec!["Gblame"], "途中に含むものも出す");
+        keys(&mut e, "<C-u>GIT");
+        assert!(names(&e).starts_with(&["Git".to_string(), "GitHunk".into(), "GitStage".into(), "GitRevert".into()]), "{:?}", names(&e));
+        assert_eq!(canonical_cmd("git"), "Git");
+        // 日本語なら説明文から
+        keys(&mut e, "<C-u>ブランチ");
+        assert!(names(&e).contains(&"Gbranches".to_string()));
+        // 打ち切った名前と同じ 1 件は出さないが、Ctrl+Space なら出す
+        keys(&mut e, "<C-u>gblame");
+        assert!(e.cmd_complete.is_none());
+        keys(&mut e, "<C-Space>");
+        assert_eq!(names(&e), vec!["Gblame"]);
+        // 小文字のまま実行できる
+        keys(&mut e, "<CR>");
+        assert!(!e.message.contains("E492"), "{}", e.message);
+        assert_eq!(canonical_cmd("gblame"), "Gblame");
+        assert_eq!(canonical_cmd("w"), "w");
+        // Insert の Ctrl+Space は単語の候補
+        let mut e = Editor::new(Buffer::from_str("alpha\nal"), None);
+        keys(&mut e, "GA<C-Space>");
+        assert!(e.completion.is_some());
     }
 }

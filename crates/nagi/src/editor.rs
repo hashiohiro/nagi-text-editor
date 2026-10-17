@@ -704,6 +704,8 @@ impl Editor {
 
     fn insert(&mut self, key: Key) {
         // 補完（Ctrl-n / Ctrl-p）の途中なら先に扱う
+        // Ctrl+Space は Ctrl-n と同じく単語の候補を出す（IntelliJ の基本の補完と同じキー）
+        let key = if key == Key::Ctrl(' ') { Key::Ctrl('n') } else { key };
         if (self.completion.is_some() || matches!(key, Key::Ctrl('n') | Key::Ctrl('p'))) && self.completion_key(key) {
             return;
         }
@@ -734,6 +736,12 @@ impl Editor {
     }
 
     fn command(&mut self, key: Key) -> Effect {
+        // Ctrl+Space: 候補を出し直す（打った名前と同じでも出す）
+        if key == Key::Ctrl(' ') {
+            let text = self.cmdline.text[..self.cmdline.cursor].to_string();
+            self.cmd_complete = self.cmd_candidates_forced(&text, true);
+            return Effect::None;
+        }
         // 候補を選ぶキー（Tab / Ctrl-n / Ctrl-p）
         if self.cmd_complete_key(key) {
             return Effect::None;
@@ -1188,6 +1196,8 @@ impl Editor {
             return e;
         }
         let (name, arg) = cmd.split_once(char::is_whitespace).map_or((cmd, ""), |(n, a)| (n, a.trim()));
+        // 大文字小文字を区別せずにコマンド名を探す（:gblame → Gblame）
+        let name = crate::cmdline_complete::canonical_cmd(name);
         match name {
             "" => {}
             "w" | "write" | "w!" | "write!" if !arg.is_empty() => {

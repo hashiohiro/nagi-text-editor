@@ -82,6 +82,7 @@ fn named(name: &str, leader: &str) -> Option<Vec<Key>> {
         "bslash" => Key::Char('\\'),
         "leader" => return Some(parse_keys(leader, leader)),
         "nop" => return Some(Vec::new()),
+        "c-space" | "c-@" => Key::Ctrl(' '),
         _ => {
             if let Some(rest) = lower.strip_prefix("m-").or(lower.strip_prefix("a-")) {
                 let mut cs = rest.chars();
