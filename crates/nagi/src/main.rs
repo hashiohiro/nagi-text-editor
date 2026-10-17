@@ -14,6 +14,7 @@ mod block;
 mod buffers;
 mod clipboard;
 mod clock;
+mod complete;
 #[cfg(test)]
 mod difftest;
 mod editor;

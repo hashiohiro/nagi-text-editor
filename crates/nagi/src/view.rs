@@ -503,6 +503,9 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     if let Some(f) = &ed.finder {
         draw_finder(&mut p, f, rows, cols);
     }
+    if let (Some(c), Mode::Insert) = (&ed.completion, ed.mode) {
+        draw_completion(&mut p, ed, c, rows, cols);
+    }
     match ed.stripe {
         Some(crate::editor::Side::Left) => draw_stripe_left(&mut p, ed.windows_rows(), ed.tree.is_some()),
         Some(crate::editor::Side::Bottom) => draw_stripe_bottom(&mut p, rows, cols, ed.grep.is_some()),
@@ -636,6 +639,34 @@ fn draw_stripe_bottom(p: &mut Painter, rows: usize, cols: usize, open: bool) {
         p.out.push(Instance::fill(0.0, y, w as f32 * cell.w, cell.h, FG));
     }
     p.text(label, 0, y, if open { BG } else { STATUS_FG });
+}
+
+/// 補完の候補（カーソルの下に最大 10 件。下に余白が無ければ上に）。ターミナルの Vim の補完メニューと同じ形
+fn draw_completion(p: &mut Painter, ed: &Editor, c: &crate::complete::Completion, rows: usize, cols: usize) {
+    const MAX: usize = 10;
+    let cell = p.fonts.cell();
+    let rect = ed.active_rect();
+    let (sl, sb) = ed.buf.pos_of(c.start);
+    if sl < ed.top {
+        return;
+    }
+    let row = rect.y + (sl - ed.top);
+    let line = ed.buf.line_head(sl, sb + 4).0;
+    let col = (rect.x + GUTTER + nagi_core::display_col(&line, sb.min(line.len()), false)).saturating_sub(1);
+    let n = c.items.len().min(MAX);
+    // 選んでいる候補が見える範囲
+    let first = c.sel.map_or(0, |s| s.saturating_sub(MAX - 1));
+    let width = c.items.iter().skip(first).take(n).map(|i| p.width(i)).max().unwrap_or(1) + 2;
+    let col = col.min(cols.saturating_sub(width));
+    let below = row + 1 + n <= rows;
+    let top = if below { row + 1 } else { row.saturating_sub(n) };
+    for (k, item) in c.items.iter().skip(first).take(n).enumerate() {
+        let y = (top + k) as f32 * cell.h;
+        let selected = c.sel == Some(first + k);
+        let (bg, fg) = if selected { (FG, BG) } else { (MATCH_BG, FG) };
+        p.out.push(Instance::fill(col as f32 * cell.w, y, width as f32 * cell.w, cell.h, bg));
+        p.text(&format!(" {item}"), col, y, fg);
+    }
 }
 
 /// ファイルツリー。1 行目は根の名前、2 行目から字下げした木（フォルダは青で `▸` `▾`）。右端に 1px の区切り線

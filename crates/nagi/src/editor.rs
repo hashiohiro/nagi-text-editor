@@ -254,6 +254,8 @@ pub struct Editor {
     pub(crate) in_global: bool,
     /// 直前の :s（& で繰り返す）
     pub(crate) last_sub: Option<crate::ex_cmds::LastSub>,
+    /// 補完の途中（Insert の Ctrl-n / Ctrl-p）
+    pub completion: Option<crate::complete::Completion>,
     /// プロジェクトの定義の索引
     pub(crate) nav: crate::nav::IndexState,
     /// 作業中のバッファの閉じた折りたたみ
@@ -330,6 +332,7 @@ impl Editor {
             last_sub: None,
             folds: Default::default(),
             nav: Default::default(),
+            completion: None,
             block_insert: None,
             reg_blocks: HashMap::new(),
             reg_block_next: None,
@@ -512,6 +515,7 @@ impl Editor {
     }
 
     fn leave_insert(&mut self) {
+        self.completion = None;
         // 矩形の I A c: 打った文字列をほかの行へ（同じ undo のグループに入れる）
         let placed = self.finish_block_insert();
         self.hist.close();
@@ -610,6 +614,10 @@ impl Editor {
     }
 
     fn insert(&mut self, key: Key) {
+        // 補完（Ctrl-n / Ctrl-p）の途中なら先に扱う
+        if (self.completion.is_some() || matches!(key, Key::Ctrl('n') | Key::Ctrl('p'))) && self.completion_key(key) {
+            return;
+        }
         match key {
             Key::Esc | Key::Ctrl('c') => self.leave_insert(),
             // 新しい行のインデントは今の行に合わせる（autoindent。Neovim の既定と同じ）
