@@ -144,9 +144,9 @@ impl Lang {
     /// ハイライトのクエリ。TypeScript は JavaScript のクエリに TS 固有分を足して使う（grammar の想定どおり）
     fn highlights_source(self) -> String {
         match self {
-            Lang::TypeScript | Lang::Tsx => {
-                format!("{}\n{}", tree_sitter_javascript::HIGHLIGHT_QUERY, tree_sitter_typescript::HIGHLIGHTS_QUERY)
-            }
+            Lang::TypeScript => format!("{}\n{}", tree_sitter_javascript::HIGHLIGHT_QUERY, tree_sitter_typescript::HIGHLIGHTS_QUERY),
+            // TSX は JSX の要素（タグ・属性）の規則も足す
+            Lang::Tsx => format!("{}\n{}\n{}", tree_sitter_javascript::HIGHLIGHT_QUERY, tree_sitter_javascript::JSX_HIGHLIGHT_QUERY, tree_sitter_typescript::HIGHLIGHTS_QUERY),
             Lang::JavaScript => format!("{}\n{}", tree_sitter_javascript::HIGHLIGHT_QUERY, tree_sitter_javascript::JSX_HIGHLIGHT_QUERY),
             Lang::Java => tree_sitter_java::HIGHLIGHTS_QUERY.to_string(),
             Lang::Rust => tree_sitter_rust::HIGHLIGHTS_QUERY.to_string(),
@@ -205,6 +205,8 @@ fn classify(capture: &str, lang: Lang) -> Option<Hl> {
         "constant" if capture.contains("builtin") => Hl::Number,
         "function" | "method" => Hl::Function,
         "attribute" | "decorator" | "annotation" | "label" => Hl::Attribute,
+        // JSX / HTML のタグ（<div> など。部品の <MyButton> は型の色になる）
+        "tag" => Hl::Keyword,
         _ => return None,
     })
 }
@@ -710,6 +712,28 @@ mod tests {
         assert!(k.iter().any(|(t, h)| t == "\\n" && *h == Hl::Escape) || k.iter().any(|(t, h)| t.starts_with('"') && *h == Hl::String), "{k:?}");
         assert!(k.contains(&("1".into(), Hl::Number)), "{k:?}");
         assert!(Lang::detect(Path::new("src/main.rs")) == Some(Lang::Rust));
+    }
+
+    /// JSX / TSX: タグはキーワードの色、属性は属性の色、部品（大文字で始まる）は型の色、{ } の中は TS / JS のまま
+    #[test]
+    fn jsx_and_tsx() {
+        let src = "const App = (p: Props) => <div className=\"box\" onClick={() => go(1)}><MyButton label=\"ok\" /></div>;\n";
+        let k = kinds(Lang::Tsx, src);
+        assert!(k.contains(&("div".into(), Hl::Keyword)), "{k:?}");
+        assert!(k.contains(&("className".into(), Hl::Attribute)), "{k:?}");
+        assert!(k.contains(&("onClick".into(), Hl::Attribute)), "{k:?}");
+        assert!(k.contains(&("MyButton".into(), Hl::Type)), "{k:?}");
+        assert!(k.contains(&("\"box\"".into(), Hl::String)), "{k:?}");
+        assert!(k.contains(&("Props".into(), Hl::Type)), "{k:?}");
+        assert!(k.contains(&("go".into(), Hl::Function)), "{k:?}");
+        assert!(k.contains(&("1".into(), Hl::Number)), "{k:?}");
+        let src = "export default function App() { return <section id=\"a\"><Item key={1} /></section>; }\n";
+        let k = kinds(Lang::JavaScript, src);
+        assert!(k.contains(&("section".into(), Hl::Keyword)), "{k:?}");
+        assert!(k.contains(&("id".into(), Hl::Attribute)), "{k:?}");
+        assert!(k.contains(&("Item".into(), Hl::Type)), "{k:?}");
+        assert_eq!(Lang::detect(Path::new("a/App.tsx")), Some(Lang::Tsx));
+        assert_eq!(Lang::detect(Path::new("a/App.jsx")), Some(Lang::JavaScript));
     }
 
     #[test]
