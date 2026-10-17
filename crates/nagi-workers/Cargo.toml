@@ -6,6 +6,7 @@ publish.workspace = true
 
 # UI スレッドの外で行う仕事（ファイル一覧、全文検索、ファイル監視）。結果はチャネルで返し、届いたら UI を起こす
 [dependencies]
+nagi-syntax.workspace = true
 ignore = "0.4.33"
 grep-searcher = "0.1.17"
 grep-regex = "0.1.14"

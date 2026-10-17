@@ -254,6 +254,8 @@ pub struct Editor {
     pub(crate) in_global: bool,
     /// 直前の :s（& で繰り返す）
     pub(crate) last_sub: Option<crate::ex_cmds::LastSub>,
+    /// プロジェクトの定義の索引
+    pub(crate) nav: crate::nav::IndexState,
     /// 作業中のバッファの閉じた折りたたみ
     pub(crate) folds: crate::folds::Folds,
     /// 矩形の I A c で、Insert を抜けたときにほかの行へ入れる約束
@@ -327,6 +329,7 @@ impl Editor {
             in_global: false,
             last_sub: None,
             folds: Default::default(),
+            nav: Default::default(),
             block_insert: None,
             reg_blocks: HashMap::new(),
             reg_block_next: None,
@@ -418,6 +421,21 @@ impl Editor {
         });
         if spawned.is_ok() {
             self.pending_syntax = Some(rx);
+        }
+    }
+
+    /// 構文木を使うコマンドの前に: 裏で解析中なら終わるのを待ち、今の内容に合わせる
+    pub(crate) fn ensure_syntax(&mut self) {
+        if self.syntax.is_none() {
+            if let Some(rx) = self.pending_syntax.take() {
+                if let Ok(mut s) = rx.recv() {
+                    s.waker = self.waker.clone();
+                    self.syntax = Some(s);
+                }
+            }
+        }
+        if let Some(s) = &mut self.syntax {
+            s.sync(&mut self.buf);
         }
     }
 
@@ -993,6 +1011,8 @@ impl Editor {
             Ok(n) => {
                 let name = self.buf.path.as_ref().map(|p| p.display().to_string()).unwrap_or_default();
                 self.message = format!("\"{name}\" {}L, {n}B 書き込み", self.buf.line_count());
+                // 保存したファイルの定義を索引し直す（裏で）
+                self.reindex_saved();
                 true
             }
             Err(e) => {
@@ -1078,6 +1098,11 @@ impl Editor {
             "Buffers" => self.open_finder(crate::finder::Source::Buffers),
             "Recent" | "History" => self.open_finder(crate::finder::Source::Recent),
             "Commands" | "Palette" => self.open_finder(crate::finder::Source::Commands),
+            "Symbols" => self.symbol_search(false),
+            "Types" | "Classes" => self.symbol_search(true),
+            "Outline" => self.outline(),
+            "Refs" | "References" => self.find_references(),
+            "Idea" | "IntelliJ" => self.open_in_intellij(),
             "Grep" | "grep" | "Rg" | "rg" => self.open_grep(arg),
             "cn" | "cnext" => self.next_hit(true, arg.parse().unwrap_or(1)),
             "cp" | "cprevious" | "cN" | "cNext" => self.next_hit(false, arg.parse().unwrap_or(1)),
@@ -1120,6 +1145,15 @@ impl Editor {
             Some((Some("search.project"), _)) => self.open_grep(""),
             Some((Some("tool.project"), _)) => self.toggle_tree(),
             Some((Some("palette"), _)) => self.open_finder(crate::finder::Source::Commands),
+            Some((Some("finder.symbols"), _)) => self.symbol_search(false),
+            Some((Some("finder.types"), _)) => self.symbol_search(true),
+            Some((Some("outline"), _)) => self.outline(),
+            Some((Some("nav.definition"), _)) => self.goto_definition(),
+            Some((Some("nav.references"), _)) => self.find_references(),
+            Some((Some("nav.method_prev"), _)) => self.method_jump(false),
+            Some((Some("nav.method_next"), _)) => self.method_jump(true),
+            Some((Some("jump.back"), _)) => self.jump(true, 1),
+            Some((Some("jump.forward"), _)) => self.jump(false, 1),
             Some((Some(cmd), desc)) => self.message = format!("未実装: {desc}（{cmd}）"),
             Some((None, desc)) => self.message = format!("Nagi には無い機能: {desc}"),
             None => self.message = format!("不明なアクション: {name}"),

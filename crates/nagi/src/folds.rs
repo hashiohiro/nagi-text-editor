@@ -72,6 +72,9 @@ impl Folds {
 impl Editor {
     /// `z` のコマンド（c o a M R E j k と、Visual の f）
     pub(crate) fn fold_cmd(&mut self, c: char, visual: Option<(usize, usize)>) {
+        if c != 'f' {
+            self.ensure_syntax();
+        }
         let line = self.cursor.line;
         let syntax_folds = |ed: &Editor, all: bool| -> Option<Vec<(usize, usize)>> {
             let s = ed.syntax.as_ref()?;

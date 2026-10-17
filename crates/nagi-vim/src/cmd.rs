@@ -106,6 +106,10 @@ pub enum Action {
     Fold(char),
     /// `zz` `zt` `zb`（カーソルの行を画面の中央・上・下へ）
     ScrollCursor(char),
+    /// `gd` / `gD` / `Ctrl-]`（定義へ）
+    GotoDef,
+    /// `gr`（参照を探す）
+    References,
     /// `g-` / `g+`（undo の木を時間の順に）
     UndoTime { later: bool },
     /// `&`（直前の :s を今の行に）と `g&`（フラグごと全体に）
@@ -364,6 +368,7 @@ pub fn parse_normal(keys: &[Key]) -> Parse {
         Key::Ctrl('r') => Action::Redo,
         Key::Ctrl('^' | '6') => Action::AltBuffer,
         Key::Ctrl('o') => Action::Jump { older: true },
+        Key::Ctrl(']') => Action::GotoDef,
         Key::Ctrl('i') | Key::Tab => Action::Jump { older: false },
         Key::Char('q') => match p.next() {
             None => return Parse::Incomplete,
@@ -413,6 +418,8 @@ pub fn parse_normal(keys: &[Key]) -> Parse {
             Some(Key::Char(';')) => Action::LastChange,
             Some(Key::Char('&')) => Action::RepeatSub { all: true },
             Some(Key::Char('-')) => Action::UndoTime { later: false },
+            Some(Key::Char('d' | 'D')) => Action::GotoDef,
+            Some(Key::Char('r')) => Action::References,
             Some(Key::Char('+')) => Action::UndoTime { later: true },
             Some(_) => return Parse::Invalid,
         },

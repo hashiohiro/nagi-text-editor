@@ -19,6 +19,8 @@ pub fn ideavim(name: &str) -> Option<(Option<&'static str>, &'static str)> {
         "RecentLocations" => (Some("jump.recent"), "最近の編集箇所"),
         "ManageRecentProjects" => (Some("finder.projects"), "最近のプロジェクト"),
         "FileStructurePopup" => (Some("outline"), "ファイルの構造（tree-sitter）"),
+        "GotoDeclaration" | "GotoImplementation" | "GotoTypeDeclaration" => (Some("nav.definition"), "定義へ（tree-sitter の索引）"),
+        "FindUsages" | "ShowUsages" => (Some("nav.references"), "参照を探す（名前の一致）"),
         // 移動（M3, M4）
         "Back" => (Some("jump.back"), "前の位置へ（Ctrl-o 相当）"),
         "Forward" => (Some("jump.forward"), "次の位置へ（Ctrl-i 相当）"),

@@ -10,6 +10,8 @@ use std::sync::mpsc::Receiver;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
+pub mod defs;
+
 use nagi_core::{Buffer, EditLog};
 use tree_sitter::{InputEdit, Language, Node, Parser, Point, Query, QueryCursor, StreamingIterator, Tree};
 
@@ -565,6 +567,20 @@ impl Syntax {
         out.sort_unstable();
         out.dedup();
         out
+    }
+}
+
+impl Syntax {
+    /// このファイルの定義の一覧（ファイルの構造）
+    pub fn defs(&self, buf: &Buffer) -> Vec<defs::Def> {
+        let Some(tree) = &self.tree else { return Vec::new() };
+        defs::collect_defs(tree, &|r: Range<usize>| buf.slice_string(r.start, r.end))
+    }
+
+    /// `at` の識別子の、このファイルの中の定義の位置（引数・ローカル変数を含む）
+    pub fn local_definition(&self, buf: &Buffer, at: usize) -> Option<usize> {
+        let tree = self.tree.as_ref()?;
+        defs::find_local_definition(tree, at, &|r: Range<usize>| buf.slice_string(r.start, r.end))
     }
 }
 

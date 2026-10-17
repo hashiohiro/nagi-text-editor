@@ -19,6 +19,13 @@ pub enum Source {
     Recent,
     /// コマンドパレット
     Commands,
+    /// 定義の候補（gd で複数見つかったとき）
+    Definitions,
+    /// シンボル検索（GotoSymbol）と型だけ（GotoClass）
+    Symbols,
+    Types,
+    /// ファイルの構造（FileStructurePopup）
+    Outline,
 }
 
 /// コマンドパレットの項目（説明, Ex コマンド）
@@ -60,6 +67,10 @@ impl Source {
             Source::Buffers => "バッファ",
             Source::Recent => "最近のファイル",
             Source::Commands => "コマンド",
+            Source::Definitions => "定義",
+            Source::Symbols => "シンボル",
+            Source::Types => "型",
+            Source::Outline => "構造",
         }
     }
 }
@@ -73,6 +84,8 @@ pub struct Finder {
     pub items: Vec<String>,
     /// バッファの候補なら、その番号（items と同じ並び）
     docs: Vec<usize>,
+    /// 場所の候補なら (パス, 行, 列)（items と同じ並び）
+    locs: Vec<(PathBuf, usize, usize)>,
     /// 当たった候補 (items の添字, 点数)。良い順
     pub hits: Vec<(u32, i32)>,
     /// 選んでいる候補（hits の添字。0 が一番良いもの）
@@ -89,6 +102,17 @@ pub struct Finder {
 }
 
 impl Finder {
+    /// 場所の一覧を入れる（定義の候補・シンボル・ファイルの構造）
+    pub fn set_locations(&mut self, items: Vec<String>, locs: Vec<(PathBuf, usize, usize)>) {
+        self.items = items;
+        self.locs = locs;
+        self.scored_query.clear();
+        self.scored_upto = 0;
+        self.hits.clear();
+        self.refilter();
+        self.selected = 0;
+    }
+
     pub fn walking(&self) -> bool {
         self.walk.is_some() || self.recent_rx.is_some()
     }
@@ -156,6 +180,7 @@ impl Editor {
             root: root.clone(),
             items: Vec::new(),
             docs: Vec::new(),
+            locs: Vec::new(),
             hits: Vec::new(),
             selected: 0,
             scroll: 0,
@@ -185,6 +210,8 @@ impl Editor {
                     f.docs.push(i);
                 }
             }
+            // 場所の一覧は呼んだ側が set_locations で入れる
+            Source::Definitions | Source::Symbols | Source::Types | Source::Outline => {}
             Source::Commands => {
                 for (label, cmd) in COMMANDS {
                     f.items.push(format!("{label}  :{cmd}"));
@@ -310,7 +337,7 @@ impl Editor {
         self.mode = Mode::Normal;
         let Some(&(i, _)) = f.hits.get(f.selected) else { return Effect::None };
         let i = i as usize;
-        if let (Some(v), false) = (split, f.source == Source::Commands) {
+        if let (Some(v), false) = (split, matches!(f.source, Source::Commands | Source::Outline)) {
             self.split(v);
         }
         match f.source {
@@ -323,6 +350,10 @@ impl Editor {
             Source::Commands => {
                 let cmd = f.items[i].rsplit_once("  :").map_or("", |(_, c)| c).to_string();
                 return self.run_ex(&cmd);
+            }
+            Source::Definitions | Source::Symbols | Source::Types | Source::Outline => {
+                let (p, l, c) = f.locs[i].clone();
+                self.jump_to(&p, l, c);
             }
         }
         Effect::None

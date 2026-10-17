@@ -23,6 +23,7 @@ mod folds;
 mod grep_panel;
 mod macros;
 mod marks;
+mod nav;
 mod tree_panel;
 mod normal;
 mod stats;
@@ -253,6 +254,8 @@ impl App {
         if let Some(ed) = &mut self.ed {
             ed.start_watch(&rc_files);
             clock::mark("watch started");
+            // 定義の索引も表示の後に裏で作る（保存したものがあれば差分だけ）
+            ed.start_index();
         }
         // 試験用: 表示倍率が変わったときと同じ処理をこの倍率で行う（OS の設定を変えずに確かめる）
         if let Some(s) = std::env::var("NAGI_DEBUG_SCALE").ok().and_then(|v| v.parse().ok()) {
@@ -841,6 +844,7 @@ impl ApplicationHandler for App {
             ed.poll_finder();
             ed.poll_grep();
             ed.poll_tree();
+            ed.poll_index();
         }
         if self.ed.as_mut().is_some_and(|ed| ed.poll_watch().1) {
             self.reload_rc();

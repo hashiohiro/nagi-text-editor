@@ -863,6 +863,7 @@ dependencies = [
  "grep-searcher",
  "ignore",
  "nagi-core",
+ "nagi-syntax",
  "notify",
 ]
 

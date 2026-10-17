@@ -2,6 +2,7 @@
 
 pub mod files;
 pub mod grep;
+pub mod index;
 pub mod watch;
 
 /// UI のイベントループを起こす関数

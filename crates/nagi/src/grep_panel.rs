@@ -113,6 +113,17 @@ impl Editor {
         self.rows = self.text_rows(self.active_rect());
     }
 
+    /// 正規表現で探し始める（参照の検索 gr）。パネルに結果を出し、編集画面に戻る
+    pub(crate) fn open_grep_regex(&mut self, pattern: &str) {
+        self.open_grep("");
+        if let Some(g) = &mut self.grep {
+            g.regex = true;
+            g.query.set(pattern);
+        }
+        self.mode = Mode::Normal;
+        self.restart_grep();
+    }
+
     fn restart_grep(&mut self) {
         let waker = self.waker.clone().unwrap_or_else(|| std::sync::Arc::new(|| {}));
         let Some(g) = &mut self.grep else { return };

@@ -484,9 +484,7 @@ impl Editor {
                     _ => nagi_syntax::ObjKind::Argument,
                 };
                 // 構文木を今の内容に合わせてから探す（大きなファイルで裏の再解析中なら、位置をずらした木で）
-                if let Some(s) = &mut self.syntax {
-                    s.sync(&mut self.buf);
-                }
+                self.ensure_syntax();
                 let Some(syn) = &self.syntax else {
                     self.message = "このファイルには構文木が無いので使えません".into();
                     return None;
@@ -843,6 +841,8 @@ impl Editor {
             }
             Action::Play(c) => return self.play_macro(c, n),
             Action::UndoTime { later } => self.undo_time(later, n),
+            Action::GotoDef => self.goto_definition(),
+            Action::References => self.find_references(),
             Action::Fold(c) => {
                 let lines = visual.map(|_| {
                     let (s, e, _) = self.visual_range();
