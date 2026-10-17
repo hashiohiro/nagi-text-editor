@@ -14,6 +14,7 @@ mod block;
 mod buffers;
 mod clipboard;
 mod clock;
+mod cmdline_complete;
 mod complete;
 mod diagnostics;
 #[cfg(test)]
@@ -848,6 +849,7 @@ impl ApplicationHandler for App {
             ed.poll_tree();
             ed.poll_index();
             ed.poll_make();
+            ed.poll_cmd_files();
         }
         if self.ed.as_mut().is_some_and(|ed| ed.poll_watch().1) {
             self.reload_rc();

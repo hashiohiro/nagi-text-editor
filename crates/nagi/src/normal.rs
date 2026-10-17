@@ -866,6 +866,8 @@ impl Editor {
                 if visual.is_some() {
                     self.cmdline.set("'<,'>");
                 }
+                // 打つ前から候補を出す
+                self.update_cmd_complete();
                 self.message.clear();
             }
             Action::Cmdline(c) => self.start_search(c == '/', false, ""),

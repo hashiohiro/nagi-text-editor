@@ -257,6 +257,10 @@ pub struct Editor {
     /// 動いている診断のコマンドと、その結果
     pub(crate) make: Option<crate::diagnostics::MakeState>,
     pub diags: Vec<crate::diagnostics::Diag>,
+    /// `:` のコマンドラインの候補
+    pub cmd_complete: Option<crate::cmdline_complete::CmdComplete>,
+    /// `:e` などの候補のために裏で集めているファイルの一覧（根, 途中, 集めた分）
+    pub(crate) cmd_files: Option<(PathBuf, nagi_workers::files::FileWalk, Vec<String>)>,
     /// 補完の途中（Insert の Ctrl-n / Ctrl-p）
     pub completion: Option<crate::complete::Completion>,
     /// プロジェクトの定義の索引
@@ -336,6 +340,8 @@ impl Editor {
             folds: Default::default(),
             nav: Default::default(),
             completion: None,
+            cmd_complete: None,
+            cmd_files: None,
             make: None,
             diags: Vec::new(),
             block_insert: None,
@@ -650,13 +656,22 @@ impl Editor {
     }
 
     fn command(&mut self, key: Key) -> Effect {
+        // 候補を選ぶキー（Tab / Ctrl-n / Ctrl-p）
+        if self.cmd_complete_key(key) {
+            return Effect::None;
+        }
         match key {
             Key::Esc | Key::Ctrl('c') => {
                 self.cmdline = Prompt::default();
                 self.mode = Mode::Normal;
+                self.cmd_complete = None;
             }
-            Key::Backspace if self.cmdline.text.is_empty() => self.mode = Mode::Normal,
+            Key::Backspace if self.cmdline.text.is_empty() => {
+                self.mode = Mode::Normal;
+                self.cmd_complete = None;
+            }
             Key::Enter => {
+                self.cmd_complete = None;
                 let line = std::mem::take(&mut self.cmdline).text;
                 self.mode = Mode::Normal;
                 // `|` で区切った複数のコマンド（`source ~/.ideavimrc | echo "..."`）。:s の中の | は区切らない
@@ -671,7 +686,9 @@ impl Editor {
                 return effect;
             }
             k => {
-                self.cmdline.key(k);
+                if self.cmdline.key(k) {
+                    self.update_cmd_complete();
+                }
             }
         }
         Effect::None
@@ -1280,7 +1297,10 @@ impl Editor {
                     self.repl.insert(text);
                 }
             }
-            Mode::Command => self.cmdline.insert(text),
+            Mode::Command => {
+                self.cmdline.insert(text);
+                self.update_cmd_complete();
+            }
             Mode::Finder => self.finder_insert(text),
             Mode::GrepPrompt => self.grep_insert(text),
             _ => {}
