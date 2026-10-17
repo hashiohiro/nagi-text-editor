@@ -21,6 +21,8 @@ const FG: [f32; 4] = rgb(0xcccccc);
 const LINE_NO: [f32; 4] = rgb(0x4e4e4e);
 const TILDE: [f32; 4] = rgb(0x3a3a3a);
 const CURSOR: [f32; 4] = rgb(0xcccccc);
+/// Visual で選んだ行末（空行など）にあるカーソル。選択の反転とも地の色とも見分けられる灰色
+const CURSOR_IN_SELECTION: [f32; 4] = rgb(0x6c6c6c);
 const STATUS_FG: [f32; 4] = rgb(0x8a8a8a);
 /// 検索の一致（今いるもの以外）の背景
 const MATCH_BG: [f32; 4] = rgb(0x3a3a3a);
@@ -309,10 +311,11 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             items.push(it);
         }
         // Visual で改行まで選んでいる行は、Vim と同じく行末を 1 セル反転して見せる（空行が選ばれていると分かるように）
+        let mut eol_selected = false;
         if let Some((vs, ve, lw)) = visual {
             let eol = abs + line.len();
-            let selected = if lw { line_selected } else { eol >= vs && eol < ve };
-            if selected && !(is_cursor_line && ed.cursor.byte >= line.len()) {
+            eol_selected = if lw { line_selected } else { eol >= vs && eol < ve };
+            if eol_selected && !(is_cursor_line && ed.cursor.byte >= line.len()) {
                 items.push(Item { g: Cow::Borrowed(" "), width: 1, fg: BG, bg: Some(FG), underline: false });
             }
         }
@@ -335,7 +338,12 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             p.caret(GUTTER + before + caret_in_pre, y);
         } else {
             // ブロックカーソル（文字を反転）。空行や行末では 1 セルの塗り
+            // 選択の中では反転をもう一度反転して元の色に戻す（ターミナルの Vim と同じ見え方。行単位の Visual でも位置が分かる）
             match cursor_item {
+                Some(i) if visual.is_some() && items[i].fg == BG && items[i].bg.is_some() => {
+                    items[i].fg = items[i].bg.take().unwrap_or(FG);
+                    p.draw(&items, GUTTER, y);
+                }
                 Some(i) => {
                     items[i].bg = Some(CURSOR);
                     items[i].fg = BG;
@@ -345,7 +353,8 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
                     let c = p.draw(&items, GUTTER, y);
                     // 切った行でカーソルが見えている部分より右にあるときは描かない
                     if !cut {
-                        p.out.push(Instance::fill(c as f32 * cell.w, y, cell.w, cell.h, CURSOR));
+                        let color = if eol_selected { CURSOR_IN_SELECTION } else { CURSOR };
+                        p.out.push(Instance::fill(c as f32 * cell.w, y, cell.w, cell.h, color));
                     }
                 }
             }
