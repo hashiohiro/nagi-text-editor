@@ -51,6 +51,7 @@ pub fn ideavim(name: &str) -> Option<(Option<&'static str>, &'static str)> {
         "Stop" => (Some("job.stop"), "実行中のコマンドを止める"),
         // git（M5）
         "Vcs.ShowTabbedFileHistory" => (Some("git.file_history"), "ファイルの履歴"),
+        "Vcs.Show.Log" | "ActivateVersionControlToolWindow" => (Some("git.log"), "履歴（グラフ付きのログ）"),
         "Annotate" => (Some("git.blame"), "blame"),
         "ChangesView" => (Some("git.changes"), "変更の一覧（コミットのパネル）"),
         "CheckinProject" => (Some("git.commit"), "コミット（コミットのパネル）"),

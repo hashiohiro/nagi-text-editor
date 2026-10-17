@@ -124,7 +124,7 @@ impl Editor {
     fn close_diff(&mut self) {
         self.diff = None;
         self.mode = match self.diff_return.take() {
-            Some(m @ (Mode::List | Mode::Normal)) => m,
+            Some(m @ (Mode::List | Mode::Normal | Mode::Log)) => m,
             _ => Mode::Normal,
         };
     }

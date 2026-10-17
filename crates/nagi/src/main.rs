@@ -28,6 +28,7 @@ mod finder;
 mod git_ui;
 mod folds;
 mod grep_panel;
+mod log_view;
 mod macros;
 mod marks;
 mod nav;
@@ -878,6 +879,7 @@ impl ApplicationHandler for App {
             ed.poll_git();
             ed.poll_commit();
             ed.poll_blame();
+            ed.poll_log();
         }
         // ダイアログで選んだ名前で保存する（ダイアログが上書きを確かめている）
         if let Some(r) = self.save_dialog.as_ref().and_then(|rx| rx.try_recv().ok()) {

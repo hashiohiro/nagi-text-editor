@@ -396,7 +396,7 @@ fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
                 items.push(Item { g: Cow::Borrowed(" "), width: 1, fg: BG, bg: Some(FG), underline: false });
             }
         }
-        if !is_cursor_line || matches!(ed.mode, Mode::Command | Mode::Search | Mode::Replace | Mode::Finder | Mode::GrepPrompt | Mode::List | Mode::CommitMsg | Mode::Diff) {
+        if !is_cursor_line || matches!(ed.mode, Mode::Command | Mode::Search | Mode::Replace | Mode::Finder | Mode::GrepPrompt | Mode::List | Mode::CommitMsg | Mode::Diff | Mode::Log) {
             p.draw(&items, rect.x + gutter, y);
             continue;
         }
@@ -558,6 +558,10 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     if let (Some(r), Some(c)) = (ed.commit_rect(), &ed.commit) {
         draw_commit_panel(&mut p, ed, c, r);
     }
+    if let (Some(l), None) = (&ed.log, &ed.diff) {
+        let (x, w) = ed.windows_x();
+        draw_log_view(&mut p, l, Rect { x, y: 0, w, h: ed.windows_rows() });
+    }
     if let Some(d) = &ed.diff {
         let (x, w) = ed.windows_x();
         draw_diff_view(&mut p, d, Rect { x, y: 0, w, h: ed.windows_rows() });
@@ -630,6 +634,22 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         }
         Mode::CommitMsg => {
             p.text(if ed.message.is_empty() { "-- コミットメッセージ --   Esc 一覧へ   Ctrl-Enter コミット" } else { &ed.message }, 0, y, FG);
+        }
+        Mode::Log => {
+            let l = ed.log.as_ref();
+            let left = if !ed.message.is_empty() {
+                ed.message.clone()
+            } else if l.is_some_and(|l| l.filtering) {
+                format!("/{}", l.map_or("", |l| l.filter.text.as_str()))
+            } else {
+                "-- 履歴 --".into()
+            };
+            let end = p.text(&left, 0, y, FG);
+            let help = "j/k 移動  / 絞り込み  Tab ファイル  Enter 差分  o チェックアウト  b ブランチ  c チェリーピック  y ハッシュ  q 閉じる ";
+            let pc = cols.saturating_sub(p.width(help));
+            if end + 2 <= pc {
+                p.text(help, pc, y, STATUS_FG);
+            }
         }
         Mode::Diff => {
             let d = ed.diff.as_ref();
@@ -886,6 +906,140 @@ fn draw_commit_panel(p: &mut Painter, ed: &Editor, c: &crate::commit_panel::Comm
     // 下の行: キーの案内
     let hy = y0 + (r.h - 1) as f32 * cell.h;
     p.text(" Space 選択  a すべて  Enter 開く  d 差分  u 戻す  c メッセージへ  Ctrl-Enter コミット  P コミットしてプッシュ  r 読み直す  q 閉じる", r.x, hy, STATUS_FG);
+}
+
+/// 履歴（窓の領域全体）。左にブランチ、中央にグラフ付きのコミット、右に選んだコミットの中身
+fn draw_log_view(p: &mut Painter, l: &crate::log_view::LogView, r: Rect) {
+    const LANES: [[f32; 4]; 5] = [rgb(0x87afd7), rgb(0xd7af87), rgb(0x87af87), rgb(0xd787af), rgb(0xafafd7)];
+    let cell = p.fonts.cell();
+    let (x0, y0) = (r.x as f32 * cell.w, r.y as f32 * cell.h);
+    p.out.push(Instance::fill(x0, y0, r.w as f32 * cell.w, r.h as f32 * cell.h, BG));
+    let bw = 20.min(r.w / 6);
+    let dw = 42.min(r.w / 3);
+    let cx = r.x + bw + 1;
+    let cw = r.w.saturating_sub(bw + dw + 2);
+    let dx = cx + cw + 1;
+    // 上の行: 絞り込みと件数
+    let n = l.visible.iter().filter(|&&i| l.rows[i].commit.is_some()).count();
+    let head = format!(
+        " {}{}   {} 件{}",
+        if l.filter.text.is_empty() { "/ で絞り込み".to_string() } else { format!("/{}", l.filter.text) },
+        l.path.as_ref().map_or(String::new(), |p| format!("   ファイル: {p}")),
+        n,
+        if l.loading { " …" } else { "" }
+    );
+    p.text(&head, r.x, y0, if l.filtering { FG } else { STATUS_FG });
+    p.out.push(Instance::fill(x0, y0 + cell.h - 1.0, r.w as f32 * cell.w, 1.0, LINE_NO));
+    let body = r.h.saturating_sub(1);
+    // 左: ブランチ
+    let saved = p.cols;
+    p.cols = r.x + bw;
+    let mut y = y0 + cell.h;
+    let mut last_sec = "";
+    for (sec, name, cur) in &l.branches {
+        if y >= y0 + body as f32 * cell.h {
+            break;
+        }
+        if sec != last_sec {
+            p.text(&format!(" {sec}"), r.x, y, STATUS_FG);
+            y += cell.h;
+            last_sec = sec;
+        }
+        p.text(&format!(" {} {name}", if *cur { '*' } else { ' ' }), r.x, y, if *cur { FG } else { STATUS_FG });
+        y += cell.h;
+    }
+    p.cols = saved;
+    p.out.push(Instance::fill((r.x + bw) as f32 * cell.w + cell.w * 0.5, y0 + cell.h, 1.0, body as f32 * cell.h, LINE_NO));
+    // 中央: コミット
+    let saved = p.cols;
+    p.cols = cx + cw;
+    for (k, &i) in l.visible.iter().enumerate().skip(l.top).take(body) {
+        let row = &l.rows[i];
+        let y = y0 + (1 + k - l.top) as f32 * cell.h;
+        let sel = k == l.selected;
+        let focused = sel && !l.focus_files;
+        if focused {
+            p.out.push(Instance::fill(cx as f32 * cell.w, y, cw as f32 * cell.w, cell.h, FG));
+        } else if sel {
+            p.out.push(Instance::fill(cx as f32 * cell.w, y, cw as f32 * cell.w, cell.h, MATCH_BG));
+        }
+        let mut c = cx + 1;
+        for (j, ch) in crate::log_view::pretty_graph(&row.graph).chars().enumerate() {
+            let mut b = [0u8; 4];
+            let color = if focused { BG } else { LANES[(j / 2) % LANES.len()] };
+            c = p.text(ch.encode_utf8(&mut b), c, y, color);
+        }
+        if let Some(cm) = &row.commit {
+            let (fg, dim, refc) = if focused { (BG, BG, BG) } else { (FG, STATUS_FG, rgb(0xd7af87)) };
+            // 作者と日時は表示の幅で揃える（全角は 2 セル）
+            let pad = |p: &Painter, s: &str, w: usize| {
+                let t: String = s.chars().scan(0, |acc, ch| {
+                    *acc += p.width(ch.encode_utf8(&mut [0u8; 4]));
+                    (*acc <= w).then_some(ch)
+                }).collect();
+                let tw = p.width(&t);
+                format!("{t}{}", " ".repeat(w.saturating_sub(tw)))
+            };
+            let right = format!("{} {} {}", pad(p, &cm.author, 10), pad(p, &cm.date, 9), cm.short);
+            let rw = p.width(&right);
+            let mut c2 = c + 1;
+            if !cm.refs.is_empty() {
+                c2 = p.text(&format!("{}  ", cm.refs), c2, y, refc);
+            }
+            let limit = (cx + cw).saturating_sub(rw + 1);
+            let saved2 = p.cols;
+            p.cols = limit.saturating_sub(1);
+            p.text(&cm.subject, c2, y, fg);
+            p.cols = saved2;
+            p.text(&right, limit, y, dim);
+        }
+    }
+    p.cols = saved;
+    p.out.push(Instance::fill((cx + cw) as f32 * cell.w + cell.w * 0.5, y0 + cell.h, 1.0, body as f32 * cell.h, LINE_NO));
+    // 右: 選んだコミットの中身
+    let saved = p.cols;
+    p.cols = r.x + r.w;
+    if let Some(d) = &l.detail {
+        let mut y = y0 + cell.h;
+        let line = |p: &mut Painter, y: &mut f32, s: &str, color: [f32; 4]| {
+            p.text(s, dx + 1, *y, color);
+            *y += cell.h;
+        };
+        line(p, &mut y, &format!("{}   {}   {}", &d.hash[..7.min(d.hash.len())], d.author, d.date), STATUS_FG);
+        line(p, &mut y, &format!("親 {}", d.parents.split(' ').map(|h| &h[..7.min(h.len())]).collect::<Vec<_>>().join(" ")), STATUS_FG);
+        y += cell.h * 0.5;
+        for (k, m) in d.message.lines().enumerate().take(8) {
+            line(p, &mut y, m, if k == 0 { rgb(0xe8e8e8) } else { STATUS_FG });
+        }
+        y += cell.h * 0.5;
+        line(p, &mut y, &format!("変えたファイル（{}）", d.files.len()), STATUS_FG);
+        let limit = y0 + r.h as f32 * cell.h;
+        for (k, (st, path)) in d.files.iter().enumerate() {
+            if y + cell.h > limit {
+                break;
+            }
+            let sel = l.focus_files && k == l.file_sel;
+            if sel {
+                p.out.push(Instance::fill(dx as f32 * cell.w, y, (r.x + r.w - dx) as f32 * cell.w, cell.h, FG));
+            }
+            let sc = if sel {
+                BG
+            } else {
+                match st {
+                    'A' => GIT_ADD,
+                    'D' => GIT_DEL,
+                    'M' => GIT_MOD,
+                    _ => rgb(0xd7af5f),
+                }
+            };
+            let c = p.text(&format!("{st}"), dx + 1, y, sc);
+            p.text(&format!("  {path}"), c, y, if sel { BG } else { FG });
+            y += cell.h;
+        }
+    } else if !l.rows.is_empty() {
+        p.text("…", dx + 1, y0 + cell.h, STATUS_FG);
+    }
+    p.cols = saved;
 }
 
 /// 左右並べの差分（窓の領域全体）。足した行は緑、消した行は赤、変えた行は青の地、対の行は変わった部分を濃く
