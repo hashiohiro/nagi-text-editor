@@ -25,6 +25,14 @@ const CURSOR: [f32; 4] = rgb(0xcccccc);
 /// Visual で選んだ行末（空行など）にあるカーソル。選択の反転とも地の色とも見分けられる灰色
 const CURSOR_IN_SELECTION: [f32; 4] = rgb(0x6c6c6c);
 const STATUS_FG: [f32; 4] = rgb(0x8a8a8a);
+/// git の変更マーカー（足した行・変えた行・消した位置）と、差分の地の色
+const GIT_ADD: [f32; 4] = rgb(0x87af87);
+const GIT_MOD: [f32; 4] = rgb(0x87afd7);
+const GIT_DEL: [f32; 4] = rgb(0xd75f5f);
+const DIFF_ADD_BG: [f32; 4] = rgb(0x16261a);
+const DIFF_DEL_BG: [f32; 4] = rgb(0x2c1a1a);
+const DIFF_WORD_BG: [f32; 4] = rgb(0x2c4a70);
+const DIFF_WORD_DEL_BG: [f32; 4] = rgb(0x6a2a2a);
 /// 診断のある行の行番号（エラーと警告）
 const DIAG_ERROR: [f32; 4] = rgb(0xd75f5f);
 const DIAG_WARN: [f32; 4] = rgb(0xd7af5f);
@@ -188,6 +196,8 @@ struct Pane<'a> {
     buf: &'a nagi_core::Buffer,
     /// 診断のある行（行 → エラーか）。行番号の色に使う
     diags: std::collections::HashMap<usize, bool>,
+    /// git の行頭の変更マーカー
+    marks: std::collections::HashMap<usize, crate::git_ui::Marker>,
     folds: &'a crate::folds::Folds,
     syntax: Option<&'a nagi_syntax::Syntax>,
     cursor: nagi_core::Cursor,
@@ -270,6 +280,15 @@ fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
             None => LINE_NO,
         };
         p.text(&format!("{:>5} ", ln + 1), rect.x, y, num_color);
+        // git の変更マーカー（行番号の左端の細い帯。消した位置は赤い短い線）
+        if let Some(m) = pane.marks.get(&ln) {
+            let x = rect.x as f32 * cell.w + 1.0;
+            match m {
+                crate::git_ui::Marker::Add => p.out.push(Instance::fill(x, y, 3.0, cell.h, GIT_ADD)),
+                crate::git_ui::Marker::Mod => p.out.push(Instance::fill(x, y, 3.0, cell.h, GIT_MOD)),
+                crate::git_ui::Marker::DelAbove => p.out.push(Instance::fill(x, y - 1.0, cell.w * 1.2, 3.0, GIT_DEL)),
+            }
+        }
         // 閉じた折りたたみは 1 行で「+-- 12 行: 頭の行」と薄く出す（Vim の Folded と同じ形）
         if let Some((s, e)) = pane.folds.outer_at(ln).filter(|f| f.0 == ln) {
             let x = (rect.x + GUTTER) as f32 * cell.w;
@@ -446,6 +465,8 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             f.scroll = f.selected + 1 - h;
         }
     }
+    // 見えている窓のバッファの git の差分（版が変わったときだけ計算し直す）
+    ed.prepare_git();
     let ed: &Editor = ed;
     let split = ed.is_split();
     let rects = ed.window_rects();
@@ -464,7 +485,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         let last = buf.line_count().saturating_sub(1);
         let mut cursor = st.cursor;
         cursor.line = cursor.line.min(last);
-        let pane = Pane { buf, diags: ed.diag_lines(buf.path.as_deref()), folds, syntax, cursor, top: st.top.min(last), frac: if active { ed.frac } else { 0.0 }, active };
+        let pane = Pane { buf, marks: ed.git_markers(buf.path.as_deref()), diags: ed.diag_lines(buf.path.as_deref()), folds, syntax, cursor, top: st.top.min(last), frac: if active { ed.frac } else { 0.0 }, active };
         draw_pane(&mut p, ed, &pane, Rect { h: ed.text_rows(rect), ..rect });
     }
     // 窓ごとの状態行（分割中だけ。Vim の laststatus=1 と同じ）と、左右の窓の間の 1px の区切り線
@@ -514,6 +535,9 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     if let Some(f) = &ed.finder {
         draw_finder(&mut p, f, rows, cols);
     }
+    if ed.git.popup.is_some() && ed.mode == Mode::Normal {
+        draw_hunk_popup(&mut p, ed, rows, cols);
+    }
     if let (Some(c), Mode::Insert) = (&ed.completion, ed.mode) {
         draw_completion(&mut p, ed, c, rows, cols);
     }
@@ -531,6 +555,11 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     p.out.push(Instance::fill(0.0, y, w as f32, h as f32 - y, BG));
     let name = ed.buf.path.as_ref().map_or("[No Name]".to_string(), |p| p.display().to_string());
     let keys = format!("{}{}", ed.pending_keys.iter().map(|k| k.label()).collect::<String>(), ed.showcmd);
+    // git のブランチ（main ↑1）
+    let keys = match ed.git_branch_label() {
+        Some(b) => format!("{keys}   {b}"),
+        None => keys,
+    };
     // 分割中は位置を窓ごとの状態行に出すので、最下行には入力中のキーだけを出す
     let ruler = if split {
         format!("{keys} ")
@@ -658,6 +687,66 @@ fn draw_stripe_bottom(p: &mut Painter, rows: usize, cols: usize, open: bool) {
         p.out.push(Instance::fill(0.0, y, w as f32 * cell.w, cell.h, FG));
     }
     p.text(label, 0, y, if open { BG } else { STATUS_FG });
+}
+
+/// 行頭のマーカーから出る差分のポップアップ（変更のまとまりの下。古い行は赤、新しい行は緑の地、変わった部分を濃く）
+fn draw_hunk_popup(p: &mut Painter, ed: &Editor, rows: usize, cols: usize) {
+    const MAX_LINES: usize = 12;
+    let Some((old, new, h)) = ed.popup_lines() else { return };
+    let cell = p.fonts.cell();
+    let rect = ed.active_rect();
+    let last = if new.is_empty() { h.new.start.saturating_sub(1) } else { h.new.end - 1 };
+    if last < ed.top {
+        return;
+    }
+    let below = rect.y + (last - ed.top) + 1;
+    let x0 = rect.x + GUTTER - 1;
+    let w = rect.w.saturating_sub(GUTTER).min(110).max(40).min(cols.saturating_sub(x0));
+    let n_old = old.len().min(MAX_LINES);
+    let n_new = new.len().min(MAX_LINES);
+    let h_rows = 1 + n_old + n_new;
+    // 下に入らなければ、まとまりの上に出す
+    let top = if below + h_rows <= rows { below } else { (rect.y + h.new.start.saturating_sub(ed.top)).saturating_sub(h_rows) };
+    let (x, y0) = (x0 as f32 * cell.w, top as f32 * cell.h);
+    p.out.push(Instance::fill(x - 1.0, y0 - 1.0, w as f32 * cell.w + 2.0, h_rows as f32 * cell.h + 2.0, LINE_NO));
+    p.out.push(Instance::fill(x, y0, w as f32 * cell.w, h_rows as f32 * cell.h, rgb(0x141414)));
+    let saved = p.cols;
+    p.cols = x0 + w;
+    let total = ed.git.popup.map(|i| i + 1).unwrap_or(0);
+    let kind = match h.kind {
+        nagi_core::linediff::HunkKind::Add => format!("{} 行を足した", new.len()),
+        nagi_core::linediff::HunkKind::Del => format!("{} 行を消した", old.len()),
+        nagi_core::linediff::HunkKind::Mod => format!("{} 行を変えた", new.len().max(old.len())),
+    };
+    p.text(&format!(" 変更 {total}   {kind}     [c 前  ]c 次  u 戻す  s ステージ  Esc 閉じる"), x0, y0, STATUS_FG);
+    let mut y = y0 + cell.h;
+    // 対になる行は変わった部分を濃く塗る
+    for (i, l) in old.iter().take(n_old).enumerate() {
+        p.out.push(Instance::fill(x, y, w as f32 * cell.w, cell.h, DIFF_DEL_BG));
+        let span = new.get(i).map(|n| nagi_core::linediff::changed_span(l, n).0);
+        draw_diff_line(p, "−", l, span, DIFF_WORD_DEL_BG, GIT_DEL, x0, y);
+        y += cell.h;
+    }
+    for (i, l) in new.iter().take(n_new).enumerate() {
+        p.out.push(Instance::fill(x, y, w as f32 * cell.w, cell.h, DIFF_ADD_BG));
+        let span = old.get(i).map(|o| nagi_core::linediff::changed_span(o, l).1);
+        draw_diff_line(p, "+", l, span, DIFF_WORD_BG, GIT_ADD, x0, y);
+        y += cell.h;
+    }
+    p.cols = saved;
+}
+
+/// 差分の 1 行（先頭の印と、変わった部分の地）
+#[allow(clippy::too_many_arguments)]
+fn draw_diff_line(p: &mut Painter, sign: &str, text: &str, span: Option<std::ops::Range<usize>>, word_bg: [f32; 4], sign_color: [f32; 4], col: usize, y: f32) {
+    let lead = format!(" {sign} ");
+    let mut items = p.items(&lead, sign_color);
+    for (b, g) in text.grapheme_indices(true) {
+        let width = p.cell_width(g);
+        let hit = span.as_ref().is_some_and(|s| b >= s.start && b < s.end);
+        items.push(Item { g: Cow::Borrowed(g), width, fg: FG, bg: if hit { Some(word_bg) } else { None }, underline: false });
+    }
+    p.draw(&items, col, y);
 }
 
 /// `:` のコマンドラインの候補（最下行のすぐ上に最大 10 件。補う語の位置から）

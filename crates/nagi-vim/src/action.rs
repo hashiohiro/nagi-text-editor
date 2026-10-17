@@ -21,6 +21,10 @@ pub fn ideavim(name: &str) -> Option<(Option<&'static str>, &'static str)> {
         "FileStructurePopup" => (Some("outline"), "ファイルの構造（tree-sitter）"),
         "GotoDeclaration" | "GotoImplementation" | "GotoTypeDeclaration" => (Some("nav.definition"), "定義へ（tree-sitter の索引）"),
         "FindUsages" | "ShowUsages" => (Some("nav.references"), "参照を探す（名前の一致）"),
+        "VcsShowNextChangeMarker" => (Some("git.hunk_next"), "次の変更へ"),
+        "VcsShowPrevChangeMarker" => (Some("git.hunk_prev"), "前の変更へ"),
+        "VcsShowCurrentChangeMarker" => (Some("git.hunk_popup"), "カーソルの変更を見る"),
+        "Vcs.RollbackChangedLines" => (Some("git.hunk_revert"), "カーソルの変更を戻す"),
         // 移動（M3, M4）
         "Back" => (Some("jump.back"), "前の位置へ（Ctrl-o 相当）"),
         "Forward" => (Some("jump.forward"), "次の位置へ（Ctrl-i 相当）"),

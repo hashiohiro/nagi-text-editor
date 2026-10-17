@@ -22,6 +22,7 @@ mod difftest;
 mod editor;
 mod ex_cmds;
 mod finder;
+mod git_ui;
 mod folds;
 mod grep_panel;
 mod macros;
@@ -262,6 +263,8 @@ impl App {
             clock::mark("watch started");
             // 定義の索引も表示の後に裏で作る（保存したものがあれば差分だけ）
             ed.start_index();
+            // git の状態（行頭の変更マーカーと状態行のブランチ）
+            ed.start_git();
         }
         // 試験用: 表示倍率が変わったときと同じ処理をこの倍率で行う（OS の設定を変えずに確かめる）
         if let Some(s) = std::env::var("NAGI_DEBUG_SCALE").ok().and_then(|v| v.parse().ok()) {
@@ -867,6 +870,7 @@ impl ApplicationHandler for App {
             ed.poll_index();
             ed.poll_make();
             ed.poll_cmd_files();
+            ed.poll_git();
         }
         // ダイアログで選んだ名前で保存する（ダイアログが上書きを確かめている）
         if let Some(r) = self.save_dialog.as_ref().and_then(|rx| rx.try_recv().ok()) {

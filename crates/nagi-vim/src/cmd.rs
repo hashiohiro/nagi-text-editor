@@ -106,6 +106,8 @@ pub enum Action {
     Fold(char),
     /// `zz` `zt` `zb`（カーソルの行を画面の中央・上・下へ）
     ScrollCursor(char),
+    /// `]c` / `[c`（次・前の変更へ）
+    Hunk { next: bool },
     /// `gd` / `gD` / `Ctrl-]`（定義へ）
     GotoDef,
     /// `gr`（参照を探す）
@@ -354,6 +356,7 @@ pub fn parse_normal(keys: &[Key]) -> Parse {
             None => return Parse::Incomplete,
             Some(Key::Char('p')) => Action::Put { after: k == Key::Char(']'), indent: true },
             Some(Key::Char('P')) => Action::Put { after: false, indent: true },
+            Some(Key::Char('c')) => Action::Hunk { next: k == Key::Char(']') },
             Some(_) => return Parse::Invalid,
         },
         Key::Char('J') => Action::Join,

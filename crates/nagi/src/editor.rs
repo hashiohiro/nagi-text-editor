@@ -256,6 +256,8 @@ pub struct Editor {
     pub(crate) in_global: bool,
     /// 直前の :s（& で繰り返す）
     pub(crate) last_sub: Option<crate::ex_cmds::LastSub>,
+    /// git（status・HEAD の版・差分・ポップアップ）
+    pub(crate) git: crate::git_ui::GitState,
     /// 動いている診断のコマンドと、その結果
     pub(crate) make: Option<crate::diagnostics::MakeState>,
     pub diags: Vec<crate::diagnostics::Diag>,
@@ -345,6 +347,7 @@ impl Editor {
             cmd_complete: None,
             cmd_files: None,
             make: None,
+            git: Default::default(),
             diags: Vec::new(),
             block_insert: None,
             reg_blocks: HashMap::new(),
@@ -592,6 +595,11 @@ impl Editor {
             if let Some(rec) = &mut self.dot_rec {
                 rec.push(key);
             }
+        }
+        // 変更のポップアップを開いている間の u s Esc
+        if self.mode == Mode::Normal && self.hunk_popup_key(key) {
+            self.scroll_into_view();
+            return Effect::None;
         }
         let effect = match self.mode {
             Mode::Normal | Mode::Visual { .. } => self.normal_key(key),
@@ -1074,8 +1082,9 @@ impl Editor {
             Ok(n) => {
                 let name = self.buf.path.as_ref().map(|p| p.display().to_string()).unwrap_or_default();
                 self.message = format!("\"{name}\" {}L, {n}B 書き込み", self.buf.line_count());
-                // 保存したファイルの定義を索引し直す（裏で）
+                // 保存したファイルの定義を索引し直す（裏で）。git の状態も取り直す
                 self.reindex_saved();
+                self.refresh_status();
                 true
             }
             Err(e) => {
@@ -1179,6 +1188,9 @@ impl Editor {
             "Refs" | "References" => self.find_references(),
             "Idea" | "IntelliJ" => self.open_in_intellij(),
             "Make" | "make" => self.make(arg),
+            "GitHunk" => self.open_hunk_popup(),
+            "GitStage" => self.stage_hunk(),
+            "GitRevert" => self.revert_hunk(),
             "eslint" | "Lint" => self.make("npx eslint -f unix ."),
             "Grep" | "grep" | "Rg" | "rg" => self.open_grep(arg),
             "cn" | "cnext" => self.next_hit(true, arg.parse().unwrap_or(1)),
@@ -1231,6 +1243,10 @@ impl Editor {
             Some((Some("nav.method_next"), _)) => self.method_jump(true),
             Some((Some("jump.back"), _)) => self.jump(true, 1),
             Some((Some("nav.error_next"), _)) => self.next_error(true),
+            Some((Some("git.hunk_next"), _)) => self.hunk_jump(true, 1),
+            Some((Some("git.hunk_prev"), _)) => self.hunk_jump(false, 1),
+            Some((Some("git.hunk_popup"), _)) => self.open_hunk_popup(),
+            Some((Some("git.hunk_revert"), _)) => self.revert_hunk(),
             Some((Some("nav.error_prev"), _)) => self.next_error(false),
             Some((Some("jump.forward"), _)) => self.jump(false, 1),
             Some((Some(cmd), desc)) => self.message = format!("未実装: {desc}（{cmd}）"),
