@@ -45,6 +45,21 @@ impl History {
         }
     }
 
+    /// 閉じたグループの数（`squash_from` に渡す目印）
+    pub fn len(&mut self) -> usize {
+        self.close();
+        self.undo.len()
+    }
+
+    /// `from` 以降に閉じたグループを 1 つにまとめる（`:g` のように、いくつもの変更を 1 回の u で戻すため）
+    pub fn squash_from(&mut self, from: usize) {
+        self.close();
+        if self.undo.len() > from + 1 {
+            let merged: Vec<Change> = self.undo.drain(from..).flatten().collect();
+            self.undo.push(merged);
+        }
+    }
+
     /// 1 グループ戻す。戻した後にカーソルを置く絶対 byte 位置を返す
     pub fn undo(&mut self, buf: &mut Buffer) -> Option<usize> {
         self.close();

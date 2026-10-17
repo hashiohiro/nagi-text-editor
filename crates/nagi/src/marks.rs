@@ -38,12 +38,13 @@ pub(crate) fn shift_line(line: usize, sl: usize, el: usize, nl: usize) -> usize 
 impl Editor {
     /// 編集の前に呼ぶ: [start, end) を `text` に置き換えるとき、後ろのマークとジャンプの行をずらす
     pub(crate) fn shift_marks(&mut self, start: usize, end: usize, text: &str) {
-        let (sl, _) = self.buf.pos_of(start);
-        let (el, _) = self.buf.pos_of(end);
+        let (sl, sb) = self.buf.pos_of(start);
+        let (el, eb) = self.buf.pos_of(end);
         let nl = text.matches('\n').count();
         if el == sl && nl == 0 {
             return;
         }
+        self.shift_anchors(sl, el, nl, sb == 0 && eb == 0);
         let f = |c: &mut Cursor| c.line = shift_line(c.line, sl, el, nl);
         self.marks.named.values_mut().for_each(f);
         if let Some(c) = &mut self.marks.pc {

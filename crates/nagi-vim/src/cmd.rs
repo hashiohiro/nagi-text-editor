@@ -96,6 +96,8 @@ pub enum Action {
     Record(char),
     /// `@{reg}`（`@@` は直前のマクロ）
     Play(char),
+    /// `&`（直前の :s を今の行に）と `g&`（フラグごと全体に）
+    RepeatSub { all: bool },
     Esc,
 }
 
@@ -356,6 +358,7 @@ pub fn parse_normal(keys: &[Key]) -> Parse {
             Some(Key::Char(c)) if c.is_ascii_alphanumeric() || matches!(c, '@' | '"' | ':') => Action::Play(c),
             Some(_) => return Parse::Invalid,
         },
+        Key::Char('&') => Action::RepeatSub { all: false },
         Key::Char('m') => match p.next() {
             None => return Parse::Incomplete,
             Some(Key::Char(c)) if c.is_ascii_alphabetic() => Action::SetMark(c),
@@ -381,6 +384,7 @@ pub fn parse_normal(keys: &[Key]) -> Parse {
         Key::Char('g') => match p.next() {
             None => return Parse::Incomplete,
             Some(Key::Char(';')) => Action::LastChange,
+            Some(Key::Char('&')) => Action::RepeatSub { all: true },
             Some(_) => return Parse::Invalid,
         },
         _ => return Parse::Invalid,

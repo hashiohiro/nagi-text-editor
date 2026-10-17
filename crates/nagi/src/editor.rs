@@ -248,6 +248,11 @@ pub struct Editor {
     pub(crate) jump_idx: usize,
     /// ジャンプとして記録しない間（窓の移動や、ジャンプリストでの移動）
     pub(crate) jump_lock: bool,
+    /// `:g` と `:normal` が 1 行ずつ処理する行の目印（入れ子の段ごと。編集でずらし、消えた行は None）
+    pub(crate) line_anchors: Vec<Vec<Option<usize>>>,
+    pub(crate) in_global: bool,
+    /// 直前の :s（& で繰り返す）
+    pub(crate) last_sub: Option<crate::ex_cmds::LastSub>,
     /// 記録中のマクロ（レジスタ, 打ったキー）
     pub recording: Option<(char, Vec<Key>)>,
     /// 直前に再生したマクロ（`@@`）
@@ -310,6 +315,9 @@ impl Editor {
             jumps: Vec::new(),
             jump_idx: 0,
             jump_lock: false,
+            line_anchors: Vec::new(),
+            in_global: false,
+            last_sub: None,
             recording: None,
             last_macro: None,
             macro_depth: 0,
@@ -603,7 +611,7 @@ impl Editor {
                 let line = std::mem::take(&mut self.cmdline).text;
                 self.mode = Mode::Normal;
                 // `|` で区切った複数のコマンド（`source ~/.ideavimrc | echo "..."`）。:s の中の | は区切らない
-                let cmds: Vec<String> = if self.is_substitute(&line) { vec![line] } else { line.split('|').map(str::to_string).collect() };
+                let cmds: Vec<String> = if self.keeps_bar(&line) { vec![line] } else { line.split('|').map(str::to_string).collect() };
                 let mut effect = Effect::None;
                 for cmd in cmds {
                     match self.ex(cmd.trim()) {
@@ -747,7 +755,7 @@ impl Editor {
     }
 
     /// 入力のたびに、最寄りの一致へカーソルを動かす（incsearch）
-    fn update_incsearch(&mut self) {
+    pub(crate) fn update_incsearch(&mut self) {
         let Some((origin, top)) = self.search.origin else { return };
         self.refresh_matches();
         let at = self.buf.line_start(origin.line) + origin.byte;
@@ -983,9 +991,9 @@ impl Editor {
 
     fn ex(&mut self, cmd: &str) -> Effect {
         let cmd = cmd.trim_start_matches(':').trim();
-        if self.is_substitute(cmd) {
-            self.substitute(cmd);
-            return Effect::None;
+        // 範囲を取るコマンド（:s :g :d :normal など）と :{行}
+        if let Some(e) = self.ex_ranged(cmd) {
+            return e;
         }
         let (name, arg) = cmd.split_once(char::is_whitespace).map_or((cmd, ""), |(n, a)| (n, a.trim()));
         match name {
@@ -1063,96 +1071,10 @@ impl Editor {
             "marks" => self.list_marks(),
             "delm" | "delmarks" => self.delete_marks(arg, false),
             "delm!" | "delmarks!" => self.delete_marks(arg, true),
-            n if n.chars().all(|c| c.is_ascii_digit()) => {
-                self.push_jump();
-                let line = n.parse::<usize>().unwrap_or(1).saturating_sub(1);
-                self.with_motion(|m, c| m.goto_line(c, line));
-            }
             n if n.starts_with('!') => self.message = format!("未実装: 外部コマンド（{cmd}）"),
             _ => self.message = format!("E492: エディタのコマンドではありません: {cmd}"),
         }
         Effect::None
-    }
-
-    /// `[範囲]s/検索/置換/フラグ` の形か（範囲は 空 . % 数字 , $）
-    fn is_substitute(&self, cmd: &str) -> bool {
-        let cmd = cmd.trim().trim_start_matches(':');
-        let body = cmd.trim_start_matches(|c: char| c.is_ascii_digit() || matches!(c, ',' | '%' | '.' | '$'));
-        let rest = body.strip_prefix("substitute").or(body.strip_prefix("s"));
-        rest.and_then(|r| r.chars().next()).is_some_and(|c| !c.is_alphanumeric() && !c.is_whitespace())
-    }
-
-    fn substitute(&mut self, cmd: &str) {
-        let body_start = cmd.find(|c: char| !(c.is_ascii_digit() || matches!(c, ',' | '%' | '.' | '$'))).unwrap_or(0);
-        let range = &cmd[..body_start];
-        let rest = &cmd[body_start..];
-        let rest = rest.strip_prefix("substitute").or(rest.strip_prefix("s")).unwrap_or(rest);
-        let Some(delim) = rest.chars().next() else { return };
-        let parts: Vec<&str> = rest[delim.len_utf8()..].splitn(3, delim).collect();
-        let pat = parts.first().copied().unwrap_or("");
-        let rep = parts.get(1).copied().unwrap_or("");
-        let flags = parts.get(2).copied().unwrap_or("");
-        let last = self.buf.line_count().saturating_sub(1);
-        let n = |s: &str| match s {
-            "." | "" => Some(self.cursor.line),
-            "$" => Some(last),
-            s => s.parse::<usize>().ok().map(|n| n.saturating_sub(1)),
-        };
-        let (l1, l2) = match range {
-            "%" => (0, last),
-            r => {
-                let (a, b) = r.split_once(',').unwrap_or((r, r));
-                match (n(a), n(b)) {
-                    (Some(a), Some(b)) => (a, b.min(last)),
-                    _ => {
-                        self.message = format!("E16: 範囲が不正です: {r}");
-                        return;
-                    }
-                }
-            }
-        };
-        // 確認付き（c）や検索語が空なら、置換の入力欄を開く（ideavimrc の <C-s> = :%s///cg）
-        if pat.is_empty() || flags.contains('c') {
-            self.start_search(true, true, pat);
-            if !rep.is_empty() {
-                self.repl.set(rep);
-            }
-            if !pat.is_empty() {
-                self.search.regex = true;
-                self.update_incsearch();
-            }
-            return;
-        }
-        let Some(re) = compile_search(pat, true) else {
-            self.message = format!("E486: パターンが不正です: {pat}");
-            return;
-        };
-        // Vim の置換文字列（\1 と &）を regex の書き方（${1} と ${0}）に直す
-        let rep = rep.replace("\\&", "\u{0}").replace('&', "${0}").replace('\u{0}', "&");
-        let rep = (1..=9).fold(rep, |r, i| r.replace(&format!("\\{i}"), &format!("${{{i}}}")));
-        let global = flags.contains('g');
-        let mut count = 0;
-        let mut last_hit = None;
-        self.hist.begin();
-        for l in (l1..=l2).rev() {
-            let line = self.buf.line(l);
-            let new = if global { re.replace_all(&line, rep.as_str()) } else { re.replace(&line, rep.as_str()) };
-            if new != line {
-                last_hit = last_hit.or(Some(l));
-                count += if global { re.find_iter(&line).count() } else { 1 };
-                let start = self.buf.line_start(l);
-                let new = new.into_owned();
-                self.edit(start, start + line.len(), &new);
-            }
-        }
-        self.hist.close();
-        self.message = if count == 0 { format!("E486: パターンは見つかりませんでした: {pat}") } else { format!("{count} 箇所を置換しました") };
-        // カーソルは最後に置換した行の最初の文字へ（Vim と同じ）
-        if let Some(l) = last_hit {
-            self.cursor.line = l;
-            self.with_motion(|m, c| m.first_non_blank(c));
-        }
-        self.clamp_normal();
     }
 
     /// IdeaVim の `:action <IntelliJ のアクション名>` を Nagi の機能に振り分ける

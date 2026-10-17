@@ -792,6 +792,7 @@ dependencies = [
  "nagi-text",
  "nagi-vim",
  "nagi-workers",
+ "regex",
  "unicode-segmentation",
  "windows",
  "winit",

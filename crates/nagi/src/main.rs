@@ -16,6 +16,7 @@ mod clock;
 #[cfg(test)]
 mod difftest;
 mod editor;
+mod ex_cmds;
 mod finder;
 mod grep_panel;
 mod macros;

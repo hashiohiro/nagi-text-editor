@@ -320,7 +320,7 @@ impl Editor {
     // ---------------------------------------------------------------- 範囲
 
     /// 行 l1..=l2 の範囲（改行込み）。最終行で改行が無ければ、前の行の改行を含める
-    fn lines_range(&self, l1: usize, l2: usize) -> (usize, usize) {
+    pub(crate) fn lines_range(&self, l1: usize, l2: usize) -> (usize, usize) {
         let l2 = l2.min(self.buf.line_count().saturating_sub(1));
         let start = self.buf.line_start(l1);
         let end = self.buf.line_start(l2) + self.buf.line_len_with_break(l2);
@@ -523,7 +523,7 @@ impl Editor {
     }
 
     /// 範囲 [s, e) にオペレーターを適用する
-    fn apply(&mut self, op: Op, s: usize, e: usize, lw: bool, reg: Option<char>) {
+    pub(crate) fn apply(&mut self, op: Op, s: usize, e: usize, lw: bool, reg: Option<char>) {
         let text = self.buf.slice_string(s, e);
         match op {
             Op::Yank => {
@@ -721,6 +721,10 @@ impl Editor {
                 self.message.clear();
             }
             Action::Play(c) => return self.play_macro(c, n),
+            Action::RepeatSub { all } => {
+                let range = if all { (0, self.buf.line_count().saturating_sub(1)) } else { (self.cursor.line, self.cursor.line) };
+                self.repeat_sub(range, all);
+            }
             Action::Jump { older } => self.jump(older, n),
             Action::AltBuffer => match cmd.count {
                 Some(n) => self.goto_buffer(&n.to_string()),
@@ -861,7 +865,7 @@ impl Editor {
         self.set_abs(s);
     }
 
-    fn join(&mut self, l: usize, times: usize) {
+    pub(crate) fn join(&mut self, l: usize, times: usize) {
         self.hist.begin();
         let mut pos = None;
         for _ in 0..times {
