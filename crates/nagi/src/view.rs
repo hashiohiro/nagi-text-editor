@@ -121,6 +121,21 @@ pub fn prefetch_ascii(fonts: &mut Fonts, r: &mut Renderer) {
     r.prefetch(fonts, &keys);
 }
 
+/// 右下の列番号。行の先頭からカーソルまでの表示幅を足すので、数 MB の行の奥では
+/// 代わりに byte 位置を出す（Vim も表示列と byte 位置が違うときは両方出す）
+fn ruler_col(ed: &Editor) -> String {
+    const MAX: usize = 1 << 16;
+    if ed.cursor.byte > MAX {
+        return format!("{}-", ed.cursor.byte + 1);
+    }
+    (nagi_core::display_col(&ed.buf.line_head(ed.cursor.line, ed.cursor.byte + 4).0, ed.cursor.byte, false) + 1).to_string()
+}
+
+/// 1 行のうち取り出す byte 数。1 文字は最大 4 byte で、少なくとも 1 セル使うので、これで画面の幅を必ず埋められる
+fn line_budget(cols: usize) -> usize {
+    cols * 4 + 16
+}
+
 fn screen_rows(fonts: &Fonts, r: &Renderer) -> usize {
     ((r.size().1 as f32 / fonts.cell().h) as usize).saturating_sub(1).max(1)
 }
@@ -149,7 +164,7 @@ pub fn rasterize_first_screen(ed: &Editor, fonts: &mut Fonts, height: u32) -> Ve
 fn glyph_keys(ed: &Editor, fonts: &mut Fonts, from: usize, to: usize) -> Vec<nagi_text::GlyphKey> {
     let total = ed.buf.line_count();
     let mut keys = Vec::new();
-    let mut lines: Vec<String> = (from.min(total)..to.min(total)).map(|l| ed.buf.line(l)).collect();
+    let mut lines: Vec<String> = (from.min(total)..to.min(total)).map(|l| ed.buf.line_head(l, line_budget(400)).0).collect();
     lines.push("~ 0123456789,[No Name]-- INSERT VISUAL LINE --/?:→".into());
     for line in &lines {
         let items: Vec<(String, usize)> = nagi_text::graphemes(fonts, line).map(|(g, _, w)| (g.to_string(), w)).collect();
@@ -187,15 +202,29 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     // 画面に見えている範囲だけにハイライトのクエリをかける
     let view_start = ed.buf.line_start(ed.top);
     let view_end = ed.buf.line_start((ed.top + drawn).min(total));
+    // 行は画面に入る分だけ取り出す（折り返さないので、それより右は見えない。数 MB の 1 行でも毎回全体を作らない）
+    let budget = line_budget(cols);
+    let heads: Vec<(String, usize, bool)> = (ed.top..(ed.top + drawn).min(total))
+        .map(|ln| {
+            let (s, cut) = ed.buf.line_head(ln, budget);
+            (s, ed.buf.line_start(ln), cut)
+        })
+        .collect();
     let spans = match &ed.syntax {
+        // 長い行があるときは、行ごとに見えている部分だけを問い合わせる
+        Some(syn) if heads.iter().any(|h| h.2) => heads.iter().flat_map(|(s, abs, _)| syn.highlight(&ed.buf, *abs..*abs + s.len())).collect(),
         Some(syn) => syn.highlight(&ed.buf, view_start..view_end.max(view_start)),
         None => Vec::new(),
     };
     let t_hl = t0.elapsed();
     let ed: &Editor = ed;
-    let visible_matches;
+    let visible_matches: Vec<(usize, usize)>;
     let all_matches: &[(usize, usize)] = if searching {
         &ed.search.matches
+    } else if ed.search.highlight && heads.iter().any(|h| h.2) {
+        // 長い行は見えている部分だけを探す
+        visible_matches = heads.iter().flat_map(|(s, abs, _)| ed.visible_matches(*abs, *abs + s.len())).collect();
+        &visible_matches
     } else if ed.search.highlight {
         let end = if ed.top + drawn >= total { ed.buf.len_bytes() } else { view_end };
         visible_matches = ed.visible_matches(view_start, end);
@@ -220,8 +249,8 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             continue;
         }
         p.text(&format!("{:>5} ", ln + 1), 0, y, LINE_NO);
-        let line = ed.buf.line(ln);
-        let abs = ed.buf.line_start(ln);
+        let (line, abs, cut) = &heads[row];
+        let (line, abs, cut) = (line.as_str(), *abs, *cut);
         // byte ごとの文字色。外側のキャプチャの後に内側が来るので、後から塗ったものが勝つ
         let mut colors = vec![FG; line.len()];
         for (rg, hl) in spans.iter().filter(|(rg, _)| rg.end > abs && rg.start < abs + line.len()) {
@@ -318,7 +347,10 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
                 }
                 None => {
                     let c = p.draw(&items, GUTTER, y);
-                    p.out.push(Instance::fill(c as f32 * cell.w, y, cell.w, cell.h, CURSOR));
+                    // 切った行でカーソルが見えている部分より右にあるときは描かない
+                    if !cut {
+                        p.out.push(Instance::fill(c as f32 * cell.w, y, cell.w, cell.h, CURSOR));
+                    }
                 }
             }
         }
@@ -343,7 +375,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         if ed.buf.dirty { " [+]" } else { "" },
         ed.syntax.as_ref().map_or(String::new(), |s| format!("{}   ", s.lang.name())),
         ed.cursor.line + 1,
-        nagi_core::display_col(&ed.buf.line(ed.cursor.line), ed.cursor.byte, false) + 1
+        ruler_col(ed)
     );
     let n = ed.search.matches.len();
     let re = if ed.search.regex { "  [.*]" } else { "" };

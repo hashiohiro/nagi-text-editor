@@ -69,7 +69,7 @@ impl Opts {
 struct Pending {
     gpu: mpsc::Receiver<windows::core::Result<Gpu>>,
     fonts: mpsc::Receiver<Vec<FontData>>,
-    file: mpsc::Receiver<(Buffer, Option<nagi_syntax::Syntax>)>,
+    file: mpsc::Receiver<Buffer>,
     rc: mpsc::Receiver<Rc>,
 }
 
@@ -147,6 +147,8 @@ struct App {
     replay_deadline: Option<Instant>,
     /// 上下の先読みを済ませた表示位置
     prefetched_top: Option<usize>,
+    /// 裏の処理（構文解析）が終わったことを知らせる
+    proxy: Option<winit::event_loop::EventLoopProxy<()>>,
 }
 
 impl App {
@@ -168,12 +170,19 @@ impl App {
         // GPU の準備（最も遅い）を待つ間に、フォントとファイルを受け取って最初の画面のグリフをラスタライズしておく
         let p = self.pending.take().unwrap();
         let chain = p.fonts.recv().unwrap();
-        let (buf, syntax) = p.file.recv().unwrap();
+        let buf = p.file.recv().unwrap();
         self.rc = p.rc.recv().unwrap();
         let mut fonts = Fonts::new(chain, (FONT_PX * self.scale).round() as f32);
         window.set_title(&self.title_for(buf.path.as_deref()));
-        self.ed = Some(Editor::new(buf, syntax));
+        self.ed = Some(Editor::new(buf, None));
         self.apply_rc();
+        // 構文解析は裏で行い、終わったらイベントループを起こして色を付ける（大きなファイルでも表示を待たせない）
+        if let (Some(ed), Some(proxy)) = (&mut self.ed, self.proxy.take()) {
+            ed.waker = Some(Arc::new(move || {
+                let _ = proxy.send_event(());
+            }));
+            ed.start_syntax();
+        }
         let size = window.inner_size();
         let glyphs = view::rasterize_first_screen(self.ed.as_ref().unwrap(), &mut fonts, size.height);
         clock::mark("glyphs rasterized");
@@ -438,7 +447,8 @@ impl App {
                 };
                 (1 + nagi_core::display_col(&p.text, p.cursor, false), row)
             } else {
-                let line = ed.buf.line(ed.cursor.line);
+                // 画面の幅より右は見えないので、そこまでの幅だけ数える（数 MB の行で全体を数えない）
+                let line = ed.buf.line_head(ed.cursor.line, ed.cursor.byte.min(4096) + 4).0;
                 (editor::GUTTER + nagi_core::display_col(&line, ed.cursor.byte.min(line.len()), false), ed.cursor.line.saturating_sub(ed.top))
             };
             w.set_ime_cursor_area(
@@ -619,6 +629,16 @@ fn double_click_time() -> Duration {
 }
 
 impl ApplicationHandler for App {
+    /// 裏の構文解析（最初の解析か、編集後の再解析）が終わった。描き直すと受け取る
+    fn user_event(&mut self, _el: &ActiveEventLoop, _event: ()) {
+        if self.ed.as_mut().is_some_and(|ed| ed.poll_syntax()) {
+            if let Some(s) = self.ed.as_ref().and_then(|ed| ed.syntax.as_ref()) {
+                clock::mark_once(&format!("syntax: {} parsed", s.lang.name()));
+            }
+        }
+        self.draw();
+    }
+
     fn new_events(&mut self, el: &ActiveEventLoop, cause: winit::event::StartCause) {
         if let winit::event::StartCause::ResumeTimeReached { .. } = cause {
             let now = Instant::now();
@@ -754,14 +774,7 @@ fn main() {
                 None => Buffer::from_str(""),
             };
             clock::mark(format!("file: {} lines", buf.line_count()));
-            // 初回の構文解析も読み込みスレッドで済ませる
-            let mut buf = buf;
-            let syntax = buf.path.as_deref().and_then(nagi_syntax::Lang::detect).and_then(nagi_syntax::Syntax::new).map(|mut s| {
-                s.parse(&mut buf);
-                clock::mark(format!("syntax: {} parsed", s.lang.name()));
-                s
-            });
-            xtx.send((buf, syntax)).unwrap();
+            xtx.send(buf).unwrap();
         })
         .unwrap();
 
@@ -774,11 +787,13 @@ fn main() {
         })
         .unwrap();
     let event_loop = EventLoop::new().unwrap();
+    let proxy = event_loop.create_proxy();
     clock::mark("event loop");
     event_loop.set_control_flow(ControlFlow::Wait);
     let mut app = App {
         opts,
         pending: Some(Pending { gpu, fonts, file, rc }),
+        proxy: Some(proxy),
         window: None,
         renderer: None,
         fonts: None,

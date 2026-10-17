@@ -135,7 +135,7 @@ impl Editor {
         let (l, b) = self.buf.pos_of(abs);
         let line = self.buf.line(l);
         let start = self.buf.line_start(l);
-        line[..b.min(line.len())].grapheme_indices(true).last().map_or(start, |(i, _)| start + i)
+        line[..b.min(line.len())].grapheme_indices(true).next_back().map_or(start, |(i, _)| start + i)
     }
 
     /// 移動先のカーソルと、移動の種類。`op` はオペレーターの対象として計算する（l で行末を越えられる等）
@@ -150,10 +150,13 @@ impl Editor {
             }
             M::Right => {
                 let line = self.buf.line(c.line);
-                let gs: Vec<usize> = line.grapheme_indices(true).map(|(i, _)| i).chain([line.len()]).collect();
-                let pos = gs.iter().position(|&i| i == c.byte).unwrap_or(0);
-                let max = if op { gs.len() - 1 } else { gs.len().saturating_sub(2) };
-                c.byte = gs[(pos + n).min(max)];
+                // カーソルから先の n+1 個だけ見る（長い行で行全体を書記素に分けない）
+                let from = if line.is_char_boundary(c.byte.min(line.len())) { c.byte.min(line.len()) } else { 0 };
+                let gs: Vec<usize> = line[from..].grapheme_indices(true).map(|(i, _)| from + i).chain([line.len()]).take(n + 2).collect();
+                let reached_end = gs.last() == Some(&line.len());
+                // オペレーターの後は行末（改行の手前）まで、そうでなければ最後の書記素まで
+                let max = if op || !reached_end { gs.len() - 1 } else { gs.len().saturating_sub(2) };
+                c.byte = gs[n.min(max)];
                 c.want_col = display_col(&line, c.byte, false);
                 Kd::Exclusive
             }

@@ -87,6 +87,42 @@ impl Buffer {
         s
     }
 
+    /// 行の先頭から最大 `max` byte（文字の境目で切る）。長い行の表示で、画面に入らない部分の文字列を作らない。
+    /// 2 つ目は途中で切ったかどうか
+    pub fn line_head(&self, i: usize, max: usize) -> (String, bool) {
+        if self.line_len(i) <= max {
+            return (self.line(i), false);
+        }
+        let mut s = String::with_capacity(max);
+        for chunk in self.rope.line(i, LT).chunks() {
+            if s.len() + chunk.len() > max {
+                let mut end = max - s.len();
+                while !chunk.is_char_boundary(end) {
+                    end -= 1;
+                }
+                s.push_str(&chunk[..end]);
+                break;
+            }
+            s.push_str(chunk);
+        }
+        (s, true)
+    }
+
+    /// 行の長さ（byte、改行を除く）。文字列を作らずに求める
+    pub fn line_len(&self, i: usize) -> usize {
+        let slice = self.rope.line(i, LT);
+        let mut n = slice.len();
+        while n > 0 && matches!(slice.byte(n - 1), b'\n' | b'\r') {
+            n -= 1;
+        }
+        n
+    }
+
+    /// 同じ内容の別のバッファ（rope の複製は O(1)）。裏のスレッドで構文解析するときに渡す
+    pub fn snapshot(&self) -> Buffer {
+        Buffer { rope: self.rope.clone(), version: self.version, edits: Vec::new(), dirty: false, path: self.path.clone(), crlf: self.crlf, bom: self.bom }
+    }
+
     pub fn len_bytes(&self) -> usize {
         self.rope.len()
     }
@@ -243,18 +279,20 @@ impl Motion<'_> {
         cur.want_col = display_col(line, byte, self.ambiguous_wide);
     }
 
+    // h / l / w / e / b はカーソルの前後だけを見る（行全体を書記素に分けると、数 MB の 1 行で数百 ms かかる）
+
     pub fn left(&self, cur: &mut Cursor, n: usize) {
         let line = self.buf.line(cur.line);
-        let starts: Vec<usize> = line.grapheme_indices(true).map(|(i, _)| i).filter(|&i| i < cur.byte).collect();
-        let b = starts.iter().rev().nth(n.saturating_sub(1)).copied().unwrap_or(0);
+        let Some(head) = line.get(..cur.byte.min(line.len())) else { return };
+        let b = head.grapheme_indices(true).rev().nth(n.saturating_sub(1)).map_or(0, |(i, _)| i);
         self.set_byte(cur, &line, b);
     }
 
     pub fn right(&self, cur: &mut Cursor, n: usize) {
         let line = self.buf.line(cur.line);
-        let starts: Vec<usize> = line.grapheme_indices(true).map(|(i, _)| i).collect();
-        let Some(pos) = starts.iter().position(|&i| i == cur.byte) else { return };
-        let b = starts[(pos + n).min(starts.len().saturating_sub(1))];
+        let Some(tail) = line.get(cur.byte..) else { return };
+        let starts: Vec<usize> = tail.grapheme_indices(true).map(|(i, _)| cur.byte + i).take(n + 1).collect();
+        let Some(&b) = starts.get(n.min(starts.len().saturating_sub(1))) else { return };
         self.set_byte(cur, &line, b);
     }
 
@@ -280,7 +318,7 @@ impl Motion<'_> {
     /// `$`: 行末の書記素。以降の j / k も行末に付く
     pub fn line_end(&self, cur: &mut Cursor) {
         let line = self.buf.line(cur.line);
-        cur.byte = line.grapheme_indices(true).last().map_or(0, |(i, _)| i);
+        cur.byte = line.grapheme_indices(true).next_back().map_or(0, |(i, _)| i);
         cur.want_col = usize::MAX;
     }
 
@@ -293,19 +331,13 @@ impl Motion<'_> {
     pub fn word_forward(&self, cur: &mut Cursor, big: bool) {
         let mut line_no = cur.line;
         let mut line = self.buf.line(line_no);
-        let gs: Vec<(usize, &str)> = line.grapheme_indices(true).collect();
-        let start = gs.iter().position(|(i, _)| *i == cur.byte).unwrap_or(0);
-        let cls = gs.get(start).map_or(Class::Space, |(_, g)| class(g, big));
+        let from = if line.is_char_boundary(cur.byte.min(line.len())) { cur.byte.min(line.len()) } else { 0 };
+        let mut gs = line[from..].grapheme_indices(true).map(|(i, g)| (from + i, g)).peekable();
+        let cls = gs.peek().map_or(Class::Space, |(_, g)| class(g, big));
         // 同じ種類を飛ばし、続く空白を飛ばす
-        let mut k = start;
-        while k < gs.len() && class(gs[k].1, big) == cls && cls != Class::Space {
-            k += 1;
-        }
-        while k < gs.len() && class(gs[k].1, big) == Class::Space {
-            k += 1;
-        }
-        if k < gs.len() {
-            let b = gs[k].0;
+        while cls != Class::Space && gs.next_if(|(_, g)| class(g, big) == cls).is_some() {}
+        while gs.next_if(|(_, g)| class(g, big) == Class::Space).is_some() {}
+        if let Some(&(b, _)) = gs.peek() {
             self.set_byte(cur, &line, b);
             return;
         }
@@ -331,18 +363,22 @@ impl Motion<'_> {
         let mut line_no = cur.line;
         let mut line = self.buf.line(line_no);
         // 1 つ進めてから、空白を飛ばし、同じ種類の終わりまで進む
-        let mut gs: Vec<(usize, &str)> = line.grapheme_indices(true).collect();
-        let mut k = gs.iter().position(|(i, _)| *i == cur.byte).map_or(0, |k| k + 1);
+        let (mut from, mut skip) = match cur.byte.min(line.len()) {
+            b if line.is_char_boundary(b) => (b, true),
+            _ => (0, false),
+        };
         loop {
-            while k < gs.len() && class(gs[k].1, big) == Class::Space {
-                k += 1;
+            let mut gs = line[from..].grapheme_indices(true).map(|(i, g)| (from + i, g)).peekable();
+            if skip {
+                gs.next();
+                skip = false;
             }
-            if k < gs.len() {
-                let cls = class(gs[k].1, big);
-                while k + 1 < gs.len() && class(gs[k + 1].1, big) == cls {
-                    k += 1;
+            while gs.next_if(|(_, g)| class(g, big) == Class::Space).is_some() {}
+            if let Some((mut b, g)) = gs.next() {
+                let cls = class(g, big);
+                while let Some((nb, _)) = gs.next_if(|(_, g)| class(g, big) == cls) {
+                    b = nb;
                 }
-                let b = gs[k].0;
                 cur.line = line_no;
                 self.set_byte(cur, &line, b);
                 return;
@@ -352,8 +388,7 @@ impl Motion<'_> {
             }
             line_no += 1;
             line = self.buf.line(line_no);
-            gs = line.grapheme_indices(true).collect();
-            k = 0;
+            from = 0;
         }
     }
 
@@ -363,17 +398,14 @@ impl Motion<'_> {
         let mut line = self.buf.line(line_no);
         let mut end = cur.byte;
         loop {
-            let gs: Vec<(usize, &str)> = line.grapheme_indices(true).filter(|(i, _)| *i < end).collect();
-            let mut k = gs.len();
-            while k > 0 && class(gs[k - 1].1, big) == Class::Space {
-                k -= 1;
-            }
-            if k > 0 {
-                let cls = class(gs[k - 1].1, big);
-                while k > 0 && class(gs[k - 1].1, big) == cls {
-                    k -= 1;
+            let end_b = (0..=end.min(line.len())).rev().find(|&b| line.is_char_boundary(b)).unwrap_or(0);
+            let mut gs = line[..end_b].grapheme_indices(true).rev().peekable();
+            while gs.next_if(|(_, g)| class(g, big) == Class::Space).is_some() {}
+            if let Some((mut b, g)) = gs.next() {
+                let cls = class(g, big);
+                while let Some((nb, _)) = gs.next_if(|(_, g)| class(g, big) == cls) {
+                    b = nb;
                 }
-                let b = gs[k].0;
                 cur.line = line_no;
                 self.set_byte(cur, &line, b);
                 return;

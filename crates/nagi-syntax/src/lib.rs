@@ -6,7 +6,9 @@
 
 use std::ops::Range;
 use std::path::Path;
-use std::sync::OnceLock;
+use std::sync::mpsc::Receiver;
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, Instant};
 
 use nagi_core::{Buffer, EditLog};
 use tree_sitter::{InputEdit, Language, Node, Parser, Point, Query, QueryCursor, StreamingIterator, Tree};
@@ -201,42 +203,122 @@ fn classify(capture: &str, lang: Lang) -> Option<Hl> {
 
 pub struct Syntax {
     pub lang: Lang,
-    parser: Parser,
+    /// 裏で再解析している間は、そのスレッドへ渡している
+    parser: Option<Parser>,
     tree: Option<Tree>,
+    /// 編集を反映したが、まだ再解析していない（木の位置だけずらしてある）
+    stale: bool,
+    /// 裏で走っている再解析と、その解析を始めた後の編集（届いた木にも反映する）
+    job: Option<(Receiver<(Parser, Option<Tree>, Duration)>, Vec<InputEdit>)>,
+    /// 直前の解析にかかった時間。短ければその場で、長ければ裏で再解析する
+    last_parse: Duration,
+    /// 裏の再解析が終わったときに UI スレッドを起こす
+    pub waker: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 // Parser と Tree は別スレッドへ移せる（初回のパースを読み込みスレッドで行う）
 unsafe impl Send for Syntax {}
 
+/// これより速く解析できるファイルは、編集のたびにその場で再解析する（色がずれる瞬間を作らない）
+const SYNC_PARSE_LIMIT: Duration = Duration::from_millis(3);
+
 fn point((row, column): (usize, usize)) -> Point {
     Point { row, column }
+}
+
+fn parse_with(parser: &mut Parser, buf: &Buffer, old: Option<&Tree>) -> Option<Tree> {
+    parser.parse_with_options(&mut |byte, _| buf.chunk_from(byte), old, None)
 }
 
 impl Syntax {
     pub fn new(lang: Lang) -> Option<Self> {
         let mut parser = Parser::new();
         parser.set_language(&lang.language()).ok()?;
-        Some(Self { lang, parser, tree: None })
+        Some(Self { lang, parser: Some(parser), tree: None, stale: false, job: None, last_parse: Duration::ZERO, waker: None })
     }
 
-    /// バッファ全体をパースする（初回、または編集を反映した後の再パース）
+    /// バッファ全体をその場でパースする（初回）
     pub fn parse(&mut self, buf: &mut Buffer) {
         for e in buf.take_edits() {
             if let Some(t) = &mut self.tree {
                 t.edit(&input_edit(e));
             }
         }
-        let tree = self.parser.parse_with_options(&mut |byte, _| buf.chunk_from(byte), self.tree.as_ref(), None);
-        self.tree = tree;
+        let Some(parser) = &mut self.parser else { return };
+        let t = Instant::now();
+        self.tree = parse_with(parser, buf, self.tree.as_ref());
+        self.last_parse = t.elapsed();
+        self.stale = false;
     }
 
-    /// 編集が溜まっていれば反映して再パースする
+    /// 編集を構文木に反映する。戻り値は色が変わりうるか（描き直す）。
+    ///
+    /// 解析が速いファイルはその場で再解析する。遅いファイル（数十〜数百 ms。同じ階層に要素が非常に多いと、
+    /// 差分解析でも全体に比例して時間がかかる）は、木の位置だけずらして裏で再解析し、届いたら差し替える。
     pub fn sync(&mut self, buf: &mut Buffer) -> bool {
-        if self.tree.is_some() && !buf.has_edits() {
-            return false;
+        let mut changed = self.receive();
+        let edits = buf.take_edits();
+        if !edits.is_empty() {
+            for e in edits {
+                let ie = input_edit(e);
+                if let Some(t) = &mut self.tree {
+                    t.edit(&ie);
+                }
+                if let Some((_, since)) = &mut self.job {
+                    since.push(ie);
+                }
+            }
+            self.stale = true;
+            changed = true;
         }
-        self.parse(buf);
+        if self.stale && self.job.is_none() {
+            if self.last_parse < SYNC_PARSE_LIMIT || self.waker.is_none() {
+                self.parse(buf);
+            } else {
+                self.spawn_parse(buf);
+            }
+        }
+        changed
+    }
+
+    fn spawn_parse(&mut self, buf: &Buffer) {
+        let Some(mut parser) = self.parser.take() else { return };
+        let (old, snap, waker) = (self.tree.clone(), buf.snapshot(), self.waker.clone());
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.stale = false;
+        self.job = Some((rx, Vec::new()));
+        std::thread::spawn(move || {
+            let t = Instant::now();
+            let tree = parse_with(&mut parser, &snap, old.as_ref());
+            if tx.send((parser, tree, t.elapsed())).is_ok() {
+                if let Some(w) = waker {
+                    w();
+                }
+            }
+        });
+    }
+
+    /// 裏の再解析が終わっていれば受け取る
+    fn receive(&mut self) -> bool {
+        let Some((rx, _)) = &self.job else { return false };
+        let Ok((parser, tree, took)) = rx.try_recv() else { return false };
+        let (_, since) = self.job.take().unwrap();
+        self.parser = Some(parser);
+        self.last_parse = took;
+        if let Some(mut t) = tree {
+            for ie in &since {
+                t.edit(ie);
+            }
+            self.tree = Some(t);
+        }
+        // 解析中に入った編集は、届いた木ではまだ位置をずらしただけ
+        self.stale |= !since.is_empty();
         true
+    }
+
+    /// 裏で再解析中か（テスト用）
+    pub fn busy(&self) -> bool {
+        self.job.is_some()
     }
 
     /// `range`（絶対 byte）にかかるハイライト。返す範囲は重ならないよう、後から来た内側のキャプチャで上書きした結果
@@ -299,6 +381,37 @@ mod tests {
         let mut s = Syntax::new(lang).unwrap();
         s.parse(&mut buf);
         s.highlight(&buf, 0..src.len()).into_iter().map(|(r, h)| (src[r].to_string(), h)).collect()
+    }
+
+    /// 裏で再解析している間に編集が入っても、最後は最初から解析し直したのと同じ木になる
+    #[test]
+    fn background_reparse_catches_up() {
+        let src = "function a() { return 1; }\n".repeat(200);
+        let mut buf = Buffer::from_str(&src);
+        let mut s = Syntax::new(Lang::TypeScript).unwrap();
+        s.parse(&mut buf);
+        s.last_parse = Duration::from_secs(1); // 遅いファイルとして扱わせる
+        s.waker = Some(Arc::new(|| {}));
+        buf.edit(9, 10, "bb");
+        s.sync(&mut buf);
+        assert!(s.busy());
+        buf.edit(0, 0, "const z = 2;\n");
+        let end = buf.len_bytes();
+        buf.edit(end, end, "let q = 'x';\n");
+        s.sync(&mut buf);
+        let t = Instant::now();
+        while s.busy() || s.stale {
+            s.last_parse = Duration::from_secs(1);
+            s.sync(&mut buf);
+            assert!(t.elapsed() < Duration::from_secs(10));
+            std::thread::yield_now();
+        }
+        let mut fresh = Syntax::new(Lang::TypeScript).unwrap();
+        let mut copy = Buffer::from_str(&buf.text());
+        fresh.parse(&mut copy);
+        assert_eq!(s.tree.as_ref().unwrap().root_node().to_sexp(), fresh.tree.as_ref().unwrap().root_node().to_sexp());
+        let hl = s.highlight(&buf, 0..buf.len_bytes());
+        assert!(hl.iter().any(|(r, h)| *h == Hl::Keyword && buf.slice_string(r.start, r.end) == "const"), "{hl:?}");
     }
 
     #[test]

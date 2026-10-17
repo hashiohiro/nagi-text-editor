@@ -144,6 +144,10 @@ pub struct Editor {
     pub showcmd: String,
     /// 構文木（対応言語のときだけ）
     pub syntax: Option<nagi_syntax::Syntax>,
+    /// 裏で解析中の構文木（届いたら `poll_syntax` で受け取る）
+    pending_syntax: Option<std::sync::mpsc::Receiver<nagi_syntax::Syntax>>,
+    /// 裏の解析が終わったときに UI スレッドを起こす（App が入れる）
+    pub waker: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
     /// Normal / Visual で解釈中のキー列
     pub pending_keys: Vec<Key>,
     /// Visual の起点（絶対 byte）
@@ -182,6 +186,8 @@ impl Editor {
             last_change: None,
             showcmd: String::new(),
             syntax,
+            pending_syntax: None,
+            waker: None,
             pending_keys: Vec::new(),
             anchor: 0,
             last_find: None,
@@ -190,6 +196,47 @@ impl Editor {
             replaying: false,
             rows: 1,
             text_cache: Default::default(),
+        }
+    }
+
+    /// 構文解析を裏のスレッドで始める。大きなファイルでは数百 ms〜秒かかるので、表示や入力を待たせない。
+    /// 解析は今の内容の複製に対して行い、その間の編集は届いた後の `sync` で差分として反映する
+    pub fn start_syntax(&mut self) {
+        let Some(lang) = self.buf.path.as_deref().and_then(nagi_syntax::Lang::detect) else { return };
+        let mut snap = self.buf.snapshot();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let waker = self.waker.clone();
+        let spawned = std::thread::Builder::new().name("syntax".into()).spawn(move || {
+            let Some(mut s) = nagi_syntax::Syntax::new(lang) else { return };
+            s.parse(&mut snap);
+            // ハイライトのクエリのコンパイル（大きい言語で数十 ms）もここで済ませる
+            let _ = lang.highlights();
+            if tx.send(s).is_ok() {
+                if let Some(w) = waker {
+                    w();
+                }
+            }
+        });
+        if spawned.is_ok() {
+            self.pending_syntax = Some(rx);
+        }
+    }
+
+    /// 裏の構文解析が終わっていれば受け取る。受け取ったら true（描き直す）
+    pub fn poll_syntax(&mut self) -> bool {
+        let Some(rx) = &self.pending_syntax else { return false };
+        match rx.try_recv() {
+            Ok(mut s) => {
+                s.waker = self.waker.clone();
+                self.syntax = Some(s);
+                self.pending_syntax = None;
+                true
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.pending_syntax = None;
+                false
+            }
         }
     }
 
@@ -243,7 +290,7 @@ impl Editor {
     pub(crate) fn clamp_normal(&mut self) {
         let line = self.buf.line(self.cursor.line);
         if self.cursor.byte >= line.len() {
-            self.cursor.byte = line.grapheme_indices(true).last().map_or(0, |(i, _)| i);
+            self.cursor.byte = line.grapheme_indices(true).next_back().map_or(0, |(i, _)| i);
         }
     }
 
@@ -284,7 +331,7 @@ impl Editor {
     fn backspace(&mut self) {
         let line = self.buf.line(self.cursor.line);
         if self.cursor.byte > 0 {
-            let prev = line[..self.cursor.byte].grapheme_indices(true).last().map_or(0, |(i, _)| i);
+            let prev = line[..self.cursor.byte].grapheme_indices(true).next_back().map_or(0, |(i, _)| i);
             let start = self.buf.line_start(self.cursor.line) + prev;
             self.edit(start, self.abs(), "");
             self.set_abs(start);
@@ -617,7 +664,7 @@ impl Editor {
             return;
         }
         let mut message = String::new();
-        let mut buf = match Buffer::open(&path) {
+        let buf = match Buffer::open(&path) {
             Ok(b) => b,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 let mut b = Buffer::from_str("");
@@ -630,10 +677,6 @@ impl Editor {
                 return;
             }
         };
-        let syntax = nagi_syntax::Lang::detect(&path).and_then(nagi_syntax::Syntax::new).map(|mut s| {
-            s.parse(&mut buf);
-            s
-        });
         // 一致の計算結果は前のバッファのもの。版の番号は新しいバッファでも 0 から始まるので、必ず捨てる
         let mut search = std::mem::take(&mut self.search);
         search.computed = None;
@@ -645,9 +688,11 @@ impl Editor {
             search,
             rows: self.rows,
             message,
-            ..Self::new(buf, syntax)
+            waker: self.waker.take(),
+            ..Self::new(buf, None)
         };
         *self = keep;
+        self.start_syntax();
     }
 
     fn ex(&mut self, cmd: &str) -> Effect {
