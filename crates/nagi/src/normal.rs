@@ -133,6 +133,10 @@ impl Editor {
 
     fn prev_grapheme(&self, abs: usize) -> usize {
         let (l, b) = self.buf.pos_of(abs);
+        // 行頭なら、前の行の改行
+        if b == 0 && l > 0 {
+            return self.buf.line_start(l - 1) + self.line_len(l - 1);
+        }
         let line = self.buf.line(l);
         let start = self.buf.line_start(l);
         line[..b.min(line.len())].grapheme_indices(true).next_back().map_or(start, |(i, _)| start + i)
@@ -324,9 +328,11 @@ impl Editor {
     /// text object の範囲 (start, end, 行単位か)
     fn object(&self, inner: bool, obj: TextObj, n: usize) -> Option<(usize, usize, bool)> {
         let ls = self.buf.line_start(self.cursor.line);
-        let line = self.buf.line(self.cursor.line);
+        // 行の文字列は単語と引用符のときだけ作る（括弧と段落は rope の上で探す）
+        let line = || self.buf.line(self.cursor.line);
         match obj {
             TextObj::Word { big } => {
+                let line = line();
                 let (mut s, mut e) = textops::word_object(&line, self.cursor.byte.min(line.len()), big, !inner)?;
                 for _ in 1..n {
                     if let Some((_, e2)) = textops::word_object(&line, e.min(line.len().saturating_sub(1)), big, !inner) {
@@ -340,6 +346,7 @@ impl Editor {
                 Some((ls + s, ls + e, false))
             }
             TextObj::Quote(q) => {
+                let line = line();
                 let (a, b) = textops::enclosing_quote(&line, self.cursor.byte, q)?;
                 if inner {
                     return Some((ls + a + 1, ls + b, false));
@@ -422,13 +429,18 @@ impl Editor {
             }
             Target::Obj { inner, obj } => match self.object(inner, obj, n) {
                 Some((s, e, lw)) => {
-                    // 複数行のブロックの内側（行全体）を消したら、カーソルは閉じ括弧の行の最初の文字へ
-                    if matches!(obj, TextObj::Block(_)) && inner && self.buf.pos_of(s).1 == 0 && self.buf.pos_of(e).1 == 0 && op == Op::Delete {
-                        self.apply(op, s, e, false, reg);
-                        self.with_motion(|m, c| m.first_non_blank(c));
-                        return;
+                    // 複数行のブロックの内側が丸ごとの行になったら、行単位で扱う（Vim の exclusive-linewise）。
+                    // 消したときのカーソルは閉じ括弧の行の最初の文字へ
+                    if matches!(obj, TextObj::Block(_)) && inner && s < e && self.buf.pos_of(s).1 == 0 && self.buf.pos_of(e).1 == 0 {
+                        if op == Op::Delete {
+                            self.apply(op, s, e, true, reg);
+                            self.with_motion(|m, c| m.first_non_blank(c));
+                            return;
+                        }
+                        (s, e, true)
+                    } else {
+                        (s, e, lw)
                     }
-                    (s, e, lw)
                 }
                 None => return,
             },
