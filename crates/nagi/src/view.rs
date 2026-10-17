@@ -121,12 +121,6 @@ pub fn prefetch_ascii(fonts: &mut Fonts, r: &mut Renderer) {
     r.prefetch(fonts, &keys);
 }
 
-/// 画面に出るグリフを先にまとめてアトラスへ載せる（並列ラスタライズ）
-pub fn prefetch(ed: &Editor, fonts: &mut Fonts, r: &mut Renderer) {
-    let rows = screen_rows(fonts, r);
-    prefetch_lines(ed, fonts, r, ed.top, ed.top + rows + 1);
-}
-
 fn screen_rows(fonts: &Fonts, r: &Renderer) -> usize {
     ((r.size().1 as f32 / fonts.cell().h) as usize).saturating_sub(1).max(1)
 }
@@ -139,6 +133,20 @@ pub fn prefetch_around(ed: &Editor, fonts: &mut Fonts, r: &mut Renderer) {
 }
 
 fn prefetch_lines(ed: &Editor, fonts: &mut Fonts, r: &mut Renderer, from: usize, to: usize) {
+    let keys = glyph_keys(ed, fonts, from, to);
+    r.prefetch(fonts, &keys);
+}
+
+/// 起動時、GPU の準備を待つ間に最初の画面のグリフをラスタライズしておく（アトラスに載せるのは後）
+pub fn rasterize_first_screen(ed: &Editor, fonts: &mut Fonts, height: u32) -> Vec<(nagi_text::GlyphKey, Option<nagi_text::GlyphImage>)> {
+    let rows = ((height as f32 / fonts.cell().h) as usize).saturating_sub(1).max(1);
+    let mut keys = glyph_keys(ed, fonts, ed.top, ed.top + rows + 1);
+    keys.sort_by_key(|k| (k.face, k.glyph, k.width));
+    keys.dedup();
+    fonts.rasterize_many(&keys)
+}
+
+fn glyph_keys(ed: &Editor, fonts: &mut Fonts, from: usize, to: usize) -> Vec<nagi_text::GlyphKey> {
     let total = ed.buf.line_count();
     let mut keys = Vec::new();
     let mut lines: Vec<String> = (from.min(total)..to.min(total)).map(|l| ed.buf.line(l)).collect();
@@ -151,7 +159,7 @@ fn prefetch_lines(ed: &Editor, fonts: &mut Fonts, r: &mut Renderer, from: usize,
             }
         }
     }
-    r.prefetch(fonts, &keys);
+    keys
 }
 
 pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instance> {

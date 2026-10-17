@@ -160,35 +160,43 @@ impl App {
         let window = Arc::new(el.create_window(attrs).unwrap());
         clock::mark("window created (hidden)");
         self.scale = window.scale_factor();
+        let hwnd = {
+            let RawWindowHandle::Win32(h) = window.window_handle().unwrap().as_raw() else { unreachable!() };
+            windows::Win32::Foundation::HWND(h.hwnd.get() as *mut _)
+        };
 
+        // GPU の準備（最も遅い）を待つ間に、フォントとファイルを受け取って最初の画面のグリフをラスタライズしておく
         let p = self.pending.take().unwrap();
-        let gpu = p.gpu.recv().unwrap().expect("D3D11 の初期化に失敗");
         let chain = p.fonts.recv().unwrap();
         let (buf, syntax) = p.file.recv().unwrap();
         self.rc = p.rc.recv().unwrap();
-        clock::mark("init joined");
-
-        let fonts = Fonts::new(chain, (FONT_PX * self.scale).round() as f32);
-        clock::mark("fonts measured");
-        let RawWindowHandle::Win32(h) = window.window_handle().unwrap().as_raw() else { unreachable!() };
-        let size = window.inner_size();
-        let renderer = Renderer::new(gpu, h.hwnd.get(), size.width, size.height).expect("スワップチェーンの作成に失敗");
-        clock::mark("swap chain created");
-
+        let mut fonts = Fonts::new(chain, (FONT_PX * self.scale).round() as f32);
         window.set_title(&self.title_for(buf.path.as_deref()));
         self.ed = Some(Editor::new(buf, syntax));
         self.apply_rc();
+        let size = window.inner_size();
+        let glyphs = view::rasterize_first_screen(self.ed.as_ref().unwrap(), &mut fonts, size.height);
+        clock::mark("glyphs rasterized");
+        let gpu = p.gpu.recv().unwrap().expect("D3D11 の初期化に失敗");
+        clock::mark("gpu joined");
+
+        let mut renderer = Renderer::new(gpu, hwnd.0 as isize, size.width, size.height).expect("スワップチェーンの作成に失敗");
+        clock::mark("swap chain created");
+        renderer.insert_rasterized(glyphs);
+        clock::mark("glyphs uploaded");
         self.fonts = Some(fonts);
         self.renderer = Some(renderer);
         self.window = Some(window.clone());
-        if let (Some(r), Some(f), Some(ed)) = (&mut self.renderer, &mut self.fonts, &self.ed) {
-            view::prefetch(ed, f, r);
-            clock::mark("glyphs prefetched");
-        }
         self.draw();
         clock::mark("first present");
-        window.set_visible(true);
+        // 表示だけ先に済ませる。アクティブにする処理（フォーカスと IME の準備）は 20〜35ms かかるので、見えてから行う
+        unsafe {
+            let _ = windows::Win32::UI::WindowsAndMessaging::ShowWindow(hwnd, windows::Win32::UI::WindowsAndMessaging::SW_SHOWNOACTIVATE);
+        }
         clock::mark("window visible");
+        window.set_visible(true);
+        window.focus_window();
+        clock::mark("window activated");
         if let (Some(r), Some(f)) = (&mut self.renderer, &mut self.fonts) {
             view::prefetch_ascii(f, r);
             clock::mark("ascii prefetched");

@@ -350,7 +350,16 @@ impl Renderer {
         let mut missing: Vec<GlyphKey> = keys.iter().copied().filter(|k| !self.atlas.map.contains_key(k)).collect();
         missing.sort_by_key(|k| (k.face, k.glyph, k.width));
         missing.dedup();
-        for (key, img) in fonts.rasterize_many(&missing) {
+        let images = fonts.rasterize_many(&missing);
+        self.insert_rasterized(images);
+    }
+
+    /// 先に（GPU の準備を待つ間に）ラスタライズしておいたグリフをアトラスに載せる
+    pub fn insert_rasterized(&mut self, images: Vec<(GlyphKey, Option<nagi_text::GlyphImage>)>) {
+        for (key, img) in images {
+            if self.atlas.map.contains_key(&key) {
+                continue;
+            }
             let g = img.and_then(|img| self.atlas.upload(&self.gpu.ctx, &img));
             self.atlas.map.insert(key, g);
         }
