@@ -563,7 +563,7 @@ impl Editor {
         self.open_db_panel();
         let f: Vec<&str> = arg.split_whitespace().collect();
         let Some(p) = &mut self.db else { return };
-        let (Some(name), Some(url)) = (f.first(), f.get(1).filter(|u| u.starts_with("jdbc:"))) else {
+        let (Some(name), Some(url)) = (f.first(), f.get(1).filter(|u| Kind::of(u).is_some())) else {
             p.form = Some(Form::new(Kind::Oracle));
             self.message = "接続先を足す: Tab で次の欄、種類は ← →、最後の欄で Enter で保存してつなぐ".into();
             return;

@@ -687,7 +687,8 @@ pub fn config_sources(text: &str, origin: &str) -> Vec<DataSource> {
         .filter_map(|l| {
             let f: Vec<&str> = l.split('|').map(str::trim).collect();
             let url = f.get(1)?.to_string();
-            url.starts_with("jdbc:").then(|| DataSource { name: f[0].to_string(), url, user: f.get(2).unwrap_or(&"").to_string(), origin: origin.into() })
+            // jdbc: のほか salesforce: も（保存した Salesforce の接続先を読み飛ばしていた）
+            (url.starts_with("jdbc:") || url.starts_with("salesforce:")).then(|| DataSource { name: f[0].to_string(), url, user: f.get(2).unwrap_or(&"").to_string(), origin: origin.into() })
         })
         .collect()
 }
@@ -722,8 +723,10 @@ mod tests {
         let v = detect_sources(&dir);
         assert_eq!(v.len(), 1);
         assert_eq!((v[0].name.as_str(), v[0].url.as_str(), v[0].user.as_str()), ("rest (dev)", "jdbc:oracle:thin:@//db:1521/X", "APP"));
-        let c = config_sources("# x\nlocal | jdbc:sqlite::memory: |\n", "cfg");
+        let c = config_sources("# x\nlocal | jdbc:sqlite::memory: |\nSF 開発 | salesforce:https://example--dev.sandbox.my.salesforce.com | me@example.com\n", "cfg");
         assert_eq!(c[0].name, "local");
+        assert_eq!((c[1].name.as_str(), c[1].user.as_str()), ("SF 開発", "me@example.com"), "Salesforce の接続先も読む");
+        assert_eq!(Kind::of(&c[1].url), Some(Kind::Salesforce));
     }
 
     /// SQLite のメモリ DB で、つなぐ・表を作る・行を入れる・読む・木・キー・まとめて送る・トランザクション
