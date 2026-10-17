@@ -1331,7 +1331,11 @@ impl Editor {
                     return Effect::Quit;
                 }
             }
+            // フォルダならプロジェクトとして開く（IntelliJ・Eclipse の設定を読む）
+            "e" | "edit" if !arg.is_empty() && std::path::Path::new(arg).is_dir() => self.open_project(PathBuf::from(arg)),
             "e" | "edit" if !arg.is_empty() => self.edit_file(PathBuf::from(arg)),
+            "Project" | "project" if arg.is_empty() => self.pick_project(),
+            "Project" | "project" => self.open_project(PathBuf::from(arg)),
             "e!" | "edit!" => self.reload(),
             "ls" | "buffers" | "files" => self.list_buffers(),
             "Files" => self.open_finder(crate::finder::Source::Files),
@@ -1413,6 +1417,7 @@ impl Editor {
             Some((Some("tool.project"), _)) => self.toggle_tree(),
             Some((Some("palette"), _)) => self.open_finder(crate::finder::Source::Commands),
             Some((Some("finder.symbols"), _)) => self.symbol_search(false),
+            Some((Some("finder.projects"), _)) => self.pick_project(),
             Some((Some("finder.types"), _)) => self.symbol_search(true),
             Some((Some("outline"), _)) => self.outline(),
             Some((Some("nav.definition"), _)) => self.goto_definition(),

@@ -10,6 +10,7 @@
 //! メインスレッドはその間にイベントループと非表示のウィンドウを作る。最初のフレームを描いてから表示する。
 
 mod autoread;
+mod project_open;
 mod blame;
 mod db_panel;
 mod db_table;
@@ -279,6 +280,11 @@ impl App {
         if let Some(ed) = &mut self.ed {
             ed.start_watch(&rc_files);
             clock::mark("watch started");
+            // 引数がフォルダなら、プロジェクトとして開く（IntelliJ・Eclipse の設定を読み、前に開いていたファイルを復元）
+            if let Some(dir) = self.opts.file.clone().filter(|p| p.is_dir()) {
+                ed.open_project(dir);
+                clock::mark("project opened");
+            }
             // 定義の索引も表示の後に裏で作る（保存したものがあれば差分だけ）
             ed.start_index();
             // git の状態（行頭の変更マーカーと状態行のブランチ）
@@ -1246,6 +1252,8 @@ fn main() {
             // 大きなファイルは、先頭部分を読んだところで先に渡して表示し、全体は後から渡す
             let mut sent_head = false;
             let buf = match &path {
+                // フォルダはプロジェクトとして開く（表示の後に open_project）
+                Some(p) if p.is_dir() => Buffer::from_str(""),
                 Some(p) => Buffer::open_with_head(p, |head| {
                     clock::mark(format!("file: head {} lines", head.line_count()));
                     sent_head = xtx.send((head, true)).is_ok();

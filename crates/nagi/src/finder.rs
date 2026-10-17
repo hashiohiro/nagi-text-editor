@@ -27,6 +27,8 @@ pub enum Source {
     Types,
     /// ファイルの構造（FileStructurePopup）
     Outline,
+    /// 最近のプロジェクト（Nagi・IntelliJ・WebStorm・Eclipse）と、Eclipse のワークスペースの中のプロジェクト
+    Projects,
 }
 
 /// コマンドパレットの項目（説明, Ex コマンド）
@@ -56,6 +58,7 @@ const COMMANDS: &[(&str, &str)] = &[
     ("検索結果のパネルを閉じる", "cclose"),
     ("検索の強調を消す", "noh"),
     ("ファイルを読み直す（変更を捨てる）", "e!"),
+    ("プロジェクトを開く（最近のプロジェクト・IntelliJ・Eclipse）", "Project"),
     ("設定（ideavimrc）を読み直す", "source"),
     ("入力の遅延の計測を表示", "NagiStats"),
     ("入力の遅延の計測を消す", "NagiStats!"),
@@ -72,11 +75,21 @@ impl Source {
             Source::Symbols => "シンボル",
             Source::Types => "型",
             Source::Outline => "構造",
+            Source::Projects => "プロジェクト",
         }
     }
 }
 
 impl Finder {
+    /// プロジェクトの候補を入れる（`member` なら Eclipse のワークスペースの中から選ぶ）
+    pub fn set_projects(&mut self, items: Vec<String>, locs: Vec<(PathBuf, usize, usize)>, member: bool) {
+        self.projects_rx = None;
+        self.items = items;
+        self.locs = locs;
+        self.pick_member = member;
+        self.refilter();
+    }
+
     /// 欄の中身を絞り込みの語に写して絞り直す
     pub fn sync_query(&mut self) {
         self.query.text = self.field.text();
@@ -111,6 +124,10 @@ pub struct Finder {
     /// 覚えた一覧を出しながら集め直している間の新しい一覧（集め終えたら差し替える）
     fresh: Option<Vec<String>>,
     recent_rx: Option<std::sync::mpsc::Receiver<Vec<PathBuf>>>,
+    /// 最近のプロジェクト（表示, 場所）を裏で集めている
+    projects_rx: Option<std::sync::mpsc::Receiver<Vec<(String, PathBuf)>>>,
+    /// Eclipse のワークスペースの中から選んでいる（選んだらそのまま開く）
+    pick_member: bool,
     /// hits を数えたときの検索語と、そのときの候補の数
     scored_query: String,
     scored_upto: usize,
@@ -129,7 +146,7 @@ impl Finder {
     }
 
     pub fn walking(&self) -> bool {
-        self.walk.is_some() || self.recent_rx.is_some()
+        self.walk.is_some() || self.recent_rx.is_some() || self.projects_rx.is_some()
     }
 
     /// 検索語や候補が変わったら絞り直す
@@ -203,6 +220,8 @@ impl Editor {
             walk: None,
             fresh: None,
             recent_rx: None,
+            projects_rx: None,
+            pick_member: false,
             scored_query: String::new(),
             scored_upto: 0,
         };
@@ -232,6 +251,18 @@ impl Editor {
                 for (label, cmd) in COMMANDS {
                     f.items.push(format!("{label}  :{cmd}"));
                 }
+            }
+            Source::Projects => {
+                let (tx, rx) = std::sync::mpsc::channel();
+                let waker = self.waker.clone();
+                let _ = std::thread::Builder::new().name("projects".into()).spawn(move || {
+                    if tx.send(crate::project_open::recent_list()).is_ok() {
+                        if let Some(w) = waker {
+                            w();
+                        }
+                    }
+                });
+                f.projects_rx = Some(rx);
             }
             Source::Recent => {
                 let (tx, rx) = std::sync::mpsc::channel();
@@ -293,6 +324,14 @@ impl Editor {
                         break;
                     }
                 }
+            }
+        }
+        if let Some(rx) = &f.projects_rx {
+            if let Ok(list) = rx.try_recv() {
+                f.items = list.iter().map(|(l, _)| l.clone()).collect();
+                f.locs = list.into_iter().map(|(_, p)| (p, 0, 0)).collect();
+                f.projects_rx = None;
+                changed = true;
             }
         }
         if let Some(rx) = &f.recent_rx {
@@ -365,7 +404,7 @@ impl Editor {
         self.mode = Mode::Normal;
         let Some(&(i, _)) = f.hits.get(f.selected) else { return Effect::None };
         let i = i as usize;
-        if let (Some(v), false) = (split, matches!(f.source, Source::Commands | Source::Outline)) {
+        if let (Some(v), false) = (split, matches!(f.source, Source::Commands | Source::Outline | Source::Projects)) {
             self.split(v);
         }
         match f.source {
@@ -378,6 +417,14 @@ impl Editor {
             Source::Commands => {
                 let cmd = f.items[i].rsplit_once("  :").map_or("", |(_, c)| c).to_string();
                 return self.run_ex(&cmd);
+            }
+            Source::Projects => {
+                let p = f.locs[i].0.clone();
+                if f.pick_member {
+                    self.open_project_direct(p);
+                } else {
+                    self.open_project(p);
+                }
             }
             Source::Definitions | Source::Symbols | Source::Types | Source::Outline => {
                 let (p, l, c) = f.locs[i].clone();

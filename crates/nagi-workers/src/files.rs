@@ -50,7 +50,7 @@ pub fn walk(root: &Path, waker: Waker) -> FileWalk {
     let stop = cancel.clone();
     let _ = std::thread::Builder::new().name("files".into()).spawn(move || {
         let done = waker.clone();
-        let walker = ignore::WalkBuilder::new(&root).hidden(true).git_ignore(true).git_global(true).git_exclude(true).require_git(false).build_parallel();
+        let walker = walker(&root).build_parallel();
         walker.run(|| {
             let mut b = Batch { buf: Vec::with_capacity(BATCH), tx: tx.clone(), waker: waker.clone() };
             let root = root.clone();
@@ -103,8 +103,18 @@ pub fn list_dir(dir: PathBuf, tx: Sender<DirList>, waker: Waker) {
 
 /// `path` を含むプロジェクトの根（`.git` のあるところ）。無ければ None
 pub fn project_root(path: &Path) -> Option<PathBuf> {
-    let start = if path.is_dir() { path } else { path.parent()? };
-    start.ancestors().find(|d| d.join(".git").exists()).map(Path::to_path_buf)
+    crate::project::root_of(path)
+}
+
+/// プロジェクトのファイルをたどる WalkBuilder（隠しファイルと .gitignore に加え、IntelliJ・Eclipse の除外フォルダ・出力先を外す）
+pub fn walker(root: &Path) -> ignore::WalkBuilder {
+    let ex = crate::project::detect(root).excludes;
+    let mut b = ignore::WalkBuilder::new(root);
+    b.hidden(true).git_ignore(true).git_global(true).git_exclude(true).require_git(false);
+    if !ex.is_empty() {
+        b.filter_entry(move |e| !ex.iter().any(|x| e.path() == x));
+    }
+    b
 }
 
 #[cfg(test)]

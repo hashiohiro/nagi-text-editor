@@ -207,7 +207,7 @@ pub fn build(root: &Path, waker: Waker) -> Receiver<Progress> {
         let cached = load_cache(&root);
         // 対応する言語のファイルを集める
         let mut paths = Vec::new();
-        for e in ignore::WalkBuilder::new(&root).hidden(true).require_git(false).build().flatten() {
+        for e in crate::files::walker(&root).build().flatten() {
             if e.file_type().is_some_and(|t| t.is_file()) && Lang::detect(e.path()).is_some() {
                 paths.push(e.into_path());
             }

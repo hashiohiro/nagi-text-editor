@@ -54,7 +54,7 @@ pub fn search(root: &Path, pattern: &str, regex: bool, waker: Waker) -> Result<G
     let _ = std::thread::Builder::new().name("grep".into()).spawn(move || {
         let done = waker.clone();
         let count = Arc::new(AtomicUsize::new(0));
-        let walker = ignore::WalkBuilder::new(&root).hidden(true).git_ignore(true).require_git(false).build_parallel();
+        let walker = crate::files::walker(&root).build_parallel();
         walker.run(|| {
             let matcher = matcher.clone();
             let tx = tx.clone();
