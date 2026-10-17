@@ -188,6 +188,7 @@ impl Form {
         self.fields = match kind {
             Kind::Oracle => vec![("種類", p("Oracle")), ("名前", p(&name)), ("ホスト", p("localhost")), ("ポート", p("1521")), ("サービス名", p("")), ("利用者", p(""))],
             Kind::Sqlite => vec![("種類", p("SQLite")), ("名前", p(&name)), ("ファイル", p(""))],
+            Kind::Salesforce => vec![("種類", p("Salesforce")), ("名前", p(&name)), ("ログイン URL", p("https://login.salesforce.com")), ("利用者", p(""))],
         };
         self.at = self.at.min(self.fields.len() - 1);
     }
@@ -213,6 +214,10 @@ impl Form {
             Kind::Sqlite => {
                 let f = self.get("ファイル");
                 (format!("jdbc:sqlite:{}", if f.is_empty() { ":memory:".into() } else { f }), String::new())
+            }
+            Kind::Salesforce => {
+                let u = self.get("ログイン URL");
+                (format!("salesforce:{}", if u.is_empty() { "https://login.salesforce.com".into() } else { u }), self.get("利用者"))
             }
         };
         Ok(DataSource { name, url, user, origin: config_path().display().to_string() })
@@ -318,6 +323,10 @@ pub fn qualified(schema: &str, name: &str) -> String {
 }
 
 impl DbPanel {
+    pub fn kind(&self, i: usize) -> Option<Kind> {
+        Kind::of(&self.sources.get(i)?.url)
+    }
+
     pub fn is_open(&self, r: &DbRow) -> bool {
         r.key().is_some_and(|k| self.expanded.contains(&k)) || (!self.filter.text.is_empty() && matches!(r, DbRow::Group(..)))
     }
@@ -454,7 +463,14 @@ impl DbPanel {
             }
             DbRow::Schema(_, s, d) => (*d, ' ', s.clone(), "スキーマ".into()),
             DbRow::Others(i) => (1, ' ', "ほかのスキーマ".into(), format!("{}", self.conns[*i].schemas.as_ref().map_or(0, |v| v.len().saturating_sub(1)))),
-            DbRow::Group(_, _, g, n) => (0, ' ', g.label().into(), n.to_string()),
+            DbRow::Group(i, _, g, n) => {
+                let label = match (self.kind(*i), g) {
+                    (Some(Kind::Salesforce), Group::Tables) => "オブジェクト",
+                    (Some(Kind::Salesforce), Group::Views) => "カスタムオブジェクト",
+                    _ => g.label(),
+                };
+                (0, ' ', label.into(), n.to_string())
+            }
             DbRow::Object(_, _, t, g, d) => (
                 *d,
                 match g {
@@ -598,7 +614,7 @@ impl Editor {
             );
             return;
         }
-        if Kind::of(&s.url) == Some(Kind::Sqlite) {
+        if matches!(Kind::of(&s.url), Some(Kind::Sqlite | Kind::Salesforce)) {
             self.db_connect(i, String::new());
             return;
         }
@@ -741,6 +757,12 @@ impl Editor {
     }
 
     fn db_reply(&mut self, i: usize, r: Reply) {
+        // 途中の知らせは、頼みごとの答えではない
+        if let Reply::Note(s) = r {
+            self.message = s.clone();
+            self.db_log_line(&s, false);
+            return;
+        }
         let Some(p) = &mut self.db else { return };
         let name = p.sources[i].name.clone();
         let c = &mut p.conns[i];
@@ -917,7 +939,8 @@ impl Editor {
         let changes = !is_read_only(&sql);
         let first = sql.lines().next().unwrap_or("").chars().take(60).collect::<String>();
         let title = format!("{} · {first}", p.sources[i].name);
-        let id = self.db_results.new_tab(i, &title, &sql, !changes);
+        let sf = p.kind(i) == Some(Kind::Salesforce);
+        let id = self.db_results.new_tab(i, &title, &sql, !changes && !sf);
         let c = &mut self.db.as_mut().unwrap().conns[i];
         c.send(Req::Query { sql: sql.clone(), max: MAX_ROWS, offset: 0 }, Expect::Query(Target::Result(id), sql, changes));
         self.show_results();
@@ -1001,6 +1024,10 @@ impl Editor {
 
     /// Tx の自動・手動を切り替える
     pub(crate) fn db_toggle_tx(&mut self, i: usize) {
+        if self.db.as_ref().and_then(|p| p.kind(i)) == Some(Kind::Salesforce) {
+            self.message = "Salesforce にトランザクションはありません".into();
+            return;
+        }
         let Some(c) = self.db.as_mut().map(|p| &mut p.conns[i]) else { return };
         if !c.connected {
             self.message = "まだつないでいません".into();
@@ -1033,6 +1060,24 @@ impl Editor {
     /// 今の接続先（コンソールの接続先、無ければ木で選んでいる接続先）
     fn db_current_source(&self) -> Option<usize> {
         self.console_source().or_else(|| self.db.as_ref().and_then(|p| p.rows.get(p.selected)).map(|r| r.source()))
+    }
+
+    /// `:DbLogout`: Salesforce の保存したログインを消して切る
+    pub(crate) fn db_logout(&mut self) {
+        let Some(i) = self.db_current_source() else {
+            self.message = "接続先がありません".into();
+            return;
+        };
+        let Some(p) = &mut self.db else { return };
+        let s = p.sources[i].clone();
+        if p.kind(i) != Some(Kind::Salesforce) {
+            self.message = "ログアウトは Salesforce の接続先だけです".into();
+            return;
+        }
+        let had = nagi_workers::salesforce::forget(&s.url, &s.user);
+        p.conns[i] = Conn::default();
+        p.rebuild();
+        self.message = if had { format!("{} の保存したログインを消しました", s.name) } else { "保存したログインはありません".into() };
     }
 
     /// `:DbSchema 名前`
@@ -1116,6 +1161,12 @@ impl Editor {
     /// o: テーブル・ビューのデータを開く
     fn db_open_selected(&mut self) {
         match self.db_selected() {
+            // Salesforce は表を直さないので、SOQL で先頭の 200 件を出す
+            Some(DbRow::Object(i, _, t, Group::Tables | Group::Views, _)) if self.db.as_ref().and_then(|p| p.kind(i)) == Some(Kind::Salesforce) => {
+                self.db_execute(i, format!("SELECT FIELDS(STANDARD) FROM {t} LIMIT 200"));
+                self.mode = Mode::List;
+                self.list_side = crate::editor::Side::Right;
+            }
             Some(DbRow::Object(i, s, t, Group::Tables | Group::Views, _)) => self.db_open_table(i, &s, &t),
             Some(DbRow::Source(_)) | Some(DbRow::Schema(..)) => self.db_activate(),
             _ => {}
@@ -1188,8 +1239,10 @@ impl Editor {
                 Key::Tab | Key::Down => f.at = (f.at + 1).min(f.fields.len() - 1),
                 Key::Up => f.at = f.at.saturating_sub(1),
                 Key::Left | Key::Right | Key::Char(' ') if f.at == 0 => {
-                    let k = if f.kind == Kind::Oracle { Kind::Sqlite } else { Kind::Oracle };
-                    f.set_kind(k);
+                    let order = [Kind::Oracle, Kind::Sqlite, Kind::Salesforce];
+                    let k = order.iter().position(|k| *k == f.kind).unwrap_or(0);
+                    let k = if key == Key::Left { (k + 2) % 3 } else { (k + 1) % 3 };
+                    f.set_kind(order[k]);
                 }
                 Key::Enter if f.at + 1 < f.fields.len() => f.at += 1,
                 Key::Enter => match f.source() {
@@ -1262,7 +1315,9 @@ impl Editor {
             // コンソール（テーブルの上なら SELECT を書き足して）
             Key::Char('c') => {
                 if let Some(r) = self.db_selected() {
+                    let sf = self.db.as_ref().and_then(|p| p.kind(r.source())) == Some(Kind::Salesforce);
                     let init = match &r {
+                        DbRow::Object(_, _, t, Group::Tables | Group::Views, _) if sf => Some(format!("SELECT Id, Name FROM {t} LIMIT 100")),
                         DbRow::Object(_, s, t, Group::Tables | Group::Views, _) => Some(format!("SELECT * FROM {};", qualified(s, t))),
                         _ => None,
                     };
@@ -1361,7 +1416,9 @@ impl Editor {
         };
         push(&mut v, "▶ 実行".into(), BarItem::Run);
         push(&mut v, "Ctrl+Enter".into(), BarItem::Label);
-        push(&mut v, format!("Tx: {} ▾", if c.manual { "手動" } else { "自動" }), BarItem::Tx);
+        if p.kind(i) != Some(Kind::Salesforce) {
+            push(&mut v, format!("Tx: {} ▾", if c.manual { "手動" } else { "自動" }), BarItem::Tx);
+        }
         if c.manual {
             push(&mut v, format!("未コミット {} 件", c.pending), BarItem::Pending);
             push(&mut v, "✓ コミット".into(), BarItem::Commit);

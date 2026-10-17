@@ -1343,6 +1343,7 @@ impl Editor {
             "DbCommit" => self.db_tx_command("commit"),
             "DbRollback" => self.db_tx_command("rollback"),
             "DbTx" => self.db_tx_command("toggle"),
+            "DbLogout" => self.db_logout(),
             "Gpull" => self.run_git_job("pull ", &["pull", "--no-edit"]),
             "Gfetch" => self.run_git_job("フェッチ", &["fetch", "--all", "--prune"]),
             "Gpush" => self.push_from_anywhere(),

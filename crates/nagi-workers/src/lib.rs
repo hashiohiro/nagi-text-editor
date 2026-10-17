@@ -8,6 +8,7 @@ pub mod grep;
 pub mod index;
 pub mod jobs;
 pub mod maven;
+pub mod salesforce;
 pub mod watch;
 
 /// UI のイベントループを起こす関数

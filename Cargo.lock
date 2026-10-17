@@ -958,6 +958,8 @@ dependencies = [
  "notify",
  "oracle",
  "rusqlite",
+ "serde_json",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

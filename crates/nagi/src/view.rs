@@ -1081,15 +1081,17 @@ fn draw_right_panel(p: &mut Painter, ed: &Editor, r: Rect) {
             draw_panel_box(p, r, &lines, 0);
         } else if let Some(f) = &d.form {
             let mut lines = vec![" 接続先を足す".to_string()];
+            // 見出しは表示の幅（12 セル）でそろえる
+            let pad = |p: &Painter, l: &str| format!("{l}{}", " ".repeat(12usize.saturating_sub(p.width(l))));
             for (k, (label, prompt)) in f.fields.iter().enumerate() {
                 let v = if k == 0 { format!("‹ {} ›", prompt.text) } else { prompt.text.clone() };
-                lines.push(format!(" {label:<6}{}  {v}", if k == f.at { "▸" } else { " " }));
+                lines.push(format!(" {}{}  {v}", pad(p, label), if k == f.at { "▸" } else { " " }));
             }
             lines.push(" Tab 次の欄 ・ 最後の欄で Enter 保存してつなぐ ・ Esc やめる".to_string());
             let caret = (f.at > 0).then(|| (f.at + 1, f.fields[f.at].1.text.clone()));
             let (bx, by) = draw_panel_box(p, r, &lines, f.at + 1);
             if let Some((row, text)) = caret {
-                let label_w = p.width(&format!(" {:<6}▸  ", f.fields[f.at].0));
+                let label_w = 1 + 12.max(p.width(f.fields[f.at].0)) + p.width("▸  ");
                 let x = bx + label_w + p.width(&text);
                 p.caret(x, by + row as f32 * cell.h);
             }

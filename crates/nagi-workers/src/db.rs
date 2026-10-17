@@ -28,6 +28,7 @@ pub struct DataSource {
 pub enum Kind {
     Oracle,
     Sqlite,
+    Salesforce,
 }
 
 impl Kind {
@@ -37,6 +38,8 @@ impl Kind {
             Some(Kind::Oracle)
         } else if u.starts_with("jdbc:sqlite:") {
             Some(Kind::Sqlite)
+        } else if u.starts_with("salesforce:") {
+            Some(Kind::Salesforce)
         } else {
             None
         }
@@ -46,6 +49,7 @@ impl Kind {
         match self {
             Kind::Oracle => "Oracle",
             Kind::Sqlite => "SQLite",
+            Kind::Salesforce => "Salesforce",
         }
     }
 }
@@ -95,6 +99,8 @@ pub enum Reply {
     Count(i64),
     Ddl(String),
     Done,
+    /// 途中の知らせ（「ブラウザでログインしてください」など。頼みごとの答えではない）
+    Note(String),
     Error(String),
 }
 
@@ -119,7 +125,7 @@ pub enum Req {
 type R<T> = Result<T, String>;
 
 /// ドライバーごとの中身
-trait Backend {
+pub(crate) trait Backend {
     fn info(&mut self) -> R<(String, String)>;
     fn schemas(&mut self) -> R<Vec<String>>;
     fn set_schema(&mut self, s: &str) -> R<()>;
@@ -560,7 +566,7 @@ pub struct Client {
 impl Client {
     /// 裏のスレッドで `url` につなぎ始める（つながったら Reply::Connected が届く）
     pub fn connect(url: &str, user: &str, pass: &str, waker: Waker) -> Result<Client, String> {
-        let kind = Kind::of(url).ok_or_else(|| format!("この種類の接続はまだ使えません（Oracle と SQLite）: {}", url.split(':').take(2).collect::<Vec<_>>().join(":")))?;
+        let kind = Kind::of(url).ok_or_else(|| format!("この種類の接続はまだ使えません（Oracle・SQLite・Salesforce）: {}", url.split(':').take(2).collect::<Vec<_>>().join(":")))?;
         let (tx, req_rx) = channel::<Req>();
         let (reply_tx, rx) = channel::<Reply>();
         let (url, user, pass) = (url.to_string(), user.to_string(), pass.to_string());
@@ -572,9 +578,13 @@ impl Client {
                     waker();
                     ok
                 };
+                let note = |s: String| {
+                    send(Reply::Note(s));
+                };
                 let opened: R<Box<dyn Backend>> = match kind {
                     Kind::Oracle => OracleDb::connect(&url, &user, &pass).map(|d| Box::new(d) as Box<dyn Backend>),
                     Kind::Sqlite => SqliteDb::connect(&url).map(|d| Box::new(d) as Box<dyn Backend>),
+                    Kind::Salesforce => crate::salesforce::SalesforceDb::connect(&url, &user, &note).map(|d| Box::new(d) as Box<dyn Backend>),
                 };
                 let mut db = match opened.and_then(|mut d| d.info().map(|i| (d, i))) {
                     Ok((d, (product, schema))) => {
