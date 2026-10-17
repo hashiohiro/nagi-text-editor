@@ -384,3 +384,43 @@ mod tests {
         assert_eq!(e.buf.len_bytes(), 0);
     }
 }
+
+#[cfg(test)]
+mod write_as_tests {
+    use super::*;
+
+    fn keys(e: &mut Editor, k: &str) {
+        for key in nagi_vim::parse_keys(k, " ") {
+            e.key(key);
+        }
+    }
+
+    #[test]
+    fn write_with_name() {
+        let dir = std::env::temp_dir().join(format!("nagi-writeas-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = dir.join("a.txt");
+        // 名前の無いバッファに :w 名前 → その名前になって保存される
+        let mut e = Editor::new(Buffer::from_str(""), None);
+        keys(&mut e, &format!("ihello<Esc>:w {}<CR>", a.display()));
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "hello");
+        assert_eq!(e.buf.path.as_deref(), Some(a.as_path()));
+        assert!(!e.buf.dirty);
+        // 名前のあるバッファの :w 別名 → 書き出すだけ（名前は a のまま）。既にあるファイルは ! が要る
+        let b = dir.join("b.txt");
+        keys(&mut e, &format!("A!<Esc>:w {}<CR>", b.display()));
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), "hello!");
+        assert_eq!(e.buf.path.as_deref(), Some(a.as_path()));
+        assert!(e.buf.dirty, "a にはまだ書いていない");
+        keys(&mut e, &format!(":w {}<CR>", b.display()));
+        assert!(e.message.starts_with("E13"), "{}", e.message);
+        keys(&mut e, &format!(":w! {}<CR>", b.display()));
+        assert!(!e.message.starts_with("E13"));
+        // :saveas は名前ごと変える
+        let c = dir.join("c.txt");
+        keys(&mut e, &format!(":saveas {}<CR>", c.display()));
+        assert_eq!(e.buf.path.as_deref(), Some(c.as_path()));
+        assert_eq!(std::fs::read_to_string(&c).unwrap(), "hello!");
+    }
+}

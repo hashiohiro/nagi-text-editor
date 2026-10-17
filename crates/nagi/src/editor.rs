@@ -1019,6 +1019,37 @@ impl Editor {
 
     // ---------------------------------------------------------------- Ex コマンド
 
+    /// `:w 名前` / `:saveas 名前`。名前の無いバッファ（と :saveas）はその名前になり、名前のあるバッファは
+    /// 別のファイルへ書き出すだけ（Vim と同じ）。ほかの既にあるファイルを上書きするには `!` が要る
+    pub(crate) fn write_as(&mut self, name: &str, force: bool, rename: bool) -> bool {
+        let target = PathBuf::from(name.trim().trim_matches('"'));
+        let same = self.buf.path.as_ref().is_some_and(|p| std::path::absolute(p).ok() == std::path::absolute(&target).ok());
+        if same {
+            return self.write();
+        }
+        if target.exists() && !force {
+            self.message = format!("E13: ファイルが既にあります（:w! {name} で上書き）");
+            return false;
+        }
+        if self.buf.path.is_none() || rename {
+            self.buf.path = Some(target.clone());
+            self.buf.disk = None;
+            self.watch_file(&target);
+            crate::finder::remember_recent(&target);
+            if self.syntax.is_none() {
+                self.start_syntax();
+            }
+            return self.write();
+        }
+        // 名前はそのまま、中身を別のファイルへ（変更ありの印も変えない）
+        let (path, dirty, disk) = (self.buf.path.replace(target.clone()), self.buf.dirty, self.buf.disk);
+        let ok = self.write();
+        self.buf.path = path;
+        self.buf.dirty = dirty;
+        self.buf.disk = disk;
+        ok
+    }
+
     fn write(&mut self) -> bool {
         match self.buf.save() {
             Ok(n) => {
@@ -1060,11 +1091,19 @@ impl Editor {
         let (name, arg) = cmd.split_once(char::is_whitespace).map_or((cmd, ""), |(n, a)| (n, a.trim()));
         match name {
             "" => {}
-            "w" | "write" => {
+            "w" | "write" | "w!" | "write!" if !arg.is_empty() => {
+                self.write_as(arg, name.ends_with('!'), false);
+            }
+            "sav" | "saveas" | "sav!" | "saveas!" if !arg.is_empty() => {
+                self.write_as(arg, name.ends_with('!'), true);
+            }
+            "w" | "write" | "w!" | "write!" => {
                 self.write();
             }
             // 分割中の :q は今の窓だけを閉じる（バッファは隠れたまま残る）
             "q" | "quit" | "q!" | "quit!" | "clo" | "close" if self.is_split() => self.close_window(self.cur_win),
+            // :wq 名前 は名前を付けて保存してから
+            "wq" | "x" | "xit" | "wq!" if !arg.is_empty() && !self.write_as(arg, name.ends_with('!'), false) => {}
             "wq" | "x" | "xit" if self.is_split() => {
                 if self.write() {
                     self.close_window(self.cur_win);

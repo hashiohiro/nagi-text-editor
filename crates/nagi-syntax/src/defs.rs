@@ -242,7 +242,9 @@ fn is_binding(id: Node) -> bool {
         return false;
     }
     let Some(p) = id.parent() else { return false };
-    if p.child_by_field_name("name") == Some(id) || p.child_by_field_name("pattern") == Some(id) {
+    // 名前・パターンの欄は、定義や束縛を作る節のときだけ（method_invocation の name などは使う側）
+    let defining = def_kind(p.kind()).is_some() || BINDING_PARENTS.contains(&p.kind()) || matches!(p.kind(), "property_declaration" | "variable_declaration");
+    if defining && (p.child_by_field_name("name") == Some(id) || p.child_by_field_name("pattern") == Some(id)) {
         return true;
     }
     // for (x of …) / Python の for x in / 代入の左辺
@@ -318,6 +320,58 @@ pub fn find_local_definition(tree: &Tree, at: usize, text: &dyn Fn(Range<usize>)
     best.map(|(_, p)| p)
 }
 
+/// 参照の種類（定義ジャンプの的中率を測るため）
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
+pub enum RefKind {
+    /// メソッド・関数の呼び出し
+    Call,
+    /// 型の参照
+    Type,
+}
+
+/// 呼び出しと型の参照の位置（名前, 種類, byte）
+pub fn reference_sites(tree: &Tree, text: &dyn Fn(Range<usize>) -> String) -> Vec<(String, RefKind, usize)> {
+    let mut out = Vec::new();
+    let mut c = tree.walk();
+    'walk: loop {
+        let n = c.node();
+        if n.child_count() == 0 && !is_binding(n) && !in_import(n) {
+            let kind = match n.kind() {
+                "type_identifier" => Some(RefKind::Type),
+                "identifier" | "property_identifier" | "field_identifier" => n.parent().and_then(|p| {
+                    let call = |q: Node| matches!(q.kind(), "call_expression" | "method_invocation");
+                    let is_fn = |q: Node, x: Node| q.child_by_field_name("function") == Some(x) || q.child_by_field_name("name") == Some(x);
+                    if call(p) && is_fn(p, n) {
+                        return Some(RefKind::Call);
+                    }
+                    let member = matches!(p.kind(), "member_expression" | "field_expression" | "scoped_identifier");
+                    let prop = p.child_by_field_name("property") == Some(n) || p.child_by_field_name("field") == Some(n) || p.child_by_field_name("name") == Some(n);
+                    match p.parent() {
+                        Some(g) if member && prop && call(g) && is_fn(g, p) => Some(RefKind::Call),
+                        _ => None,
+                    }
+                }),
+                _ => None,
+            };
+            if let Some(k) = kind {
+                out.push((text(n.byte_range()), k, n.start_byte()));
+            }
+        }
+        if c.goto_first_child() {
+            continue;
+        }
+        loop {
+            if c.goto_next_sibling() {
+                continue 'walk;
+            }
+            if !c.goto_parent() {
+                break 'walk;
+            }
+        }
+    }
+    out
+}
+
 /// 索引用の解析器（スレッドごとに 1 つ持つ）
 pub struct DefParser {
     parser: Parser,
@@ -332,6 +386,22 @@ impl Default for DefParser {
 impl DefParser {
     pub fn defs(&mut self, lang: Lang, src: &str) -> Vec<Def> {
         defs_of_source(lang, src, &mut self.parser)
+    }
+
+    /// 参照ごとに (名前, 種類, ファイルの中で定義が見つかったか)（的中率の計測用）
+    pub fn reference_report(&mut self, lang: Lang, src: &str) -> Vec<(String, RefKind, bool)> {
+        if self.parser.set_language(&lang.language()).is_err() {
+            return Vec::new();
+        }
+        let Some(tree) = self.parser.parse(src, None) else { return Vec::new() };
+        let text = |r: Range<usize>| src.get(r).unwrap_or("").to_string();
+        reference_sites(&tree, &text)
+            .into_iter()
+            .map(|(name, k, at)| {
+                let local = find_local_definition(&tree, at, &text).is_some_and(|d| d != at);
+                (name, k, local)
+            })
+            .collect()
     }
 }
 
