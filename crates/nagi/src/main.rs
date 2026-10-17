@@ -34,6 +34,7 @@ mod macros;
 mod marks;
 mod nav;
 mod save_dialog;
+mod toggles;
 mod tree_panel;
 mod normal;
 mod stats;
@@ -645,8 +646,18 @@ impl App {
         } else {
             None
         };
-        if want != ed.stripe {
+        // 出す・隠すのボタンの上なら明るくして名前を出す。ボタンは左端にもあるので、
+        // ストライプがまだ出ていなければボタンを優先し、もう出ていればストライプを優先する
+        let mut hover = ed.button_at(row, col as usize);
+        let mut want = want;
+        if want.is_some() && want == ed.stripe {
+            hover = None;
+        } else if hover.is_some() {
+            want = None;
+        }
+        if want != ed.stripe || hover != ed.hover_button {
             ed.stripe = want;
+            ed.hover_button = hover;
             self.draw();
         }
     }
@@ -663,8 +674,10 @@ impl App {
                 None => return false,
             },
             Some(editor::Side::Bottom) if row + 1 == ed.screen.1 && col < 8 => {
-                if ed.grep.is_some() {
-                    ed.close_grep();
+                if ed.bottom_visible() {
+                    ed.hide_bottom();
+                } else if ed.grep.is_some() {
+                    ed.show_bottom();
                 } else {
                     ed.open_grep("");
                 }
@@ -694,6 +707,18 @@ impl App {
         self.sync_screen();
         if self.press_stripe() {
             return;
+        }
+        // 出す・隠すのボタン
+        if let (Some(f), Some(ed)) = (&self.fonts, &mut self.ed) {
+            let cell = f.cell();
+            let (row, col) = ((self.mouse.1 as f32 / cell.h) as usize, (self.mouse.0.max(0.0) as f32 / cell.w) as usize);
+            if let Some(b) = ed.button_at(row, col) {
+                ed.press_button(b);
+                ed.hover_button = None;
+                self.sync_ime();
+                self.draw();
+                return;
+            }
         }
         // パネルの上なら、パネルの行を選ぶ（ダブルクリックで開く）
         if let (Some(f), Some(ed)) = (&self.fonts, &mut self.ed) {

@@ -271,8 +271,8 @@ impl Editor {
                     return;
                 }
                 // 一番左の窓から左へは、ツリーがあればツリーへ
-                None if dir == 'h' && self.tree.is_some() => {
-                    self.open_tree();
+                None if dir == 'h' && (self.tree.is_some() || self.commit.is_some()) => {
+                    self.select_left_tab(self.left_last());
                     return;
                 }
                 None => return,

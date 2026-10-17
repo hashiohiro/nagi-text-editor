@@ -123,6 +123,7 @@ impl Editor {
             return;
         }
         self.left_tab = crate::tree_panel::LeftTab::Commit;
+        self.left_hidden = false;
         if self.commit.is_none() {
             self.commit = Some(CommitPanel {
                 items: Vec::new(),

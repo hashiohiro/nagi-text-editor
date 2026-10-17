@@ -586,9 +586,10 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     if let (Some(c), Mode::Command) = (&ed.cmd_complete, ed.mode) {
         draw_cmd_complete(&mut p, ed, c, rows, cols);
     }
+    draw_toggle_buttons(&mut p, ed, cols);
     match ed.stripe {
         Some(crate::editor::Side::Left) => draw_stripe_left(&mut p, ed.windows_rows(), ed.left_visible()),
-        Some(crate::editor::Side::Bottom) => draw_stripe_bottom(&mut p, rows, cols, ed.grep.is_some()),
+        Some(crate::editor::Side::Bottom) => draw_stripe_bottom(&mut p, rows, cols, ed.bottom_visible()),
         Some(crate::editor::Side::Commit) | None => {}
     }
     // ---- 最下行: 左にモード・メッセージ・入力欄、右に位置（Vim の showmode と ruler と同じ形）
@@ -782,6 +783,28 @@ fn draw_stripe_bottom(p: &mut Painter, rows: usize, cols: usize, open: bool) {
     p.text(label, 0, y, if open { BG } else { STATUS_FG });
 }
 
+/// 出す・隠すのボタン。ふだんは薄い 1 文字、マウスを載せると明るくして名前を横に出す
+fn draw_toggle_buttons(p: &mut Painter, ed: &Editor, cols: usize) {
+    let cell = p.fonts.cell();
+    for (b, row, col) in ed.toggle_buttons() {
+        let hover = ed.hover_button == Some(b);
+        let (x, y) = (col as f32 * cell.w, row as f32 * cell.h);
+        if hover {
+            p.out.push(Instance::fill(x, y, cell.w, cell.h, MATCH_BG));
+        }
+        p.text(b.glyph(), col, y, if hover { FG } else { STATUS_FG });
+        if hover {
+            let label = format!(" {} ", b.label(ed));
+            let w = p.width(&label);
+            let lx = if col + 2 + w <= cols { col + 2 } else { col.saturating_sub(w + 1) };
+            let (fx, fw) = (lx as f32 * cell.w, w as f32 * cell.w);
+            p.out.push(Instance::fill(fx - 1.0, y - 1.0, fw + 2.0, cell.h + 2.0, STATUS_FG));
+            p.out.push(Instance::fill(fx, y, fw, cell.h, rgb(0x141414)));
+            p.text(&label, lx, y, FG);
+        }
+    }
+}
+
 /// 左の欄の 1 行目: タブ（プロジェクト・コミット）。出しているタブは明るい字と下線
 fn draw_left_tabs(p: &mut Painter, r: Rect, active: crate::tree_panel::LeftTab, focused: bool, extra: &str) {
     let cell = p.fonts.cell();
@@ -796,7 +819,10 @@ fn draw_left_tabs(p: &mut Painter, r: Rect, active: crate::tree_panel::LeftTab, 
         x = end;
     }
     if !extra.is_empty() {
+        let saved = p.cols;
+        p.cols = (r.x + r.w).saturating_sub(3);
         p.text(&format!(" {extra}"), x, y, LINE_NO);
+        p.cols = saved;
     }
     p.out.push(Instance::fill(r.x as f32 * cell.w, y + cell.h - 1.0, r.w as f32 * cell.w, 1.0, LINE_NO));
 }
@@ -1401,7 +1427,10 @@ fn draw_grep_panel(p: &mut Painter, g: &crate::grep_panel::GrepPanel, r: Rect, f
             if g.searching() { " …" } else { "" }
         ),
     };
+    let saved = p.cols;
+    p.cols = (r.x + r.w).saturating_sub(3);
     p.text(&head, r.x, y0, STATUS_FG);
+    p.cols = saved;
     for k in 0..r.h.saturating_sub(1) {
         let Some(h) = g.hits.get(g.scroll + k) else { break };
         let y = (r.y + 1 + k) as f32 * cell.h;

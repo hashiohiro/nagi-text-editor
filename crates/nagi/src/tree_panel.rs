@@ -163,6 +163,9 @@ impl Editor {
 
     /// 左の欄に出しているタブ（両方開いていれば、最後に選んだ方）
     pub fn left_visible(&self) -> Option<LeftTab> {
+        if self.left_hidden {
+            return None;
+        }
         match (self.tree.is_some(), self.commit.is_some()) {
             (true, true) => Some(self.left_tab),
             (true, false) => Some(LeftTab::Project),
@@ -224,6 +227,7 @@ impl Editor {
             self.tree = Some(t);
         }
         self.left_tab = LeftTab::Project;
+        self.left_hidden = false;
         let t = self.tree.as_mut().unwrap();
         t.reveal = current;
         t.advance_reveal(&waker);

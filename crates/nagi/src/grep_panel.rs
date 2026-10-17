@@ -70,7 +70,9 @@ pub fn panel_height(rows: usize) -> usize {
 impl Editor {
     /// パネルの矩形（開いていなければ None）。1 行目は見出し
     pub fn panel_rect(&self) -> Option<Rect> {
-        self.grep.as_ref()?;
+        if !self.bottom_visible() {
+            return None;
+        }
         let (cols, rows) = self.screen;
         let h = panel_height(rows);
         Some(Rect { x: 0, y: rows - h, w: cols, h })
@@ -84,7 +86,7 @@ impl Editor {
     /// 窓に使える行数（下のパネルの分を除く）
     pub(crate) fn windows_rows(&self) -> usize {
         let rows = self.screen.1;
-        if self.grep.is_some() {
+        if self.bottom_visible() {
             rows - panel_height(rows)
         } else {
             rows
@@ -117,8 +119,7 @@ impl Editor {
             pending_g: false,
             pending_w: false,
         });
-        // 下のパネルは 1 つだけ
-        self.commit = None;
+        self.bottom_hidden = false;
         g.root = root;
         // 語を付けて呼んだら（`:Grep 語`）探し始めて編集画面へ戻る（Vim の :grep と同じ）。付けなければ最下行で打つ
         self.mode = if initial.is_empty() { Mode::GrepPrompt } else { Mode::Normal };
@@ -295,6 +296,7 @@ impl Editor {
     /// パネルへ移る（リストモード）
     pub(crate) fn focus_panel(&mut self) {
         if self.grep.is_some() {
+            self.bottom_hidden = false;
             self.list_side = crate::editor::Side::Bottom;
             self.mode = Mode::List;
             self.pending_keys.clear();
@@ -303,6 +305,7 @@ impl Editor {
 
     pub(crate) fn close_grep(&mut self) {
         self.grep = None;
+        self.bottom_hidden = false;
         if self.mode == Mode::GrepPrompt || (self.mode == Mode::List && self.list_side == crate::editor::Side::Bottom) {
             self.mode = Mode::Normal;
         }

@@ -268,6 +268,11 @@ pub struct Editor {
     pub(crate) last_sub: Option<crate::ex_cmds::LastSub>,
     /// git（status・HEAD の版・差分・ポップアップ）
     pub(crate) git: crate::git_ui::GitState,
+    /// 左の欄・下のパネルを隠しているか（中身は残す）
+    pub left_hidden: bool,
+    pub bottom_hidden: bool,
+    /// マウスを載せているボタン
+    pub hover_button: Option<crate::toggles::Button>,
     /// 左の欄で出しているタブ（ツリーとコミットのパネルが両方開いているとき）
     pub left_tab: crate::tree_panel::LeftTab,
     /// ブランチのポップアップ（開いている間だけ）
@@ -379,6 +384,9 @@ impl Editor {
             log: None,
             branch_popup: None,
             left_tab: Default::default(),
+            left_hidden: false,
+            bottom_hidden: false,
+            hover_button: None,
             git_job: None,
             diff: None,
             diff_return: None,
@@ -616,7 +624,7 @@ impl Editor {
             if self.mode == Mode::Insert {
                 self.key(Key::Esc);
             }
-            self.select_left_tab(if key == Key::Alt('1') { crate::tree_panel::LeftTab::Project } else { crate::tree_panel::LeftTab::Commit });
+            self.toggle_left_tab(if key == Key::Alt('1') { crate::tree_panel::LeftTab::Project } else { crate::tree_panel::LeftTab::Commit });
             return Effect::None;
         }
         // マクロの記録を止める q（Normal と Visual で、ほかのキーの途中でないとき）
