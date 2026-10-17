@@ -8,6 +8,8 @@ use std::ops::Range;
 
 use tree_sitter::{Node, Parser, Tree};
 
+use std::collections::HashMap;
+
 use crate::{FUNCTION_KINDS, Lang};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
@@ -337,6 +339,153 @@ pub fn find_local_definition(tree: &Tree, at: usize, text: &dyn Fn(Range<usize>)
     pick_binding(binds.get(&name)?, at)
 }
 
+/// メソッド呼び出しの受け手（`x.foo()` の `x`）。定義の候補を、その型のファイルに絞るのに使う
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Receiver {
+    /// this.foo() / Java の受け手なしの foo()（今のクラス）
+    This,
+    /// 型が分かった（宣言の型・new の型・静的な呼び出しのクラス名）
+    Type(String),
+    /// 受け手のフィールド（x.f の f。宣言の型は索引で調べる）
+    Member(Box<Receiver>, String),
+    /// 受け手のメソッドの戻り値（x.m() の m）
+    Call(Box<Receiver>, String),
+}
+
+/// `at`（呼び出しの名前の位置）の呼び出しの引数の数
+pub fn call_arg_count(tree: &Tree, at: usize) -> Option<usize> {
+    let n = tree.root_node().descendant_for_byte_range(at, at)?;
+    let mut call = n.parent()?;
+    if call.kind() == "member_expression" {
+        call = call.parent()?;
+    }
+    if !matches!(call.kind(), "method_invocation" | "call_expression") {
+        return None;
+    }
+    let args = call.child_by_field_name("arguments")?;
+    let mut c = args.walk();
+    Some(args.named_children(&mut c).filter(|a| a.kind() != "comment").count())
+}
+
+/// `at`（呼び出しの名前の位置）の受け手の型
+pub fn receiver_at(tree: &Tree, at: usize, text: &dyn Fn(Range<usize>) -> String, binds: &HashMap<String, Vec<(Range<usize>, usize)>>) -> Option<Receiver> {
+    let n = tree.root_node().descendant_for_byte_range(at, at)?;
+    let p = n.parent()?;
+    let obj = match p.kind() {
+        "method_invocation" if p.child_by_field_name("name") == Some(n) => match p.child_by_field_name("object") {
+            Some(o) => o,
+            None => return Some(Receiver::This),
+        },
+        "member_expression" if p.child_by_field_name("property") == Some(n) => p.child_by_field_name("object")?,
+        _ => return None,
+    };
+    expr_type(tree, obj, text, binds, 0)
+}
+
+fn expr_type(tree: &Tree, e: Node, text: &dyn Fn(Range<usize>) -> String, binds: &HashMap<String, Vec<(Range<usize>, usize)>>, depth: usize) -> Option<Receiver> {
+    if depth > 6 {
+        return None;
+    }
+    match e.kind() {
+        "this" => Some(Receiver::This),
+        "identifier" => {
+            let s = text(e.byte_range());
+            if let Some(d) = binds.get(&s).and_then(|c| pick_binding(c, e.start_byte())) {
+                return declared_type(tree, d, text, binds, depth);
+            }
+            // 束縛でない大文字の名前は、クラスの静的な呼び出し（Foo.bar()）
+            s.chars().next().is_some_and(char::is_uppercase).then_some(Receiver::Type(s))
+        }
+        // this.x.foo(): フィールド x の型（TS のコンストラクタ引数のフィールドは関数の中にしか見えないので、範囲を問わず探す）。
+        // このファイルに無ければ（親クラスのフィールド）、a.b.foo() と同じく索引で調べる
+        "field_access" | "member_expression" => {
+            let o = e.child_by_field_name("object")?;
+            let f = text(e.child_by_field_name("field").or_else(|| e.child_by_field_name("property"))?.byte_range());
+            if o.kind() == "this" {
+                if let Some(t) = binds.get(&f).and_then(|v| v.iter().find_map(|(_, d)| declared_type(tree, *d, text, binds, depth))) {
+                    return Some(t);
+                }
+            }
+            Some(Receiver::Member(Box::new(expr_type(tree, o, text, binds, depth + 1)?), f))
+        }
+        // a.m().foo(): m の戻り値の型
+        "method_invocation" => {
+            let m = text(e.child_by_field_name("name")?.byte_range());
+            let inner = match e.child_by_field_name("object") {
+                Some(o) => expr_type(tree, o, text, binds, depth + 1)?,
+                None => Receiver::This,
+            };
+            Some(Receiver::Call(Box::new(inner), m))
+        }
+        "call_expression" => {
+            let f = e.child_by_field_name("function")?;
+            if f.kind() != "member_expression" {
+                return None;
+            }
+            let m = text(f.child_by_field_name("property")?.byte_range());
+            Some(Receiver::Call(Box::new(expr_type(tree, f.child_by_field_name("object")?, text, binds, depth + 1)?), m))
+        }
+        // (x as Foo).bar() / ((Foo) x).bar()
+        "as_expression" => type_name(e.named_child(1)?, text).map(Receiver::Type),
+        "cast_expression" => type_name(e.child_by_field_name("type")?, text).map(Receiver::Type),
+        "object_creation_expression" | "new_expression" => {
+            type_name(e.child_by_field_name("type").or_else(|| e.child_by_field_name("constructor"))?, text).map(Receiver::Type)
+        }
+        "parenthesized_expression" | "non_null_expression" => expr_type(tree, e.named_child(0)?, text, binds, depth + 1),
+        _ => None,
+    }
+}
+
+/// 束縛（`at` の識別子）の宣言の型。型の注釈が無ければ右辺から（`let h = this.headers` / `const c = new Cart()`）
+fn declared_type(tree: &Tree, at: usize, text: &dyn Fn(Range<usize>) -> String, binds: &HashMap<String, Vec<(Range<usize>, usize)>>, depth: usize) -> Option<Receiver> {
+    let id = tree.root_node().descendant_for_byte_range(at, at)?;
+    let mut n = id;
+    for _ in 0..3 {
+        let a = n.parent()?;
+        if matches!(a.kind(), "variable_declarator" | "public_field_definition" | "field_definition") && a.child_by_field_name("type").is_none() {
+            if let Some(v) = a.child_by_field_name("value") {
+                // フィールドの x = inject(Foo)
+                if v.kind() == "call_expression" && v.child_by_field_name("function").is_some_and(|f| text(f.byte_range()) == "inject") {
+                    return v.child_by_field_name("arguments")?.named_child(0).and_then(|t| type_name(t, text)).map(Receiver::Type);
+                }
+                // 自分自身を右辺に含む（let x = x.y）ものは追わない
+                if v.byte_range().contains(&at) {
+                    return None;
+                }
+                return expr_type(tree, v, text, binds, depth + 1);
+            }
+        }
+        if let Some(mut t) = a.child_by_field_name("type") {
+            if t.kind() == "type_annotation" {
+                t = t.named_child(0)?;
+            }
+            match type_name(t, text) {
+                // Java の var: 右辺から
+                Some(v) if v == "var" => {
+                    let v = n.child_by_field_name("value")?;
+                    return expr_type(tree, v, text, binds, depth + 1);
+                }
+                r => return r.map(Receiver::Type),
+            }
+        }
+        n = a;
+    }
+    None
+}
+
+/// 型の名前（総称型は外側、修飾付きは最後の名前）
+fn type_name(t: Node, text: &dyn Fn(Range<usize>) -> String) -> Option<String> {
+    match t.kind() {
+        "type_identifier" | "identifier" => Some(text(t.byte_range())),
+        "generic_type" => type_name(t.child_by_field_name("name").or_else(|| t.named_child(0))?, text),
+        "scoped_type_identifier" | "nested_type_identifier" | "member_expression" => {
+            let last = t.named_child(u32::try_from(t.named_child_count().checked_sub(1)?).ok()?)?;
+            type_name(last, text)
+        }
+        _ => None,
+    }
+}
+
 /// 参照の種類（定義ジャンプの的中率を測るため）
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Hash)]
 pub enum RefKind {
@@ -406,7 +555,7 @@ impl DefParser {
     }
 
     /// 参照ごとに (名前, 種類, ファイルの中で定義が見つかったか)（的中率の計測用）
-    pub fn reference_report(&mut self, lang: Lang, src: &str) -> Vec<(String, RefKind, bool)> {
+    pub fn reference_report(&mut self, lang: Lang, src: &str) -> Vec<(String, RefKind, bool, Option<Receiver>, Option<usize>)> {
         if self.parser.set_language(&lang.language()).is_err() {
             return Vec::new();
         }
@@ -418,7 +567,9 @@ impl DefParser {
             .into_iter()
             .map(|(name, k, at)| {
                 let local = ident_at(&tree, at, &text).and_then(|n| pick_binding(binds.get(&n)?, at)).is_some_and(|d| d != at);
-                (name, k, local)
+                let recv = if k == RefKind::Call { receiver_at(&tree, at, &text, &binds) } else { None };
+                let args = if k == RefKind::Call { call_arg_count(&tree, at) } else { None };
+                (name, k, local, recv, args)
             })
             .collect()
     }
@@ -450,6 +601,51 @@ mod tests {
         let d = find_local_definition(&tree, at, &|r: Range<usize>| src[r].to_string())?;
         // 定義の行を返す
         Some(src[..d].rsplit('\n').next().unwrap_or("").to_string() + &src[d..].split('\n').next().unwrap_or("").to_string())
+    }
+
+    fn recv(lang: Lang, src: &str, call: &str) -> Option<Receiver> {
+        let mut p = Parser::new();
+        p.set_language(&lang.language()).unwrap();
+        let tree = p.parse(src, None).unwrap();
+        let at = src.find(call).unwrap();
+        let text = |r: Range<usize>| src[r].to_string();
+        receiver_at(&tree, at, &text, &local_bindings(&tree, &text))
+    }
+
+    #[test]
+    fn receivers() {
+        let t = |s: &str| Some(Receiver::Type(s.into()));
+        let java = "class A {\n  private UserService users;\n  void f(OrderRepo repo, List<Item> xs) {\n    users.find1();\n    repo.save2();\n    var b = new Builder();\n    b.build3();\n    Util.parse4();\n    run5();\n    this.users.find6();\n    xs.get7();\n    new Foo().go8();\n    make().go9();\n  }\n}\n";
+        assert_eq!(recv(Lang::Java, java, "find1"), t("UserService"));
+        assert_eq!(recv(Lang::Java, java, "save2"), t("OrderRepo"));
+        assert_eq!(recv(Lang::Java, java, "build3"), t("Builder"));
+        assert_eq!(recv(Lang::Java, java, "parse4"), t("Util"));
+        assert_eq!(recv(Lang::Java, java, "run5"), Some(Receiver::This));
+        assert_eq!(recv(Lang::Java, java, "find6"), t("UserService"));
+        assert_eq!(recv(Lang::Java, java, "get7"), t("List"));
+        assert_eq!(recv(Lang::Java, java, "go8"), t("Foo"));
+        assert_eq!(recv(Lang::Java, java, "go9"), Some(Receiver::Call(Box::new(Receiver::This), "make".into())));
+        let java2 = "class B {\n  void f(Req req) {\n    req.getJokn().getCd1();\n    ex.createCriteria().andNo2();\n    ((Foo) o).bar3();\n  }\n}\n";
+        let call = |r: Receiver, m: &str| Some(Receiver::Call(Box::new(r), m.into()));
+        assert_eq!(recv(Lang::Java, java2, "getCd1"), call(Receiver::Type("Req".into()), "getJokn"));
+        assert_eq!(recv(Lang::Java, java2, "andNo2"), None, "ex は束縛でも大文字でもないので分からない");
+        assert_eq!(recv(Lang::Java, java2, "bar3"), t("Foo"));
+        let ts = "class P {\n  private api = inject(ApiService);\n  constructor(private users: UserService) {}\n  f(o: Order) {\n    this.users.load1();\n    this.api.get2();\n    o.total3();\n    this.refresh4();\n    const c = new Cart();\n    c.add5();\n    helper6();\n  }\n}\n";
+        assert_eq!(recv(Lang::TypeScript, ts, "load1"), t("UserService"));
+        assert_eq!(recv(Lang::TypeScript, ts, "get2"), t("ApiService"));
+        assert_eq!(recv(Lang::TypeScript, ts, "total3"), t("Order"));
+        assert_eq!(recv(Lang::TypeScript, ts, "refresh4"), Some(Receiver::This));
+        assert_eq!(recv(Lang::TypeScript, ts, "add5"), t("Cart"));
+        assert_eq!(recv(Lang::TypeScript, ts, "helper6"), None);
+        let ts2 = "class Q extends Base {\n  f() {\n    this.store.set1(1);\n    this.route.snapshot.get2('a');\n    this.form()?.get3('x');\n    (c as FormControl).reset4();\n  }\n}\n";
+        let mem = |r: Receiver, f: &str| Receiver::Member(Box::new(r), f.into());
+        assert_eq!(recv(Lang::TypeScript, ts2, "set1"), Some(mem(Receiver::This, "store")));
+        assert_eq!(recv(Lang::TypeScript, ts2, "get2"), Some(mem(mem(Receiver::This, "route"), "snapshot")));
+        assert_eq!(recv(Lang::TypeScript, ts2, "get3"), Some(Receiver::Call(Box::new(Receiver::This), "form".into())));
+        assert_eq!(recv(Lang::TypeScript, ts2, "reset4"), t("FormControl"));
+        let ts3 = "class S {\n  f() {\n    let h = this.defaultHeaders;\n    h = h.set1('a');\n    const r = svc.load();\n    r.go2();\n  }\n}\n";
+        assert_eq!(recv(Lang::TypeScript, ts3, "set1"), Some(mem(Receiver::This, "defaultHeaders")));
+        assert_eq!(recv(Lang::TypeScript, ts3, "go2"), None, "svc が分からないので r も分からない");
     }
 
     #[test]

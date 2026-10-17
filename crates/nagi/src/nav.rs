@@ -155,25 +155,54 @@ impl Editor {
         }
         // プロジェクトの索引（まだなら、このファイルの定義から）
         let here = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
+        let cur = (self.cursor.line, word_at - self.buf.line_start(self.cursor.line));
+        // 有力な順に並べる（受け手の型とその親 → import → 同じモジュール）。best はいちばん有力なものの数
+        let mut best = 0;
+        // 呼び出しなら引数の数（オーバーロードを選ぶ・フィールドを候補から外す）
+        let args = self.syntax.as_ref().and_then(|s| s.arg_count(word_at));
         let mut cands: Vec<(PathBuf, usize, usize, DefKind)> = match &self.nav.index {
             Some(idx) => {
-                // 候補が複数なら、import と同じモジュールで絞る
                 let rel = here.as_ref().and_then(|h| h.strip_prefix(&idx.root).ok()).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default();
-                let head = self.buf.slice_string(0, self.buf.len_bytes().min(64 * 1024));
-                let locs = nagi_workers::index::narrow_candidates(&rel, &head, &name, idx.lookup(&name).to_vec());
-                locs.iter().map(|l| (idx.root.join(&*l.path), l.line as usize, l.col as usize, l.kind)).collect()
+                let src = self.buf.text();
+                let recv = self.syntax.as_ref().and_then(|s| s.receiver(&self.buf, word_at));
+                let mut all = idx.lookup(&name).to_vec();
+                // 今いる定義そのものは候補から外す（ほかに候補があれば）
+                if all.len() > 1 {
+                    all.retain(|l| !(l.path.as_ref() == rel && (l.line as usize, l.col as usize) == cur));
+                }
+                match nagi_workers::index::Ranker::new(Some(idx)).resolve(&rel, &src, &name, recv.as_ref(), args, all) {
+                    nagi_workers::index::Ranked::Locs(locs, b) => {
+                        best = b;
+                        locs.iter().map(|l| (idx.root.join(&*l.path), l.line as usize, l.col as usize, l.kind)).collect()
+                    }
+                    nagi_workers::index::Ranked::Outside(t) => {
+                        // 受け手の型（またはその親）がライブラリ。同じ名前のプロジェクトのメソッドへは跳ばない
+                        self.message = format!("定義はプロジェクトの外です: {name}（{t} から先はライブラリ）");
+                        return;
+                    }
+                }
             }
             None => Vec::new(),
         };
         if cands.is_empty() {
             if let (Some(syn), Some(p)) = (&self.syntax, &here) {
                 cands = syn.defs(&self.buf).into_iter().filter(|d| d.name == name).map(|d| (p.clone(), d.line, d.col, d.kind)).collect();
+                if cands.len() > 1 {
+                    cands.retain(|(p, l, c, _)| !(Some(p) == here.as_ref() && (*l, *c) == cur));
+                }
+                best = cands.len();
             }
         }
-        // 今いる定義そのものは候補から外す（ほかに候補があれば）
-        let cur = (self.cursor.line, word_at - self.buf.line_start(self.cursor.line));
-        if cands.len() > 1 {
-            cands.retain(|(p, l, c, _)| !(Some(p) == here.as_ref() && (*l, *c) == cur));
+        if best == 1 && cands.len() > 1 {
+            cands.truncate(1);
+        }
+        // 呼び出しの候補に、有力でない同じ名前のフィールド・定数は出さない
+        if args.is_some() && cands.len() > best {
+            let mut i = 0;
+            cands.retain(|(_, _, _, k)| {
+                i += 1;
+                i <= best || matches!(k, DefKind::Function | DefKind::Method)
+            });
         }
         match cands.len() {
             0 => {
@@ -186,15 +215,73 @@ impl Editor {
                 let (p, l, c, _) = cands.remove(0);
                 self.jump_to(&p, l, c);
             }
-            _ => {
-                // 同じファイル → 型の名前なら型 → 近いフォルダ の順
-                let upper = name.chars().next().is_some_and(char::is_uppercase);
-                let near = |p: &Path| here.as_ref().map_or(0, |h| h.components().zip(p.components()).take_while(|(a, b)| a == b).count());
-                cands.sort_by_key(|(p, l, _, k)| (Some(p) != here.as_ref(), !(upper && k.is_type()), std::cmp::Reverse(near(p)), p.clone(), *l));
+            n => {
+                // 有力な順（上の best 件が同じくらい有力）。有力なものには ● を付ける
                 let root = self.nav.index.as_ref().map(|i| i.root.clone()).unwrap_or_default();
-                let items = cands.iter().map(|(p, l, _, k)| format!("{name}  {}  {}:{}", k.label(), rel(p, &root), l + 1)).collect();
+                let mark = best < n;
+                let items = cands
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (p, l, _, k))| {
+                        let m = if !mark { "" } else if i < best { "● " } else { "  " };
+                        format!("{m}{name}  {}  {}:{}", k.label(), rel(p, &root), l + 1)
+                    })
+                    .collect();
                 let locs = cands.into_iter().map(|(p, l, c, _)| (p, l, c)).collect();
                 self.open_locations(Source::Definitions, items, locs, false);
+                if mark {
+                    self.message = format!("定義の候補 {n} 件（● の {best} 件が有力）");
+                }
+            }
+        }
+    }
+
+    /// `gI`: 実装へ。型の上なら継承・実装している型、メソッドの上なら受け手の型（宣言の上なら囲む型）の子の中のそのメソッド
+    pub(crate) fn goto_implementation(&mut self) {
+        let Some((name, word_at)) = self.word_at_cursor() else {
+            self.message = "E348: カーソルの下に識別子がありません".into();
+            return;
+        };
+        self.ensure_syntax();
+        let Some(idx) = self.nav.index.as_ref() else {
+            self.message = match &self.nav.progress {
+                Some((a, b)) => format!("索引を作っています（{a}/{b}）。しばらくしてからもう一度"),
+                None => "索引がありません".into(),
+            };
+            return;
+        };
+        let here = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
+        let rel = here.as_ref().and_then(|h| h.strip_prefix(&idx.root).ok()).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default();
+        let src = self.buf.text();
+        let mut r = nagi_workers::index::Ranker::new(Some(idx));
+        let is_type = idx.lookup(&name).iter().any(|l| l.kind.is_type()) && name.chars().next().is_some_and(char::is_uppercase);
+        let (ty, member) = if is_type {
+            (Some(name.clone()), None)
+        } else {
+            let recv = self.syntax.as_ref().and_then(|s| s.receiver(&self.buf, word_at));
+            let ty = match recv {
+                Some(rc) => r.receiver_type_name(&rel, &src, word_at, &rc),
+                None => nagi_workers::index::enclosing_type(&src, word_at),
+            };
+            (ty, Some(name.as_str()))
+        };
+        let Some(ty) = ty else {
+            self.message = format!("{name} の型が分かりません");
+            return;
+        };
+        let locs = r.implementations(&ty, member);
+        let root = idx.root.clone();
+        drop(r);
+        match locs.len() {
+            0 => self.message = format!("実装が見つかりません: {}{name}", if is_type { String::new() } else { format!("{ty}.") }),
+            1 => {
+                let l = &locs[0].1;
+                self.jump_to(&root.join(&*l.path), l.line as usize, l.col as usize);
+            }
+            _ => {
+                let items = locs.iter().map(|(n, l)| format!("{n}  {}  {}:{}", l.kind.label(), l.path, l.line + 1)).collect();
+                let at = locs.iter().map(|(_, l)| (root.join(&*l.path), l.line as usize, l.col as usize)).collect();
+                self.open_locations(Source::Definitions, items, at, false);
             }
         }
     }
@@ -388,5 +475,33 @@ mod tests {
         e.symbol_search(true);
         assert_eq!(e.finder.as_ref().unwrap().items.len(), 2, "型は Box が 2 つ");
         keys(&mut e, "<Esc>");
+    }
+
+    #[test]
+    fn implementation_jumps() {
+        let dir = std::env::temp_dir().join(format!("nagi-impl-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        unsafe { std::env::set_var("NAGI_INDEX_DIR", dir.join("cache")) };
+        std::fs::write(dir.join("src/UserService.java"), "interface UserService {\n  User find(long id);\n}\n").unwrap();
+        std::fs::write(dir.join("src/UserServiceImpl.java"), "class UserServiceImpl implements UserService {\n  public User find(long id) { return null; }\n}\n").unwrap();
+        std::fs::write(dir.join("src/Other.java"), "class Other {\n  User find(long id) { return null; }\n}\n").unwrap();
+        std::fs::write(dir.join("src/Use.java"), "class Use {\n  UserService users;\n  void f() { users.find(1); }\n}\n").unwrap();
+        let mut e = open(&dir.join("src/Use.java"));
+        wait_index(&mut e);
+        // users.find の gd はインタフェースの宣言、gI は実装
+        keys(&mut e, "3G0/find<CR>gd");
+        assert!(e.buf.path.as_ref().unwrap().ends_with("UserService.java"), "{:?} {}", e.buf.path, e.message);
+        keys(&mut e, "<C-o>3G0/find<CR>gI");
+        assert!(e.buf.path.as_ref().unwrap().ends_with("UserServiceImpl.java"), "{:?} {}", e.buf.path, e.message);
+        assert_eq!(e.cursor.line, 1);
+        // インタフェースの宣言の上で gI → 実装
+        keys(&mut e, &format!(":e {}<CR>2G0/find<CR>gI", dir.join("src/UserService.java").display()));
+        assert!(e.buf.path.as_ref().unwrap().ends_with("UserServiceImpl.java"), "{:?} {}", e.buf.path, e.message);
+        // 型の上で gI → 実装している型
+        keys(&mut e, &format!(":e {}<CR>1G0wgI", dir.join("src/UserService.java").display()));
+        assert!(e.buf.path.as_ref().unwrap().ends_with("UserServiceImpl.java"), "{:?} {}", e.buf.path, e.message);
+        assert_eq!(e.cursor.line, 0);
     }
 }

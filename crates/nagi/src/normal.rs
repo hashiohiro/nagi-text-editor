@@ -842,6 +842,7 @@ impl Editor {
             Action::Play(c) => return self.play_macro(c, n),
             Action::UndoTime { later } => self.undo_time(later, n),
             Action::GotoDef => self.goto_definition(),
+            Action::GotoImpl => self.goto_implementation(),
             Action::Hunk { next } => self.hunk_jump(next, n),
             Action::References => self.find_references(),
             Action::Fold(c) => {

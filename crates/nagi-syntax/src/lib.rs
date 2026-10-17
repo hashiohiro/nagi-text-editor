@@ -607,6 +607,19 @@ impl Syntax {
         defs::collect_defs(tree, &|r: Range<usize>| buf.slice_string(r.start, r.end))
     }
 
+    /// `at`（呼び出しの名前）の引数の数
+    pub fn arg_count(&self, at: usize) -> Option<usize> {
+        defs::call_arg_count(self.tree.as_ref()?, at)
+    }
+
+    /// `at`（呼び出しの名前）の受け手の型
+    pub fn receiver(&self, buf: &Buffer, at: usize) -> Option<defs::Receiver> {
+        let tree = self.tree.as_ref()?;
+        let text = |r: Range<usize>| buf.slice_string(r.start, r.end);
+        let binds = defs::local_bindings(tree, &text);
+        defs::receiver_at(tree, at, &text, &binds)
+    }
+
     /// `at` の識別子の、このファイルの中の定義の位置（引数・ローカル変数を含む）
     pub fn local_definition(&self, buf: &Buffer, at: usize) -> Option<usize> {
         let tree = self.tree.as_ref()?;

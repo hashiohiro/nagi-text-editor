@@ -110,6 +110,8 @@ pub enum Action {
     Hunk { next: bool },
     /// `gd` / `gD` / `Ctrl-]`（定義へ）
     GotoDef,
+    /// `gI`（実装へ。IntelliJ の Go to Implementation）
+    GotoImpl,
     /// `gr`（参照を探す）
     References,
     /// `g-` / `g+`（undo の木を時間の順に）
@@ -422,6 +424,7 @@ pub fn parse_normal(keys: &[Key]) -> Parse {
             Some(Key::Char('&')) => Action::RepeatSub { all: true },
             Some(Key::Char('-')) => Action::UndoTime { later: false },
             Some(Key::Char('d' | 'D')) => Action::GotoDef,
+            Some(Key::Char('I')) => Action::GotoImpl,
             Some(Key::Char('r')) => Action::References,
             Some(Key::Char('+')) => Action::UndoTime { later: true },
             Some(_) => return Parse::Invalid,

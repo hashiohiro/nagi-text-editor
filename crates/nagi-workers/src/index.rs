@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::UNIX_EPOCH;
 
 use nagi_syntax::Lang;
-use nagi_syntax::defs::{DefKind, DefParser};
+use nagi_syntax::defs::{DefKind, DefParser, Receiver as Recv};
 
 use crate::Waker;
 
@@ -303,25 +303,549 @@ pub fn imports_of(src: &str) -> Vec<(Vec<String>, String)> {
     out
 }
 
-/// 定義の候補が複数のとき絞る。① import しているもの ② 今のファイルとパスがいちばん長く共通するもの（同じモジュール）
-/// `from_rel` は今のファイルの根からの相対パス（区切りは `/`）
+/// 定義の候補が複数のとき絞る（いちばん有力なものだけ）。`from_rel` は今のファイルの根からの相対パス（区切りは `/`）
 pub fn narrow_candidates(from_rel: &str, src: &str, name: &str, cands: Vec<Loc>) -> Vec<Loc> {
-    if cands.len() < 2 {
-        return cands;
+    let (mut v, best) = Ranker::new(None).rank(from_rel, src, name, None, cands);
+    v.truncate(best);
+    v
+}
+
+/// 定義を探した結果
+#[derive(Debug)]
+pub enum Ranked {
+    /// (有力な順の候補, いちばん有力なものの数)
+    Locs(Vec<Loc>, usize),
+    /// 受け手の型（またはその親）がプロジェクトの外（ライブラリ）にある。その型の名前
+    Outside(String),
+}
+
+/// 受け手の型をたどった結果
+enum Hier {
+    /// 候補のあるファイル
+    Files(std::collections::HashSet<String>),
+    /// Lombok の getter・setter のフィールド
+    Lombok(Vec<Loc>),
+    Outside(String),
+    Unknown,
+}
+
+/// getFoo / isFoo / setFoo → foo
+fn accessor_field(name: &str) -> Option<String> {
+    let rest = name.strip_prefix("get").or_else(|| name.strip_prefix("set")).or_else(|| name.strip_prefix("is"))?;
+    let mut c = rest.chars();
+    let first = c.next().filter(|c| c.is_uppercase())?;
+    Some(first.to_lowercase().chain(c).collect())
+}
+
+/// 定義の候補を有力な順に並べる。受け手の型（とその親クラス）→ import → 型の名前なら型 → 今のファイルとパスが長く共通するもの
+pub struct Ranker<'a> {
+    idx: Option<&'a Index>,
+    /// 「ファイル#型」→ 直接の親（extends / implements）
+    supers: HashMap<String, Vec<String>>,
+    /// 読んだファイル（根からの相対パス → 行）
+    files: HashMap<String, Arc<Vec<String>>>,
+}
+
+/// 受け手を型に直したもの
+enum Ty {
+    This,
+    /// 型の名前と、その型の名前が書かれていたファイル（内部クラスを先に探す）
+    Named(String, Option<String>),
+    Outside(String),
+}
+
+type Files = std::collections::HashSet<String>;
+
+impl<'a> Ranker<'a> {
+    pub fn new(idx: Option<&'a Index>) -> Self {
+        Ranker { idx, supers: HashMap::new(), files: HashMap::new() }
     }
-    // 全部が同じファイルの中（Java のクラスとそのコンストラクタなど）なら、型の定義を 1 つ
-    if cands.iter().all(|c| c.path == cands[0].path) {
-        use nagi_syntax::defs::DefKind::{Class, Enum, Interface, Type};
-        let ty = cands.iter().find(|c| matches!(c.kind, Class | Interface | Enum | Type)).cloned();
-        return vec![ty.unwrap_or_else(|| cands[0].clone())];
+
+    /// (有力な順の候補, いちばん有力なものの数)。数が 1 ならすぐ跳んでよい
+    pub fn rank(&mut self, from_rel: &str, src: &str, name: &str, recv: Option<&Recv>, cands: Vec<Loc>) -> (Vec<Loc>, usize) {
+        match self.resolve(from_rel, src, name, recv, None, cands) {
+            Ranked::Locs(v, best) => (v, best),
+            Ranked::Outside(_) => (Vec::new(), 0),
+        }
     }
+
+    /// 定義を探す。受け手の型がプロジェクトの外（ライブラリ）なら Outside。`args` は呼び出しの引数の数（オーバーロードを選ぶ）
+    pub fn resolve(&mut self, from_rel: &str, src: &str, name: &str, recv: Option<&Recv>, args: Option<usize>, cands: Vec<Loc>) -> Ranked {
+        let ty = recv.and_then(|r| self.type_of(from_rel, src, r, 0));
+        match self.resolve_ty(from_rel, src, name, ty, cands) {
+            Ranked::Locs(v, best) if best > 1 && args.is_some() => {
+                let (v, best) = self.by_args(v, best, args.unwrap_or(0));
+                Ranked::Locs(v, best)
+            }
+            r => r,
+        }
+    }
+
+    /// 有力な候補のうち、引数の数が合うものを先に
+    fn by_args(&mut self, mut v: Vec<Loc>, best: usize, n: usize) -> (Vec<Loc>, usize) {
+        let counts: Vec<Option<(usize, bool)>> = v[..best].to_vec().iter().map(|l| self.param_count(l)).collect();
+        // ぴったり合うもの、無ければ可変長で合うもの
+        let exact: Vec<bool> = counts.iter().map(|c| c.is_some_and(|(c, var)| c == n && !var)).collect();
+        let fits = if exact.contains(&true) { exact } else { counts.iter().map(|c| c.is_some_and(|(c, var)| c == n || (var && n + 1 >= c))).collect() };
+        let k = fits.iter().filter(|f| **f).count();
+        if k == 0 || k == best {
+            return (v, best);
+        }
+        let mut head: Vec<Loc> = Vec::new();
+        let mut rest: Vec<Loc> = Vec::new();
+        for (l, f) in v.drain(..best).zip(fits) {
+            if f { head.push(l) } else { rest.push(l) }
+        }
+        head.extend(rest);
+        head.extend(v);
+        (head, k)
+    }
+
+    /// 定義の行の引数の数（可変長引数なら true）
+    fn param_count(&mut self, l: &Loc) -> Option<(usize, bool)> {
+        let lines = self.lines(&l.path)?;
+        let first = lines.get(l.line as usize)?;
+        let mut text = first.get(l.col as usize..)?.to_string();
+        for extra in lines.iter().skip(l.line as usize + 1).take(12) {
+            if text.contains(')') {
+                break;
+            }
+            text.push(' ');
+            text.push_str(extra);
+        }
+        let open = text.find('(')?;
+        let mut depth = 0;
+        let mut commas = 0;
+        let mut inner = String::new();
+        for c in text[open..].chars() {
+            match c {
+                '(' | '<' | '[' | '{' => depth += 1,
+                ')' | '>' | ']' | '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                ',' if depth == 1 => commas += 1,
+                _ => {}
+            }
+            if depth >= 1 {
+                inner.push(c);
+            }
+        }
+        let body = inner.trim_start_matches('(').trim();
+        if body.is_empty() {
+            return Some((0, false));
+        }
+        Some((commas + 1, body.contains("...")))
+    }
+
+    fn resolve_ty(&mut self, from_rel: &str, src: &str, name: &str, ty: Option<Ty>, cands: Vec<Loc>) -> Ranked {
+        let hier = match ty {
+            Some(Ty::Outside(t)) => return Ranked::Outside(t),
+            Some(t) => self.receiver_files(from_rel, src, name, t, &cands),
+            None => Hier::Unknown,
+        };
+        let recv_files = match hier {
+            Hier::Files(f) => Some(f),
+            Hier::Outside(t) => return Ranked::Outside(t),
+            Hier::Lombok(v) => {
+                let n = v.len();
+                return Ranked::Locs(v, n);
+            }
+            Hier::Unknown => None,
+        };
+        let (v, best) = self.rank_in(from_rel, src, name, recv_files, cands);
+        Ranked::Locs(v, best)
+    }
+
+    /// 受け手の型。x.f は f の宣言の型、x.m() は m の戻り値の型を、定義の行から読む
+    fn type_of(&mut self, from_rel: &str, src: &str, r: &Recv, depth: usize) -> Option<Ty> {
+        match r {
+            Recv::This => Some(Ty::This),
+            Recv::Type(t) => Some(Ty::Named(t.clone(), None)),
+            Recv::Member(inner, m) | Recv::Call(inner, m) => {
+                if depth > 6 {
+                    return None;
+                }
+                let it = self.type_of(from_rel, src, inner, depth + 1)?;
+                if let Ty::Outside(t) = it {
+                    return Some(Ty::Outside(t));
+                }
+                let idx = self.idx?;
+                let cands = idx.lookup(m).to_vec();
+                let none = cands.is_empty();
+                match self.resolve_ty(from_rel, src, m, Some(it), cands) {
+                    Ranked::Outside(t) => Some(Ty::Outside(t)),
+                    // プロジェクトのどこにも無い（Lombok のフィールドでもない）メソッド・フィールド: ライブラリのもの（Mockito の mock() など）
+                    Ranked::Locs(v, _) if v.is_empty() && none => Some(Ty::Outside(m.clone())),
+                    Ranked::Locs(v, 1) => {
+                        let l = &v[0];
+                        let t = self.decl_type(l)?;
+                        Some(Ty::Named(t, Some(l.path.to_string())))
+                    }
+                    Ranked::Locs(..) => None,
+                }
+            }
+        }
+    }
+
+    fn lines(&mut self, path: &str) -> Option<Arc<Vec<String>>> {
+        if let Some(v) = self.files.get(path) {
+            return Some(v.clone());
+        }
+        let idx = self.idx?;
+        let text = std::fs::read_to_string(idx.root.join(path)).ok()?;
+        let v = Arc::new(text.lines().map(String::from).collect::<Vec<_>>());
+        self.files.insert(path.to_string(), v.clone());
+        Some(v)
+    }
+
+    /// 定義の行から、フィールドの型・メソッドの戻り値の型を読む
+    fn decl_type(&mut self, l: &Loc) -> Option<String> {
+        let lines = self.lines(&l.path)?;
+        let line = lines.get(l.line as usize)?;
+        let col = (l.col as usize).min(line.len());
+        let ts = [".ts", ".tsx", ".js", ".jsx", ".mts"].iter().any(|e| l.path.ends_with(e));
+        if ts { ts_decl_type(&line[col..]) } else { java_decl_type(&line[..col]) }
+    }
+
+    /// 受け手の型を定義しているファイル。そこに候補が無ければ親クラス・インタフェースへたどる
+    fn receiver_files(&mut self, from_rel: &str, src: &str, name: &str, ty: Ty, cands: &[Loc]) -> Hier {
+        let Some(idx) = self.idx else { return Hier::Unknown };
+        let has = |files: &Files| cands.iter().any(|c| files.contains(&*c.path));
+        let this = matches!(ty, Ty::This);
+        // (型, その名前が書かれていたファイル)
+        let mut types: Vec<(String, Option<String>)> = match ty {
+            Ty::This => {
+                let here: Files = [from_rel.to_string()].into();
+                if has(&here) {
+                    return Hier::Files(here);
+                }
+                supertypes(src, None).into_iter().map(|t| (t, Some(from_rel.to_string()))).collect()
+            }
+            Ty::Named(t, hint) => vec![(t, hint)],
+            Ty::Outside(t) => return Hier::Outside(t),
+        };
+        let mut seen: Files = Files::new();
+        // たどった型のファイル（Lombok の getter のフィールドを探す）と、プロジェクトに無かった型
+        let mut visited: Files = Files::new();
+        let mut outside: Option<String> = None;
+        if this {
+            visited.insert(from_rel.to_string());
+        }
+        for _ in 0..8 {
+            types.retain(|(t, h)| seen.insert(format!("{}#{t}", h.as_deref().unwrap_or(""))));
+            if types.is_empty() {
+                break;
+            }
+            let mut files = Files::new();
+            let mut level: Vec<(String, String)> = Vec::new();
+            for (t, hint) in &types {
+                let defs: Vec<Loc> = idx.lookup(t).iter().filter(|l| l.kind.is_type()).cloned().collect();
+                // 1 文字の名前は型引数（T・E など）なので分からないものとする
+                if defs.is_empty() && t.chars().count() > 1 && outside.is_none() {
+                    outside = Some(t.clone());
+                }
+                // 名前が書かれていたファイルの中の型（内部クラス）→ 同じ名前が複数なら、そのファイルの import と同じモジュール
+                let defs = match hint.as_deref().map(|h| defs.iter().filter(|l| &*l.path == h).cloned().collect::<Vec<_>>()) {
+                    Some(inner) if !inner.is_empty() => inner,
+                    _ if defs.len() > 1 => match hint.as_deref().filter(|h| *h != from_rel).and_then(|h| self.lines(h).map(|l| (h.to_string(), l.join("\n")))) {
+                        Some((h, hsrc)) => narrow_candidates(&h, &hsrc, t, defs),
+                        None => narrow_candidates(from_rel, src, t, defs),
+                    },
+                    _ => defs,
+                };
+                for d in &defs {
+                    files.insert(d.path.to_string());
+                    level.push((t.clone(), d.path.to_string()));
+                }
+            }
+            if has(&files) {
+                return Hier::Files(files);
+            }
+            visited.extend(files.iter().cloned());
+            let mut next = Vec::new();
+            for (t, f) in &level {
+                next.extend(self.supers_in(f, t).into_iter().map(|s| (s, Some(f.clone()))));
+            }
+            types = next;
+        }
+        if visited.is_empty() && outside.is_none() {
+            return Hier::Unknown;
+        }
+        // Lombok（@Getter / @Data）: getFoo / isFoo / setFoo はフィールド foo へ
+        if let Some(field) = accessor_field(name) {
+            let locs: Vec<Loc> = idx.lookup(&field).iter().filter(|l| l.kind == DefKind::Field && visited.contains(&*l.path)).cloned().collect();
+            if !locs.is_empty() {
+                return Hier::Lombok(locs);
+            }
+        }
+        // フィールドそのもの（this.f が親クラスのフィールド）: 候補は f の定義なので、たどったファイルにあるもの
+        match outside {
+            Some(t) => Hier::Outside(t),
+            None => Hier::Unknown,
+        }
+    }
+
+    /// 受け手の型の名前（this なら今のファイルで `at` を囲む型）
+    pub fn receiver_type_name(&mut self, from_rel: &str, src: &str, at: usize, recv: &Recv) -> Option<String> {
+        match self.type_of(from_rel, src, recv, 0)? {
+            Ty::Named(t, _) | Ty::Outside(t) => Some(t),
+            Ty::This => enclosing_type(src, at),
+        }
+    }
+
+    /// 型 `ty` を継承・実装している型（孫も）。`member` があれば、それらの型の中のその名前の定義。（名前, 場所）
+    pub fn implementations(&mut self, ty: &str, member: Option<&str>) -> Vec<(String, Loc)> {
+        let Some(idx) = self.idx else { return Vec::new() };
+        // 子 → 親の表を、型の定義のあるファイルを読んで作る（呼ばれたときだけ）
+        let types: Vec<(String, Loc)> = idx.all().filter(|(_, l)| l.kind.is_type()).map(|(n, l)| (n.to_string(), l.clone())).collect();
+        let mut children: HashMap<String, Vec<(String, Loc)>> = HashMap::new();
+        for (n, l) in &types {
+            for sup in self.supers_in(&l.path, n) {
+                children.entry(sup).or_default().push((n.clone(), l.clone()));
+            }
+        }
+        let mut subs: Vec<(String, Loc)> = Vec::new();
+        let mut seen: std::collections::HashSet<String> = [ty.to_string()].into();
+        let mut queue = vec![ty.to_string()];
+        while let Some(t) = queue.pop() {
+            for (n, l) in children.get(&t).into_iter().flatten() {
+                if seen.insert(n.clone()) {
+                    queue.push(n.clone());
+                }
+                if !subs.iter().any(|(_, x)| x == l) {
+                    subs.push((n.clone(), l.clone()));
+                }
+            }
+        }
+        let mut out: Vec<(String, Loc)> = match member {
+            None => subs,
+            Some(m) => {
+                let files: std::collections::HashSet<&str> = subs.iter().map(|(_, l)| &*l.path).collect();
+                idx.lookup(m).iter().filter(|l| files.contains(&*l.path) && !l.kind.is_type()).map(|l| (m.to_string(), l.clone())).collect()
+            }
+        };
+        out.sort_by(|a, b| a.1.path.cmp(&b.1.path).then(a.1.line.cmp(&b.1.line)));
+        out
+    }
+
+    /// ファイル `path` の中の型 `t` の直接の親
+    fn supers_in(&mut self, path: &str, t: &str) -> Vec<String> {
+        let key = format!("{path}#{t}");
+        if let Some(v) = self.supers.get(&key) {
+            return v.clone();
+        }
+        let out = match self.lines(path) {
+            Some(lines) => supertypes(&lines.join("\n"), Some(t)),
+            None => Vec::new(),
+        };
+        self.supers.insert(key, out.clone());
+        out
+    }
+
+    fn rank_in(&mut self, from_rel: &str, src: &str, name: &str, recv_files: Option<Files>, cands: Vec<Loc>) -> (Vec<Loc>, usize) {
+        if cands.len() < 2 {
+            let n = cands.len();
+            return (cands, n);
+        }
+        // 全部が同じファイルの中（Java のクラスとそのコンストラクタなど）なら、型の定義を先に
+        if cands.iter().all(|c| c.path == cands[0].path) {
+            let mut v = cands;
+            v.sort_by_key(|c| (!c.kind.is_type(), c.line));
+            return (v, 1);
+        }
+        // 言語のまとまり（Java と Kotlin、TS と JS は同じ）
+        let family = |p: &str| match p.rsplit('.').next().unwrap_or("") {
+            "java" | "kt" | "kts" => 1,
+            "ts" | "tsx" | "js" | "jsx" | "mts" | "mjs" | "cts" | "cjs" => 2,
+            _ => 0,
+        };
+        let hit = import_hits(from_rel, src, name, &cands);
+        // TS / JS: 別のファイルの export していない関数・定数は使えない
+        let hidden: Files = cands
+            .iter()
+            .filter(|c| &*c.path != from_rel && family(&c.path) == 2 && !c.kind.is_type() && !matches!(c.kind, DefKind::Method | DefKind::Field))
+            .filter(|c| self.lines(&c.path).and_then(|l| l.get(c.line as usize).cloned()).is_some_and(|l| !l.trim_start().starts_with("export")))
+            .map(|c| c.path.to_string())
+            .collect();
+        let upper = name.chars().next().is_some_and(char::is_uppercase);
+        let common = |p: &str| p.split('/').zip(from_rel.split('/')).take_while(|(a, b)| a == b).count();
+        let mine = family(from_rel);
+        let key = |c: &Loc| {
+            (
+                recv_files.as_ref().is_some_and(|f| !f.contains(&*c.path)),
+                mine != 0 && family(&c.path) != mine,
+                hidden.contains(&*c.path),
+                !hit.is_empty() && !hit.contains(&*c.path),
+                upper && !c.kind.is_type(),
+                std::cmp::Reverse(common(&c.path)),
+            )
+        };
+        let mut v = cands;
+        v.sort_by(|a, b| key(a).cmp(&key(b)).then_with(|| a.path.cmp(&b.path)).then(a.line.cmp(&b.line)));
+        let top = key(&v[0]);
+        let best = v.iter().take_while(|c| key(c) == top).count();
+        (v, best)
+    }
+}
+
+/// Java: 名前の前の型（`public Criteria createCriteria(` / `private Foo bar;` → Criteria / Foo）。総称型は外側
+fn java_decl_type(before: &str) -> Option<String> {
+    let mut b = before.trim_end();
+    // 配列は分からないものとする
+    if b.ends_with(']') {
+        return None;
+    }
+    if b.ends_with('>') {
+        let mut depth = 0;
+        let mut cut = None;
+        for (i, c) in b.char_indices().rev() {
+            match c {
+                '>' => depth += 1,
+                '<' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        cut = Some(i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        b = b[..cut?].trim_end();
+    }
+    let word: String = b.chars().rev().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$' || *c == '.').collect::<Vec<_>>().into_iter().rev().collect();
+    let last = word.rsplit('.').next().unwrap_or("").to_string();
+    let not_type = ["void", "public", "private", "protected", "static", "final", "abstract", "synchronized", "default", "native", "transient", "volatile", "int", "long", "short", "byte", "char", "boolean", "float", "double", "var", "return", "new"];
+    (!last.is_empty() && last.chars().next().is_some_and(|c| c.is_alphabetic()) && !not_type.contains(&last.as_str())).then_some(last)
+}
+
+/// TS: 名前の後ろの型（`f: Foo` / `m(a, b): Foo {` / `x = inject(Foo)` / `x = new Foo(`）
+fn ts_decl_type(after: &str) -> Option<String> {
+    let mut a = after.trim_start_matches(|c: char| c.is_alphanumeric() || c == '_' || c == '$').trim_start().trim_start_matches(['?', '!']).trim_start();
+    if a.starts_with('(') || a.starts_with('<') {
+        // 引数の ( … ) を飛ばす
+        let mut depth = 0;
+        let mut end = None;
+        for (i, c) in a.char_indices() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        a = a[end? + 1..].trim_start();
+    }
+    let ident = |s: &str| -> Option<String> {
+        let w: String = s.trim_start().chars().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$' || *c == '.').collect();
+        let last = w.rsplit('.').next().unwrap_or("").to_string();
+        let prim = ["string", "number", "boolean", "any", "unknown", "void", "never", "object", "null", "undefined"];
+        (!last.is_empty() && !prim.contains(&last.as_str())).then_some(last)
+    };
+    if let Some(t) = a.strip_prefix(':') {
+        return ident(t);
+    }
+    let v = a.strip_prefix('=')?.trim_start();
+    if let Some(x) = v.strip_prefix("inject(") {
+        return ident(x);
+    }
+    if let Some(x) = v.strip_prefix("new ") {
+        return ident(x);
+    }
+    None
+}
+
+/// `at` より前で最後に宣言されたクラス・インタフェースの名前（`at` を囲む型の近似）
+pub fn enclosing_type(src: &str, at: usize) -> Option<String> {
+    let head = &src[..at.min(src.len())];
+    let mut best: Option<(usize, String)> = None;
+    for kw in ["class ", "interface ", "enum ", "record "] {
+        let mut from = 0;
+        while let Some(i) = head[from..].find(kw).map(|i| i + from) {
+            from = i + kw.len();
+            if i > 0 && head.as_bytes()[i - 1].is_ascii_alphanumeric() {
+                continue;
+            }
+            let name: String = head[from..].trim_start().chars().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$').collect();
+            if !name.is_empty() && best.as_ref().is_none_or(|(b, _)| i > *b) {
+                best = Some((i, name));
+            }
+        }
+    }
+    best.map(|(_, n)| n)
+}
+
+/// クラス・インタフェースの宣言の extends / implements にある型の名前（`of` なら、その名前の宣言だけ）
+pub fn supertypes(src: &str, of: Option<&str>) -> Vec<String> {
+    let mut out = Vec::new();
+    let b = src.as_bytes();
+    let ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'$';
+    for kw in ["class ", "interface "] {
+        let mut from = 0;
+        while let Some(i) = src[from..].find(kw).map(|i| i + from) {
+            from = i + kw.len();
+            if i > 0 && ident(b[i - 1]) {
+                continue;
+            }
+            let rest = &src[from..];
+            let name: String = rest.trim_start().chars().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$').collect();
+            if name.is_empty() || of.is_some_and(|o| o != name) {
+                continue;
+            }
+            let head = &rest[..rest.find(['{', ';']).unwrap_or(rest.len()).min(600)];
+            // 総称型の <…> を消す
+            let mut flat = String::new();
+            let mut depth = 0;
+            for c in head.chars() {
+                match c {
+                    '<' => depth += 1,
+                    '>' => depth -= 1,
+                    _ if depth == 0 => flat.push(c),
+                    _ => {}
+                }
+            }
+            let mut on = false;
+            for w in flat.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$' || c == '.')).filter(|w| !w.is_empty()) {
+                match w {
+                    "extends" | "implements" => on = true,
+                    "permits" | "with" => on = false,
+                    w if on => out.push(w.rsplit('.').next().unwrap_or(w).to_string()),
+                    _ => {}
+                }
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// import している完全な名前・相対パスに当たる候補のファイル
+fn import_hits(from_rel: &str, src: &str, name: &str, cands: &[Loc]) -> std::collections::HashSet<String> {
     let from_dir: Vec<&str> = from_rel.split('/').collect::<Vec<_>>().split_last().map_or(Vec::new(), |x| x.1.to_vec());
     let stem = |p: &str| p.rsplit_once('.').map_or(p.to_string(), |(a, _)| a.to_string());
-    let mut hit: Vec<Loc> = Vec::new();
+    let mut hit = std::collections::HashSet::new();
     for (names, spec) in imports_of(src) {
-        if spec.contains('/') || spec.starts_with('.') {
+        // TS / JS（相対パス・パッケージ名）と Java（a.b.C）を分ける
+        if spec.contains('/') || spec.starts_with('.') || !spec.contains('.') {
             // TS / JS: その名前を取り込んでいるモジュールのファイル
-            if !names.iter().any(|n| n == name) || !spec.starts_with('.') {
+            if !names.iter().any(|n| n == name) {
+                continue;
+            }
+            if !spec.starts_with('.') {
+                // パッケージ（tsconfig の paths・ワークスペース）: その名前のフォルダの中のもの
+                let pkg = spec.trim_start_matches('@').split('/').next_back().unwrap_or("");
+                if !pkg.is_empty() {
+                    hit.extend(cands.iter().filter(|c| c.path.split('/').any(|seg| seg == pkg)).map(|c| c.path.to_string()));
+                }
                 continue;
             }
             let mut parts = from_dir.clone();
@@ -335,28 +859,157 @@ pub fn narrow_candidates(from_rel: &str, src: &str, name: &str, cands: Vec<Loc>)
                 }
             }
             let target = parts.join("/");
-            hit.extend(cands.iter().filter(|c| stem(&c.path) == target || stem(&c.path) == format!("{target}/index")).cloned());
+            hit.extend(cands.iter().filter(|c| stem(&c.path) == target || stem(&c.path) == format!("{target}/index")).map(|c| c.path.to_string()));
         } else if spec.ends_with(".*") || names.iter().any(|n| n == name) {
             // Java: a.b.C → a/b/C.java、a.b.* → a/b/
             let path = spec.trim_end_matches(".*").replace('.', "/");
             let want = if spec.ends_with(".*") { format!("{path}/{name}") } else { path };
-            hit.extend(cands.iter().filter(|c| stem(&c.path).ends_with(&want)).cloned());
+            hit.extend(cands.iter().filter(|c| stem(&c.path).ends_with(&want)).map(|c| c.path.to_string()));
         }
     }
-    let pool = if hit.is_empty() { cands } else { hit };
-    if pool.len() < 2 {
-        return pool;
-    }
-    // 今のファイルとの共通のパスがいちばん長いもの
-    let common = |p: &str| p.split('/').zip(from_rel.split('/')).take_while(|(a, b)| a == b).count();
-    let best = pool.iter().map(|c| common(&c.path)).max().unwrap_or(0);
-    let top: Vec<Loc> = pool.iter().filter(|c| common(&c.path) == best).cloned().collect();
-    if top.len() < pool.len() { top } else { pool }
+    hit
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn loc_at(p: &str) -> Loc {
+        Loc { path: p.into(), line: 0, col: 0, kind: DefKind::Function }
+    }
+
+    /// 受け手の型のファイル → 無ければ親クラスへたどる
+    #[test]
+    fn rank_by_receiver() {
+        let dir = std::env::temp_dir().join(format!("nagi-rank-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        unsafe { std::env::set_var("NAGI_INDEX_DIR", dir.join("cache")) };
+        std::fs::write(dir.join("src/Base.java"), "abstract class Base<T> implements Saver {\n  void save() {}\n}\n").unwrap();
+        std::fs::write(dir.join("src/Repo.java"), "class Repo extends Base<Item> {\n  void find() {}\n}\n").unwrap();
+        std::fs::write(dir.join("src/Other.java"), "class Other {\n  void save() {}\n  void find() {}\n}\n").unwrap();
+        std::fs::write(dir.join("src/Saver.java"), "interface Saver {\n  void flush();\n}\n").unwrap();
+        std::fs::write(dir.join("src/Item.java"), "class Item {\n  void flush() {}\n}\n").unwrap();
+        std::fs::write(dir.join("src/Dto.java"), "@Data\nclass Dto extends BaseDto {\n  private String oksmNo;\n}\n").unwrap();
+        std::fs::write(dir.join("src/BaseDto.java"), "@Getter\nclass BaseDto {\n  private boolean active;\n}\n").unwrap();
+        std::fs::write(dir.join("src/UserRepo.java"), "interface UserRepo extends JpaRepository<User, Long> {\n}\n").unwrap();
+        std::fs::write(dir.join("src/Holder.java"), "class Holder {\n  void findById() {}\n  void get() {}\n}\n").unwrap();
+        // MyBatis の Example（内部クラスの Criteria がファイルごとにある）
+        for ex in ["FooExample", "BarExample"] {
+            let body = format!("class {ex} {{\n  public Criteria createCriteria() {{}}\n  public static class Criteria extends GeneratedCriteria {{\n  }}\n  protected abstract static class GeneratedCriteria {{\n    public Criteria andNoEqualTo(String v) {{}}\n  }}\n}}\n");
+            std::fs::write(dir.join(format!("src/{ex}.java")), body).unwrap();
+        }
+        // Lombok の getter の連鎖
+        std::fs::write(dir.join("src/Req.java"), "@Data\nclass Req {\n  private List<Jokn> list;\n  private Jokn jokn;\n}\n").unwrap();
+        std::fs::write(dir.join("src/Jokn.java"), "@Data\nclass Jokn {\n  private String cd;\n}\n").unwrap();
+        std::fs::write(dir.join("src/Z.java"), "class Z {\n  private String cd;\n}\n").unwrap();
+        // TS: 基底クラスのフィールド
+        std::fs::write(dir.join("src/base.ts"), "export class Base {\n  protected store = inject(SessionStore);\n  form(): FormGroup { return null; }\n}\n").unwrap();
+        std::fs::write(dir.join("src/store.ts"), "export class SessionStore {\n  set(v: number) {}\n}\n").unwrap();
+        std::fs::write(dir.join("src/m.ts"), "export class M {\n  set(v) {}\n  get(k) {}\n}\n").unwrap();
+        let rx = build(&dir, Arc::new(|| {}));
+        let idx = loop {
+            if let Ok(Progress::Done(i)) = rx.recv() {
+                break i;
+            }
+        };
+        let mut r = Ranker::new(Some(&idx));
+        let src = "class Use { Repo repo; }\n";
+        let rank = |r: &mut Ranker, name: &str, recv: Option<&Recv>| {
+            let (v, best) = r.rank("src/Use.java", src, name, recv, idx.lookup(name).to_vec());
+            (v.iter().map(|l| l.path.to_string()).collect::<Vec<_>>(), best)
+        };
+        // repo.find(): Repo のファイル
+        assert_eq!(rank(&mut r, "find", Some(&Recv::Type("Repo".into()))), (vec!["src/Repo.java".into(), "src/Other.java".into()], 1));
+        // repo.save(): Repo に無いので親の Base
+        assert_eq!(rank(&mut r, "save", Some(&Recv::Type("Repo".into()))).0[0], "src/Base.java");
+        assert_eq!(rank(&mut r, "save", Some(&Recv::Type("Repo".into()))).1, 1);
+        // repo.flush(): Base の implements Saver
+        assert_eq!(rank(&mut r, "flush", Some(&Recv::Type("Repo".into()))), (vec!["src/Saver.java".into(), "src/Item.java".into()], 1));
+        // 受け手が分からなければ選ばせる
+        assert_eq!(rank(&mut r, "save", None).1, 2);
+        // this.save()（Repo の中）: 今のファイルに無いので extends をたどる
+        let repo_src = std::fs::read_to_string(dir.join("src/Repo.java")).unwrap();
+        let (v, best) = r.rank("src/Repo.java", &repo_src, "save", Some(&Recv::This), idx.lookup("save").to_vec());
+        assert_eq!((&*v[0].path, best), ("src/Base.java", 1));
+        assert_eq!(supertypes("export class A extends B<C> implements D, E.F {", None), vec!["B", "D", "F"]);
+        let res = |r: &mut Ranker, name: &str, t: &str| match r.resolve("src/Use.java", src, name, Some(&Recv::Type(t.into())), None, idx.lookup(name).to_vec()) {
+            Ranked::Locs(v, b) => format!("{} {b}", v.iter().map(|l| format!("{}:{}", l.path, l.line)).collect::<Vec<_>>().join(",")),
+            Ranked::Outside(t) => format!("外 {t}"),
+        };
+        // Lombok: dto.getOksmNo() → フィールド oksmNo、親の isActive() → 親のフィールド
+        assert_eq!(res(&mut r, "getOksmNo", "Dto"), "src/Dto.java:2 1");
+        assert_eq!(res(&mut r, "isActive", "Dto"), "src/BaseDto.java:2 1");
+        // ライブラリの型・ライブラリの親: プロジェクトの同じ名前へは跳ばない
+        assert_eq!(res(&mut r, "get", "FormGroup"), "外 FormGroup");
+        assert_eq!(res(&mut r, "findById", "UserRepo"), "外 JpaRepository");
+        let call = |r: Recv, m: &str| Recv::Call(Box::new(r), m.into());
+        let chain = |r: &mut Ranker, from: &str, src: &str, name: &str, recv: Recv| match r.resolve(from, src, name, Some(&recv), None, idx.lookup(name).to_vec()) {
+            Ranked::Locs(v, b) => format!("{} {b}", v.iter().take(b).map(|l| format!("{}:{}", l.path, l.line)).collect::<Vec<_>>().join(",")),
+            Ranked::Outside(t) => format!("外 {t}"),
+        };
+        // example.createCriteria().andNoEqualTo(): FooExample の中の Criteria → その親の GeneratedCriteria
+        assert_eq!(chain(&mut r, "src/Use.java", src, "andNoEqualTo", call(Recv::Type("FooExample".into()), "createCriteria")), "src/FooExample.java:5 1");
+        // req.getJokn().getCd(): Lombok のフィールド jokn の型 Jokn → フィールド cd
+        assert_eq!(chain(&mut r, "src/Use.java", src, "getCd", call(Recv::Type("Req".into()), "getJokn")), "src/Jokn.java:2 1");
+        // req.getList().get(0): List はライブラリ
+        assert_eq!(chain(&mut r, "src/Use.java", src, "get", call(Recv::Type("Req".into()), "getList")), "外 List");
+        // TS: this.store.set()（store は基底クラスのフィールド）、this.form().get()（戻り値はライブラリの型）
+        let page = "export class Page extends Base {\n  f() { this.store.set(1); }\n}\n";
+        assert_eq!(chain(&mut r, "src/page.ts", page, "set", Recv::Member(Box::new(Recv::This), "store".into())), "src/store.ts:1 1");
+        assert_eq!(chain(&mut r, "src/page.ts", page, "get", call(Recv::This, "form")), "外 FormGroup");
+        // 実装: Saver を実装しているのは Base（implements）とその子の Repo。flush の実装は Saver を実装した型の中
+        let impls = |r: &mut Ranker, t: &str, m: Option<&str>| r.implementations(t, m).iter().map(|(_, l)| format!("{}:{}", l.path, l.line)).collect::<Vec<_>>();
+        assert_eq!(impls(&mut r, "Saver", None), vec!["src/Base.java:0", "src/Repo.java:0"]);
+        assert_eq!(impls(&mut r, "Base", Some("find")), vec!["src/Repo.java:1"]);
+        assert_eq!(impls(&mut r, "GeneratedCriteria", None).len(), 2, "内部クラスの Criteria（2 つのファイル）");
+        assert_eq!(enclosing_type("interface A {\n  void f();\n}\nclass B implements A {\n  void g() {}\n", 60).as_deref(), Some("B"));
+        // mock(Repo.class).save(): mock はプロジェクトに無いのでライブラリ
+        assert_eq!(chain(&mut r, "src/Use.java", src, "save", call(Recv::This, "mock")), "外 mock");
+        assert_eq!(java_decl_type("    public Map<String, List<Foo>> "), Some("Map".into()));
+        assert_eq!(ts_decl_type("load(a: string, b = 1): Observable<Foo> {"), Some("Observable".into()));
+        // this.getOksmNo()（Lombok、親クラスなし）: 今のファイルのフィールド
+        assert_eq!(chain(&mut r, "src/Dto.java", "@Data\nclass Dto extends BaseDto {\n  private String oksmNo;\n}\n", "getOksmNo", Recv::This), "src/Dto.java:2 1");
+        let jokn = std::fs::read_to_string(dir.join("src/Jokn.java")).unwrap();
+        assert_eq!(chain(&mut r, "src/Jokn.java", &jokn, "getCd", Recv::This), "src/Jokn.java:2 1");
+        // オーバーロード: 引数の数で選ぶ
+        std::fs::write(dir.join("src/DateUtil.java"), "class DateUtil {\n  static String format(Date d) {}\n  static String format(Date d, String p) {}\n  static String format(String... xs) {}\n}\n").unwrap();
+        std::fs::write(dir.join("src/Fmt.java"), "class Fmt {\n  void format() {}\n}\n").unwrap();
+        let idx2 = {
+            let rx = build(&dir, Arc::new(|| {}));
+            loop {
+                if let Ok(Progress::Done(i)) = rx.recv() {
+                    break i;
+                }
+            }
+        };
+        let mut r2 = Ranker::new(Some(&idx2));
+        let over = |r: &mut Ranker, n: usize| match r.resolve("src/Use.java", src, "format", Some(&Recv::Type("DateUtil".into())), Some(n), idx2.lookup("format").to_vec()) {
+            Ranked::Locs(v, b) => (v[0].line, b),
+            Ranked::Outside(_) => (99, 0),
+        };
+        assert_eq!(over(&mut r2, 2), (2, 1));
+        assert_eq!(over(&mut r2, 3), (3, 1), "可変長");
+        assert_eq!(over(&mut r2, 1), (1, 1), "1 引数は可変長よりぴったりの format(Date)");
+        // TS: export していない同じ名前の関数は後ろへ
+        std::fs::write(dir.join("src/va.ts"), "function notBlank(m) {}\nexport const use = 1;\n").unwrap();
+        std::fs::write(dir.join("src/vb.ts"), "export const notBlank = (m) => m;\n").unwrap();
+        let idx3 = {
+            let rx = build(&dir, Arc::new(|| {}));
+            loop {
+                if let Ok(Progress::Done(i)) = rx.recv() {
+                    break i;
+                }
+            }
+        };
+        let (v, b) = Ranker::new(Some(&idx3)).rank("src/page.ts", "notBlank('x');\n", "notBlank", None, idx3.lookup("notBlank").to_vec());
+        assert_eq!((&*v[0].path, b), ("src/vb.ts", 1));
+        // TS のパッケージ名の import（tsconfig の paths）
+        let cands = vec![loc_at("projects/my-shared-lib/src/v.ts"), loc_at("projects/other/src/v.ts")];
+        assert_eq!(narrow_candidates("projects/app/src/p.ts", "import {\n  notBlank,\n} from 'my-shared-lib';\n", "notBlank", cands)[0].path.as_ref(), "projects/my-shared-lib/src/v.ts");
+        // 型引数（1 文字）は分からないものとして選ばせる
+        assert_eq!(res(&mut r, "get", "T"), "src/Holder.java:2,src/m.ts:2 1");
+    }
 
     #[test]
     fn narrow() {

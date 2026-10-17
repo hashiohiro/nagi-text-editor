@@ -1409,6 +1409,7 @@ impl Editor {
             Some((Some("finder.types"), _)) => self.symbol_search(true),
             Some((Some("outline"), _)) => self.outline(),
             Some((Some("nav.definition"), _)) => self.goto_definition(),
+            Some((Some("nav.implementation"), _)) => self.goto_implementation(),
             Some((Some("nav.references"), _)) => self.find_references(),
             Some((Some("nav.method_prev"), _)) => self.method_jump(false),
             Some((Some("nav.method_next"), _)) => self.method_jump(true),
