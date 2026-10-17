@@ -19,6 +19,7 @@ mod difftest;
 mod editor;
 mod ex_cmds;
 mod finder;
+mod folds;
 mod grep_panel;
 mod macros;
 mod marks;

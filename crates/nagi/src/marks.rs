@@ -41,6 +41,10 @@ impl Editor {
         let (sl, sb) = self.buf.pos_of(start);
         let (el, eb) = self.buf.pos_of(end);
         let nl = text.matches('\n').count();
+        // 折りたたみは 1 行の中の編集でも開く（中を編集したら開く）
+        if !self.folds.is_empty() {
+            self.folds.shift(sl, el, nl);
+        }
         if el == sl && nl == 0 {
             return;
         }

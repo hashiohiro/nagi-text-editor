@@ -254,6 +254,8 @@ pub struct Editor {
     pub(crate) in_global: bool,
     /// 直前の :s（& で繰り返す）
     pub(crate) last_sub: Option<crate::ex_cmds::LastSub>,
+    /// 作業中のバッファの閉じた折りたたみ
+    pub(crate) folds: crate::folds::Folds,
     /// 矩形の I A c で、Insert を抜けたときにほかの行へ入れる約束
     pub(crate) block_insert: Option<crate::block::BlockInsert>,
     /// 矩形で取ったレジスタ（レジスタ → 矩形の幅）と、次に書くレジスタを矩形にする印
@@ -324,6 +326,7 @@ impl Editor {
             line_anchors: Vec::new(),
             in_global: false,
             last_sub: None,
+            folds: Default::default(),
             block_insert: None,
             reg_blocks: HashMap::new(),
             reg_block_next: None,
@@ -580,6 +583,10 @@ impl Editor {
                 Side::Bottom => self.list_key(key),
             },
         };
+        // 検索や :{行} で閉じた折りたたみの途中へ跳んだら開く
+        if !self.folds.is_empty() && self.mode == Mode::Normal {
+            self.open_folds_at_cursor();
+        }
         self.scroll_into_view();
         effect
     }
@@ -1192,7 +1199,12 @@ impl Editor {
 
     /// 画面上の (行, セル列) にあたるカーソル位置。行は表示中のスクロール位置から数える
     pub fn pos_at(&self, row: usize, col: usize) -> Cursor {
-        let line = (self.top + row).min(self.buf.line_count().saturating_sub(1));
+        let line = if self.folds.is_empty() {
+            (self.top + row).min(self.buf.line_count().saturating_sub(1))
+        } else {
+            let shown = self.folds.visible_from(self.top, row + 1, self.buf.line_count());
+            shown.last().copied().unwrap_or(0)
+        };
         let text = self.buf.line(line);
         let col = col.saturating_sub(GUTTER);
         let byte = if self.mode == Mode::Insert && col >= display_col(&text, text.len(), false) {
@@ -1292,6 +1304,30 @@ impl Editor {
 
     pub(crate) fn scroll_into_view(&mut self) {
         let rows = self.rows.max(1);
+        if !self.folds.is_empty() {
+            // 閉じた折りたたみは 1 行として数える
+            self.top = self.folds.snap(self.top);
+            let cur = self.folds.snap(self.cursor.line);
+            if cur < self.top {
+                self.top = cur;
+                self.frac = 0.0;
+            } else {
+                let total = self.buf.line_count();
+                let shown = self.folds.visible_from(self.top, rows, total);
+                if !shown.contains(&cur) {
+                    let mut t = cur;
+                    for _ in 1..rows {
+                        match self.folds.prev_visible(t) {
+                            Some(p) => t = p,
+                            None => break,
+                        }
+                    }
+                    self.top = t;
+                    self.frac = 0.0;
+                }
+            }
+            return;
+        }
         if self.frac > 0.0 && self.cursor.line <= self.top {
             self.frac = 0.0;
         }

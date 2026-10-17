@@ -102,6 +102,10 @@ pub enum Action {
     Record(char),
     /// `@{reg}`（`@@` は直前のマクロ）
     Play(char),
+    /// `z{c}`（折りたたみ: c o a M R E j k、Visual の f）
+    Fold(char),
+    /// `zz` `zt` `zb`（カーソルの行を画面の中央・上・下へ）
+    ScrollCursor(char),
     /// `g-` / `g+`（undo の木を時間の順に）
     UndoTime { later: bool },
     /// `&`（直前の :s を今の行に）と `g&`（フラグごと全体に）
@@ -372,6 +376,15 @@ pub fn parse_normal(keys: &[Key]) -> Parse {
             Some(_) => return Parse::Invalid,
         },
         Key::Char('&') => Action::RepeatSub { all: false },
+        Key::Char('z') => match p.next() {
+            None => return Parse::Incomplete,
+            Some(Key::Char(c @ ('c' | 'o' | 'a' | 'M' | 'R' | 'E' | 'j' | 'k'))) => Action::Fold(c),
+            Some(Key::Char(c @ ('z' | 't' | 'b'))) => Action::ScrollCursor(c),
+            Some(Key::Char('.')) => Action::ScrollCursor('z'),
+            Some(Key::Enter) => Action::ScrollCursor('t'),
+            Some(Key::Char('-')) => Action::ScrollCursor('b'),
+            Some(_) => return Parse::Invalid,
+        },
         Key::Char('m') => match p.next() {
             None => return Parse::Incomplete,
             Some(Key::Char(c)) if c.is_ascii_alphabetic() => Action::SetMark(c),
@@ -444,6 +457,11 @@ pub fn parse_visual(keys: &[Key]) -> Parse {
         Key::Char('V') => Action::Visual { line: true },
         Key::Ctrl('v' | 'q') => Action::VisualBlock,
         Key::Char(c @ ('I' | 'A')) => Action::Insert(c),
+        Key::Char('z') => match p.next() {
+            None => return Parse::Incomplete,
+            Some(Key::Char('f')) => Action::Fold('f'),
+            Some(_) => return Parse::Invalid,
+        },
         Key::Char('J') => Action::Join,
         Key::Char('~') => Action::ToggleCase,
         Key::Char('p') | Key::Char('P') => Action::Put { after: true, indent: false },

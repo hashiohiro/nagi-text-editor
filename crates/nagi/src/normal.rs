@@ -86,6 +86,10 @@ impl Editor {
         if self.mode != Mode::Insert {
             self.finish_dot();
         }
+        // 跳んだ先が閉じた折りたたみの途中なら開く（検索・マーク・G など。Vim の foldopen と同じ）
+        if !self.folds.is_empty() {
+            self.open_folds_at_cursor();
+        }
         if matches!(self.mode, Mode::Normal) {
             self.clamp_normal();
         }
@@ -213,14 +217,17 @@ impl Editor {
                 Kd::Exclusive
             }
             M::Up => {
-                if c.line < n && !op {
+                if c.line < n && !op && self.folds.is_empty() {
                     return None;
                 }
-                mo.vertical(&mut c, -(n as isize));
+                // 閉じた折りたたみは 1 行として数える
+                let d = if self.folds.is_empty() { -(n as isize) } else { self.fold_vertical(c.line, -(n as isize)) as isize - c.line as isize };
+                mo.vertical(&mut c, d);
                 Kd::Linewise
             }
             M::Down => {
-                mo.vertical(&mut c, n as isize);
+                let d = if self.folds.is_empty() { n as isize } else { self.fold_vertical(c.line, n as isize) as isize - c.line as isize };
+                mo.vertical(&mut c, d);
                 Kd::Linewise
             }
             M::WordFwd { big } => {
@@ -524,7 +531,8 @@ impl Editor {
         let from_abs = self.abs();
         let (s, e, lw) = match t {
             Target::Lines => {
-                let l2 = from.line + n - 1;
+                // 閉じた折りたたみの行なら、折りたたみ全体
+                let l2 = if self.folds.is_empty() { from.line + n - 1 } else { self.fold_extend(from.line, n) };
                 if l2 >= self.buf.line_count() && n > 1 {
                     return;
                 }
@@ -835,6 +843,14 @@ impl Editor {
             }
             Action::Play(c) => return self.play_macro(c, n),
             Action::UndoTime { later } => self.undo_time(later, n),
+            Action::Fold(c) => {
+                let lines = visual.map(|_| {
+                    let (s, e, _) = self.visual_range();
+                    (self.buf.pos_of(s).0, self.buf.pos_of(e.saturating_sub(1).max(s)).0)
+                });
+                self.fold_cmd(c, lines);
+            }
+            Action::ScrollCursor(c) => self.scroll_cursor(c),
             Action::RepeatSub { all } => {
                 let range = if all { (0, self.buf.line_count().saturating_sub(1)) } else { (self.cursor.line, self.cursor.line) };
                 self.repeat_sub(range, all);

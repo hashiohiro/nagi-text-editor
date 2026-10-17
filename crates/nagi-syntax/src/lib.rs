@@ -472,6 +472,102 @@ impl Syntax {
     }
 }
 
+/// 折りたためる節（関数・クラスに加えて、ブロックや大きな値）
+const FOLD_KINDS: &[&str] = &[
+    "block",
+    "statement_block",
+    "compound_statement",
+    "class_body",
+    "interface_body",
+    "enum_body",
+    "declaration_list",
+    "field_declaration_list",
+    "enum_variant_list",
+    "match_block",
+    "switch_body",
+    "switch_block",
+    "object",
+    "array",
+    "array_expression",
+    "field_initializer_list",
+    "token_tree",
+    "tuple_expression",
+    "object_type",
+    "jsx_element",
+    "template_string",
+    "array_initializer",
+    "element_value_array_initializer",
+    "collection_literal",
+    "lambda_literal",
+    "parenthesized_expression",
+    "dictionary",
+    "list",
+    "arguments",
+    "argument_list",
+    "use_list",
+    "import_statement",
+    "mapping",
+    "block_mapping",
+    "block_sequence",
+    "comment",
+    "block_comment",
+];
+
+fn foldable(kind: &str) -> bool {
+    FOLD_KINDS.contains(&kind) || FUNCTION_KINDS.contains(&kind) || CLASS_KINDS.contains(&kind)
+}
+
+impl Syntax {
+    /// 行 `line` を含む折りたためる範囲（行）を、内側から順に。同じ行の範囲は 1 つにまとめる
+    pub fn folds_at(&self, line: usize) -> Vec<(usize, usize)> {
+        let Some(tree) = &self.tree else { return Vec::new() };
+        let p = Point { row: line, column: 0 };
+        let end = Point { row: line, column: usize::MAX / 2 };
+        let Some(mut node) = tree.root_node().descendant_for_point_range(p, end) else { return Vec::new() };
+        let mut out: Vec<(usize, usize)> = Vec::new();
+        loop {
+            let (s, e) = (node.start_position().row, node.end_position().row);
+            if e > s && foldable(node.kind()) && s <= line && !out.contains(&(s, e)) {
+                out.push((s, e));
+            }
+            match node.parent() {
+                Some(p) => node = p,
+                None => break,
+            }
+        }
+        out
+    }
+
+    /// ファイルの中のすべての折りたためる範囲（行）
+    pub fn all_folds(&self) -> Vec<(usize, usize)> {
+        let Some(tree) = &self.tree else { return Vec::new() };
+        let mut out = Vec::new();
+        let mut c = tree.walk();
+        'walk: loop {
+            let n = c.node();
+            let (s, e) = (n.start_position().row, n.end_position().row);
+            if e > s && foldable(n.kind()) {
+                out.push((s, e));
+            }
+            // 1 行に収まる節の中には入らない
+            if e > s && c.goto_first_child() {
+                continue;
+            }
+            loop {
+                if c.goto_next_sibling() {
+                    continue 'walk;
+                }
+                if !c.goto_parent() {
+                    break 'walk;
+                }
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+}
+
 /// 引数の範囲。外側（aa）は後ろの区切り（`, ` まで）を含め、最後の引数なら前の区切りを含める
 fn argument_range(node: Node, inner: bool, buf: &Buffer) -> Range<usize> {
     let (s, e) = (node.start_byte(), node.end_byte());
@@ -589,6 +685,17 @@ mod tests {
         let at = src.find(at_text).unwrap();
         let r = syn.text_object(at, kind, inner, &buf).unwrap();
         src[r].to_string()
+    }
+
+    #[test]
+    fn folds() {
+        let rs = "fn a() {\n    let v = [\n        1,\n    ];\n}\nfn b() {}\n";
+        let mut buf = Buffer::from_str(rs);
+        let mut syn = Syntax::new(Lang::Rust).unwrap();
+        syn.parse(&mut buf);
+        // 2 行目（let v = [）: 配列 1〜3 行、関数 0〜4 行
+        assert_eq!(syn.folds_at(2), vec![(1, 3), (0, 4)]);
+        assert_eq!(syn.all_folds(), vec![(0, 4), (1, 3)]);
     }
 
     #[test]

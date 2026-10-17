@@ -183,6 +183,7 @@ fn glyph_keys(ed: &Editor, fonts: &mut Fonts, from: usize, to: usize) -> Vec<nag
 /// 1 つの窓に描くもの。作業中の窓だけがカーソル・Visual・入力中の検索の強調を持つ
 struct Pane<'a> {
     buf: &'a nagi_core::Buffer,
+    folds: &'a crate::folds::Folds,
     syntax: Option<&'a nagi_syntax::Syntax>,
     cursor: nagi_core::Cursor,
     top: usize,
@@ -208,19 +209,22 @@ fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
     let drawn = rect.h + usize::from(frac > 0.0);
 
     // 画面に見えている範囲だけにハイライトのクエリをかける
-    let view_start = pane.buf.line_start(pane.top);
-    let view_end = pane.buf.line_start((pane.top + drawn).min(total));
+    // 見える行（閉じた折りたたみは頭の行だけ）
+    let shown: Vec<usize> = if pane.folds.is_empty() { (pane.top..(pane.top + drawn).min(total)).collect() } else { pane.folds.visible_from(pane.top, drawn, total) };
+    let view_start = pane.buf.line_start(shown.first().copied().unwrap_or(pane.top).min(total));
+    let view_end = pane.buf.line_start(shown.last().map_or(pane.top, |l| l + 1).min(total));
     // 行は画面に入る分だけ取り出す（折り返さないので、それより右は見えない。数 MB の 1 行でも毎回全体を作らない）
     let budget = line_budget(rect.w);
-    let heads: Vec<(String, usize, bool)> = (pane.top..(pane.top + drawn).min(total))
-        .map(|ln| {
+    let heads: Vec<(String, usize, bool)> = shown
+        .iter()
+        .map(|&ln| {
             let (s, cut) = pane.buf.line_head(ln, budget);
             (s, pane.buf.line_start(ln), cut)
         })
         .collect();
     let spans = match pane.syntax {
-        // 長い行があるときは、行ごとに見えている部分だけを問い合わせる
-        Some(syn) if heads.iter().any(|h| h.2) => heads.iter().flat_map(|(s, abs, _)| syn.highlight(pane.buf, *abs..*abs + s.len())).collect(),
+        // 長い行があるとき（と折りたたみで行が飛ぶとき）は、行ごとに見えている部分だけを問い合わせる
+        Some(syn) if heads.iter().any(|h| h.2) || !pane.folds.is_empty() => heads.iter().flat_map(|(s, abs, _)| syn.highlight(pane.buf, *abs..*abs + s.len())).collect(),
         Some(syn) => syn.highlight(pane.buf, view_start..view_end.max(view_start)),
         None => Vec::new(),
     };
@@ -248,14 +252,28 @@ fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
     let replacing = pane.active && ed.mode == Mode::Replace && !ed.query.text.is_empty();
 
     for row in 0..drawn {
-        let ln = pane.top + row;
         let y = (rect.y as f32 + row as f32 - frac) * cell.h;
-        if ln >= total {
+        let Some(&ln) = shown.get(row) else {
             // ファイル末尾より後ろは Vim と同じく ~
             p.text("~", rect.x, y, TILDE);
             continue;
-        }
+        };
         p.text(&format!("{:>5} ", ln + 1), rect.x, y, LINE_NO);
+        // 閉じた折りたたみは 1 行で「+-- 12 行: 頭の行」と薄く出す（Vim の Folded と同じ形）
+        if let Some((s, e)) = pane.folds.outer_at(ln).filter(|f| f.0 == ln) {
+            let x = (rect.x + GUTTER) as f32 * cell.w;
+            p.out.push(Instance::fill(x, y, (rect.w.saturating_sub(GUTTER)) as f32 * cell.w, cell.h, MATCH_BG));
+            let label = format!("+--{:>3} 行: {}", e - s + 1, heads[row].0.trim());
+            let saved = p.cols;
+            p.cols = rect.x + rect.w;
+            let end = p.text(&label, rect.x + GUTTER, y, STATUS_FG);
+            let _ = end;
+            p.cols = saved;
+            if pane.active && pane.cursor.line == ln && !matches!(ed.mode, Mode::Command | Mode::Search | Mode::Replace | Mode::Finder | Mode::GrepPrompt | Mode::List) {
+                p.out.push(Instance::fill(x, y, cell.w, cell.h, CURSOR));
+            }
+            continue;
+        }
         let (line, abs, cut) = &heads[row];
         let (line, abs, cut) = (line.as_str(), *abs, *cut);
         // byte ごとの文字色。外側のキャプチャの後に内側が来るので、後から塗ったものが勝つ
@@ -423,11 +441,11 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     for &(win, rect) in &rects {
         let Some(st) = ed.win_state(win) else { continue };
         let active = win == ed.cur_win;
-        let (buf, syntax) = if st.doc == ed.cur_doc {
-            (&ed.buf, ed.syntax.as_ref())
+        let (buf, syntax, folds) = if st.doc == ed.cur_doc {
+            (&ed.buf, ed.syntax.as_ref(), &ed.folds)
         } else {
             match ed.parked_doc(st.doc) {
-                Some(d) => (&d.buf, d.syntax.as_ref()),
+                Some(d) => (&d.buf, d.syntax.as_ref(), &d.folds),
                 None => continue,
             }
         };
@@ -435,7 +453,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         let last = buf.line_count().saturating_sub(1);
         let mut cursor = st.cursor;
         cursor.line = cursor.line.min(last);
-        let pane = Pane { buf, syntax, cursor, top: st.top.min(last), frac: if active { ed.frac } else { 0.0 }, active };
+        let pane = Pane { buf, folds, syntax, cursor, top: st.top.min(last), frac: if active { ed.frac } else { 0.0 }, active };
         draw_pane(&mut p, ed, &pane, Rect { h: ed.text_rows(rect), ..rect });
     }
     // 窓ごとの状態行（分割中だけ。Vim の laststatus=1 と同じ）と、左右の窓の間の 1px の区切り線
