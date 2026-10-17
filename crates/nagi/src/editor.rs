@@ -33,6 +33,15 @@ pub enum Mode {
     List,
 }
 
+/// リストモードでいるパネル
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Side {
+    /// ファイルツリー
+    Left,
+    /// 全文検索の結果
+    Bottom,
+}
+
 pub enum Effect {
     None,
     Quit,
@@ -218,6 +227,10 @@ pub struct Editor {
     pub finder: Option<crate::finder::Finder>,
     /// 全文検索のパネル（開いている間だけ）
     pub grep: Option<crate::grep_panel::GrepPanel>,
+    /// ファイルツリー（開いている間だけ）
+    pub tree: Option<crate::tree_panel::TreePanel>,
+    /// リストモードでいるパネル
+    pub list_side: Side,
     /// 一度集めたプロジェクトのファイル一覧（根 → 相対パス）
     pub(crate) file_cache: HashMap<PathBuf, Vec<String>>,
 }
@@ -264,6 +277,8 @@ impl Editor {
             screen: (80, 24),
             finder: None,
             grep: None,
+            tree: None,
+            list_side: Side::Bottom,
             file_cache: HashMap::new(),
         }
     }
@@ -495,7 +510,10 @@ impl Editor {
                 self.grep_prompt_key(key);
                 Effect::None
             }
-            Mode::List => self.list_key(key),
+            Mode::List => match self.list_side {
+                Side::Left => self.tree_key(key),
+                Side::Bottom => self.list_key(key),
+            },
         };
         self.scroll_into_view();
         effect
@@ -971,6 +989,7 @@ impl Editor {
             "cn" | "cnext" => self.next_hit(true, arg.parse().unwrap_or(1)),
             "cp" | "cprevious" | "cN" | "cNext" => self.next_hit(false, arg.parse().unwrap_or(1)),
             "ccl" | "cclose" => self.close_grep(),
+            "Tree" | "Explore" | "Ex" | "NERDTreeToggle" => self.toggle_tree(),
             "cope" | "copen" => self.focus_panel(),
             "b" | "buffer" if !arg.is_empty() => self.goto_buffer(arg),
             "bn" | "bnext" => self.cycle_buffer(true, arg.parse().unwrap_or(1)),
@@ -1086,6 +1105,7 @@ impl Editor {
             Some((Some("finder.recent"), _)) => self.open_finder(crate::finder::Source::Recent),
             Some((Some("buffer.close"), _)) => self.delete_buffer("", false),
             Some((Some("search.project"), _)) => self.open_grep(""),
+            Some((Some("tool.project"), _)) => self.toggle_tree(),
             Some((Some(cmd), desc)) => self.message = format!("未実装: {desc}（{cmd}）"),
             Some((None, desc)) => self.message = format!("Nagi には無い機能: {desc}"),
             None => self.message = format!("不明なアクション: {name}"),

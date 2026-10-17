@@ -216,6 +216,7 @@ impl Editor {
             match key {
                 Key::Char('c' | 'q') | Key::Ctrl('c' | 'q') => self.close_grep(),
                 Key::Char('j') | Key::Ctrl('j') => {}
+                Key::Char('h') | Key::Ctrl('h') if self.tree.is_some() => self.open_tree(),
                 _ => self.mode = Mode::Normal,
             }
             return crate::editor::Effect::None;
@@ -264,6 +265,7 @@ impl Editor {
     /// パネルへ移る（リストモード）
     pub(crate) fn focus_panel(&mut self) {
         if self.grep.is_some() {
+            self.list_side = crate::editor::Side::Bottom;
             self.mode = Mode::List;
             self.pending_keys.clear();
         }
@@ -271,7 +273,7 @@ impl Editor {
 
     pub(crate) fn close_grep(&mut self) {
         self.grep = None;
-        if matches!(self.mode, Mode::List | Mode::GrepPrompt) {
+        if self.mode == Mode::GrepPrompt || (self.mode == Mode::List && self.list_side == crate::editor::Side::Bottom) {
             self.mode = Mode::Normal;
         }
         self.rows = self.text_rows(self.active_rect());
@@ -322,6 +324,7 @@ impl Editor {
 
     /// パネルの中のクリック。`row` はパネルの中の行（0 は見出し）
     pub fn panel_click(&mut self, row: usize, clicks: u32) {
+        self.list_side = crate::editor::Side::Bottom;
         let Some(g) = &mut self.grep else { return };
         if row == 0 {
             self.focus_panel();

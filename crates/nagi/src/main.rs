@@ -17,6 +17,7 @@ mod difftest;
 mod editor;
 mod finder;
 mod grep_panel;
+mod tree_panel;
 mod normal;
 mod stats;
 mod view;
@@ -590,6 +591,23 @@ impl App {
                 return;
             }
         }
+        // ツリーの上なら、ツリーの行を選ぶ（フォルダは開閉、ファイルはダブルクリックで開く）
+        if let (Some(f), Some(ed)) = (&self.fonts, &mut self.ed) {
+            let cell = f.cell();
+            let (row, col) = ((self.mouse.1 as f32 / cell.h) as usize, (self.mouse.0.max(0.0) as f32 / cell.w) as usize);
+            if ed.tree_rect().is_some_and(|r| r.contains(row, col)) {
+                let now = Instant::now();
+                let clicks = match self.last_click {
+                    Some((t, c, n)) if now - t <= double_click_time() && c == (row, usize::MAX - 1) => n % 3 + 1,
+                    _ => 1,
+                };
+                self.last_click = Some((now, (row, usize::MAX - 1), clicks));
+                ed.tree_click(row, clicks);
+                self.sync_ime();
+                self.draw();
+                return;
+            }
+        }
         let on_text = self.focus_under_mouse();
         let rows = self.sync_screen();
         if !on_text {
@@ -753,6 +771,7 @@ impl ApplicationHandler for App {
             ed.poll_search();
             ed.poll_finder();
             ed.poll_grep();
+            ed.poll_tree();
         }
         if self.ed.as_mut().is_some_and(|ed| ed.poll_syntax()) {
             if let Some(s) = self.ed.as_ref().and_then(|ed| ed.syntax.as_ref()) {

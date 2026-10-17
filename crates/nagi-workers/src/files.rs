@@ -78,6 +78,29 @@ pub fn walk(root: &Path, waker: Waker) -> FileWalk {
     FileWalk { rx, cancel }
 }
 
+/// フォルダの中身（ファイルツリー用）。(名前, フォルダか) をフォルダ・名前の順に並べる。`.gitignore` に従い、`.git` は出さない
+pub type DirList = (PathBuf, Vec<(String, bool)>);
+
+/// `dir` の中身を裏のスレッドで読み、`tx` に送って UI を起こす
+pub fn list_dir(dir: PathBuf, tx: Sender<DirList>, waker: Waker) {
+    let _ = std::thread::Builder::new().name("list-dir".into()).spawn(move || {
+        let mut out: Vec<(String, bool)> = ignore::WalkBuilder::new(&dir)
+            .max_depth(Some(1))
+            .hidden(false)
+            .require_git(false)
+            .filter_entry(|e| e.file_name() != ".git")
+            .build()
+            .filter_map(Result::ok)
+            .filter(|e| e.depth() == 1)
+            .map(|e| (e.file_name().to_string_lossy().into_owned(), e.file_type().is_some_and(|t| t.is_dir())))
+            .collect();
+        out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.to_lowercase().cmp(&b.0.to_lowercase())));
+        if tx.send((dir, out)).is_ok() {
+            waker();
+        }
+    });
+}
+
 /// `path` を含むプロジェクトの根（`.git` のあるところ）。無ければ None
 pub fn project_root(path: &Path) -> Option<PathBuf> {
     let start = if path.is_dir() { path } else { path.parent()? };

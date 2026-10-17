@@ -384,6 +384,14 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     let bar = (cell.w / 6.0).round().max(2.0);
     let underline = (cell.h / 16.0).round().max(1.0);
     let mut p = Painter { out: Vec::with_capacity(cols * rows + 64), fonts, r, cols, bar, underline };
+    if let (Some(r), Some(t)) = (ed.tree_rect(), &mut ed.tree) {
+        let h = r.h.saturating_sub(1).max(1);
+        if t.selected < t.scroll {
+            t.scroll = t.selected;
+        } else if t.selected >= t.scroll + h {
+            t.scroll = t.selected + 1 - h;
+        }
+    }
     if let (Some(r), Some(g)) = (ed.panel_rect(), &mut ed.grep) {
         // 選んでいる結果が見える範囲に入るように送る（1 行目は見出し）
         let h = r.h.saturating_sub(1).max(1);
@@ -461,6 +469,9 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             p.cols = saved;
         }
     }
+    if let (Some(r), Some(t)) = (ed.tree_rect(), &ed.tree) {
+        draw_tree(&mut p, t, r, ed.mode == Mode::List && ed.list_side == crate::editor::Side::Left, ed.buf.path.as_deref());
+    }
     if let (Some(r), Some(g)) = (ed.panel_rect(), &ed.grep) {
         draw_grep_panel(&mut p, g, r, matches!(ed.mode, Mode::List | Mode::GrepPrompt));
     }
@@ -502,6 +513,9 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             let info = format!("{}{} 件{} ", if g.regex { "[.*]  " } else { "" }, g.hits.len(), if g.searching() { " …" } else { "" });
             let pc = cols.saturating_sub(p.width(&info));
             p.text(&info, pc, y, STATUS_FG);
+        }
+        Mode::List if ed.list_side == crate::editor::Side::Left => {
+            p.text(if ed.message.is_empty() { "-- ツリー --" } else { &ed.message }, 0, y, FG);
         }
         Mode::List if ed.grep.is_some() => {
             let g = ed.grep.as_ref().unwrap();
@@ -553,6 +567,36 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         }
     }
     p.out
+}
+
+/// ファイルツリー。1 行目は根の名前、2 行目から字下げした木（フォルダは青で `▸` `▾`）。右端に 1px の区切り線
+fn draw_tree(p: &mut Painter, t: &crate::tree_panel::TreePanel, r: Rect, focused: bool, current: Option<&std::path::Path>) {
+    let cell = p.fonts.cell();
+    let (x, y0, w) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
+    p.out.push(Instance::fill(x, y0, w, r.h as f32 * cell.h, BG));
+    p.out.push(Instance::fill(((r.x + r.w) as f32 + 0.5) * cell.w, y0, 1.0, r.h as f32 * cell.h, LINE_NO));
+    let saved = p.cols;
+    p.cols = r.x + r.w;
+    let name = t.root.file_name().map_or(t.root.display().to_string(), |n| n.to_string_lossy().into_owned());
+    p.text(&format!("{name}/{}", if t.loading() { " …" } else { "" }), r.x, y0, STATUS_FG);
+    let current = current.and_then(|c| std::path::absolute(c).ok());
+    for k in 0..r.h.saturating_sub(1) {
+        let Some(row) = t.rows.get(t.scroll + k) else { break };
+        let y = (r.y + 1 + k) as f32 * cell.h;
+        let selected = t.scroll + k == t.selected;
+        let reversed = selected && focused;
+        if reversed {
+            p.out.push(Instance::fill(x, y, w, cell.h, FG));
+        } else if selected {
+            p.out.push(Instance::fill(x, y, w, cell.h, MATCH_BG));
+        }
+        let mark = if row.dir { if t.is_expanded(&row.path) { "▾ " } else { "▸ " } } else { "  " };
+        let is_current = current.as_deref() == Some(row.path.as_path());
+        let fg = if reversed { BG } else if row.dir { FINDER_MATCH } else if is_current { FG } else { STATUS_FG };
+        let label = format!("{}{mark}{}{}", "  ".repeat(row.depth), row.name, if row.dir { "/" } else { "" });
+        p.text(&label, r.x, y, fg);
+    }
+    p.cols = saved;
 }
 
 /// 全文検索のパネル。1 行目は見出し（検索語と件数）、2 行目から `path:行: 本文`（ripgrep の vimgrep と同じ形）
