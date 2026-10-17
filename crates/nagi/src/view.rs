@@ -906,9 +906,8 @@ fn draw_toggle_buttons(p: &mut Painter, ed: &Editor, cols: usize) {
     for (b, row, col) in ed.toggle_buttons() {
         let hover = ed.hover_button == Some(b);
         let (x, y) = (col as f32 * cell.w, row as f32 * cell.h);
-        if hover {
-            p.out.push(Instance::fill(x, y, cell.w, cell.h, MATCH_BG));
-        }
+        // 本文の長い行と重なっても見えるように地を塗る
+        p.out.push(Instance::fill(x, y, cell.w, cell.h, if hover { MATCH_BG } else { BG }));
         p.text(b.glyph(), col, y, if hover { FG } else { STATUS_FG });
         if hover {
             let label = format!(" {} ", b.label(ed));

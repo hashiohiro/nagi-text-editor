@@ -286,8 +286,7 @@ impl Editor {
             Key::Char('q') => self.close_grep(),
             Key::Esc => self.mode = Mode::Normal,
             Key::Char(':') => {
-                self.mode = Mode::Command;
-                self.cmdline = Default::default();
+                self.enter_command("");
             }
             _ => {}
         }

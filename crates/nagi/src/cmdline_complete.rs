@@ -143,6 +143,15 @@ pub struct CmdComplete {
 
 impl Editor {
     /// 入力欄が変わったら候補を作り直す
+    /// コマンドラインに入る（パネルの中の `:` もここを通して、候補を出す）
+    pub(crate) fn enter_command(&mut self, initial: &str) {
+        self.mode = crate::editor::Mode::Command;
+        self.cmdline = Default::default();
+        self.cmdline.set(initial);
+        self.pending_keys.clear();
+        self.update_cmd_complete();
+    }
+
     pub(crate) fn update_cmd_complete(&mut self) {
         let text = self.cmdline.text[..self.cmdline.cursor].to_string();
         // ファイル名の候補が要るのに一覧がまだ無ければ、裏で集め始める（届いたら poll_cmd_files で出し直す）

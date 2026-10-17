@@ -1371,8 +1371,7 @@ impl Editor {
             }
             Key::Esc => self.mode = Mode::Normal,
             Key::Char(':') => {
-                self.mode = Mode::Command;
-                self.cmdline = Default::default();
+                self.enter_command("");
             }
             _ => {}
         }
@@ -1439,8 +1438,7 @@ impl Editor {
             BarItem::Commit => self.db_commit(i, true),
             BarItem::Rollback => self.db_commit(i, false),
             BarItem::Schema => {
-                self.mode = Mode::Command;
-                self.cmdline = Default::default();
+                self.enter_command("");
                 self.cmdline.set("DbSchema ");
                 self.update_cmd_complete();
             }

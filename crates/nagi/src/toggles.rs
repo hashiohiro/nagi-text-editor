@@ -40,9 +40,10 @@ impl Button {
             Button::HideBottom => "隠す".into(),
             Button::ShowBottom => if ed.bottom_kind == crate::result_grid::BottomKind::Result { "クエリの結果".into() } else { "検索の結果".into() },
             Button::HideRight => "隠す".into(),
-            Button::ShowRight => match ed.right_last() {
-                crate::right_panel::RightTab::Database => "データベース".into(),
-                crate::right_panel::RightTab::Maven => "Maven".into(),
+            Button::ShowRight => match (ed.db.is_some() || ed.maven.is_some(), ed.right_last()) {
+                (false, _) => "データベース・Maven".into(),
+                (true, crate::right_panel::RightTab::Database) => "データベース".into(),
+                (true, crate::right_panel::RightTab::Maven) => "Maven".into(),
             },
         }
     }
@@ -89,7 +90,8 @@ impl Editor {
         // 右の欄: タブの行の右端に「隠す」、隠している間は右上の隅に「出す」
         match self.right_rect() {
             Some(r) => v.push((Button::HideRight, r.y, r.x + r.w - 2)),
-            None if (self.db.is_some() || self.maven.is_some()) && self.diff.is_none() && self.log.is_none() => v.push((Button::ShowRight, 0, self.screen.0.saturating_sub(1))),
+            // 右の欄はまだ開いていなくても出す（押すと最後に使ったタブ。初めてならデータベース）
+            None if self.diff.is_none() && self.log.is_none() && self.db_table.is_none() => v.push((Button::ShowRight, 0, self.screen.0.saturating_sub(1))),
             None => {}
         }
         v
@@ -179,5 +181,18 @@ mod tests {
         assert_eq!((e.left_visible(), e.mode), (Some(LeftTab::Project), Mode::List));
         e.key(nagi_vim::Key::Alt('1'));
         assert_eq!(e.left_visible(), None);
+        // 右上の隅には、右の欄を開いていなくても「出す」ボタン
+        assert_eq!(e.button_at(0, 119), Some(Button::ShowRight));
+        e.press_button(Button::ShowRight);
+        assert_eq!(e.right_visible(), Some(crate::right_panel::RightTab::Database));
+        // 右の欄の中で : を押しても、コマンドの候補が出る
+        e.key(nagi_vim::Key::Char(':'));
+        assert_eq!(e.mode, Mode::Command);
+        assert!(e.cmd_complete.as_ref().is_some_and(|c| c.items.len() > 20), "パネルの中の : でも候補を出す");
+        let (_, r, c) = e.toggle_buttons().into_iter().find(|b| b.0 == Button::HideRight).unwrap();
+        e.key(nagi_vim::Key::Esc);
+        e.press_button(Button::HideRight);
+        assert_eq!(e.right_visible(), None);
+        let _ = (r, c);
     }
 }

@@ -400,8 +400,7 @@ impl Editor {
                 // ここからブランチ: :Gbranch 名前 ハッシュ を打たせる
                 if let Some(c) = l.current() {
                     let h = c.short.clone();
-                    self.mode = Mode::Command;
-                    self.cmdline = Default::default();
+                    self.enter_command("");
                     self.cmdline.set(&format!("Gbranch  {h}"));
                     self.cmdline.cursor = "Gbranch ".len();
                     self.update_cmd_complete();

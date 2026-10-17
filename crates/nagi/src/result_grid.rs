@@ -359,8 +359,7 @@ impl Editor {
             Key::Char('[') | Key::Ctrl('p') => r.active = (r.active + r.tabs.len()) % (r.tabs.len() + 1),
             Key::Esc | Key::Ctrl('w') => self.mode = Mode::Normal,
             Key::Char(':') => {
-                self.mode = Mode::Command;
-                self.cmdline = Default::default();
+                self.enter_command("");
             }
             Key::Char('q') => {
                 if r.active == 0 {
@@ -448,8 +447,7 @@ impl Editor {
                         self.db_requery(id);
                     }
                     Key::Char('E') => {
-                        self.mode = Mode::Command;
-                        self.cmdline = Default::default();
+                        self.enter_command("");
                         self.cmdline.set("DbExport ");
                         self.update_cmd_complete();
                     }

@@ -520,8 +520,7 @@ impl Editor {
                 }
             }
             (_, Key::Char(':')) => {
-                self.mode = Mode::Command;
-                self.cmdline = Default::default();
+                self.enter_command("");
             }
             _ => {}
         }
