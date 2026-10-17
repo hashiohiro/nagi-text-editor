@@ -120,6 +120,7 @@ impl Editor {
             pending_w: false,
         });
         self.bottom_hidden = false;
+        self.bottom_kind = crate::result_grid::BottomKind::Grep;
         g.root = root;
         // 語を付けて呼んだら（`:Grep 語`）探し始めて編集画面へ戻る（Vim の :grep と同じ）。付けなければ最下行で打つ
         self.mode = if initial.is_empty() { Mode::GrepPrompt } else { Mode::Normal };
@@ -295,7 +296,7 @@ impl Editor {
 
     /// パネルへ移る（リストモード）
     pub(crate) fn focus_panel(&mut self) {
-        if self.grep.is_some() {
+        if self.bottom_exists() {
             self.bottom_hidden = false;
             self.list_side = crate::editor::Side::Bottom;
             self.mode = Mode::List;
@@ -316,6 +317,10 @@ impl Editor {
     pub(crate) fn open_hit(&mut self, stay: bool) {
         let Some(g) = &self.grep else { return };
         let Some(h) = g.hits.get(g.selected).cloned() else { return };
+        // ファイルを持たない行（コマンドの出力）
+        if h.path.is_empty() {
+            return;
+        }
         let path = g.root.join(&h.path);
         self.edit_file(path);
         let line = (h.line - 1).min(self.buf.line_count().saturating_sub(1));
@@ -358,6 +363,9 @@ impl Editor {
     /// パネルの中のクリック。`row` はパネルの中の行（0 は見出し）
     pub fn panel_click(&mut self, row: usize, clicks: u32) {
         self.list_side = crate::editor::Side::Bottom;
+        if self.bottom_kind == crate::result_grid::BottomKind::Result {
+            return;
+        }
         let Some(g) = &mut self.grep else { return };
         if row == 0 {
             self.focus_panel();

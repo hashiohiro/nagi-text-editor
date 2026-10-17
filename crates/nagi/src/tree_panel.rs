@@ -189,12 +189,14 @@ impl Editor {
     /// 窓に使える範囲の左端と幅（左の欄の分と区切りの 1 列を除く）
     pub(crate) fn windows_x(&self) -> (usize, usize) {
         let cols = self.screen.0;
+        // 右の欄の分と区切りの 1 列も除く
+        let right = self.right_rect().map_or(0, |r| r.w + 1);
         match self.left_visible() {
             Some(_) => {
                 let w = self.left_width() + 1;
-                (w, cols.saturating_sub(w))
+                (w, cols.saturating_sub(w + right))
             }
-            None => (0, cols),
+            None => (0, cols.saturating_sub(right)),
         }
     }
 

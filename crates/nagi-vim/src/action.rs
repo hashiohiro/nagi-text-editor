@@ -66,7 +66,8 @@ pub fn ideavim(name: &str) -> Option<(Option<&'static str>, &'static str)> {
         "Generate" | "NewClass" | "OverrideMethods" | "GenerateConstructor" | "GenerateGetter" | "GenerateSetter"
         | "GenerateGetterAndSetter" | "GenerateEquals" | "GenerateTestMethod" => (None, "コード生成（IntelliJ 固有のため対象外）"),
         "Debug" | "DebugContextTest" | "ToggleLineBreakpoint" => (None, "デバッガ（スコープ外）"),
-        "ActivateMavenToolWindow" => (None, "Maven ツールウィンドウ（IntelliJ 固有）"),
+        "ActivateMavenToolWindow" => (Some("tool.maven"), "Maven（右の欄）"),
+        "ActivateDatabaseToolWindow" => (Some("tool.database"), "データベース（右の欄）"),
         _ => return None,
     };
     Some(r)

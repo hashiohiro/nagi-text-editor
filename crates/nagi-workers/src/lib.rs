@@ -1,10 +1,12 @@
 //! UI スレッドの外で行う仕事（architecture.md §3）。結果はチャネルで返し、届くたびに `waker` で UI を起こす。
 
+pub mod db;
 pub mod files;
 pub mod git;
 pub mod grep;
 pub mod index;
 pub mod jobs;
+pub mod maven;
 pub mod watch;
 
 /// UI のイベントループを起こす関数

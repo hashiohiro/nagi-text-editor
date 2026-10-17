@@ -28,6 +28,10 @@ pub struct MakeState {
     job: Job,
     pub cmd: String,
     root: PathBuf,
+    /// 診断の形でない行もパネルに出す（Maven の実行）
+    output: bool,
+    /// 出力の中の「BUILD SUCCESS」「BUILD FAILURE」
+    status: Option<String>,
 }
 
 /// 診断を指すとみなす拡張子（`http://host:80:` のような行を拾わないため）
@@ -118,12 +122,20 @@ impl Editor {
         } else {
             arg.trim().to_string()
         };
+        self.run_job(&cmd, &root, &format!("診断: {cmd}"), false);
+    }
+
+    /// コマンドを `root` で動かし、診断（`output` なら出力の全行）を下のパネルに出す
+    pub(crate) fn run_job(&mut self, cmd: &str, root: &Path, title: &str, output: bool) {
         let waker = self.waker.clone().unwrap_or_else(|| std::sync::Arc::new(|| {}));
-        match nagi_workers::jobs::run(&cmd, &root, waker) {
+        match nagi_workers::jobs::run(cmd, root, waker) {
             Ok(job) => {
                 self.diags.clear();
-                self.open_result_panel(&format!("診断: {cmd}"));
-                self.make = Some(MakeState { job, cmd, root });
+                self.open_result_panel(title);
+                if let Some(g) = &mut self.grep {
+                    g.root = root.to_path_buf();
+                }
+                self.make = Some(MakeState { job, cmd: cmd.to_string(), root: root.to_path_buf(), output, status: None });
             }
             Err(e) => self.message = format!("コマンドを起動できません: {e}"),
         }
@@ -134,34 +146,47 @@ impl Editor {
         let Some(m) = &self.make else { return false };
         let mut changed = false;
         let mut done = None;
-        let mut new = Vec::new();
+        let mut lines = Vec::new();
         while let Ok(msg) = m.job.rx.try_recv() {
             match msg {
-                JobMsg::Line(l) => {
-                    if let Some(d) = parse_line(&l, &m.root) {
-                        new.push(d);
-                    }
-                }
+                JobMsg::Line(l) => lines.push(l),
                 JobMsg::Done(code) => done = Some(code),
             }
             changed = true;
         }
-        let root = m.root.clone();
-        for d in new {
-            if let Some(g) = &mut self.grep {
-                let head = if d.error { "error" } else { "warning" };
-                let text = format!("{head}: {}", d.msg);
-                g.hits.push(Hit { path: rel(&d.path, &root), line: d.line + 1, range: (0, head.len()), text });
+        let (root, output) = (m.root.clone(), m.output);
+        for l in lines {
+            match parse_line(&l, &root) {
+                Some(d) => {
+                    if let Some(g) = &mut self.grep {
+                        let head = if d.error { "error" } else { "warning" };
+                        let text = format!("{head}: {}", d.msg);
+                        g.hits.push(Hit { path: rel(&d.path, &root), line: d.line + 1, range: (0, head.len()), text });
+                    }
+                    self.diags.push(d);
+                }
+                None if output => {
+                    if l.contains("BUILD SUCCESS") || l.contains("BUILD FAILURE") {
+                        if let Some(m) = &mut self.make {
+                            m.status = Some(if l.contains("SUCCESS") { "BUILD SUCCESS" } else { "BUILD FAILURE" }.into());
+                        }
+                    }
+                    // 診断の形でない行は、ファイルを持たない行として出す
+                    if let Some(g) = &mut self.grep {
+                        g.hits.push(Hit { path: String::new(), line: 0, range: (0, 0), text: l });
+                    }
+                }
+                None => {}
             }
-            self.diags.push(d);
         }
         if let Some(code) = done {
-            let cmd = self.make.take().map(|m| m.cmd).unwrap_or_default();
+            let (cmd, status) = self.make.take().map(|m| (m.cmd, m.status)).unwrap_or_default();
             let (e, w) = (self.diags.iter().filter(|d| d.error).count(), self.diags.iter().filter(|d| !d.error).count());
             if let Some(g) = &mut self.grep {
                 g.running = false;
             }
             self.message = match (e + w, code) {
+                _ if status.is_some() => format!("{}（エラー {e} 件、警告 {w} 件）", status.unwrap_or_default()),
                 (0, Some(0)) => format!("診断: 問題はありません（{cmd}）"),
                 (0, c) => format!("診断: 診断の形の出力はありませんでした（終了コード {}）", c.map_or("-".into(), |c| c.to_string())),
                 _ => format!("診断: エラー {e} 件、警告 {w} 件"),
@@ -228,7 +253,7 @@ impl Editor {
         out
     }
 
-    fn nav_root(&self) -> PathBuf {
+    pub(crate) fn nav_root(&self) -> PathBuf {
         let root = self
             .buf
             .path

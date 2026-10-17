@@ -13,6 +13,8 @@ pub enum Button {
     ShowLeft,
     HideBottom,
     ShowBottom,
+    HideRight,
+    ShowRight,
 }
 
 impl Button {
@@ -22,6 +24,8 @@ impl Button {
             Button::ShowLeft => "»",
             Button::HideBottom => "▾",
             Button::ShowBottom => "▴",
+            Button::HideRight => "»",
+            Button::ShowRight => "«",
         }
     }
 
@@ -34,7 +38,12 @@ impl Button {
                 LeftTab::Commit => "コミット（Alt-0）".into(),
             },
             Button::HideBottom => "隠す".into(),
-            Button::ShowBottom => "検索の結果".into(),
+            Button::ShowBottom => if ed.bottom_kind == crate::result_grid::BottomKind::Result { "クエリの結果".into() } else { "検索の結果".into() },
+            Button::HideRight => "隠す".into(),
+            Button::ShowRight => match ed.right_last() {
+                crate::right_panel::RightTab::Database => "データベース".into(),
+                crate::right_panel::RightTab::Maven => "Maven".into(),
+            },
         }
     }
 }
@@ -49,9 +58,17 @@ impl Editor {
         }
     }
 
-    /// 下のパネル（全文検索）が出ているか
+    /// 下のパネル（全文検索の結果かクエリの結果）があるか
+    pub fn bottom_exists(&self) -> bool {
+        match self.bottom_kind {
+            crate::result_grid::BottomKind::Grep => self.grep.is_some(),
+            crate::result_grid::BottomKind::Result => self.db_result.is_some(),
+        }
+    }
+
+    /// 下のパネルが出ているか
     pub fn bottom_visible(&self) -> bool {
-        self.grep.is_some() && !self.bottom_hidden
+        self.bottom_exists() && !self.bottom_hidden
     }
 
     /// 画面にあるボタン（ボタン, 行, 列）。幅はどれも 1 セル
@@ -64,9 +81,15 @@ impl Editor {
         }
         match self.panel_rect() {
             Some(r) => v.push((Button::HideBottom, r.y, r.x + r.w - 2)),
-            None if self.grep.is_some() && self.diff.is_none() && self.log.is_none() => {
+            None if self.bottom_exists() && self.diff.is_none() && self.log.is_none() => {
                 v.push((Button::ShowBottom, self.windows_rows().saturating_sub(1), self.windows_x().0))
             }
+            None => {}
+        }
+        // 右の欄: タブの行の右端に「隠す」、隠している間は右上の隅に「出す」
+        match self.right_rect() {
+            Some(r) => v.push((Button::HideRight, r.y, r.x + r.w - 2)),
+            None if (self.db.is_some() || self.maven.is_some()) && self.diff.is_none() && self.log.is_none() => v.push((Button::ShowRight, 0, self.screen.0.saturating_sub(1))),
             None => {}
         }
         v
@@ -82,6 +105,8 @@ impl Editor {
             Button::ShowLeft => self.select_left_tab(self.left_last()),
             Button::HideBottom => self.hide_bottom(),
             Button::ShowBottom => self.show_bottom(),
+            Button::HideRight => self.hide_right(),
+            Button::ShowRight => self.select_right_tab(self.right_last()),
         }
     }
 

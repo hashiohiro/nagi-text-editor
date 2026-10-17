@@ -13,6 +13,7 @@ use crate::panes::{Layout, Rect, split_sizes};
 #[derive(Clone, Debug, PartialEq)]
 pub enum Sep {
     Left,
+    Right,
     Bottom,
     /// 窓の並び（根からの道筋）の、`idx` 番目と次の子の間。`area` はその並びの矩形
     Split { path: Vec<usize>, idx: usize, vertical: bool, area: Rect },
@@ -22,7 +23,7 @@ impl Sep {
     /// 左右に動かす区切りか（カーソルの形）
     pub fn horizontal_drag(&self) -> bool {
         match self {
-            Sep::Left => true,
+            Sep::Left | Sep::Right => true,
             Sep::Bottom => false,
             Sep::Split { vertical, .. } => *vertical,
         }
@@ -71,7 +72,9 @@ impl Editor {
     pub fn left_width(&self) -> usize {
         let cols = self.screen.0;
         let w = self.left_w.unwrap_or_else(|| crate::tree_panel::tree_width(cols));
-        w.clamp(10.min(cols), cols.saturating_sub(20).max(10))
+        // 右の欄が出ていればその分も除いて、窓に 20 列は残す
+        let right = if self.right_visible().is_some() { self.right_w.unwrap_or(10).min(40) + 1 } else { 0 };
+        w.clamp(10.min(cols), cols.saturating_sub(20 + right).max(10))
     }
 
     /// 下のパネルの高さ（ドラッグで変えていればその高さ）
@@ -89,6 +92,11 @@ impl Editor {
         if let Some(r) = self.left_rect() {
             if col == r.x + r.w && row < r.y + r.h {
                 return Some(Sep::Left);
+            }
+        }
+        if let Some(r) = self.right_rect() {
+            if r.x > 0 && col == r.x - 1 && row < r.y + r.h {
+                return Some(Sep::Right);
             }
         }
         if let Some(r) = self.panel_rect() {
@@ -111,6 +119,7 @@ impl Editor {
     pub(crate) fn drag_sep(&mut self, sep: &Sep, row: usize, col: usize) {
         match sep {
             Sep::Left => self.left_w = Some(col),
+            Sep::Right => self.right_w = Some(self.screen.0.saturating_sub(col + 1)),
             Sep::Bottom => self.bottom_h = Some(self.screen.1.saturating_sub(row)),
             Sep::Split { path, idx, vertical, area } => {
                 let Some(Layout::Split { kids, weights, .. }) = node_mut(&mut self.layout, path) else { return };
@@ -136,6 +145,7 @@ impl Editor {
     pub(crate) fn reset_sep(&mut self, sep: &Sep) {
         match sep {
             Sep::Left => self.left_w = None,
+            Sep::Right => self.right_w = None,
             Sep::Bottom => self.bottom_h = None,
             Sep::Split { path, .. } => {
                 if let Some(Layout::Split { weights, .. }) = node_mut(&mut self.layout, path) {

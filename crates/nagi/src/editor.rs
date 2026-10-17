@@ -51,6 +51,8 @@ pub enum Side {
     Bottom,
     /// コミットのパネル
     Commit,
+    /// 右の欄（データベース・Maven）
+    Right,
 }
 
 pub enum Effect {
@@ -271,6 +273,15 @@ pub struct Editor {
     /// 左の欄・下のパネルを隠しているか（中身は残す）
     pub left_hidden: bool,
     pub bottom_hidden: bool,
+    /// 右の欄（データベース・Maven）と、下のパネルのクエリの結果
+    pub db: Option<crate::db_panel::DbPanel>,
+    pub maven: Option<crate::maven_panel::MavenPanel>,
+    pub db_result: Option<crate::result_grid::ResultGrid>,
+    pub bottom_kind: crate::result_grid::BottomKind,
+    pub right_tab: crate::right_panel::RightTab,
+    pub right_hidden: bool,
+    pub right_w: Option<usize>,
+    pub(crate) right_pending_w: bool,
     /// ドラッグで変えた左の欄の幅・下のパネルの高さ（None は既定の大きさ）
     pub left_w: Option<usize>,
     pub bottom_h: Option<usize>,
@@ -391,6 +402,14 @@ impl Editor {
             bottom_hidden: false,
             hover_button: None,
             left_w: None,
+            db: None,
+            maven: None,
+            db_result: None,
+            bottom_kind: Default::default(),
+            right_tab: Default::default(),
+            right_hidden: false,
+            right_w: None,
+            right_pending_w: false,
             bottom_h: None,
             git_job: None,
             diff: None,
@@ -624,6 +643,15 @@ impl Editor {
     pub fn key(&mut self, key: Key) -> Effect {
         // 先頭部分だけを表示している間は、全体が届くのを待ってから処理する（先頭部分を編集してしまわない）
         self.finish_load();
+        // データを変える SQL の確認（y で実行）
+        if self.db_confirm_key(key) {
+            return Effect::None;
+        }
+        // SQL コンソールの Ctrl+Enter（Ctrl-m として届く）: カーソルのある文を流す
+        if key == Key::Ctrl('m') && matches!(self.mode, Mode::Normal | Mode::Insert | Mode::Visual { .. }) && self.console_source().is_some() {
+            self.db_run_at_cursor();
+            return Effect::None;
+        }
         // Alt-1 プロジェクト、Alt-0 コミット（IntelliJ と同じ。どのモードからでも）
         if matches!(key, Key::Alt('1') | Key::Alt('0')) && matches!(self.mode, Mode::Normal | Mode::Insert | Mode::List | Mode::CommitMsg) {
             if self.mode == Mode::Insert {
@@ -679,8 +707,10 @@ impl Editor {
             }
             Mode::List => match self.list_side {
                 Side::Left => self.tree_key(key),
+                Side::Bottom if self.bottom_kind == crate::result_grid::BottomKind::Result => self.result_key(key),
                 Side::Bottom => self.list_key(key),
                 Side::Commit => self.commit_list_key(key),
+                Side::Right => self.right_key(key),
             },
             Mode::CommitMsg => {
                 self.commit_msg_key(key);
@@ -1282,6 +1312,11 @@ impl Editor {
             "Ghistory" | "Gfilelog" => self.open_log(true),
             "Gbranch" => self.git_new_branch(arg),
             "Gbranches" | "Gbr" => self.open_branches(),
+            "Maven" | "Mvn" if arg.is_empty() => self.open_maven(),
+            "Maven" | "Mvn" => self.maven_run(arg),
+            "Db" | "Database" => self.open_db_panel(),
+            "DbAdd" => self.db_add(arg),
+            "DbRun" => self.db_run_at_cursor(),
             "Gpull" => self.run_git_job("pull ", &["pull", "--no-edit"]),
             "Gfetch" => self.run_git_job("フェッチ", &["fetch", "--all", "--prune"]),
             "Gpush" => self.push_from_anywhere(),
@@ -1345,6 +1380,8 @@ impl Editor {
             Some((Some("git.file_history"), _)) => self.open_log(true),
             Some((Some("git.log"), _)) => self.open_log(false),
             Some((Some("git.branches"), _)) => self.open_branches(),
+            Some((Some("tool.maven"), _)) => self.toggle_right_tab(crate::right_panel::RightTab::Maven),
+            Some((Some("tool.database"), _)) => self.toggle_right_tab(crate::right_panel::RightTab::Database),
             Some((Some("git.pull"), _)) => self.run_git_job("pull ", &["pull", "--no-edit"]),
             Some((Some("git.fetch"), _)) => self.run_git_job("フェッチ", &["fetch", "--all", "--prune"]),
             Some((Some("git.push"), _)) => self.push_from_anywhere(),

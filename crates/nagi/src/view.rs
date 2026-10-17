@@ -482,6 +482,37 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             c.scroll = at + 1 - h;
         }
     }
+    if let Some(r) = ed.right_rect() {
+        let h = r.h.saturating_sub(2).max(1);
+        let fit = |sel: usize, scroll: &mut usize| {
+            if sel < *scroll {
+                *scroll = sel;
+            } else if sel >= *scroll + h {
+                *scroll = sel + 1 - h;
+            }
+        };
+        if let Some(m) = &mut ed.maven {
+            fit(m.selected, &mut m.scroll);
+        }
+        if let Some(d) = &mut ed.db {
+            fit(d.selected, &mut d.scroll);
+        }
+    }
+    if let (Some(r), Some(g)) = (ed.panel_rect(), &mut ed.db_result) {
+        let h = r.h.saturating_sub(2).max(1);
+        if g.row < g.scroll {
+            g.scroll = g.row;
+        } else if g.row >= g.scroll + h {
+            g.scroll = g.row + 1 - h;
+        }
+        // 選んだ列が見えるように横へ送る
+        if g.col < g.hscroll {
+            g.hscroll = g.col;
+        }
+        while g.hscroll < g.col && g.widths[g.hscroll..=g.col].iter().map(|w| w + 3).sum::<usize>() + 1 > r.w {
+            g.hscroll += 1;
+        }
+    }
     if let Some(f) = &mut ed.finder {
         // 選んでいる候補が見える範囲に入るように送る
         let h = finder_height(rows);
@@ -566,7 +597,14 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         let (x, w) = ed.windows_x();
         draw_diff_view(&mut p, d, Rect { x, y: 0, w, h: ed.windows_rows() });
     }
-    if let (Some(r), Some(g)) = (ed.panel_rect(), &ed.grep) {
+    if let Some(r) = ed.right_rect() {
+        draw_right_panel(&mut p, ed, r);
+    }
+    if ed.bottom_kind == crate::result_grid::BottomKind::Result {
+        if let (Some(r), Some(g)) = (ed.panel_rect(), &ed.db_result) {
+            draw_result_grid(&mut p, g, r, ed.mode == Mode::List && ed.list_side == crate::editor::Side::Bottom);
+        }
+    } else if let (Some(r), Some(g)) = (ed.panel_rect(), &ed.grep) {
         draw_grep_panel(&mut p, g, r, matches!(ed.mode, Mode::List | Mode::GrepPrompt));
     }
     if let Some(f) = &ed.finder {
@@ -590,6 +628,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     match ed.stripe {
         Some(crate::editor::Side::Left) => draw_stripe_left(&mut p, ed.windows_rows(), ed.left_visible()),
         Some(crate::editor::Side::Bottom) => draw_stripe_bottom(&mut p, rows, cols, ed.bottom_visible()),
+        Some(crate::editor::Side::Right) => draw_stripe_right(&mut p, ed.windows_rows(), cols, ed.right_visible()),
         Some(crate::editor::Side::Commit) | None => {}
     }
     // ---- 最下行: 左にモード・メッセージ・入力欄、右に位置（Vim の showmode と ruler と同じ形）
@@ -676,6 +715,25 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             let left = if ed.message.is_empty() { format!("-- 差分 --   変更 {i}/{n}") } else { ed.message.clone() };
             let end = p.text(&left, 0, y, FG);
             let help = "]c 次  [c 前  s ステージ  u 戻す  Enter 開く  q 閉じる ";
+            let pc = cols.saturating_sub(p.width(help));
+            if end + 2 <= pc {
+                p.text(help, pc, y, STATUS_FG);
+            }
+        }
+        Mode::List if ed.list_side == crate::editor::Side::Right => {
+            let (name, help) = match ed.right_visible() {
+                Some(crate::right_panel::RightTab::Maven) => ("-- Maven --", "Enter 実行・開閉  l/h 開く・閉じる  r 読み直す  q 閉じる  Ctrl-w h 窓へ "),
+                _ => ("-- データベース --", "Enter つなぐ・開閉  o 中身  c コンソール  x 切る  r 読み直す  Ctrl-w h 窓へ "),
+            };
+            let end = p.text(if ed.message.is_empty() { name } else { &ed.message }, 0, y, FG);
+            let pc = cols.saturating_sub(p.width(help));
+            if end + 2 <= pc {
+                p.text(help, pc, y, STATUS_FG);
+            }
+        }
+        Mode::List if ed.list_side == crate::editor::Side::Bottom && ed.bottom_kind == crate::result_grid::BottomKind::Result => {
+            let end = p.text(if ed.message.is_empty() { "-- クエリの結果 --" } else { &ed.message }, 0, y, FG);
+            let help = "hjkl 移動  y 値  Y 行  gy 表全体（タブ区切り）  q 閉じる ";
             let pc = cols.saturating_sub(p.width(help));
             if end + 2 <= pc {
                 p.text(help, pc, y, STATUS_FG);
@@ -769,6 +827,30 @@ fn draw_stripe_left(p: &mut Painter, rows: usize, shown: Option<crate::tree_pane
     }
 }
 
+/// 右のストライプ（マウスを右端に寄せている間だけ）。「データベース」「Maven」を縦に書く
+fn draw_stripe_right(p: &mut Painter, rows: usize, cols: usize, shown: Option<crate::right_panel::RightTab>) {
+    let cell = p.fonts.cell();
+    let x0 = cols.saturating_sub(2);
+    let w = 2.0 * cell.w;
+    p.out.push(Instance::fill(x0 as f32 * cell.w, 0.0, w, rows as f32 * cell.h, BG));
+    p.out.push(Instance::fill(x0 as f32 * cell.w, 0.0, 1.0, rows as f32 * cell.h, LINE_NO));
+    for (label, tab, top) in crate::right_panel::RSTRIPE {
+        let open = shown == Some(tab);
+        let n = label.chars().count();
+        let y0 = top as f32 * cell.h;
+        if open {
+            p.out.push(Instance::fill(x0 as f32 * cell.w, y0, w, n as f32 * cell.h, FG));
+        }
+        for (k, c) in label.chars().enumerate() {
+            let c = if c == 'ー' { '｜' } else { c };
+            let mut buf = [0u8; 4];
+            // 半角の字は帯の真ん中に
+            let x = if c.is_ascii() { x0 + 1 } else { x0 };
+            p.text(c.encode_utf8(&mut buf), x, y0 + k as f32 * cell.h, if open { BG } else { STATUS_FG });
+        }
+    }
+}
+
 /// 下のストライプ（マウスを最下行に寄せている間だけ）。最下行のすぐ上に「検索」を出す
 fn draw_stripe_bottom(p: &mut Painter, rows: usize, cols: usize, open: bool) {
     let cell = p.fonts.cell();
@@ -807,14 +889,19 @@ fn draw_toggle_buttons(p: &mut Painter, ed: &Editor, cols: usize) {
 
 /// 左の欄の 1 行目: タブ（プロジェクト・コミット）。出しているタブは明るい字と下線
 fn draw_left_tabs(p: &mut Painter, r: Rect, active: crate::tree_panel::LeftTab, focused: bool, extra: &str) {
+    let tabs: Vec<(&str, bool)> = crate::tree_panel::TABS.iter().map(|(l, t)| (*l, *t == active)).collect();
+    draw_tabs(p, r, &tabs, focused, extra);
+}
+
+/// 欄の 1 行目のタブ（見出し, 出しているか）。右端の隠すボタンの手前で切る
+fn draw_tabs(p: &mut Painter, r: Rect, tabs: &[(&str, bool)], focused: bool, extra: &str) {
     let cell = p.fonts.cell();
     let y = r.y as f32 * cell.h;
     let mut x = r.x;
     // 右端の隠すボタンの手前で切る（細くしたとき）
     let saved_cols = p.cols;
     p.cols = (r.x + r.w).saturating_sub(3);
-    for (label, tab) in crate::tree_panel::TABS {
-        let on = tab == active;
+    for &(label, on) in tabs {
         let end = p.text(label, x, y, if on && focused { FG } else if on { rgb(0xc8c8c8) } else { STATUS_FG });
         if on {
             p.out.push(Instance::fill(x as f32 * cell.w, y + cell.h - 2.0, (end - x) as f32 * cell.w, 2.0, if focused { GIT_MOD } else { STATUS_FG }));
@@ -829,6 +916,144 @@ fn draw_left_tabs(p: &mut Painter, r: Rect, active: crate::tree_panel::LeftTab, 
         p.cols = saved;
     }
     p.out.push(Instance::fill(r.x as f32 * cell.w, y + cell.h - 1.0, r.w as f32 * cell.w, 1.0, LINE_NO));
+}
+
+/// 右の欄（データベース・Maven）。1 行目はタブ、2 行目から木
+fn draw_right_panel(p: &mut Painter, ed: &Editor, r: Rect) {
+    use crate::right_panel::RightTab;
+    let cell = p.fonts.cell();
+    let (x0, y0, wpx) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
+    p.out.push(Instance::fill(x0, y0, wpx, r.h as f32 * cell.h, BG));
+    p.out.push(Instance::fill(x0 - cell.w * 0.5, y0, 1.0, r.h as f32 * cell.h, LINE_NO));
+    let focused = ed.right_focused();
+    let tab = ed.right_visible().unwrap_or_default();
+    let tabs: Vec<(&str, bool)> = crate::right_panel::RTABS.iter().map(|(l, t)| (*l, *t == tab)).collect();
+    let extra = match tab {
+        RightTab::Maven => ed.maven.as_ref().and_then(|m| m.root.file_name()).map_or(String::new(), |n| n.to_string_lossy().into_owned()),
+        RightTab::Database => String::new(),
+    };
+    draw_tabs(p, r, &tabs, focused, &extra);
+    let saved = p.cols;
+    p.cols = r.x + r.w;
+    // (字下げ, 開け閉めの印, 本文, 補足, 本文の色)
+    let mut lines: Vec<(usize, &str, String, String, [f32; 4])> = Vec::new();
+    let (selected, scroll) = match tab {
+        RightTab::Maven => {
+            let Some(m) = &ed.maven else { return };
+            for row in &m.rows {
+                let (mark, color) = match &row.kind {
+                    crate::maven_panel::RowKind::Folder(k) => (if m.is_open(k) { "▾ " } else { "▸ " }, if row.depth == 0 || k.starts_with("p:") { FG } else { FINDER_MATCH }),
+                    crate::maven_panel::RowKind::Goal(..) => ("· ", FG),
+                    crate::maven_panel::RowKind::Leaf => ("  ", STATUS_FG),
+                };
+                lines.push((row.depth, mark, row.label.clone(), row.note.clone(), color));
+            }
+            (m.selected, m.scroll)
+        }
+        RightTab::Database => {
+            let Some(d) = &ed.db else { return };
+            if d.sources.is_empty() {
+                p.text(" 接続先がありません", r.x, y0 + cell.h, STATUS_FG);
+                p.text(" :DbAdd 名前 jdbc:URL 利用者", r.x, y0 + 2.0 * cell.h, STATUS_FG);
+            }
+            for row in &d.rows {
+                let (depth, text, note) = d.row_label(row);
+                let (mark, color) = match row {
+                    crate::db_panel::DbRow::Source(i) => {
+                        let open = d.expanded.contains(&format!("s{i}"));
+                        let c = &d.conns[*i];
+                        (if open { "▾ " } else { "▸ " }, if c.error.is_some() { DIAG_ERROR } else if c.connected { GIT_ADD } else { FG })
+                    }
+                    crate::db_panel::DbRow::Table(i, t) => (if d.expanded.contains(&format!("t{i}:{t}")) { "▾ " } else { "▸ " }, FINDER_MATCH),
+                    crate::db_panel::DbRow::Column(..) => ("  ", FG),
+                    crate::db_panel::DbRow::Info(_, s) => ("  ", if s.starts_with("誤り") { DIAG_ERROR } else { STATUS_FG }),
+                };
+                lines.push((depth, mark, text, note, color));
+            }
+            (d.selected, d.scroll)
+        }
+    };
+    let body = r.h.saturating_sub(2);
+    for (k, (depth, mark, text, note, color)) in lines.iter().enumerate().skip(scroll).take(body) {
+        let y = y0 + (1 + k - scroll) as f32 * cell.h;
+        let sel = k == selected;
+        let reversed = sel && focused;
+        if reversed {
+            p.out.push(Instance::fill(x0, y, wpx, cell.h, FG));
+        } else if sel {
+            p.out.push(Instance::fill(x0, y, wpx, cell.h, MATCH_BG));
+        }
+        let c = p.text(&format!(" {}{mark}", "  ".repeat(*depth)), r.x, y, if reversed { BG } else { STATUS_FG });
+        let c = p.text(text, c, y, if reversed { BG } else { *color });
+        if !note.is_empty() {
+            p.text(&format!("  {note}"), c, y, if reversed { BG } else { LINE_NO });
+        }
+    }
+    // パスワードの入力（欄の下の行）
+    if let Some((i, prompt, _)) = ed.db.as_ref().and_then(|d| d.password.as_ref()) {
+        let y = y0 + (r.h - 1) as f32 * cell.h;
+        p.out.push(Instance::fill(x0, y, wpx, cell.h, rgb(0x1c1c1c)));
+        let user = ed.db.as_ref().map_or("", |d| d.sources[*i].user.as_str());
+        let c = p.text(&format!(" {user} のパスワード: "), r.x, y, STATUS_FG);
+        let c = p.text(&"●".repeat(prompt.text.chars().count()), c, y, FG);
+        p.caret(c, y);
+    }
+    p.cols = saved;
+}
+
+/// クエリの結果の表（下のパネル）。1 行目は見出し、2 行目は列名、3 行目から行
+fn draw_result_grid(p: &mut Painter, g: &crate::result_grid::ResultGrid, r: Rect, focused: bool) {
+    let cell = p.fonts.cell();
+    let (x0, y0, wpx) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
+    p.out.push(Instance::fill(x0, y0, wpx, r.h as f32 * cell.h, BG));
+    p.out.push(Instance::fill(x0, y0, wpx, 1.0, LINE_NO));
+    let saved = p.cols;
+    p.cols = (r.x + r.w).saturating_sub(3);
+    let end = p.text(&format!("{}   ", g.title), r.x, y0, STATUS_FG);
+    p.text(&g.info, end, y0, if g.error { DIAG_ERROR } else if g.running { STATUS_FG } else { FG });
+    p.cols = r.x + r.w;
+    if g.cols.is_empty() {
+        p.cols = saved;
+        return;
+    }
+    // 見える列（hscroll から、幅に収まるだけ）
+    let mut xs = Vec::new();
+    let mut x = r.x + 1;
+    for c in g.hscroll..g.cols.len() {
+        if x >= r.x + r.w {
+            break;
+        }
+        xs.push((c, x));
+        x += g.widths[c] + 3;
+    }
+    let hy = y0 + cell.h;
+    for &(c, x) in &xs {
+        p.text(&g.cols[c], x, hy, if c == g.col && focused { FG } else { FINDER_MATCH });
+    }
+    p.out.push(Instance::fill(x0, hy + cell.h - 1.0, wpx, 1.0, LINE_NO));
+    let body = r.h.saturating_sub(2);
+    for (k, row) in g.rows.iter().enumerate().skip(g.scroll).take(body) {
+        let y = y0 + (2 + k - g.scroll) as f32 * cell.h;
+        if k == g.row {
+            p.out.push(Instance::fill(x0, y, wpx, cell.h, MATCH_BG));
+        }
+        for &(c, x) in &xs {
+            let v = &row[c];
+            let text = crate::result_grid::show(v);
+            let sel = k == g.row && c == g.col && focused;
+            if sel {
+                p.out.push(Instance::fill((x - 1) as f32 * cell.w, y, (g.widths[c] + 2) as f32 * cell.w, cell.h, FG));
+            }
+            let lim = p.cols;
+            p.cols = (x + g.widths[c]).min(r.x + r.w);
+            p.text(&text, x, y, if sel { BG } else if v.is_none() { LINE_NO } else { FG });
+            p.cols = lim;
+            // 列の区切り
+            let sx = (x + g.widths[c] + 1) as f32 * cell.w + cell.w * 0.5;
+            p.out.push(Instance::fill(sx, y, 1.0, cell.h, LINE_NO));
+        }
+    }
+    p.cols = saved;
 }
 
 /// コミットのパネル（左の欄の「コミット」タブ）。上から ブランチ、変えたファイル、メッセージの欄、amend、ボタン
@@ -1447,9 +1672,13 @@ fn draw_grep_panel(p: &mut Painter, g: &crate::grep_panel::GrepPanel, r: Rect, f
             p.out.push(Instance::fill(x, y, w, cell.h, MATCH_BG));
         }
         let (fg, dim, accent) = if reversed { (BG, BG, BG) } else { (FG, STATUS_FG, FINDER_MATCH) };
+        // ファイルを持たない行（コマンドの出力）は本文だけ
+        let mut items = Vec::new();
         let num = format!(":{}: ", h.line);
-        let mut items = p.items(&h.path, dim);
-        items.extend(p.items(&num, dim));
+        if !h.path.is_empty() {
+            items.extend(p.items(&h.path, dim));
+            items.extend(p.items(&num, dim));
+        }
         for (b, gr) in h.text.grapheme_indices(true) {
             let m = b >= h.range.0 && b < h.range.1;
             let width = p.cell_width(gr);

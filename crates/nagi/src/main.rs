@@ -11,6 +11,7 @@
 
 mod autoread;
 mod blame;
+mod db_panel;
 mod branches;
 mod block;
 mod buffers;
@@ -30,10 +31,13 @@ mod git_ui;
 mod folds;
 mod grep_panel;
 mod log_view;
+mod maven_panel;
 mod macros;
 mod marks;
 mod nav;
 mod resize;
+mod result_grid;
+mod right_panel;
 mod save_dialog;
 mod toggles;
 mod tree_panel;
@@ -644,8 +648,12 @@ impl App {
         let (col, row) = (self.mouse.0 / cell.w as f64, (self.mouse.1 / cell.h as f64) as usize);
         let edge = if ed.stripe == Some(editor::Side::Left) { STRIPE_W as f64 } else { 1.0 };
         let rows = ed.screen.1;
+        let cols = ed.screen.0 as f64;
+        let redge = if ed.stripe == Some(editor::Side::Right) { STRIPE_W as f64 } else { 1.0 };
         let want = if col < edge && row < ed.windows_rows() {
             Some(editor::Side::Left)
+        } else if col >= cols - redge && row < ed.windows_rows() {
+            Some(editor::Side::Right)
         } else if row >= rows && ed.status_rows() == 1 {
             Some(editor::Side::Bottom)
         } else if ed.stripe == Some(editor::Side::Bottom) && row + 1 == rows && col < 10.0 {
@@ -690,6 +698,10 @@ impl App {
             Some(editor::Side::Left) if col < STRIPE_W && row < ed.windows_rows() => match tree_panel::stripe_at(row) {
                 Some(tree_panel::LeftTab::Project) => ed.toggle_tree(),
                 Some(tree_panel::LeftTab::Commit) => ed.toggle_commit(),
+                None => return false,
+            },
+            Some(editor::Side::Right) if col + STRIPE_W >= ed.screen.0 && row < ed.windows_rows() => match right_panel::rstripe_at(row) {
+                Some(tab) => ed.toggle_right_tab(tab),
                 None => return false,
             },
             Some(editor::Side::Bottom) if row + 1 == ed.screen.1 && col < 8 => {
@@ -774,7 +786,30 @@ impl App {
                     _ => 1,
                 };
                 self.last_click = Some((now, (row, usize::MAX), clicks));
-                ed.panel_click(row - r.y, clicks);
+                if ed.bottom_kind == result_grid::BottomKind::Result {
+                    let col = (self.mouse.0.max(0.0) as f32 / cell.w) as usize;
+                    ed.result_click(row - r.y, col.saturating_sub(r.x + 1));
+                } else {
+                    ed.panel_click(row - r.y, clicks);
+                }
+                self.sync_ime();
+                self.draw();
+                return;
+            }
+        }
+        // 右の欄（データベース・Maven）
+        if let (Some(f), Some(ed)) = (&self.fonts, &mut self.ed) {
+            let cell = f.cell();
+            let (row, col) = ((self.mouse.1 as f32 / cell.h) as usize, (self.mouse.0.max(0.0) as f32 / cell.w) as usize);
+            if let Some(r) = ed.right_rect().filter(|r| r.contains(row, col)) {
+                let now = Instant::now();
+                let key = (row, usize::MAX - 4);
+                let clicks = match self.last_click {
+                    Some((t, c, n)) if now - t <= double_click_time() && c == key => n % 3 + 1,
+                    _ => 1,
+                };
+                self.last_click = Some((now, key, clicks));
+                ed.right_click(row - r.y, col - r.x, clicks);
                 self.sync_ime();
                 self.draw();
                 return;
@@ -1013,6 +1048,7 @@ impl ApplicationHandler for App {
             ed.poll_blame();
             ed.poll_log();
             ed.poll_branches();
+            ed.poll_db();
         }
         // ダイアログで選んだ名前で保存する（ダイアログが上書きを確かめている）
         if let Some(r) = self.save_dialog.as_ref().and_then(|rx| rx.try_recv().ok()) {
