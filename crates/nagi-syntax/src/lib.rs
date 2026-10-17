@@ -612,6 +612,14 @@ impl Syntax {
         defs::call_arg_count(self.tree.as_ref()?, at)
     }
 
+    /// `at`（呼び出しの名前）の引数の型
+    pub fn call_args(&self, buf: &Buffer, at: usize) -> Option<Vec<defs::Arg>> {
+        let tree = self.tree.as_ref()?;
+        let text = |r: Range<usize>| buf.slice_string(r.start, r.end);
+        let binds = defs::local_bindings(tree, &text);
+        defs::call_args(tree, at, &text, &binds)
+    }
+
     /// `at`（呼び出しの名前）の受け手の型
     pub fn receiver(&self, buf: &Buffer, at: usize) -> Option<defs::Receiver> {
         let tree = self.tree.as_ref()?;

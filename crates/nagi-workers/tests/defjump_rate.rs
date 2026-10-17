@@ -58,7 +58,7 @@ fn defjump_rate() {
             let all = idx.lookup(&name).to_vec();
             let many = all.len() > 1;
             let rel = e.path().strip_prefix(&root).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default();
-            let mut locs = match ranker.resolve(&rel, &src, &name, recv.as_ref(), args, all) {
+            let mut locs = match ranker.resolve(&rel, &src, &name, recv.as_ref(), args.as_deref(), all) {
                 nagi_workers::index::Ranked::Locs(mut v, best) => {
                     v.truncate(best);
                     v

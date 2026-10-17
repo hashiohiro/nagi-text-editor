@@ -143,6 +143,13 @@ impl Editor {
             self.message = "E348: カーソルの下に識別子がありません".into();
             return;
         };
+        // メソッド・型の定義そのものの上なら、それを実装・継承しているもの（インタフェースの宣言から実装へ）
+        if self.on_definition(&name, word_at) {
+            if let Ok((locs, root)) = self.find_implementations() {
+                self.show_implementations(locs, root);
+                return;
+            }
+        }
         // ファイルの中の束縛
         self.ensure_syntax();
         if let Some(at) = self.syntax.as_ref().and_then(|s| s.local_definition(&self.buf, word_at)) {
@@ -159,7 +166,7 @@ impl Editor {
         // 有力な順に並べる（受け手の型とその親 → import → 同じモジュール）。best はいちばん有力なものの数
         let mut best = 0;
         // 呼び出しなら引数の数（オーバーロードを選ぶ・フィールドを候補から外す）
-        let args = self.syntax.as_ref().and_then(|s| s.arg_count(word_at));
+        let args = self.syntax.as_ref().and_then(|s| s.call_args(&self.buf, word_at));
         let mut cands: Vec<(PathBuf, usize, usize, DefKind)> = match &self.nav.index {
             Some(idx) => {
                 let rel = here.as_ref().and_then(|h| h.strip_prefix(&idx.root).ok()).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default();
@@ -170,7 +177,7 @@ impl Editor {
                 if all.len() > 1 {
                     all.retain(|l| !(l.path.as_ref() == rel && (l.line as usize, l.col as usize) == cur));
                 }
-                match nagi_workers::index::Ranker::new(Some(idx)).resolve(&rel, &src, &name, recv.as_ref(), args, all) {
+                match nagi_workers::index::Ranker::new(Some(idx)).resolve(&rel, &src, &name, recv.as_ref(), args.as_deref(), all) {
                     nagi_workers::index::Ranked::Locs(locs, b) => {
                         best = b;
                         locs.iter().map(|l| (idx.root.join(&*l.path), l.line as usize, l.col as usize, l.kind)).collect()
@@ -238,17 +245,23 @@ impl Editor {
 
     /// `gI`: 実装へ。型の上なら継承・実装している型、メソッドの上なら受け手の型（宣言の上なら囲む型）の子の中のそのメソッド
     pub(crate) fn goto_implementation(&mut self) {
+        match self.find_implementations() {
+            Ok((locs, root)) => self.show_implementations(locs, root),
+            Err(m) => self.message = m,
+        }
+    }
+
+    /// 実装の一覧（名前, 場所）と索引の根。見つからなければ伝える文
+    fn find_implementations(&mut self) -> Result<(Vec<(String, nagi_workers::index::Loc)>, PathBuf), String> {
         let Some((name, word_at)) = self.word_at_cursor() else {
-            self.message = "E348: カーソルの下に識別子がありません".into();
-            return;
+            return Err("E348: カーソルの下に識別子がありません".into());
         };
         self.ensure_syntax();
         let Some(idx) = self.nav.index.as_ref() else {
-            self.message = match &self.nav.progress {
+            return Err(match &self.nav.progress {
                 Some((a, b)) => format!("索引を作っています（{a}/{b}）。しばらくしてからもう一度"),
                 None => "索引がありません".into(),
-            };
-            return;
+            });
         };
         let here = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
         let rel = here.as_ref().and_then(|h| h.strip_prefix(&idx.root).ok()).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default();
@@ -265,25 +278,33 @@ impl Editor {
             };
             (ty, Some(name.as_str()))
         };
-        let Some(ty) = ty else {
-            self.message = format!("{name} の型が分かりません");
-            return;
-        };
+        let Some(ty) = ty else { return Err(format!("{name} の型が分かりません")) };
         let locs = r.implementations(&ty, member);
         let root = idx.root.clone();
-        drop(r);
-        match locs.len() {
-            0 => self.message = format!("実装が見つかりません: {}{name}", if is_type { String::new() } else { format!("{ty}.") }),
-            1 => {
-                let l = &locs[0].1;
-                self.jump_to(&root.join(&*l.path), l.line as usize, l.col as usize);
-            }
-            _ => {
-                let items = locs.iter().map(|(n, l)| format!("{n}  {}  {}:{}", l.kind.label(), l.path, l.line + 1)).collect();
-                let at = locs.iter().map(|(_, l)| (root.join(&*l.path), l.line as usize, l.col as usize)).collect();
-                self.open_locations(Source::Definitions, items, at, false);
-            }
+        if locs.is_empty() {
+            return Err(format!("実装が見つかりません: {}{name}", if is_type { String::new() } else { format!("{ty}.") }));
         }
+        Ok((locs, root))
+    }
+
+    fn show_implementations(&mut self, locs: Vec<(String, nagi_workers::index::Loc)>, root: PathBuf) {
+        if let [(_, l)] = locs.as_slice() {
+            self.jump_to(&root.join(&*l.path), l.line as usize, l.col as usize);
+            return;
+        }
+        let n = locs.len();
+        let items = locs.iter().map(|(n, l)| format!("{n}  {}  {}:{}", l.kind.label(), l.path, l.line + 1)).collect();
+        let at = locs.iter().map(|(_, l)| (root.join(&*l.path), l.line as usize, l.col as usize)).collect();
+        self.open_locations(Source::Definitions, items, at, false);
+        self.message = format!("実装 {n} 件");
+    }
+
+    /// カーソルがメソッド・型の定義そのものの上か（gd を実装へ向ける）
+    fn on_definition(&self, name: &str, word_at: usize) -> bool {
+        let (Some(idx), Some(here)) = (&self.nav.index, self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok())) else { return false };
+        let Some(rel) = here.strip_prefix(&idx.root).ok().map(|r| r.to_string_lossy().replace('\\', "/")) else { return false };
+        let cur = (self.cursor.line, word_at - self.buf.line_start(self.cursor.line));
+        idx.lookup(name).iter().any(|l| *l.path == *rel && (l.line as usize, l.col as usize) == cur && (l.kind.is_type() || l.kind == DefKind::Method))
     }
 
     /// `gr`: 名前が単語として一致する箇所（全文検索のパネル）
@@ -498,6 +519,9 @@ mod tests {
         assert_eq!(e.cursor.line, 1);
         // インタフェースの宣言の上で gI → 実装
         keys(&mut e, &format!(":e {}<CR>2G0/find<CR>gI", dir.join("src/UserService.java").display()));
+        assert!(e.buf.path.as_ref().unwrap().ends_with("UserServiceImpl.java"), "{:?} {}", e.buf.path, e.message);
+        // 宣言の上の gd も実装へ（実装が無ければ従来どおり）
+        keys(&mut e, &format!(":e {}<CR>2G0/find<CR>gd", dir.join("src/UserService.java").display()));
         assert!(e.buf.path.as_ref().unwrap().ends_with("UserServiceImpl.java"), "{:?} {}", e.buf.path, e.message);
         // 型の上で gI → 実装している型
         keys(&mut e, &format!(":e {}<CR>1G0wgI", dir.join("src/UserService.java").display()));

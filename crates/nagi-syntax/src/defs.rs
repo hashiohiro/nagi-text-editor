@@ -367,6 +367,47 @@ pub fn call_arg_count(tree: &Tree, at: usize) -> Option<usize> {
     Some(args.named_children(&mut c).filter(|a| a.kind() != "comment").count())
 }
 
+/// 呼び出しの引数の型（分かる範囲で）
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Arg {
+    /// リテラル（"String" "int" "double" "boolean" "char" "null"）
+    Lit(&'static str),
+    /// 変数・new・キャストなど（型は索引でたどる）
+    Expr(Receiver),
+    Unknown,
+}
+
+/// `at`（呼び出しの名前の位置）の呼び出しの引数
+pub fn call_args(tree: &Tree, at: usize, text: &dyn Fn(Range<usize>) -> String, binds: &HashMap<String, Vec<(Range<usize>, usize)>>) -> Option<Vec<Arg>> {
+    let n = tree.root_node().descendant_for_byte_range(at, at)?;
+    let mut call = n.parent()?;
+    if call.kind() == "member_expression" {
+        call = call.parent()?;
+    }
+    if !matches!(call.kind(), "method_invocation" | "call_expression") {
+        return None;
+    }
+    let args = call.child_by_field_name("arguments")?;
+    let mut c = args.walk();
+    let out = args
+        .named_children(&mut c)
+        .filter(|a| a.kind() != "comment")
+        .map(|a| match a.kind() {
+            "string_literal" | "string" | "template_string" | "text_block" => Arg::Lit("String"),
+            "decimal_integer_literal" | "hex_integer_literal" | "octal_integer_literal" | "binary_integer_literal" => {
+                Arg::Lit(if text(a.byte_range()).ends_with(['l', 'L']) { "long" } else { "int" })
+            }
+            "decimal_floating_point_literal" => Arg::Lit("double"),
+            "number" => Arg::Lit("number"),
+            "true" | "false" => Arg::Lit("boolean"),
+            "character_literal" => Arg::Lit("char"),
+            "null_literal" | "null" | "undefined" => Arg::Lit("null"),
+            _ => expr_type(tree, a, text, binds, 0).map_or(Arg::Unknown, Arg::Expr),
+        })
+        .collect();
+    Some(out)
+}
+
 /// `at`（呼び出しの名前の位置）の受け手の型
 pub fn receiver_at(tree: &Tree, at: usize, text: &dyn Fn(Range<usize>) -> String, binds: &HashMap<String, Vec<(Range<usize>, usize)>>) -> Option<Receiver> {
     let n = tree.root_node().descendant_for_byte_range(at, at)?;
@@ -555,7 +596,7 @@ impl DefParser {
     }
 
     /// 参照ごとに (名前, 種類, ファイルの中で定義が見つかったか)（的中率の計測用）
-    pub fn reference_report(&mut self, lang: Lang, src: &str) -> Vec<(String, RefKind, bool, Option<Receiver>, Option<usize>)> {
+    pub fn reference_report(&mut self, lang: Lang, src: &str) -> Vec<(String, RefKind, bool, Option<Receiver>, Option<Vec<Arg>>)> {
         if self.parser.set_language(&lang.language()).is_err() {
             return Vec::new();
         }
@@ -568,7 +609,7 @@ impl DefParser {
             .map(|(name, k, at)| {
                 let local = ident_at(&tree, at, &text).and_then(|n| pick_binding(binds.get(&n)?, at)).is_some_and(|d| d != at);
                 let recv = if k == RefKind::Call { receiver_at(&tree, at, &text, &binds) } else { None };
-                let args = if k == RefKind::Call { call_arg_count(&tree, at) } else { None };
+                let args = if k == RefKind::Call { call_args(&tree, at, &text, &binds) } else { None };
                 (name, k, local, recv, args)
             })
             .collect()
@@ -646,6 +687,17 @@ mod tests {
         let ts3 = "class S {\n  f() {\n    let h = this.defaultHeaders;\n    h = h.set1('a');\n    const r = svc.load();\n    r.go2();\n  }\n}\n";
         assert_eq!(recv(Lang::TypeScript, ts3, "set1"), Some(mem(Receiver::This, "defaultHeaders")));
         assert_eq!(recv(Lang::TypeScript, ts3, "go2"), None, "svc が分からないので r も分からない");
+        // 引数の型
+        let java4 = "class C {\n  void f(Date d, LocalDate ld) {\n    DateUtil.format(d, \"x\");\n    DateUtil.format(ld, 3L, null, new Foo(), true, other);\n  }\n}\n";
+        let mut p = Parser::new();
+        p.set_language(&Lang::Java.language()).unwrap();
+        let tree = p.parse(java4, None).unwrap();
+        let text = |r: Range<usize>| java4[r].to_string();
+        let binds = local_bindings(&tree, &text);
+        let a1 = call_args(&tree, java4.find("format").unwrap(), &text, &binds).unwrap();
+        assert_eq!(a1, vec![Arg::Expr(Receiver::Type("Date".into())), Arg::Lit("String")]);
+        let a2 = call_args(&tree, java4.rfind("format").unwrap(), &text, &binds).unwrap();
+        assert_eq!(a2, vec![Arg::Expr(Receiver::Type("LocalDate".into())), Arg::Lit("long"), Arg::Lit("null"), Arg::Expr(Receiver::Type("Foo".into())), Arg::Lit("boolean"), Arg::Unknown]);
     }
 
     #[test]

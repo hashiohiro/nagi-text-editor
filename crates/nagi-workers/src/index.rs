@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::UNIX_EPOCH;
 
 use nagi_syntax::Lang;
-use nagi_syntax::defs::{DefKind, DefParser, Receiver as Recv};
+use nagi_syntax::defs::{Arg, DefKind, DefParser, Receiver as Recv};
 
 use crate::Waker;
 
@@ -329,6 +329,37 @@ enum Hier {
     Unknown,
 }
 
+/// 呼び出しの引数の型（索引でたどった後）
+enum ArgTy {
+    Lit(&'static str),
+    Named(String),
+    Unknown,
+}
+
+/// JDK のよくある型の親（オーバーロードを引数の型で選ぶため）
+fn jdk_supers(t: &str) -> Option<&'static [&'static str]> {
+    Some(match t {
+        "LocalDate" | "LocalDateTime" | "LocalTime" | "ZonedDateTime" | "OffsetDateTime" | "OffsetTime" | "Instant" | "Year" | "YearMonth" => &["Temporal", "TemporalAccessor", "Comparable", "Serializable"],
+        "Temporal" => &["TemporalAccessor"],
+        "Timestamp" => &["Date"],
+        "Date" | "Calendar" => &["Serializable", "Comparable"],
+        "Integer" | "Long" | "Short" | "Byte" | "Double" | "Float" | "BigDecimal" | "BigInteger" => &["Number", "Comparable", "Serializable"],
+        "String" => &["CharSequence", "Comparable", "Serializable"],
+        "StringBuilder" | "StringBuffer" => &["CharSequence"],
+        "ArrayList" | "LinkedList" => &["List"],
+        "List" | "Set" | "Queue" => &["Collection"],
+        "HashSet" | "LinkedHashSet" | "TreeSet" => &["Set"],
+        "Collection" => &["Iterable"],
+        "HashMap" | "LinkedHashMap" | "TreeMap" | "ConcurrentHashMap" => &["Map"],
+        _ => return None,
+    })
+}
+
+/// 表の親の側に出てくる型（親が分かっているものとして扱う）
+fn jdk_known(t: &str) -> bool {
+    matches!(t, "Temporal" | "TemporalAccessor" | "Number" | "CharSequence" | "Map" | "Iterable" | "Comparable" | "Serializable" | "int" | "long" | "short" | "byte" | "double" | "float" | "boolean" | "char")
+}
+
 /// getFoo / isFoo / setFoo → foo
 fn accessor_field(name: &str) -> Option<String> {
     let rest = name.strip_prefix("get").or_else(|| name.strip_prefix("set")).or_else(|| name.strip_prefix("is"))?;
@@ -369,39 +400,230 @@ impl<'a> Ranker<'a> {
         }
     }
 
-    /// 定義を探す。受け手の型がプロジェクトの外（ライブラリ）なら Outside。`args` は呼び出しの引数の数（オーバーロードを選ぶ）
-    pub fn resolve(&mut self, from_rel: &str, src: &str, name: &str, recv: Option<&Recv>, args: Option<usize>, cands: Vec<Loc>) -> Ranked {
+    /// 定義を探す。受け手の型がプロジェクトの外（ライブラリ）なら Outside。`args` は呼び出しの引数（オーバーロードを数と型で選ぶ）
+    pub fn resolve(&mut self, from_rel: &str, src: &str, name: &str, recv: Option<&Recv>, args: Option<&[Arg]>, cands: Vec<Loc>) -> Ranked {
         let ty = recv.and_then(|r| self.type_of(from_rel, src, r, 0));
-        match self.resolve_ty(from_rel, src, name, ty, cands) {
-            Ranked::Locs(v, best) if best > 1 && args.is_some() => {
-                let (v, best) = self.by_args(v, best, args.unwrap_or(0));
+        match (self.resolve_ty(from_rel, src, name, ty, cands), args) {
+            (Ranked::Locs(v, best), Some(args)) if best > 1 => {
+                let (v, best) = self.by_args(from_rel, src, v, best, args);
                 Ranked::Locs(v, best)
             }
-            r => r,
+            (r, _) => r,
         }
     }
 
-    /// 有力な候補のうち、引数の数が合うものを先に
-    fn by_args(&mut self, mut v: Vec<Loc>, best: usize, n: usize) -> (Vec<Loc>, usize) {
-        let counts: Vec<Option<(usize, bool)>> = v[..best].to_vec().iter().map(|l| self.param_count(l)).collect();
+    /// 有力な候補のうち、引数の数が合うもの → 引数の型がいちばん合うものを先に
+    fn by_args(&mut self, from_rel: &str, src: &str, v: Vec<Loc>, best: usize, args: &[Arg]) -> (Vec<Loc>, usize) {
+        let n = args.len();
+        let params: Vec<Option<(Vec<Option<String>>, bool)>> = v[..best].to_vec().iter().map(|l| self.params(l)).collect();
         // ぴったり合うもの、無ければ可変長で合うもの
-        let exact: Vec<bool> = counts.iter().map(|c| c.is_some_and(|(c, var)| c == n && !var)).collect();
-        let fits = if exact.contains(&true) { exact } else { counts.iter().map(|c| c.is_some_and(|(c, var)| c == n || (var && n + 1 >= c))).collect() };
-        let k = fits.iter().filter(|f| **f).count();
-        if k == 0 || k == best {
+        let exact: Vec<bool> = params.iter().map(|p| p.as_ref().is_some_and(|(p, var)| p.len() == n && !var)).collect();
+        let fits: Vec<bool> = if exact.contains(&true) {
+            exact
+        } else {
+            params.iter().map(|p| p.as_ref().is_some_and(|(p, var)| p.len() == n || (*var && n + 1 >= p.len()))).collect()
+        };
+        // 引数の型（分かるものだけ）
+        let arg_tys: Vec<ArgTy> = args
+            .iter()
+            .map(|a| match a {
+                Arg::Lit(l) => ArgTy::Lit(l),
+                Arg::Expr(r) => match self.type_of(from_rel, src, r, 0) {
+                    Some(Ty::Named(t, _) | Ty::Outside(t)) => ArgTy::Named(t),
+                    _ => ArgTy::Unknown,
+                },
+                Arg::Unknown => ArgTy::Unknown,
+            })
+            .collect();
+        let mut scores: Vec<Option<i32>> = Vec::new();
+        for (p, f) in params.iter().zip(&fits) {
+            scores.push(if !*f {
+                None
+            } else {
+                let (ps, var) = p.as_ref().unwrap();
+                let mut sc = 0;
+                for (i, a) in arg_tys.iter().enumerate() {
+                    let pt = ps.get(i).or_else(|| if *var { ps.last() } else { None }).cloned().flatten();
+                    if let Some(pt) = pt {
+                        sc += self.compat(a, &pt);
+                    }
+                }
+                Some(sc)
+            });
+        }
+        let top = scores.iter().flatten().max().copied();
+        let Some(top) = top else { return (v, best) };
+        let k = scores.iter().filter(|s| **s == Some(top)).count();
+        if k == best {
             return (v, best);
         }
-        let mut head: Vec<Loc> = Vec::new();
-        let mut rest: Vec<Loc> = Vec::new();
-        for (l, f) in v.drain(..best).zip(fits) {
-            if f { head.push(l) } else { rest.push(l) }
+        let mut order: Vec<usize> = (0..best).collect();
+        order.sort_by_key(|&i| std::cmp::Reverse(scores[i].map_or(i32::MIN, |s| s)));
+        let mut out: Vec<Loc> = order.iter().map(|&i| v[i].clone()).collect();
+        out.extend(v[best..].iter().cloned());
+        (out, k)
+    }
+
+    /// 引数の型と引数の宣言の型がどれだけ合うか（2: 同じ、1: 子の型・数の広げ、0: 分からない、負: 合わない）
+    fn compat(&mut self, a: &ArgTy, param: &str) -> i32 {
+        let p = param;
+        let loose = matches!(p, "Object" | "any" | "unknown") || p.chars().count() == 1;
+        let numeric = ["int", "long", "short", "byte", "double", "float", "Integer", "Long", "Short", "Byte", "Double", "Float", "Number", "number", "BigDecimal", "BigInteger"];
+        match a {
+            ArgTy::Unknown => 0,
+            _ if loose => 0,
+            ArgTy::Lit("String") => if matches!(p, "String" | "CharSequence" | "string") { 2 } else { -3 },
+            ArgTy::Lit("int") => match p {
+                "int" | "Integer" | "number" => 2,
+                _ if numeric.contains(&p) => 1,
+                _ => -3,
+            },
+            ArgTy::Lit("long") => match p {
+                "long" | "Long" => 2,
+                "float" | "double" | "Float" | "Double" | "Number" => 1,
+                _ => -3,
+            },
+            ArgTy::Lit("double") => match p {
+                "double" | "Double" | "number" => 2,
+                "float" | "Float" | "Number" | "BigDecimal" => 1,
+                _ => -3,
+            },
+            ArgTy::Lit("number") => if numeric.contains(&p) { 2 } else { -3 },
+            ArgTy::Lit("boolean") => if matches!(p, "boolean" | "Boolean") { 2 } else { -3 },
+            ArgTy::Lit("char") => match p {
+                "char" | "Character" => 2,
+                "int" | "long" => 1,
+                _ => -3,
+            },
+            ArgTy::Lit("null") => if ["int", "long", "short", "byte", "double", "float", "boolean", "char"].contains(&p) { -3 } else { 0 },
+            ArgTy::Lit(_) => 0,
+            ArgTy::Named(t) => {
+                if t == p {
+                    return 2;
+                }
+                if self.is_subtype(t, p) {
+                    return 1;
+                }
+                // 両方とも親が分かる型なのに関係が無ければ合わない（LocalDateTime と Date など）
+                let known = |r: &mut Self, x: &str| jdk_supers(x).is_some() || jdk_known(x) || r.idx.is_some_and(|i| i.lookup(x).iter().any(|l| l.kind.is_type()));
+                if known(self, t) && known(self, p) { -2 } else { 0 }
+            }
         }
-        head.extend(rest);
-        head.extend(v);
-        (head, k)
+    }
+
+    /// `t` が `p` の子孫か（JDK のよくある型の表と、プロジェクトの extends / implements）
+    fn is_subtype(&mut self, t: &str, p: &str) -> bool {
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut queue = vec![t.to_string()];
+        while let Some(x) = queue.pop() {
+            if !seen.insert(x.clone()) || seen.len() > 64 {
+                continue;
+            }
+            let mut sup: Vec<String> = jdk_supers(&x).map(|v| v.iter().map(|s| s.to_string()).collect()).unwrap_or_default();
+            if let Some(idx) = self.idx {
+                let files: Vec<String> = idx.lookup(&x).iter().filter(|l| l.kind.is_type()).take(4).map(|l| l.path.to_string()).collect();
+                for f in files {
+                    sup.extend(self.supers_in(&f, &x));
+                }
+            }
+            if sup.iter().any(|s| s == p) {
+                return true;
+            }
+            queue.extend(sup);
+        }
+        false
+    }
+
+    /// 定義の引数の宣言の型（分からないものは None）と、可変長引数か
+    fn params(&mut self, l: &Loc) -> Option<(Vec<Option<String>>, bool)> {
+        let body = self.param_text(l)?;
+        let ts = [".ts", ".tsx", ".js", ".jsx", ".mts"].iter().any(|e| l.path.ends_with(e));
+        if body.trim().is_empty() {
+            return Some((Vec::new(), false));
+        }
+        // 深さ 0 の , で分ける
+        let mut parts = Vec::new();
+        let mut depth = 0;
+        let mut cur = String::new();
+        for c in body.chars() {
+            match c {
+                '(' | '<' | '[' | '{' => depth += 1,
+                ')' | '>' | ']' | '}' => depth -= 1,
+                ',' if depth == 0 => {
+                    parts.push(std::mem::take(&mut cur));
+                    continue;
+                }
+                _ => {}
+            }
+            cur.push(c);
+        }
+        parts.push(cur);
+        let var = body.contains("...");
+        let tys = parts
+            .iter()
+            .map(|p| {
+                if ts {
+                    let t = p.split_once(':')?.1;
+                    let t = t.split('=').next().unwrap_or(t);
+                    let w: String = t.trim().chars().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$').collect();
+                    (!w.is_empty()).then_some(w)
+                } else {
+                    // 注釈・final を除き、名前の前の型（総称型は外側、可変長の ... と配列は外す）
+                    let mut flat = String::new();
+                    let mut d = 0;
+                    for c in p.chars() {
+                        match c {
+                            '<' | '(' => d += 1,
+                            '>' | ')' => d -= 1,
+                            _ if d == 0 => flat.push(c),
+                            _ => {}
+                        }
+                    }
+                    let words: Vec<&str> = flat.split_whitespace().filter(|w| !w.starts_with('@') && *w != "final").collect();
+                    let ty = words.len().checked_sub(2).map(|i| words[i])?;
+                    let ty = ty.trim_end_matches("...").trim_end_matches("[]");
+                    Some(ty.rsplit('.').next().unwrap_or(ty).to_string())
+                }
+            })
+            .collect();
+        Some((tys, var))
+    }
+
+    /// 定義の行の ( … ) の中身
+    fn param_text(&mut self, l: &Loc) -> Option<String> {
+        let lines = self.lines(&l.path)?;
+        let first = lines.get(l.line as usize)?;
+        let mut text = first.get(l.col as usize..)?.to_string();
+        for extra in lines.iter().skip(l.line as usize + 1).take(12) {
+            if text.contains(')') {
+                break;
+            }
+            text.push(' ');
+            text.push_str(extra);
+        }
+        let open = text.find('(')?;
+        let mut depth = 0;
+        let mut inner = String::new();
+        for c in text[open..].chars() {
+            match c {
+                '(' => depth += 1,
+                ')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            if depth >= 1 {
+                inner.push(c);
+            }
+        }
+        Some(inner.trim_start_matches('(').to_string())
     }
 
     /// 定義の行の引数の数（可変長引数なら true）
+    #[allow(dead_code)]
     fn param_count(&mut self, l: &Loc) -> Option<(usize, bool)> {
         let lines = self.lines(&l.path)?;
         let first = lines.get(l.line as usize)?;
@@ -651,10 +873,14 @@ impl<'a> Ranker<'a> {
             return (cands, n);
         }
         // 全部が同じファイルの中（Java のクラスとそのコンストラクタなど）なら、型の定義を先に
+        // 型が無ければ同じファイルのオーバーロードなので、引数で選ぶ（Java・Kotlin）
         if cands.iter().all(|c| c.path == cands[0].path) {
             let mut v = cands;
             v.sort_by_key(|c| (!c.kind.is_type(), c.line));
-            return (v, 1);
+            // オーバーロードは Java・Kotlin だけ（TS の同じ名前は get / set の対やシグネチャの宣言）
+            let jvm = [".java", ".kt", ".kts"].iter().any(|e| v[0].path.ends_with(e));
+            let best = if v[0].kind.is_type() || !jvm { 1 } else { v.len() };
+            return (v, best);
         }
         // 言語のまとまり（Java と Kotlin、TS と JS は同じ）
         let family = |p: &str| match p.rsplit('.').next().unwrap_or("") {
@@ -984,13 +1210,38 @@ mod tests {
             }
         };
         let mut r2 = Ranker::new(Some(&idx2));
-        let over = |r: &mut Ranker, n: usize| match r.resolve("src/Use.java", src, "format", Some(&Recv::Type("DateUtil".into())), Some(n), idx2.lookup("format").to_vec()) {
-            Ranked::Locs(v, b) => (v[0].line, b),
-            Ranked::Outside(_) => (99, 0),
+        let over = |r: &mut Ranker, n: usize| {
+            let args = vec![Arg::Unknown; n];
+            match r.resolve("src/Use.java", src, "format", Some(&Recv::Type("DateUtil".into())), Some(&args), idx2.lookup("format").to_vec()) {
+                Ranked::Locs(v, b) => (v[0].line, b),
+                Ranked::Outside(_) => (99, 0),
+            }
         };
         assert_eq!(over(&mut r2, 2), (2, 1));
         assert_eq!(over(&mut r2, 3), (3, 1), "可変長");
         assert_eq!(over(&mut r2, 1), (1, 1), "1 引数は可変長よりぴったりの format(Date)");
+        // 引数の型: 同じ数のオーバーロード
+        std::fs::write(dir.join("src/Fmt2.java"), "class Fmt2 {\n  static String fmt(TemporalAccessor t, String f) {}\n  static String fmt(Date d, String f) {}\n  static String fmt(@NonNull final Integer n, String f) {}\n  static String fmt(Base b, String f) {}\n}\n").unwrap();
+        let idx4 = {
+            let rx = build(&dir, Arc::new(|| {}));
+            loop {
+                if let Ok(Progress::Done(i)) = rx.recv() {
+                    break i;
+                }
+            }
+        };
+        let mut r4 = Ranker::new(Some(&idx4));
+        let mut by_ty = |a: Arg| match r4.resolve("src/Use.java", src, "fmt", Some(&Recv::Type("Fmt2".into())), Some(&[a, Arg::Lit("String")]), idx4.lookup("fmt").to_vec()) {
+            Ranked::Locs(v, b) => (v[0].line, b),
+            Ranked::Outside(_) => (99, 0),
+        };
+        let ty = |t: &str| Arg::Expr(Recv::Type(t.into()));
+        assert_eq!(by_ty(ty("LocalDateTime")), (1, 1), "LocalDateTime は TemporalAccessor");
+        assert_eq!(by_ty(ty("Date")), (2, 1));
+        assert_eq!(by_ty(ty("Timestamp")), (2, 1), "Timestamp は Date の子");
+        assert_eq!(by_ty(Arg::Lit("int")), (3, 1));
+        assert_eq!(by_ty(ty("Repo")), (4, 1), "プロジェクトの型: Repo extends Base");
+        assert_eq!(by_ty(Arg::Unknown).1, 4, "分からなければ選ばせる");
         // TS: export していない同じ名前の関数は後ろへ
         std::fs::write(dir.join("src/va.ts"), "function notBlank(m) {}\nexport const use = 1;\n").unwrap();
         std::fs::write(dir.join("src/vb.ts"), "export const notBlank = (m) => m;\n").unwrap();
