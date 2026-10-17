@@ -667,6 +667,12 @@ impl Editor {
             self.paste_clipboard();
             return Effect::None;
         }
+        // F12 は Insert・Visual の最中でも定義へ（抜けてから）
+        if key == Key::F(12) && matches!(self.mode, Mode::Insert | Mode::Visual { .. }) {
+            self.key(Key::Esc);
+            self.goto_definition();
+            return Effect::None;
+        }
         // データを変える SQL の確認（y で実行）
         if self.db_confirm_key(key) {
             return Effect::None;

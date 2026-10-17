@@ -455,6 +455,8 @@ impl App {
                 NamedKey::End => vec![VKey::End],
                 NamedKey::PageUp => vec![VKey::PageUp],
                 NamedKey::PageDown => vec![VKey::PageDown],
+                // F12: 定義へ（IntelliJ・VS Code と同じ）
+                NamedKey::F12 => vec![VKey::F(12)],
                 _ => return,
             },
             _ => return,
@@ -910,6 +912,22 @@ impl App {
         self.stop_scroll();
         let Some(ed) = &mut self.ed else { return };
         ed.rows = rows;
+        // Ctrl+クリックで定義へ、Ctrl+Alt+クリックで実装へ（IntelliJ と同じ）
+        if clicks == 1 && self.modifiers.control_key() {
+            if ed.mode == Mode::Insert {
+                ed.key(VKey::Esc);
+            }
+            ed.click(row, col);
+            if self.modifiers.alt_key() {
+                ed.goto_implementation();
+            } else {
+                ed.goto_definition();
+            }
+            self.last_click = None;
+            self.sync_ime();
+            self.draw();
+            return;
+        }
         if clicks == 1 {
             ed.click(row, col);
         } else {

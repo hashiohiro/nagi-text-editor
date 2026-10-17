@@ -482,6 +482,13 @@ mod tests {
         // Ctrl-o で戻る
         keys(&mut e, "<C-o>");
         assert!(e.buf.path.as_ref().unwrap().ends_with("a.ts"));
+        // F12 でも（Insert の最中でも）
+        keys(&mut e, "3G0<F12>");
+        assert!(e.buf.path.as_ref().unwrap().ends_with("b.ts"), "{:?} {}", e.buf.path, e.message);
+        keys(&mut e, "<C-o>3G0i<F12>");
+        assert!(e.buf.path.as_ref().unwrap().ends_with("b.ts"), "{:?} {}", e.buf.path, e.message);
+        assert_eq!(e.mode, Mode::Normal);
+        keys(&mut e, "<C-o>");
         // 候補が 2 つ（Box）: ファインダーで選ぶ
         keys(&mut e, "4Gwgd");
         assert_eq!(e.mode, Mode::Finder);
