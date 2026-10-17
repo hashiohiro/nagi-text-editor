@@ -509,7 +509,9 @@ impl App {
         // リストモード（ツリー・検索結果）では leader で始まるものだけを通す（j/k などは置き換えない。architecture.md §7.1）
         let mode = self.ed.as_ref().map(|e| e.mode);
         let leader = nagi_vim::parse_keys(&self.rc.leader, &self.rc.leader).first().copied();
-        let list_leader = mode == Some(Mode::List) && (!self.matcher.pending().is_empty() || Some(k) == leader);
+        // パネルの入力欄にいる間は割り当てを通さない（Space などがそのまま文字になるように）
+        let in_field = self.ed.as_ref().is_some_and(|e| e.in_text_field());
+        let list_leader = mode == Some(Mode::List) && !in_field && (!self.matcher.pending().is_empty() || Some(k) == leader);
         let out = if mode == Some(Mode::Normal) || list_leader {
             match self.matcher.feed(&self.rc.keymap, k) {
                 Feed::Pending => {

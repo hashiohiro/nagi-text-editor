@@ -203,6 +203,24 @@ mod tests {
     }
 
     #[test]
+    fn visual() {
+        let mut regs = Registers::new();
+        let mut f = VimField::new("alpha beta gamma", false);
+        keys(&mut f, &mut regs, "<Esc>0v");
+        assert!(f.visual().is_some(), "v で Visual に入る: {:?}", f.ed.mode);
+        keys(&mut f, &mut regs, "e");
+        assert_eq!(f.visual(), Some((0, 5)), "alpha を選ぶ");
+        keys(&mut f, &mut regs, "y");
+        assert_eq!(regs.get(&'"').map(|r| r.0.as_str()), Some("alpha"));
+        keys(&mut f, &mut regs, "wviwd");
+        assert_eq!(f.text(), "alpha  gamma");
+        keys(&mut f, &mut regs, "0vee");
+        assert_eq!(f.visual(), Some((0, 12)));
+        keys(&mut f, &mut regs, "<Esc>");
+        assert!(f.visual().is_none(), "Esc で Visual をやめる（欄は閉じない）");
+    }
+
+    #[test]
     fn multiline() {
         let mut regs = Registers::new();
         let mut f = VimField::new("", true);

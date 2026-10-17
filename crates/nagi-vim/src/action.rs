@@ -68,6 +68,7 @@ pub fn ideavim(name: &str) -> Option<(Option<&'static str>, &'static str)> {
         "Debug" | "DebugContextTest" | "ToggleLineBreakpoint" => (None, "デバッガ（スコープ外）"),
         "ActivateMavenToolWindow" => (Some("tool.maven"), "Maven（右の欄）"),
         "ActivateDatabaseToolWindow" => (Some("tool.database"), "データベース（右の欄）"),
+        "Console.Jdbc.OpenConsole" | "DatabaseView.NewQueryConsole" => (Some("db.new_query"), "新しいクエリ"),
         _ => return None,
     };
     Some(r)

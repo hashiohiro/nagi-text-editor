@@ -761,7 +761,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         Mode::List if ed.list_side == crate::editor::Side::Right => {
             let (name, help) = match ed.right_visible() {
                 Some(crate::right_panel::RightTab::Maven) => ("-- Maven --", "Enter 実行・開閉  l/h 開く・閉じる  r 読み直す  q 閉じる  Ctrl-w h 窓へ "),
-                _ => ("-- データベース --", "Enter つなぐ・開閉  o 中身  c コンソール  x 切る  r 読み直す  Ctrl-w h 窓へ "),
+                _ => ("-- データベース --", "Enter つなぐ・開閉  o 中身  n 新しいクエリ  c コンソール  / 絞り込み  a 足す  x 切る  Ctrl-w h 窓へ "),
             };
             let end = p.text(if ed.message.is_empty() { name } else { &ed.message }, 0, y, FG);
             let pc = cols.saturating_sub(p.width(help));
@@ -2167,28 +2167,40 @@ fn draw_vim_line(p: &mut Painter, f: &crate::vim_field::VimField, l: usize, col:
     let text = f.ed.buf.line(l);
     let (cl, cb) = f.cursor();
     let cb = cb.min(text.len());
-    // Visual の範囲
-    if let (true, Some((a, b))) = (active, f.visual()) {
-        let ls = f.line_start(l);
-        let (s, e) = (a.max(ls).saturating_sub(ls).min(text.len()), b.saturating_sub(ls).min(text.len()));
-        if a <= ls + text.len() && b > ls && s <= e {
-            let x0 = col + p.width(&text[..s]);
-            let w = p.width(&text[s..e]).max(1);
-            p.out.push(Instance::fill(x0 as f32 * cell.w, y, w as f32 * cell.w, cell.h, MATCH_BG));
-        }
-    }
     if active && l == cl && f.is_insert() {
         return field(p, &text, cb, preedit, col, y, true);
     }
+    // Visual: 選んだ所は反転（エディタの Visual と同じ見え方）
+    let ls = f.line_start(l);
+    let sel = f.visual().filter(|_| active).and_then(|(a, b)| {
+        let (s, e) = (a.max(ls) - ls, b.saturating_sub(ls).min(text.len()));
+        (a <= ls + text.len() && b > ls && s <= e).then_some((s.min(text.len()), e))
+    });
     let end = col + p.width(&text);
-    p.text(&text, col, y, FG);
+    match sel {
+        Some((s, e)) => {
+            let x1 = col + p.width(&text[..s]);
+            let x2 = x1 + p.width(&text[s..e]);
+            p.text(&text[..s], col, y, FG);
+            // 行末まで選んでいれば 1 セル余分に塗る
+            let w = (x2 - x1).max(1);
+            p.out.push(Instance::fill(x1 as f32 * cell.w, y, w as f32 * cell.w, cell.h, FG));
+            p.text(&text[s..e], x1, y, BG);
+            p.text(&text[e..], x2, y, FG);
+        }
+        None => {
+            p.text(&text, col, y, FG);
+        }
+    }
     if active && l == cl {
-        // 四角のカーソル（その字を地の色で描き直す）
+        // 四角のカーソル。選んだ中ではもう一度反転して元の色に
         let x = col + p.width(&text[..cb]);
         let ch = text[cb..].graphemes(true).next().unwrap_or(" ");
         let w = p.width(ch).max(1);
-        p.out.push(Instance::fill(x as f32 * cell.w, y, w as f32 * cell.w, cell.h, CURSOR));
-        p.text(ch, x, y, BG);
+        let in_sel = sel.is_some_and(|(s, e)| cb >= s && cb < e.max(s + 1));
+        let (bg, fg) = if in_sel { (BG, FG) } else { (CURSOR, BG) };
+        p.out.push(Instance::fill(x as f32 * cell.w, y, w as f32 * cell.w, cell.h, bg));
+        p.text(ch, x, y, fg);
     }
     end
 }

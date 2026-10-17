@@ -1137,6 +1137,42 @@ impl Editor {
         }
     }
 
+    /// 新しいクエリ（DataGrip の New Query Console）: 接続先の新しい .sql を Insert で開く。Ctrl+Enter で流す
+    pub(crate) fn db_new_query(&mut self, i: usize, initial: Option<String>) {
+        let Some(p) = &mut self.db else { return };
+        let s = p.sources[i].clone();
+        let dir = work_dir().join("consoles");
+        let _ = std::fs::create_dir_all(&dir);
+        let base = safe_name(&s.name);
+        let n = (1..).find(|n| !dir.join(format!("{base}_query_{n}.sql")).exists()).unwrap_or(1);
+        let path = dir.join(format!("{base}_query_{n}.sql"));
+        let body = format!("-- {}  クエリ {n}\n\n{}", s.name, initial.map(|q| format!("{q}\n")).unwrap_or_default());
+        if let Err(e) = std::fs::write(&path, body) {
+            self.message = format!("クエリのファイルを作れません: {e}");
+            return;
+        }
+        let abs = std::path::absolute(&path).unwrap_or(path.clone());
+        p.consoles.insert(abs, i);
+        self.edit_file(path);
+        self.mode = Mode::Normal;
+        // 最後の行の終わりから Insert で書き始める
+        self.key(Key::Char('G'));
+        self.key(Key::Char('A'));
+        self.message = format!("新しいクエリ（{}）。Ctrl+Enter で実行", s.name);
+    }
+
+    /// `:DbNew`: 今の接続先（コンソール・木で選んでいるもの。無ければ最初の接続先）で新しいクエリ
+    pub(crate) fn db_new_query_command(&mut self) {
+        if self.db.is_none() {
+            self.open_db_panel();
+        }
+        let i = self.db_current_source().or_else(|| self.db.as_ref().filter(|p| !p.sources.is_empty()).map(|_| 0));
+        match i {
+            Some(i) => self.db_new_query(i, None),
+            None => self.message = "接続先がありません。データベースの欄の a で足せます".into(),
+        }
+    }
+
     fn db_selected(&self) -> Option<DbRow> {
         let p = self.db.as_ref()?;
         p.rows.get(p.selected).cloned()
@@ -1333,6 +1369,18 @@ impl Editor {
                 self.message = "接続先を足す: Tab で次の欄、種類は ← →、最後の欄で Enter で保存してつなぐ".into();
             }
             Key::Char('D') => self.db_ddl(),
+            // 新しいクエリ（テーブルの上なら SELECT を書き入れて）
+            Key::Char('n') => {
+                if let Some(r) = self.db_selected() {
+                    let sf = self.db.as_ref().and_then(|p| p.kind(r.source())) == Some(Kind::Salesforce);
+                    let init = match &r {
+                        DbRow::Object(_, _, t, Group::Tables | Group::Views, _) if sf => Some(format!("SELECT Id, Name FROM {t} LIMIT 100")),
+                        DbRow::Object(_, s, t, Group::Tables | Group::Views, _) => Some(format!("SELECT * FROM {}", qualified(s, t))),
+                        _ => None,
+                    };
+                    self.db_new_query(r.source(), init);
+                }
+            }
             // コンソール（テーブルの上なら SELECT を書き足して）
             Key::Char('c') => {
                 if let Some(r) = self.db_selected() {
@@ -1570,6 +1618,18 @@ pub(crate) mod tests {
         let p = e.db.as_ref().unwrap();
         assert!(p.rows.iter().any(|r| matches!(r, DbRow::Group(_, _, Group::Tables, 1))), "{:?}", p.rows);
         assert!(p.rows.iter().any(|r| matches!(r, DbRow::Object(_, _, t, _, _) if t == "item")));
+        // 新しいクエリ: 別のファイルを Insert で開き、そのまま書いて Ctrl+Enter で流せる
+        e.focus_right(RightTab::Database);
+        e.db.as_mut().unwrap().selected = e.db.as_ref().unwrap().rows.iter().position(|r| *r == DbRow::Source(i)).unwrap();
+        keys(&mut e, "n");
+        assert_eq!(e.mode, Mode::Insert);
+        assert!(e.buf.path.as_ref().unwrap().to_string_lossy().ends_with("shop_query_1.sql"));
+        keys(&mut e, "select 42 as answer<C-m>");
+        wait(&mut e, &|e| e.db_results.active_tab().is_some_and(|t| !t.running && !t.rows.is_empty()));
+        assert_eq!(e.db_results.active_tab().unwrap().rows[0][0].as_deref(), Some("42"));
+        keys(&mut e, "<Esc>");
+        e.db_new_query_command();
+        assert!(e.buf.path.as_ref().unwrap().to_string_lossy().ends_with("shop_query_2.sql"), "番号を進める");
         // 絞り込み
         e.focus_right(RightTab::Database);
         keys(&mut e, "/zzz<CR>");

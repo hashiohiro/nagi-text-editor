@@ -86,6 +86,7 @@ const EX_COMMANDS: &[(&str, &str)] = &[
     ("DbRollback", "ロールバック"),
     ("DbTx", "トランザクションの自動・手動を切り替える"),
     ("DbLogout", "Salesforce の保存したログインを消す"),
+    ("DbNew", "新しいクエリを開く（Ctrl+Enter で実行）"),
     ("GitHunk", "カーソルの変更の差分"),
     ("GitStage", "カーソルの変更をステージ"),
     ("GitRevert", "カーソルの変更を戻す"),

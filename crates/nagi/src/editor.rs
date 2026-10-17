@@ -1356,6 +1356,7 @@ impl Editor {
             "DbRollback" => self.db_tx_command("rollback"),
             "DbTx" => self.db_tx_command("toggle"),
             "DbLogout" => self.db_logout(),
+            "DbNew" | "DbQuery" => self.db_new_query_command(),
             "Gpull" => self.run_git_job("pull ", &["pull", "--no-edit"]),
             "Gfetch" => self.run_git_job("フェッチ", &["fetch", "--all", "--prune"]),
             "Gpush" => self.push_from_anywhere(),
@@ -1421,6 +1422,7 @@ impl Editor {
             Some((Some("git.branches"), _)) => self.open_branches(),
             Some((Some("tool.maven"), _)) => self.toggle_right_tab(crate::right_panel::RightTab::Maven),
             Some((Some("tool.database"), _)) => self.toggle_right_tab(crate::right_panel::RightTab::Database),
+            Some((Some("db.new_query"), _)) => self.db_new_query_command(),
             Some((Some("git.pull"), _)) => self.run_git_job("pull ", &["pull", "--no-edit"]),
             Some((Some("git.fetch"), _)) => self.run_git_job("フェッチ", &["fetch", "--all", "--prune"]),
             Some((Some("git.push"), _)) => self.push_from_anywhere(),
@@ -1468,6 +1470,12 @@ impl Editor {
         };
         self.preedit_cursor = cursor.map(|(a, b)| (fix(a), fix(b)));
         self.preedit = text;
+    }
+
+    /// パネルの入力欄（フォーム・絞り込み・パスワード・WHERE / ORDER BY）にいるか。いる間は <leader> の割り当てを通さない
+    pub fn in_text_field(&self) -> bool {
+        (self.right_focused() && self.db.as_ref().is_some_and(|p| p.form.is_some() || p.filter.is_some() || p.password.is_some()))
+            || (self.mode == Mode::List && self.list_side == Side::Bottom && self.db_results.editing.is_some())
     }
 
     /// 貼り付けを受ける入力欄にいるか（Vim の Insert の Ctrl-V は別）
