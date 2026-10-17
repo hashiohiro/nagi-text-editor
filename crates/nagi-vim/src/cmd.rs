@@ -82,6 +82,8 @@ pub enum Action {
     Visual { line: bool },
     Scroll { half: bool, down: bool },
     LastChange,
+    /// `Ctrl-^`（直前のバッファ）
+    AltBuffer,
     Esc,
 }
 
@@ -321,6 +323,7 @@ pub fn parse_normal(keys: &[Key]) -> Parse {
         Key::Char('~') => Action::ToggleCase,
         Key::Char('u') => Action::Undo,
         Key::Ctrl('r') => Action::Redo,
+        Key::Ctrl('^' | '6') => Action::AltBuffer,
         Key::Char('.') => Action::Dot,
         Key::Char(c @ (':' | '/' | '?')) => Action::Cmdline(c),
         Key::Char('*') => Action::SearchWord { forward: true },

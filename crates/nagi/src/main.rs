@@ -9,6 +9,7 @@
 //! 起動は並列（architecture.md §6.4）: GPU・フォント・ファイル読込を別スレッドで進め、
 //! メインスレッドはその間にイベントループと非表示のウィンドウを作る。最初のフレームを描いてから表示する。
 
+mod buffers;
 mod clipboard;
 mod clock;
 #[cfg(test)]
@@ -128,7 +129,16 @@ struct Press {
     selected: bool,
 }
 
+fn title_for(path: Option<&std::path::Path>) -> String {
+    match path {
+        Some(p) => format!("nagi — {}", p.display()),
+        None => "nagi".into(),
+    }
+}
+
 struct App {
+    /// 題名に出しているパス（バッファを切り替えたら題名を変える）
+    title_path: Option<std::path::PathBuf>,
     opts: Opts,
     pending: Option<Pending>,
     window: Option<Arc<Window>>,
@@ -163,7 +173,7 @@ struct App {
 impl App {
     fn startup(&mut self, el: &ActiveEventLoop) {
         let attrs = Window::default_attributes()
-            .with_title(self.title_for(None))
+            .with_title(title_for(None))
             .with_visible(false)
             // タイトルバーも暗くして、ターミナルと見分けがつかないようにする
             .with_theme(Some(winit::window::Theme::Dark))
@@ -182,7 +192,8 @@ impl App {
         let (buf, partial) = p.file.recv().unwrap();
         self.rc = p.rc.recv().unwrap();
         let mut fonts = Fonts::new(chain, (FONT_PX * self.scale).round() as f32);
-        window.set_title(&self.title_for(buf.path.as_deref()));
+        window.set_title(&title_for(buf.path.as_deref()));
+        self.title_path = buf.path.clone();
         self.ed = Some(Editor::new(buf, None));
         self.apply_rc();
         // 構文解析は裏で行い、終わったらイベントループを起こして色を付ける（大きなファイルでも表示を待たせない）
@@ -247,12 +258,6 @@ impl App {
         }
     }
 
-    fn title_for(&self, path: Option<&std::path::Path>) -> String {
-        match path {
-            Some(p) => format!("nagi — {}", p.display()),
-            None => "nagi".into(),
-        }
-    }
 
     /// 本文に使える行数（最下行の分を除く。置換中は 2 行）
     fn rows(&self) -> usize {
@@ -290,6 +295,13 @@ impl App {
         ed.showcmd = self.matcher.pending().iter().map(|k| k.label()).collect();
         let insts = view::build(ed, f, r);
         clock::mark_once("first frame built");
+        // バッファを切り替えたら題名も変える
+        if self.title_path.as_ref() != ed.buf.path.as_ref() {
+            self.title_path = ed.buf.path.clone();
+            if let Some(w) = &self.window {
+                w.set_title(&title_for(self.title_path.as_deref()));
+            }
+        }
         let t3 = Instant::now();
         if let Err(e) = r.draw(&insts, view::BG) {
             eprintln!("draw: {e}");
@@ -861,6 +873,7 @@ fn main() {
         replay: Default::default(),
         replay_deadline: None,
         prefetched_top: None,
+        title_path: None,
     };
     event_loop.run_app(&mut app).unwrap();
 }

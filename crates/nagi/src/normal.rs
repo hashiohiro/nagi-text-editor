@@ -671,6 +671,10 @@ impl Editor {
                 }
             }
             Action::Dot => self.repeat_dot(cmd.count),
+            Action::AltBuffer => match cmd.count {
+                Some(n) => self.goto_buffer(&n.to_string()),
+                None => self.goto_buffer("#"),
+            },
             Action::Cmdline(':') => {
                 self.mode = Mode::Command;
                 self.cmdline = Default::default();

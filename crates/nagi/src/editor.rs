@@ -181,7 +181,7 @@ pub struct Editor {
     /// 大きなファイルの全体（先頭部分だけを先に表示している間。届いたら `poll_load` で差し替える）
     loading: Option<std::sync::mpsc::Receiver<Buffer>>,
     /// 裏で解析中の構文木（届いたら `poll_syntax` で受け取る）
-    pending_syntax: Option<std::sync::mpsc::Receiver<nagi_syntax::Syntax>>,
+    pub(crate) pending_syntax: Option<std::sync::mpsc::Receiver<nagi_syntax::Syntax>>,
     /// 裏の解析が終わったときに UI スレッドを起こす（App が入れる）
     pub waker: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
     /// Normal / Visual で解釈中のキー列
@@ -196,6 +196,11 @@ pub struct Editor {
     pub(crate) replaying: bool,
     /// 画面の行数（App が描画前に入れる）
     pub rows: usize,
+    /// 開いているバッファ（作業中のものは `Slot::Active` で、中身はこの構造体の欄にある）
+    pub(crate) docs: Vec<crate::buffers::Slot>,
+    pub(crate) cur_doc: usize,
+    /// 直前のバッファ（`Ctrl-^` `:b#`）
+    pub(crate) alt_doc: Option<usize>,
 }
 
 impl Editor {
@@ -230,6 +235,9 @@ impl Editor {
             dot_rec: None,
             replaying: false,
             rows: 1,
+            docs: vec![crate::buffers::Slot::Active],
+            cur_doc: 0,
+            alt_doc: None,
         }
     }
 
@@ -267,7 +275,7 @@ impl Editor {
     }
 
     /// 全体が届くまで待って差し替える（キーを処理する前）
-    fn finish_load(&mut self) {
+    pub(crate) fn finish_load(&mut self) {
         if let Some(rx) = self.loading.take() {
             if let Ok(b) = rx.recv() {
                 self.swap_full_buffer(b);
@@ -275,14 +283,20 @@ impl Editor {
         }
     }
 
-    fn swap_full_buffer(&mut self, b: Buffer) {
-        self.loading = None;
-        // 先頭部分は全体の頭と同じ内容なので、カーソルと表示位置はそのまま使える。版の番号は同じ 0 から
-        // 始まるので、版を鍵にした計算結果（検索の件数）は捨てる
-        self.buf = b;
+    /// 版を鍵にした検索の計算結果を捨てる（バッファが入れ替わったとき。版の番号はバッファごとに 0 から始まる）
+    pub(crate) fn reset_search_cache(&mut self) {
         self.search.computed = None;
         self.search.matches.clear();
+        self.search.current = None;
         self.search.job = None;
+        self.search.no_match = None;
+    }
+
+    fn swap_full_buffer(&mut self, b: Buffer) {
+        self.loading = None;
+        // 先頭部分は全体の頭と同じ内容なので、カーソルと表示位置はそのまま使える
+        self.buf = b;
+        self.reset_search_cache();
         if self.message == LOADING {
             self.message.clear();
         }
@@ -857,44 +871,6 @@ impl Editor {
         }
     }
 
-    fn open(&mut self, path: PathBuf, force: bool) {
-        if self.buf.dirty && !force {
-            self.message = "E37: 変更が保存されていません（:e! で破棄して開く）".into();
-            return;
-        }
-        let mut message = String::new();
-        let buf = match Buffer::open(&path) {
-            Ok(b) => b,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                let mut b = Buffer::from_str("");
-                b.path = Some(path.clone());
-                message = format!("\"{}\" [新規]", path.display());
-                b
-            }
-            Err(e) => {
-                self.message = format!("{}: {e}", path.display());
-                return;
-            }
-        };
-        // 一致の計算結果は前のバッファのもの。版の番号は新しいバッファでも 0 から始まるので、必ず捨てる
-        let mut search = std::mem::take(&mut self.search);
-        search.computed = None;
-        search.matches.clear();
-        search.current = None;
-        search.job = None;
-        let keep = Self {
-            clipboard: self.clipboard.take(),
-            registers: std::mem::take(&mut self.registers),
-            search,
-            rows: self.rows,
-            message,
-            waker: self.waker.take(),
-            ..Self::new(buf, None)
-        };
-        *self = keep;
-        self.start_syntax();
-    }
-
     fn ex(&mut self, cmd: &str) -> Effect {
         let cmd = cmd.trim_start_matches(':').trim();
         if self.is_substitute(cmd) {
@@ -907,19 +883,36 @@ impl Editor {
             "w" | "write" => {
                 self.write();
             }
-            "q" | "quit" if self.buf.dirty => self.message = "E37: 変更が保存されていません（:q! で破棄して終了）".into(),
-            "q" | "quit" | "q!" | "quit!" => return Effect::Quit,
+            "q" | "quit" | "qa" | "qall" | "quitall" if self.buf.dirty => self.message = "E37: 変更が保存されていません（:q! で破棄して終了）".into(),
+            "q" | "quit" | "qa" | "qall" | "quitall" if !self.dirty_docs().is_empty() => {
+                let i = self.dirty_docs()[0];
+                self.message = format!("E162: バッファ {} の変更が保存されていません（:qa! で破棄して終了）", i + 1);
+            }
+            "q" | "quit" | "q!" | "quit!" | "qa" | "qall" | "quitall" | "qa!" | "qall!" | "quitall!" => return Effect::Quit,
             "wq" | "x" | "xit" => {
-                if self.write() {
+                if self.write() && self.dirty_docs().is_empty() {
+                    return Effect::Quit;
+                }
+                if let Some(&i) = self.dirty_docs().first() {
+                    self.message = format!("E162: バッファ {} の変更が保存されていません", i + 1);
+                }
+            }
+            "wa" | "wall" => {
+                self.write_all();
+            }
+            "wqa" | "wqall" | "xa" | "xall" => {
+                if self.write_all() {
                     return Effect::Quit;
                 }
             }
-            "e" | "edit" | "e!" | "edit!" if !arg.is_empty() => self.open(PathBuf::from(arg), name.ends_with('!')),
-            "e!" | "edit!" => {
-                if let Some(p) = self.buf.path.clone() {
-                    self.open(p, true);
-                }
-            }
+            "e" | "edit" if !arg.is_empty() => self.edit_file(PathBuf::from(arg)),
+            "e!" | "edit!" => self.reload(),
+            "ls" | "buffers" | "files" => self.list_buffers(),
+            "b" | "buffer" if !arg.is_empty() => self.goto_buffer(arg),
+            "bn" | "bnext" => self.cycle_buffer(true, arg.parse().unwrap_or(1)),
+            "bp" | "bprevious" | "bN" | "bNext" => self.cycle_buffer(false, arg.parse().unwrap_or(1)),
+            "bd" | "bdelete" | "bw" | "bwipeout" => self.delete_buffer(arg, false),
+            "bd!" | "bdelete!" | "bw!" | "bwipeout!" => self.delete_buffer(arg, true),
             "action" => self.action(arg),
             "source" | "so" => return Effect::ReloadRc,
             "NagiStats" => return Effect::Stats { reset: false },
