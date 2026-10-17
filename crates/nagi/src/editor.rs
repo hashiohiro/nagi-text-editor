@@ -239,6 +239,15 @@ pub struct Editor {
     pub(crate) watcher: Option<nagi_workers::watch::Watcher>,
     pub(crate) rc_files: Vec<PathBuf>,
     pub(crate) reloads: crate::autoread::Reloads,
+    /// 作業中のバッファのマーク
+    pub(crate) marks: crate::marks::Marks,
+    /// 大文字のマーク（ファイルをまたぐ）
+    pub(crate) global_marks: crate::marks::GlobalMarks,
+    /// ジャンプリスト（バッファ, 位置）と、`Ctrl-o` / `Ctrl-i` で今いるところ
+    pub(crate) jumps: Vec<(usize, Cursor)>,
+    pub(crate) jump_idx: usize,
+    /// ジャンプとして記録しない間（窓の移動や、ジャンプリストでの移動）
+    pub(crate) jump_lock: bool,
 }
 
 impl Editor {
@@ -290,6 +299,11 @@ impl Editor {
             watcher: None,
             rc_files: Vec::new(),
             reloads: Default::default(),
+            marks: Default::default(),
+            global_marks: Default::default(),
+            jumps: Vec::new(),
+            jump_idx: 0,
+            jump_lock: false,
         }
     }
 
@@ -438,6 +452,7 @@ impl Editor {
     }
 
     pub(crate) fn edit(&mut self, start: usize, end: usize, text: &str) {
+        self.shift_marks(start, end, text);
         let c = self.buf.edit(start, end, text);
         self.hist.record(c);
         self.last_change = Some(start);
@@ -770,7 +785,11 @@ impl Editor {
                 self.mode = Mode::Normal;
                 self.search.last = Some((pattern.clone(), self.search.regex, self.search.forward));
                 self.search.highlight = true;
-                self.search.origin = None;
+                if let Some((from, _)) = self.search.origin.take() {
+                    if self.search.current.is_some() {
+                        self.push_jump_from(from);
+                    }
+                }
                 if self.search.current.is_none() {
                     self.message = format!("E486: パターンは見つかりませんでした: {pattern}");
                 } else {
@@ -1017,7 +1036,11 @@ impl Editor {
             "noh" | "nohlsearch" => self.search.highlight = false,
             // ideavimrc の `O`: `:call append(expand('.'), '')`（現在行の下に空行を足す）
             "call" if arg.starts_with("append(") => self.append_blank_line(),
+            "marks" => self.list_marks(),
+            "delm" | "delmarks" => self.delete_marks(arg, false),
+            "delm!" | "delmarks!" => self.delete_marks(arg, true),
             n if n.chars().all(|c| c.is_ascii_digit()) => {
+                self.push_jump();
                 let line = n.parse::<usize>().unwrap_or(1).saturating_sub(1);
                 self.with_motion(|m, c| m.goto_line(c, line));
             }

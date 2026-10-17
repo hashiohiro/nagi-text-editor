@@ -70,7 +70,18 @@ impl Editor {
         if Self::is_change(&cmd.kind) && !self.replaying {
             self.dot_rec = Some(keys);
         }
+        let was_visual = matches!(self.mode, Mode::Visual { .. }).then(|| self.visual_range());
         let effect = self.exec_inner(cmd);
+        // Visual を抜けたら、選んでいた範囲を '< '> に残す
+        if let (Some((s, e, _)), false) = (was_visual, matches!(self.mode, Mode::Visual { .. })) {
+            let at = |a: usize| {
+                let (l, b) = self.buf.pos_of(a.min(self.buf.len_bytes()));
+                Cursor { line: l, byte: b, want_col: 0 }
+            };
+            let (a, b) = (at(s), at(e.saturating_sub(1).max(s)));
+            self.marks.named.insert('<', a);
+            self.marks.named.insert('>', b);
+        }
         // Insert に入らなかった変更はここで記録を終える
         if self.mode != Mode::Insert {
             self.finish_dot();
@@ -89,7 +100,14 @@ impl Editor {
         };
         match cmd.kind {
             Kind::Move(m) => {
+                let from = self.cursor;
+                let doc = self.cur_doc;
                 if let Some((c, _)) = self.dest(m, cmd.count, false) {
+                    // 大きく跳ぶ移動はジャンプリストに残す（別のファイルへのマークは開くときに残している）
+                    let jump = matches!(m, M::GotoLine | M::FirstLine | M::MatchPair | M::Paragraph { .. } | M::SearchNext { .. } | M::Mark { .. });
+                    if jump && doc == self.cur_doc && (c.line, c.byte) != (from.line, from.byte) {
+                        self.push_jump_from(from);
+                    }
                     self.cursor = c;
                 }
             }
@@ -259,6 +277,18 @@ impl Editor {
                     Kd::Linewise
                 } else {
                     Kd::Exclusive
+                }
+            }
+            M::Mark { ch, exact } => {
+                let to = self.mark_pos(ch)?;
+                c.line = to.line;
+                c.byte = to.byte;
+                if exact {
+                    Kd::Exclusive
+                } else {
+                    let line = self.buf.line(c.line);
+                    c.byte = line.len() - line.trim_start_matches([' ', '\t']).len();
+                    Kd::Linewise
                 }
             }
             M::SearchNext { reverse } => {
@@ -471,6 +501,19 @@ impl Editor {
                         if matches!(m, M::WordFwd { .. }) && to.line > from.line {
                             b = self.buf.line_start(from.line) + self.line_len(from.line);
                         }
+                        // 終わりが次の行の行頭なら、前の行の行末までにする。始まりが行の最初の空白でない文字以前なら
+                        // 行単位にする（Vim の :help exclusive の 2 つの規則）
+                        let ((al, ab), (bl, bb)) = (self.buf.pos_of(a), self.buf.pos_of(b));
+                        if bb == 0 && bl > al {
+                            let line = self.buf.line(al);
+                            let first = line.len() - line.trim_start_matches([' ', '\t']).len();
+                            if ab <= first {
+                                let (s, e) = self.lines_range(al, bl - 1);
+                                self.apply(op, s, e, true, reg);
+                                return;
+                            }
+                            b = self.buf.line_start(bl - 1) + self.line_len(bl - 1);
+                        }
                         (a, b, false)
                     }
                 }
@@ -672,6 +715,8 @@ impl Editor {
             }
             Action::Dot => self.repeat_dot(cmd.count),
             Action::Window(c) => self.window_command(c, cmd.count),
+            Action::SetMark(c) => self.set_mark(c),
+            Action::Jump { older } => self.jump(older, n),
             Action::AltBuffer => match cmd.count {
                 Some(n) => self.goto_buffer(&n.to_string()),
                 None => self.goto_buffer("#"),
@@ -693,6 +738,7 @@ impl Editor {
                         let pat = format!(r"\b{}\b", regex_escape(word));
                         self.search.last = Some((pat, true, forward));
                         if let Some(at) = self.search_next(false, n) {
+                            self.push_jump();
                             self.set_abs(at);
                         }
                     }

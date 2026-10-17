@@ -164,7 +164,10 @@ impl Editor {
         self.prev_win = Some(self.cur_win);
         self.cur_win = w;
         if next.doc != self.cur_doc {
+            // 窓の移動はジャンプにしない
+            self.jump_lock = true;
             self.switch_doc(next.doc);
+            self.jump_lock = false;
         }
         if matches!(self.mode, Mode::Visual { .. } | Mode::Insert) {
             self.mode = Mode::Normal;

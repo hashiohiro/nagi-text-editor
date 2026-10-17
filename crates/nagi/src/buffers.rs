@@ -17,6 +17,7 @@ pub(crate) struct Doc {
     pub syntax: Option<nagi_syntax::Syntax>,
     pub pending_syntax: Option<std::sync::mpsc::Receiver<nagi_syntax::Syntax>>,
     pub last_change: Option<usize>,
+    pub marks: crate::marks::Marks,
     /// 最後に見ていたときのカーソルと表示位置（戻ってきたときにそこから続ける）
     pub cursor: Cursor,
     pub top: usize,
@@ -55,6 +56,8 @@ impl Editor {
         if id == self.cur_doc || !matches!(self.docs.get(id), Some(Slot::Parked(_))) {
             return;
         }
+        // 別のファイルへ移るのはジャンプ（Ctrl-o で戻れる）
+        self.push_jump();
         self.finish_load();
         let Slot::Parked(next) = std::mem::replace(&mut self.docs[id], Slot::Active) else { unreachable!() };
         let prev = self.swap_in(*next);
@@ -75,6 +78,7 @@ impl Editor {
             syntax: std::mem::replace(&mut self.syntax, d.syntax),
             pending_syntax: std::mem::replace(&mut self.pending_syntax, d.pending_syntax),
             last_change: std::mem::replace(&mut self.last_change, d.last_change),
+            marks: std::mem::replace(&mut self.marks, d.marks),
             cursor: std::mem::replace(&mut self.cursor, d.cursor),
             top: std::mem::replace(&mut self.top, d.top),
         };
@@ -95,7 +99,8 @@ impl Editor {
     fn push_doc(&mut self, buf: Buffer) {
         let id = self.docs.len();
         self.docs.push(Slot::Active);
-        let d = Doc { buf, hist: History::default(), syntax: None, pending_syntax: None, last_change: None, cursor: Cursor::default(), top: 0 };
+        self.push_jump();
+        let d = Doc { buf, hist: History::default(), syntax: None, pending_syntax: None, last_change: None, marks: Default::default(), cursor: Cursor::default(), top: 0 };
         self.finish_load();
         let prev = self.swap_in(d);
         self.docs[self.cur_doc] = Slot::Parked(Box::new(prev));
@@ -141,7 +146,7 @@ impl Editor {
             self.docs.clear();
             self.docs.push(Slot::Active);
             self.cur_doc = 0;
-            let d = Doc { buf, hist: History::default(), syntax: None, pending_syntax: None, last_change: None, cursor: Cursor::default(), top: 0 };
+            let d = Doc { buf, hist: History::default(), syntax: None, pending_syntax: None, last_change: None, marks: Default::default(), cursor: Cursor::default(), top: 0 };
             self.swap_in(d);
             self.start_syntax();
         } else {
@@ -162,7 +167,7 @@ impl Editor {
         let Some(path) = self.buf.path.clone() else { return };
         match Buffer::open(&path) {
             Ok(b) => {
-                let d = Doc { buf: b, hist: History::default(), syntax: None, pending_syntax: None, last_change: None, cursor: self.cursor, top: self.top };
+                let d = Doc { buf: b, hist: History::default(), syntax: None, pending_syntax: None, last_change: None, marks: std::mem::take(&mut self.marks), cursor: self.cursor, top: self.top };
                 self.swap_in(d);
                 self.start_syntax();
             }

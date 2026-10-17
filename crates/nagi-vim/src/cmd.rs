@@ -31,6 +31,8 @@ pub enum Motion {
     Paragraph { forward: bool },
     /// `n` / `N`
     SearchNext { reverse: bool },
+    /// `'a`（行単位、最初の空白でない文字へ）と `` `a ``（その位置へ）
+    Mark { ch: char, exact: bool },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -86,6 +88,10 @@ pub enum Action {
     AltBuffer,
     /// `Ctrl-w {c}`（窓の操作。`Ctrl-w Ctrl-h` などは `h` と同じ）
     Window(char),
+    /// `m{a-zA-Z}`
+    SetMark(char),
+    /// `Ctrl-o` / `Ctrl-i`（ジャンプリストを戻る・進む）
+    Jump { older: bool },
     Esc,
 }
 
@@ -173,6 +179,14 @@ fn motion(p: &mut P) -> Option<Option<Motion>> {
         Key::Char('{') => Motion::Paragraph { forward: false },
         Key::Char('n') => Motion::SearchNext { reverse: false },
         Key::Char('N') => Motion::SearchNext { reverse: true },
+        Key::Char(q @ ('\'' | '`')) => {
+            p.i += 1;
+            return match p.next() {
+                None => Some(None),
+                Some(Key::Char(ch)) => Some(Some(Motion::Mark { ch, exact: q == '`' })),
+                Some(_) => None,
+            };
+        }
         Key::Char(c @ ('f' | 'F' | 't' | 'T')) => {
             p.i += 1;
             return match p.next() {
@@ -326,6 +340,13 @@ pub fn parse_normal(keys: &[Key]) -> Parse {
         Key::Char('u') => Action::Undo,
         Key::Ctrl('r') => Action::Redo,
         Key::Ctrl('^' | '6') => Action::AltBuffer,
+        Key::Ctrl('o') => Action::Jump { older: true },
+        Key::Ctrl('i') | Key::Tab => Action::Jump { older: false },
+        Key::Char('m') => match p.next() {
+            None => return Parse::Incomplete,
+            Some(Key::Char(c)) if c.is_ascii_alphabetic() => Action::SetMark(c),
+            Some(_) => return Parse::Invalid,
+        },
         Key::Ctrl('w') => match p.next() {
             None => return Parse::Incomplete,
             Some(Key::Char(c)) => Action::Window(c),
@@ -427,5 +448,8 @@ mod tests {
         assert_eq!(n("10j"), Parse::Done(Cmd { count: Some(10), reg: None, kind: Kind::Move(Motion::Down) }));
         assert_eq!(n("ra"), Parse::Done(Cmd { count: None, reg: None, kind: Kind::Act(Action::Replace('a')) }));
         assert_eq!(n("]p"), Parse::Done(Cmd { count: None, reg: None, kind: Kind::Act(Action::Put { after: true, indent: true }) }));
+        assert_eq!(n("ma"), Parse::Done(Cmd { count: None, reg: None, kind: Kind::Act(Action::SetMark('a')) }));
+        assert_eq!(n("d'a"), Parse::Done(Cmd { count: None, reg: None, kind: Kind::Operate(Op::Delete, Target::Motion(Motion::Mark { ch: 'a', exact: false })) }));
+        assert_eq!(n("`"), Parse::Incomplete);
     }
 }
