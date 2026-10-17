@@ -147,13 +147,20 @@ impl Editor {
         // 下にパネルを開いている間は、その分を除いた範囲を窓で分ける
         // 左にツリーを開いている間は、その分と区切りの 1 列を除く
         let ((x, cols), rows) = (self.windows_x(), self.windows_rows());
+        // SQL コンソールの上の帯の分、1 行下げる
+        let top = self.windows_top();
         let mut out = Vec::new();
-        self.layout.rects(Rect { x, y: 0, w: cols, h: rows }, &mut out);
+        self.layout.rects(Rect { x, y: top, w: cols, h: rows.saturating_sub(top) }, &mut out);
         out
     }
 
+    /// 窓の領域の上に取る行（SQL コンソールの帯）
+    pub fn windows_top(&self) -> usize {
+        usize::from(self.console_source().is_some() && self.diff.is_none() && self.log.is_none() && self.db_table.is_none())
+    }
+
     pub fn active_rect(&self) -> Rect {
-        self.window_rects().into_iter().find(|(w, _)| *w == self.cur_win).map_or(Rect { x: self.windows_x().0, y: 0, w: self.windows_x().1, h: self.windows_rows() }, |(_, r)| r)
+        self.window_rects().into_iter().find(|(w, _)| *w == self.cur_win).map_or(Rect { x: self.windows_x().0, y: self.windows_top(), w: self.windows_x().1, h: self.windows_rows().saturating_sub(self.windows_top()) }, |(_, r)| r)
     }
 
     /// 窓の本文の行数（分割中は状態行の 1 行を除く）

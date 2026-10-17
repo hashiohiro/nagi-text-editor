@@ -1,18 +1,18 @@
-//! データベースにつなぐ（右の欄の「データベース」タブ用）。
+//! データベースにつなぐ（右の欄の「データベース」タブ用）。ドライバーはすべて Rust。
 //!
-//! JDBC のドライバーを Java の補助プログラム（NagiDb.java、ソースのまま動かす）で使う。ドライバーは Maven の
-//! ローカルリポジトリ（~/.m2/repository）から URL の種類で探すので、Oracle の Instant Client などは要らない。
-//! 補助プログラムは接続ごとに 1 つ動かしたままにし、標準入出力の 1 行ずつでやり取りする。やり取りは裏の
-//! スレッドで行い、終わったら UI を起こす。落とすと補助プログラムを止める。
+//! - Oracle: `oracle` クレート（Oracle 公式の ODPI-C）。実行時に Oracle Instant Client の DLL を読み込む。
+//!   Instant Client は、初めてつなぐときに Nagi がダウンロードして `%LOCALAPPDATA%\nagi\drivers\oracle` に置く
+//!   （drivers.rs）。PATH などに入っているものがあればそれも使う。
+//! - SQLite: `rusqlite`（SQLite を中に組み込む）。準備は要らない。
+//!
+//! 接続ごとに裏のスレッドを 1 つ立て、頼みごと（Req）を順に処理して答え（Reply）を返し、UI を起こす。
+//! 値はすべて文字列（NULL は None）で返す。日時は `YYYY-MM-DD HH24:MI:SS` の形にそろえる（書き戻すときも同じ形）。
 
-use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{Receiver, Sender, channel};
+use std::time::Instant;
 
 use crate::Waker;
-
-const HELPER: &str = include_str!("NagiDb.java");
 
 /// 接続先
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -24,264 +24,609 @@ pub struct DataSource {
     pub origin: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    Oracle,
+    Sqlite,
+}
+
+impl Kind {
+    pub fn of(url: &str) -> Option<Kind> {
+        let u = url.to_ascii_lowercase();
+        if u.starts_with("jdbc:oracle:") {
+            Some(Kind::Oracle)
+        } else if u.starts_with("jdbc:sqlite:") {
+            Some(Kind::Sqlite)
+        } else {
+            None
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Kind::Oracle => "Oracle",
+            Kind::Sqlite => "SQLite",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Column {
     pub name: String,
     pub ty: String,
-    pub size: String,
     pub nullable: bool,
+    pub pk: bool,
+    /// 外部キーの参照先のテーブル（無ければ空）
+    pub fk: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Index {
+    pub name: String,
+    pub unique: bool,
+    pub cols: String,
+}
+
+/// 主キー（refs が空）と外部キー
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Key {
+    pub name: String,
+    pub cols: String,
+    pub refs: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Objects {
+    /// (名前, TABLE / VIEW)
+    pub tables: Vec<(String, String)>,
+    pub sequences: Vec<String>,
+    pub routines: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
 pub enum Reply {
     Connected { product: String, schema: String },
-    /// (名前, TABLE / VIEW)
-    Tables(Vec<(String, String)>),
-    Columns(String, Vec<Column>),
-    Rows { cols: Vec<String>, rows: Vec<Vec<Option<String>>>, more: bool, ms: u64 },
+    Schemas(Vec<String>),
+    Objects(Objects),
+    Columns(Vec<Column>),
+    Indexes(Vec<Index>, Vec<Key>),
+    Rows { cols: Vec<String>, types: Vec<String>, rows: Vec<Vec<Option<String>>>, more: bool, ms: u64 },
     Updated { count: i64, ms: u64 },
+    Count(i64),
+    Ddl(String),
+    Done,
     Error(String),
 }
 
-enum Req {
-    Connect { url: String, user: String, pass: String },
-    Tables,
-    Columns(String),
-    Query { sql: String, max: usize },
+#[derive(Clone, Debug)]
+pub enum Req {
+    Schemas,
+    SetSchema(String),
+    Objects(String),
+    Columns(String, String),
+    Indexes(String, String),
+    Query { sql: String, max: usize, offset: usize },
+    Count(String),
+    /// 1 つのトランザクションで流す。どの文もちょうど 1 行を変えなければ全部取り消す
+    Batch(Vec<String>),
+    AutoCommit(bool),
+    Commit,
+    Rollback,
+    /// (スキーマ, 名前, TABLE / VIEW)
+    Ddl(String, String, String),
 }
 
-/// 1 つの接続（補助プログラム）
+type R<T> = Result<T, String>;
+
+/// ドライバーごとの中身
+trait Backend {
+    fn info(&mut self) -> R<(String, String)>;
+    fn schemas(&mut self) -> R<Vec<String>>;
+    fn set_schema(&mut self, s: &str) -> R<()>;
+    fn objects(&mut self, schema: &str) -> R<Objects>;
+    fn columns(&mut self, schema: &str, table: &str) -> R<Vec<Column>>;
+    fn indexes(&mut self, schema: &str, table: &str) -> R<(Vec<Index>, Vec<Key>)>;
+    /// (列名, 型, 行, 続きがあるか) か、変えた行の数
+    fn query(&mut self, sql: &str, max: usize, offset: usize) -> R<Result<(Vec<String>, Vec<String>, Vec<Vec<Option<String>>>, bool), i64>>;
+    fn count(&mut self, sql: &str) -> R<i64>;
+    fn batch(&mut self, stmts: &[String]) -> R<i64>;
+    fn set_autocommit(&mut self, on: bool) -> R<()>;
+    fn commit(&mut self) -> R<()>;
+    fn rollback(&mut self) -> R<()>;
+    fn ddl(&mut self, schema: &str, name: &str, kind: &str) -> R<String>;
+}
+
+/// 最後の ; を外す（PL/SQL のブロックは残す。Oracle は ; で誤りになる）
+pub fn strip_semicolon(sql: &str) -> String {
+    let s = sql.trim();
+    let up = s.to_ascii_uppercase();
+    if s.ends_with(';') && !(up.starts_with("BEGIN") || up.starts_with("DECLARE") || up.contains("END;")) {
+        s[..s.len() - 1].trim_end().to_string()
+    } else {
+        s.to_string()
+    }
+}
+
+// ---------------------------------------------------------------- Oracle
+
+/// JDBC の URL を Oracle の接続文字列にする
+pub fn oracle_connect_string(url: &str) -> String {
+    let rest = url.split_once('@').map_or(url, |(_, r)| r).trim();
+    if rest.starts_with('(') || rest.starts_with("//") {
+        return rest.to_string();
+    }
+    // host:port:SID（古い形）
+    let parts: Vec<&str> = rest.split(':').collect();
+    if parts.len() == 3 && !rest.contains('/') {
+        return format!("(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST={})(PORT={}))(CONNECT_DATA=(SID={})))", parts[0], parts[1], parts[2]);
+    }
+    rest.to_string()
+}
+
+struct OracleDb {
+    conn: oracle::Connection,
+}
+
+fn oe(e: oracle::Error) -> String {
+    e.to_string().lines().next().unwrap_or("").to_string()
+}
+
+impl OracleDb {
+    fn connect(url: &str, user: &str, pass: &str) -> R<Self> {
+        crate::drivers::init_oracle()?;
+        let mut conn = oracle::Connection::connect(user, pass, oracle_connect_string(url)).map_err(oe)?;
+        conn.set_autocommit(true);
+        // 表示と書き戻しで同じ形にする
+        conn.execute("ALTER SESSION SET NLS_DATE_FORMAT = 'YYYY-MM-DD HH24:MI:SS' NLS_TIMESTAMP_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF' NLS_TIMESTAMP_TZ_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF TZH:TZM'", &[]).map_err(oe)?;
+        Ok(OracleDb { conn })
+    }
+
+    fn strings(&self, sql: &str, params: &[&dyn oracle::sql_type::ToSql]) -> R<Vec<Vec<Option<String>>>> {
+        let rows = self.conn.query(sql, params).map_err(oe)?;
+        let mut out = Vec::new();
+        for r in rows {
+            let r = r.map_err(oe)?;
+            let n = r.sql_values().len();
+            out.push((0..n).map(|i| r.get::<usize, Option<String>>(i).ok().flatten()).collect());
+        }
+        Ok(out)
+    }
+}
+
+fn col(r: &[Option<String>], i: usize) -> String {
+    r.get(i).cloned().flatten().unwrap_or_default()
+}
+
+impl Backend for OracleDb {
+    fn info(&mut self) -> R<(String, String)> {
+        let (v, banner) = self.conn.server_version().map_err(oe)?;
+        let product = banner.lines().next().map_or_else(|| format!("Oracle {v}"), |b| b.split(" Release").next().unwrap_or(b).to_string());
+        Ok((format!("{product} {}", v.major()), self.conn.current_schema().map_err(oe)?))
+    }
+
+    fn schemas(&mut self) -> R<Vec<String>> {
+        Ok(self.strings("SELECT username FROM all_users ORDER BY username", &[])?.iter().map(|r| col(r, 0)).collect())
+    }
+
+    fn set_schema(&mut self, s: &str) -> R<()> {
+        self.conn.set_current_schema(s).map_err(oe)
+    }
+
+    fn objects(&mut self, schema: &str) -> R<Objects> {
+        let rows = self.strings(
+            "SELECT object_name, object_type FROM all_objects WHERE owner = :1 AND object_type IN ('TABLE','VIEW','SEQUENCE','PROCEDURE','FUNCTION','PACKAGE') AND object_name NOT LIKE 'BIN$%' ORDER BY object_name",
+            &[&schema],
+        )?;
+        let mut o = Objects::default();
+        for r in rows {
+            let (n, t) = (col(&r, 0), col(&r, 1));
+            match t.as_str() {
+                "TABLE" | "VIEW" => o.tables.push((n, t)),
+                "SEQUENCE" => o.sequences.push(n),
+                _ => o.routines.push(n),
+            }
+        }
+        Ok(o)
+    }
+
+    fn columns(&mut self, schema: &str, table: &str) -> R<Vec<Column>> {
+        let pk: Vec<String> = self
+            .strings("SELECT cc.column_name FROM all_constraints k JOIN all_cons_columns cc ON cc.owner = k.owner AND cc.constraint_name = k.constraint_name WHERE k.owner = :1 AND k.table_name = :2 AND k.constraint_type = 'P'", &[&schema, &table])?
+            .iter()
+            .map(|r| col(r, 0))
+            .collect();
+        let fk = self.strings(
+            "SELECT cc.column_name, r.table_name FROM all_constraints k JOIN all_cons_columns cc ON cc.owner = k.owner AND cc.constraint_name = k.constraint_name JOIN all_constraints r ON r.owner = k.r_owner AND r.constraint_name = k.r_constraint_name WHERE k.owner = :1 AND k.table_name = :2 AND k.constraint_type = 'R'",
+            &[&schema, &table],
+        )?;
+        let rows = self.strings(
+            "SELECT column_name, data_type, char_length, data_precision, data_scale, nullable FROM all_tab_columns WHERE owner = :1 AND table_name = :2 ORDER BY column_id",
+            &[&schema, &table],
+        )?;
+        Ok(rows
+            .iter()
+            .map(|r| {
+                let (name, dt) = (col(r, 0), col(r, 1));
+                let ty = if matches!(dt.as_str(), "VARCHAR2" | "NVARCHAR2" | "CHAR" | "NCHAR" | "RAW") {
+                    format!("{dt}({})", col(r, 2))
+                } else if dt == "NUMBER" && !col(r, 3).is_empty() {
+                    let s = col(r, 4);
+                    if s.is_empty() || s == "0" { format!("NUMBER({})", col(r, 3)) } else { format!("NUMBER({},{s})", col(r, 3)) }
+                } else {
+                    dt
+                };
+                let fk = fk.iter().find(|f| col(f, 0) == name).map(|f| col(f, 1)).unwrap_or_default();
+                Column { pk: pk.contains(&name), fk, nullable: col(r, 5) == "Y", name, ty }
+            })
+            .collect())
+    }
+
+    fn indexes(&mut self, schema: &str, table: &str) -> R<(Vec<Index>, Vec<Key>)> {
+        let rows = self.strings(
+            "SELECT i.index_name, i.uniqueness, ic.column_name FROM all_indexes i JOIN all_ind_columns ic ON ic.index_owner = i.owner AND ic.index_name = i.index_name WHERE i.table_owner = :1 AND i.table_name = :2 ORDER BY i.index_name, ic.column_position",
+            &[&schema, &table],
+        )?;
+        let mut idx: Vec<Index> = Vec::new();
+        for r in rows {
+            let n = col(&r, 0);
+            match idx.last_mut().filter(|i| i.name == n) {
+                Some(i) => i.cols = format!("{}, {}", i.cols, col(&r, 2)),
+                None => idx.push(Index { name: n, unique: col(&r, 1) == "UNIQUE", cols: col(&r, 2) }),
+            }
+        }
+        let rows = self.strings(
+            "SELECT k.constraint_name, k.constraint_type, cc.column_name, r.table_name FROM all_constraints k JOIN all_cons_columns cc ON cc.owner = k.owner AND cc.constraint_name = k.constraint_name LEFT JOIN all_constraints r ON r.owner = k.r_owner AND r.constraint_name = k.r_constraint_name WHERE k.owner = :1 AND k.table_name = :2 AND k.constraint_type IN ('P','R') ORDER BY k.constraint_type, k.constraint_name, cc.position",
+            &[&schema, &table],
+        )?;
+        let mut keys: Vec<Key> = Vec::new();
+        for r in rows {
+            let n = col(&r, 0);
+            match keys.last_mut().filter(|k| k.name == n) {
+                Some(k) => k.cols = format!("{}, {}", k.cols, col(&r, 2)),
+                None => keys.push(Key { name: n, cols: col(&r, 2), refs: col(&r, 3) }),
+            }
+        }
+        Ok((idx, keys))
+    }
+
+    fn query(&mut self, sql: &str, max: usize, offset: usize) -> R<Result<(Vec<String>, Vec<String>, Vec<Vec<Option<String>>>, bool), i64>> {
+        let sql = strip_semicolon(sql);
+        let mut stmt = self.conn.statement(&sql).build().map_err(oe)?;
+        if !stmt.is_query() {
+            stmt.execute(&[]).map_err(oe)?;
+            return Ok(Err(stmt.row_count().map_err(oe)? as i64));
+        }
+        let rs = stmt.query(&[]).map_err(oe)?;
+        let info = rs.column_info();
+        let cols: Vec<String> = info.iter().map(|c| c.name().to_string()).collect();
+        let types: Vec<String> = info.iter().map(|c| c.oracle_type().to_string()).collect();
+        let n = cols.len();
+        let mut rows = Vec::new();
+        let mut more = false;
+        for (k, r) in rs.enumerate() {
+            let r = r.map_err(oe)?;
+            if k < offset {
+                continue;
+            }
+            if rows.len() == max {
+                more = true;
+                break;
+            }
+            rows.push((0..n).map(|i| r.get::<usize, Option<String>>(i).unwrap_or_else(|e| Some(format!("({})", oe(e))))).collect());
+        }
+        Ok(Ok((cols, types, rows, more)))
+    }
+
+    fn count(&mut self, sql: &str) -> R<i64> {
+        self.conn.query_row_as::<i64>(&strip_semicolon(sql), &[]).map_err(oe)
+    }
+
+    fn batch(&mut self, stmts: &[String]) -> R<i64> {
+        let auto = self.conn.autocommit();
+        if auto {
+            self.conn.set_autocommit(false);
+        } else {
+            self.conn.execute("SAVEPOINT nagi_batch", &[]).map_err(oe)?;
+        }
+        let run = |c: &oracle::Connection| -> R<i64> {
+            let mut total = 0;
+            for (k, s) in stmts.iter().enumerate() {
+                let st = c.execute(&strip_semicolon(s), &[]).map_err(oe)?;
+                let n = st.row_count().map_err(oe)?;
+                if n != 1 {
+                    return Err(format!("{} 文目が {n} 行を変えようとしました（1 行のはず）。すべて取り消しました", k + 1));
+                }
+                total += 1;
+            }
+            Ok(total)
+        };
+        let r = run(&self.conn);
+        match (&r, auto) {
+            (Ok(_), true) => self.conn.commit().map_err(oe)?,
+            (Err(_), true) => self.conn.rollback().map_err(oe)?,
+            (Err(_), false) => {
+                let _ = self.conn.execute("ROLLBACK TO SAVEPOINT nagi_batch", &[]);
+            }
+            _ => {}
+        }
+        if auto {
+            self.conn.set_autocommit(true);
+        }
+        r
+    }
+
+    fn set_autocommit(&mut self, on: bool) -> R<()> {
+        self.conn.set_autocommit(on);
+        Ok(())
+    }
+
+    fn commit(&mut self) -> R<()> {
+        self.conn.commit().map_err(oe)
+    }
+
+    fn rollback(&mut self) -> R<()> {
+        self.conn.rollback().map_err(oe)
+    }
+
+    fn ddl(&mut self, schema: &str, name: &str, kind: &str) -> R<String> {
+        let k = if kind.contains("VIEW") { "VIEW" } else { "TABLE" };
+        self.conn.query_row_as::<String>("SELECT DBMS_METADATA.GET_DDL(:1, :2, :3) FROM DUAL", &[&k, &name, &schema]).map(|s| s.trim().to_string()).map_err(oe)
+    }
+}
+
+// ---------------------------------------------------------------- SQLite
+
+struct SqliteDb {
+    conn: rusqlite::Connection,
+    auto: bool,
+}
+
+fn se(e: rusqlite::Error) -> String {
+    e.to_string()
+}
+
+fn sqlite_value(v: rusqlite::types::ValueRef) -> Option<String> {
+    use rusqlite::types::ValueRef::*;
+    match v {
+        Null => None,
+        Integer(i) => Some(i.to_string()),
+        Real(f) => Some(f.to_string()),
+        Text(t) => Some(String::from_utf8_lossy(t).into_owned()),
+        Blob(b) => Some(format!("(BLOB {} バイト)", b.len())),
+    }
+}
+
+impl SqliteDb {
+    fn connect(url: &str) -> R<Self> {
+        let path = url.split_once("sqlite:").map_or(url, |(_, p)| p);
+        let conn = if path.is_empty() || path == ":memory:" { rusqlite::Connection::open_in_memory() } else { rusqlite::Connection::open(path) }.map_err(se)?;
+        Ok(SqliteDb { conn, auto: true })
+    }
+
+    fn strings(&self, sql: &str) -> R<Vec<Vec<Option<String>>>> {
+        let mut st = self.conn.prepare(sql).map_err(se)?;
+        let n = st.column_count();
+        let mut rows = st.query([]).map_err(se)?;
+        let mut out = Vec::new();
+        while let Some(r) = rows.next().map_err(se)? {
+            out.push((0..n).map(|i| r.get_ref(i).ok().and_then(sqlite_value)).collect());
+        }
+        Ok(out)
+    }
+
+    fn quote(s: &str) -> String {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    }
+}
+
+impl Backend for SqliteDb {
+    fn info(&mut self) -> R<(String, String)> {
+        Ok((format!("SQLite {}", rusqlite::version()), "main".into()))
+    }
+
+    fn schemas(&mut self) -> R<Vec<String>> {
+        Ok(vec!["main".into()])
+    }
+
+    fn set_schema(&mut self, _s: &str) -> R<()> {
+        Ok(())
+    }
+
+    fn objects(&mut self, _schema: &str) -> R<Objects> {
+        let rows = self.strings("SELECT name, type FROM sqlite_master WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%' ORDER BY name")?;
+        Ok(Objects { tables: rows.iter().map(|r| (col(r, 0), col(r, 1).to_ascii_uppercase())).collect(), ..Default::default() })
+    }
+
+    fn columns(&mut self, _schema: &str, table: &str) -> R<Vec<Column>> {
+        let fk = self.strings(&format!("PRAGMA foreign_key_list({})", Self::quote(table)))?;
+        let rows = self.strings(&format!("PRAGMA table_info({})", Self::quote(table)))?;
+        Ok(rows
+            .iter()
+            .map(|r| {
+                let name = col(r, 1);
+                let fk = fk.iter().find(|f| col(f, 3) == name).map(|f| col(f, 2)).unwrap_or_default();
+                Column { ty: col(r, 2), nullable: col(r, 3) == "0", pk: col(r, 5) != "0", fk, name }
+            })
+            .collect())
+    }
+
+    fn indexes(&mut self, _schema: &str, table: &str) -> R<(Vec<Index>, Vec<Key>)> {
+        let mut idx = Vec::new();
+        for r in self.strings(&format!("PRAGMA index_list({})", Self::quote(table)))? {
+            let name = col(&r, 1);
+            let cols: Vec<String> = self.strings(&format!("PRAGMA index_info({})", Self::quote(&name)))?.iter().map(|c| col(c, 2)).collect();
+            idx.push(Index { name, unique: col(&r, 2) == "1", cols: cols.join(", ") });
+        }
+        let pk: Vec<String> = self.columns("", table)?.into_iter().filter(|c| c.pk).map(|c| c.name).collect();
+        let mut keys = Vec::new();
+        if !pk.is_empty() {
+            keys.push(Key { name: "PRIMARY KEY".into(), cols: pk.join(", "), refs: String::new() });
+        }
+        for f in self.strings(&format!("PRAGMA foreign_key_list({})", Self::quote(table)))? {
+            keys.push(Key { name: format!("FK_{}", col(&f, 0)), cols: col(&f, 3), refs: col(&f, 2) });
+        }
+        Ok((idx, keys))
+    }
+
+    fn query(&mut self, sql: &str, max: usize, offset: usize) -> R<Result<(Vec<String>, Vec<String>, Vec<Vec<Option<String>>>, bool), i64>> {
+        let sql = strip_semicolon(sql);
+        let mut st = self.conn.prepare(&sql).map_err(se)?;
+        let n = st.column_count();
+        if n == 0 {
+            let c = st.execute([]).map_err(se)?;
+            return Ok(Err(c as i64));
+        }
+        let cols: Vec<String> = st.column_names().iter().map(|s| s.to_string()).collect();
+        let types: Vec<String> = st.columns().iter().map(|c| c.decl_type().unwrap_or("").to_string()).collect();
+        let mut q = st.query([]).map_err(se)?;
+        let mut rows = Vec::new();
+        let mut more = false;
+        let mut k = 0;
+        while let Some(r) = q.next().map_err(se)? {
+            k += 1;
+            if k <= offset {
+                continue;
+            }
+            if rows.len() == max {
+                more = true;
+                break;
+            }
+            rows.push((0..n).map(|i| r.get_ref(i).ok().and_then(sqlite_value)).collect());
+        }
+        Ok(Ok((cols, types, rows, more)))
+    }
+
+    fn count(&mut self, sql: &str) -> R<i64> {
+        self.conn.query_row(&strip_semicolon(sql), [], |r| r.get::<_, i64>(0)).map_err(se)
+    }
+
+    fn batch(&mut self, stmts: &[String]) -> R<i64> {
+        self.conn.execute_batch("SAVEPOINT nagi_batch").map_err(se)?;
+        let mut total = 0;
+        for (k, s) in stmts.iter().enumerate() {
+            let n = match self.conn.execute(&strip_semicolon(s), []) {
+                Ok(n) => n,
+                Err(e) => {
+                    let _ = self.conn.execute_batch("ROLLBACK TO nagi_batch; RELEASE nagi_batch");
+                    return Err(se(e));
+                }
+            };
+            if n != 1 {
+                let _ = self.conn.execute_batch("ROLLBACK TO nagi_batch; RELEASE nagi_batch");
+                return Err(format!("{} 文目が {n} 行を変えようとしました（1 行のはず）。すべて取り消しました", k + 1));
+            }
+            total += 1;
+        }
+        self.conn.execute_batch("RELEASE nagi_batch").map_err(se)?;
+        Ok(total)
+    }
+
+    fn set_autocommit(&mut self, on: bool) -> R<()> {
+        if on == self.auto {
+            return Ok(());
+        }
+        self.auto = on;
+        // 手動: BEGIN しておく。自動に戻すときは、残っている変更を確定する
+        self.conn.execute_batch(if on { "COMMIT" } else { "BEGIN" }).map_err(se)
+    }
+
+    fn commit(&mut self) -> R<()> {
+        if self.auto {
+            return Ok(());
+        }
+        self.conn.execute_batch("COMMIT; BEGIN").map_err(se)
+    }
+
+    fn rollback(&mut self) -> R<()> {
+        if self.auto {
+            return Ok(());
+        }
+        self.conn.execute_batch("ROLLBACK; BEGIN").map_err(se)
+    }
+
+    fn ddl(&mut self, _schema: &str, name: &str, _kind: &str) -> R<String> {
+        self.conn.query_row("SELECT sql FROM sqlite_master WHERE name = ?1", [name], |r| r.get::<_, String>(0)).map_err(se)
+    }
+}
+
+// ---------------------------------------------------------------- 接続（裏のスレッド）
+
+/// 1 つの接続
 pub struct Client {
     tx: Sender<Req>,
     pub rx: Receiver<Reply>,
-    child: Child,
-}
-
-impl Drop for Client {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-    }
-}
-
-fn esc(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('\t', "\\t").replace('\n', "\\n").replace('\r', "\\r")
-}
-
-fn unesc(s: &str) -> Option<String> {
-    if s == "\\N" {
-        return None;
-    }
-    let mut out = String::with_capacity(s.len());
-    let mut it = s.chars();
-    while let Some(c) = it.next() {
-        if c == '\\' {
-            match it.next() {
-                Some('t') => out.push('\t'),
-                Some('n') => out.push('\n'),
-                Some('r') => out.push('\r'),
-                Some(o) => out.push(o),
-                None => out.push('\\'),
-            }
-        } else {
-            out.push(c);
-        }
-    }
-    Some(out)
-}
-
-fn fields(l: &str) -> Vec<Option<String>> {
-    l.split('\t').map(unesc).collect()
-}
-
-fn text(f: &[Option<String>], i: usize) -> String {
-    f.get(i).cloned().flatten().unwrap_or_default()
-}
-
-fn home() -> PathBuf {
-    std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from).unwrap_or_default()
-}
-
-/// Java を探す: PATH の java、無ければ ~/.jdks のいちばん新しいもの（JAVA_HOME は古いことがあるので後回し）
-pub fn find_java() -> Option<PathBuf> {
-    let ok = |p: &Path| {
-        let mut c = Command::new(p);
-        c.arg("-version").stdout(Stdio::null()).stderr(Stdio::null());
-        no_window(&mut c);
-        c.status().is_ok_and(|s| s.success())
-    };
-    if ok(Path::new("java")) {
-        return Some(PathBuf::from("java"));
-    }
-    let mut jdks: Vec<PathBuf> = std::fs::read_dir(home().join(".jdks")).into_iter().flatten().flatten().map(|e| e.path().join("bin").join("java.exe")).filter(|p| p.is_file()).collect();
-    jdks.sort();
-    if let Some(p) = jdks.pop() {
-        return Some(p);
-    }
-    let jh = PathBuf::from(std::env::var_os("JAVA_HOME")?).join("bin").join("java.exe");
-    ok(&jh).then_some(jh)
-}
-
-#[allow(unused_variables)]
-fn no_window(c: &mut Command) {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        c.creation_flags(0x0800_0000);
-    }
-}
-
-/// 版の名前を数の並びとして比べる（21.9.0.0 < 23.7.0.25.01）
-fn version_key(v: &str) -> Vec<u64> {
-    v.split(|c: char| !c.is_ascii_digit()).filter(|s| !s.is_empty()).map(|s| s.parse().unwrap_or(0)).collect()
-}
-
-/// JDBC の URL に合うドライバーの jar を ~/.m2 から探す（いちばん新しい版）
-pub fn find_driver(url: &str) -> Option<PathBuf> {
-    find_driver_in(&home().join(".m2").join("repository"), url)
-}
-
-pub fn find_driver_in(repo: &Path, url: &str) -> Option<PathBuf> {
-    let kind = url.strip_prefix("jdbc:")?.split(':').next()?;
-    let cands: &[&str] = match kind {
-        "oracle" => &["com/oracle/database/jdbc/ojdbc11", "com/oracle/database/jdbc/ojdbc8", "com/oracle/database/jdbc/ojdbc10"],
-        "postgresql" => &["org/postgresql/postgresql"],
-        "mysql" => &["com/mysql/mysql-connector-j", "mysql/mysql-connector-java"],
-        "mariadb" => &["org/mariadb/jdbc/mariadb-java-client"],
-        "sqlserver" => &["com/microsoft/sqlserver/mssql-jdbc"],
-        "h2" => &["com/h2database/h2"],
-        "sqlite" => &["org/xerial/sqlite-jdbc"],
-        _ => return None,
-    };
-    for c in cands {
-        let dir = repo.join(c);
-        let art = c.rsplit('/').next().unwrap_or("");
-        let mut versions: Vec<String> = std::fs::read_dir(&dir).into_iter().flatten().flatten().filter_map(|e| e.file_name().into_string().ok()).collect();
-        versions.sort_by_key(|v| version_key(v));
-        for v in versions.iter().rev() {
-            let jar = dir.join(v).join(format!("{art}-{v}.jar"));
-            if jar.is_file() {
-                return Some(jar);
-            }
-        }
-    }
-    None
-}
-
-/// 補助プログラムを置く（中身が同じなら書かない）
-fn helper_path(dir: &Path) -> std::io::Result<PathBuf> {
-    std::fs::create_dir_all(dir)?;
-    let p = dir.join("NagiDb.java");
-    if std::fs::read_to_string(&p).ok().as_deref() != Some(HELPER) {
-        std::fs::write(&p, HELPER)?;
-    }
-    Ok(p)
-}
-
-fn helper_dir() -> PathBuf {
-    if let Some(d) = std::env::var_os("NAGI_DB_DIR") {
-        return PathBuf::from(d);
-    }
-    std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("nagi").join("db")
 }
 
 impl Client {
-    /// 補助プログラムを動かして `url` につなぎ始める（つながったら Reply::Connected が届く）
+    /// 裏のスレッドで `url` につなぎ始める（つながったら Reply::Connected が届く）
     pub fn connect(url: &str, user: &str, pass: &str, waker: Waker) -> Result<Client, String> {
-        let java = find_java().ok_or("Java が見つかりません（PATH か ~/.jdks に JDK 11 以上が要ります）")?;
-        let jar = find_driver(url).ok_or_else(|| format!("{} のドライバーが ~/.m2 にありません（プロジェクトを一度 mvn でビルドすると入ります）", url.split(':').take(2).collect::<Vec<_>>().join(":")))?;
-        let helper = helper_path(&helper_dir()).map_err(|e| format!("補助プログラムを置けません: {e}"))?;
-        let mut cmd = Command::new(java);
-        cmd.arg("-Dfile.encoding=UTF-8").arg("-cp").arg(&jar).arg(&helper).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null());
-        no_window(&mut cmd);
-        let mut child = cmd.spawn().map_err(|e| format!("Java を起動できません: {e}"))?;
-        let stdin = child.stdin.take().ok_or("標準入力を開けません")?;
-        let stdout = child.stdout.take().ok_or("標準出力を開けません")?;
+        let kind = Kind::of(url).ok_or_else(|| format!("この種類の接続はまだ使えません（Oracle と SQLite）: {}", url.split(':').take(2).collect::<Vec<_>>().join(":")))?;
         let (tx, req_rx) = channel::<Req>();
         let (reply_tx, rx) = channel::<Reply>();
-        let _ = std::thread::Builder::new().name("db".into()).spawn(move || serve(stdin, BufReader::new(stdout), req_rx, reply_tx, waker));
-        let c = Client { tx, rx, child };
-        c.send(Req::Connect { url: url.into(), user: user.into(), pass: pass.into() });
-        Ok(c)
+        let (url, user, pass) = (url.to_string(), user.to_string(), pass.to_string());
+        std::thread::Builder::new()
+            .name("db".into())
+            .spawn(move || {
+                let send = |r: Reply| {
+                    let ok = reply_tx.send(r).is_ok();
+                    waker();
+                    ok
+                };
+                let opened: R<Box<dyn Backend>> = match kind {
+                    Kind::Oracle => OracleDb::connect(&url, &user, &pass).map(|d| Box::new(d) as Box<dyn Backend>),
+                    Kind::Sqlite => SqliteDb::connect(&url).map(|d| Box::new(d) as Box<dyn Backend>),
+                };
+                let mut db = match opened.and_then(|mut d| d.info().map(|i| (d, i))) {
+                    Ok((d, (product, schema))) => {
+                        if !send(Reply::Connected { product, schema }) {
+                            return;
+                        }
+                        d
+                    }
+                    Err(e) => {
+                        send(Reply::Error(e));
+                        return;
+                    }
+                };
+                for req in req_rx {
+                    let t0 = Instant::now();
+                    let ms = || t0.elapsed().as_millis() as u64;
+                    let r = match req {
+                        Req::Schemas => db.schemas().map(Reply::Schemas),
+                        Req::SetSchema(s) => db.set_schema(&s).map(|_| Reply::Done),
+                        Req::Objects(s) => db.objects(&s).map(Reply::Objects),
+                        Req::Columns(s, t) => db.columns(&s, &t).map(Reply::Columns),
+                        Req::Indexes(s, t) => db.indexes(&s, &t).map(|(i, k)| Reply::Indexes(i, k)),
+                        Req::Query { sql, max, offset } => db.query(&sql, max, offset).map(|r| match r {
+                            Ok((cols, types, rows, more)) => Reply::Rows { cols, types, rows, more, ms: ms() },
+                            Err(count) => Reply::Updated { count, ms: ms() },
+                        }),
+                        Req::Count(sql) => db.count(&sql).map(Reply::Count),
+                        Req::Batch(stmts) => db.batch(&stmts).map(|count| Reply::Updated { count, ms: ms() }),
+                        Req::AutoCommit(on) => db.set_autocommit(on).map(|_| Reply::Done),
+                        Req::Commit => db.commit().map(|_| Reply::Done),
+                        Req::Rollback => db.rollback().map(|_| Reply::Done),
+                        Req::Ddl(s, n, k) => db.ddl(&s, &n, &k).map(Reply::Ddl),
+                    };
+                    if !send(r.unwrap_or_else(Reply::Error)) {
+                        return;
+                    }
+                }
+            })
+            .map_err(|e| e.to_string())?;
+        Ok(Client { tx, rx })
     }
 
-    fn send(&self, r: Req) {
+    pub fn send(&self, r: Req) {
         let _ = self.tx.send(r);
     }
 
-    pub fn tables(&self) {
-        self.send(Req::Tables);
-    }
-
-    pub fn columns(&self, table: &str) {
-        self.send(Req::Columns(table.into()));
-    }
-
     pub fn query(&self, sql: &str, max: usize) {
-        self.send(Req::Query { sql: sql.into(), max });
+        self.send(Req::Query { sql: sql.into(), max, offset: 0 });
     }
 }
 
-fn serve(mut stdin: ChildStdin, mut out: BufReader<std::process::ChildStdout>, rx: Receiver<Req>, tx: Sender<Reply>, waker: Waker) {
-    let read_line = |out: &mut BufReader<std::process::ChildStdout>| -> Option<String> {
-        let mut s = String::new();
-        match out.read_line(&mut s) {
-            Ok(0) | Err(_) => None,
-            Ok(_) => Some(s.trim_end_matches(['\r', '\n']).to_string()),
-        }
-    };
-    // 起動を待つ（コンパイルに 1 秒ほどかかる）
-    match read_line(&mut out) {
-        Some(l) if l == "READY" => {}
-        _ => {
-            let _ = tx.send(Reply::Error("補助プログラムが起動しませんでした（Java 11 以上か確かめてください）".into()));
-            waker();
-            return;
-        }
-    }
-    for req in rx {
-        let (line, columns_of) = match &req {
-            Req::Connect { url, user, pass } => (format!("CONNECT\t{}\t{}\t{}", esc(url), esc(user), esc(pass)), None),
-            Req::Tables => ("TABLES\t".to_string(), None),
-            Req::Columns(t) => (format!("COLUMNS\t\t{}", esc(t)), Some(t.clone())),
-            Req::Query { sql, max } => (format!("QUERY\t{max}\t{}", esc(sql)), None),
-        };
-        if writeln!(stdin, "{line}").and_then(|_| stdin.flush()).is_err() {
-            let _ = tx.send(Reply::Error("接続が切れました".into()));
-            waker();
-            return;
-        }
-        let mut tables = Vec::new();
-        let mut cols = Vec::new();
-        let mut head = Vec::new();
-        let mut rows = Vec::new();
-        let reply = loop {
-            let Some(l) = read_line(&mut out) else { break Reply::Error("接続が切れました".into()) };
-            let f = fields(&l);
-            match text(&f, 0).as_str() {
-                // H2 2.x などは BASE TABLE と返すので TABLE にそろえる
-                "T" => tables.push((text(&f, 1), text(&f, 2).replace("BASE TABLE", "TABLE"))),
-                "C" => cols.push(Column { name: text(&f, 1), ty: text(&f, 2), size: text(&f, 3), nullable: text(&f, 4) != "0" }),
-                "H" => head = f[1..].iter().map(|x| x.clone().unwrap_or_default()).collect(),
-                "R" => rows.push(f[1..].to_vec()),
-                "ERR" => break Reply::Error(text(&f, 1)),
-                "OK" => {
-                    break match &req {
-                        Req::Connect { .. } => Reply::Connected { product: text(&f, 1), schema: text(&f, 2) },
-                        Req::Tables => Reply::Tables(std::mem::take(&mut tables)),
-                        Req::Columns(_) => Reply::Columns(columns_of.clone().unwrap_or_default(), std::mem::take(&mut cols)),
-                        Req::Query { .. } if text(&f, 1) == "updated" => Reply::Updated { count: text(&f, 2).parse().unwrap_or(0), ms: text(&f, 3).parse().unwrap_or(0) },
-                        Req::Query { .. } => Reply::Rows { cols: std::mem::take(&mut head), rows: std::mem::take(&mut rows), more: text(&f, 3) == "1", ms: text(&f, 4).parse().unwrap_or(0) },
-                    };
-                }
-                _ => {}
-            }
-        };
-        if tx.send(reply).is_err() {
-            return;
-        }
-        waker();
-    }
-}
+// ---------------------------------------------------------------- 接続先を集める
 
 /// Spring の設定（application*.properties）から接続先を集める。パスワードは読まない（つなぐときに入力する）
 pub fn detect_sources(root: &Path) -> Vec<DataSource> {
@@ -342,11 +687,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn escape_round_trip() {
-        let s = "a\tb\\c\nd";
-        assert_eq!(unesc(&esc(s)).as_deref(), Some(s));
-        assert_eq!(unesc("\\N"), None);
-        assert_eq!(version_key("23.7.0.25.01") > version_key("21.9.0.0"), true);
+    fn connect_strings() {
+        assert_eq!(oracle_connect_string("jdbc:oracle:thin:@//db:1521/SHOP"), "//db:1521/SHOP");
+        assert_eq!(oracle_connect_string("jdbc:oracle:thin:@db:1521/SHOP"), "db:1521/SHOP");
+        assert_eq!(oracle_connect_string("jdbc:oracle:thin:@db:1521:ORCL"), "(DESCRIPTION=(ADDRESS=(PROTOCOL=TCP)(HOST=db)(PORT=1521))(CONNECT_DATA=(SID=ORCL)))");
+        assert_eq!(oracle_connect_string("jdbc:oracle:thin:@MYALIAS"), "MYALIAS");
+        assert_eq!(strip_semicolon("select 1 from dual;"), "select 1 from dual");
+        assert_eq!(strip_semicolon("BEGIN x; END;"), "BEGIN x; END;");
+        assert_eq!(Kind::of("jdbc:sqlite::memory:"), Some(Kind::Sqlite));
+        assert_eq!(Kind::of("jdbc:postgresql://x"), None);
     }
 
     #[test]
@@ -363,52 +712,64 @@ mod tests {
         let v = detect_sources(&dir);
         assert_eq!(v.len(), 1);
         assert_eq!((v[0].name.as_str(), v[0].url.as_str(), v[0].user.as_str()), ("rest (dev)", "jdbc:oracle:thin:@//db:1521/X", "APP"));
-        let c = config_sources("# x\nlocal | jdbc:h2:mem:t | sa\n", "cfg");
+        let c = config_sources("# x\nlocal | jdbc:sqlite::memory: |\n", "cfg");
         assert_eq!(c[0].name, "local");
     }
 
-    /// 本物の JDBC（~/.m2 の H2 のメモリ DB）でつなぎ、表を作って読む。Java か H2 が無ければ飛ばす
+    /// SQLite のメモリ DB で、つなぐ・表を作る・行を入れる・読む・木・キー・まとめて送る・トランザクション
     #[test]
-    fn h2_round_trip() {
-        if find_java().is_none() || find_driver("jdbc:h2:mem:x").is_none() {
-            eprintln!("Java か H2 が無いので飛ばす");
-            return;
-        }
-        let dir = std::env::temp_dir().join(format!("nagi-dbhelper-{}", std::process::id()));
-        // SAFETY: テストの中だけで使う
-        unsafe { std::env::set_var("NAGI_DB_DIR", &dir) };
-        let c = Client::connect("jdbc:h2:mem:nagi", "sa", "", std::sync::Arc::new(|| {})).unwrap();
-        let wait = |c: &Client| c.rx.recv_timeout(std::time::Duration::from_secs(60)).expect("応答が無い");
-        let r = wait(&c);
-        assert!(matches!(&r, Reply::Connected { product, .. } if product.starts_with("H2")), "{r:?}");
-        c.query("create table item(id int primary key, name varchar(20), note varchar(20))", 100);
-        assert!(matches!(wait(&c), Reply::Updated { .. }));
-        c.query("insert into item values (1, 'a\tb', null), (2, 'りんご', 'x')", 100);
-        assert!(matches!(wait(&c), Reply::Updated { count: 2, .. }));
-        c.query("select * from item order by id;", 1);
-        match wait(&c) {
-            Reply::Rows { cols, rows, more, .. } => {
-                assert_eq!(cols, vec!["ID", "NAME", "NOTE"]);
-                assert_eq!(rows, vec![vec![Some("1".to_string()), Some("a\tb".into()), None]]);
-                assert!(more, "max を超えた分がある");
+    fn sqlite_round_trip() {
+        let c = Client::connect("jdbc:sqlite::memory:", "", "", std::sync::Arc::new(|| {})).unwrap();
+        let wait = || c.rx.recv_timeout(std::time::Duration::from_secs(20)).expect("応答が無い");
+        assert!(matches!(wait(), Reply::Connected { product, schema } if product.starts_with("SQLite") && schema == "main"));
+        c.query("create table customer(id integer primary key, name text not null)", 10);
+        assert!(matches!(wait(), Reply::Updated { .. }));
+        c.query("create table item(id integer primary key, name text, cust integer references customer(id))", 10);
+        wait();
+        c.query("create index item_name on item(name)", 10);
+        wait();
+        c.query("insert into item values (1, 'a\tb', null), (2, 'りんご', null), (3, 'c', null)", 10);
+        assert!(matches!(wait(), Reply::Updated { count: 3, .. }));
+        c.send(Req::Query { sql: "select id, name, cust from item order by id;".into(), max: 1, offset: 1 });
+        match wait() {
+            Reply::Rows { cols, types, rows, more, .. } => {
+                assert_eq!(cols, vec!["id", "name", "cust"]);
+                assert_eq!(types, vec!["INTEGER", "TEXT", "INTEGER"]);
+                assert_eq!(rows, vec![vec![Some("2".to_string()), Some("りんご".into()), None]], "1 行飛ばして 1 行");
+                assert!(more);
             }
             r => panic!("{r:?}"),
         }
-        c.tables();
-        match wait(&c) {
-            Reply::Tables(t) => assert!(t.contains(&("ITEM".to_string(), "TABLE".to_string())), "{t:?}"),
-            r => panic!("{r:?}"),
-        }
-        c.columns("ITEM");
-        match wait(&c) {
-            Reply::Columns(t, cols) => {
-                assert_eq!(t, "ITEM");
-                assert_eq!(cols.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), vec!["ID", "NAME", "NOTE"]);
-                assert!(!cols[0].nullable);
+        c.send(Req::Objects("main".into()));
+        assert!(matches!(wait(), Reply::Objects(o) if o.tables == vec![("customer".to_string(), "TABLE".to_string()), ("item".into(), "TABLE".into())]));
+        c.send(Req::Columns("main".into(), "item".into()));
+        match wait() {
+            Reply::Columns(cols) => {
+                assert!(cols[0].pk && cols[2].fk == "customer", "{cols:?}");
             }
             r => panic!("{r:?}"),
         }
+        c.send(Req::Indexes("main".into(), "item".into()));
+        assert!(matches!(wait(), Reply::Indexes(i, k) if i.iter().any(|x| x.name == "item_name") && k.iter().any(|x| x.refs == "customer")));
+        c.send(Req::Count("select count(*) from item".into()));
+        assert!(matches!(wait(), Reply::Count(3)));
+        // まとめて送る: 2 文目が 0 行なら全部取り消す
+        c.send(Req::Batch(vec!["update item set name = 'x' where id = 1".into(), "update item set name = 'y' where id = 99".into()]));
+        assert!(matches!(wait(), Reply::Error(m) if m.contains("2 文目")));
+        c.send(Req::Batch(vec!["update item set name = 'x' where id = 1".into(), "delete from item where id = 3".into()]));
+        assert!(matches!(wait(), Reply::Updated { count: 2, .. }));
+        // 手動のトランザクション: ロールバックで消える
+        c.send(Req::AutoCommit(false));
+        wait();
+        c.query("delete from item", 10);
+        wait();
+        c.send(Req::Rollback);
+        wait();
+        c.send(Req::Count("select count(*) from item".into()));
+        assert!(matches!(wait(), Reply::Count(2)));
+        c.send(Req::Ddl("main".into(), "item".into(), "TABLE".into()));
+        assert!(matches!(wait(), Reply::Ddl(d) if d.starts_with("CREATE TABLE item")));
         c.query("select * from nothing", 10);
-        assert!(matches!(wait(&c), Reply::Error(m) if m.contains("NOTHING")));
+        assert!(matches!(wait(), Reply::Error(m) if m.contains("nothing")));
     }
 }

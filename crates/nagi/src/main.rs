@@ -12,6 +12,7 @@
 mod autoread;
 mod blame;
 mod db_panel;
+mod db_table;
 mod branches;
 mod block;
 mod buffers;
@@ -39,6 +40,7 @@ mod resize;
 mod result_grid;
 mod right_panel;
 mod save_dialog;
+mod sql_complete;
 mod toggles;
 mod tree_panel;
 mod normal;
@@ -675,6 +677,16 @@ impl App {
         }
         // 出す・隠すのボタンの上なら明るくして名前を出す。ボタンは左端にもあるので、
         // ストライプがまだ出ていなければボタンを優先し、もう出ていればストライプを優先する
+        // SQL コンソールの帯のボタン
+        let bar = if row == 0 && ed.windows_top() > 0 {
+            let (x, w) = ed.windows_x();
+            let c = col as usize;
+            ed.console_bar(w).into_iter().find(|b| c >= x + b.1 && c < x + b.1 + b.2).map(|b| b.3)
+        } else {
+            None
+        };
+        let bar_changed = bar != ed.hover_bar;
+        ed.hover_bar = bar;
         let mut hover = ed.button_at(row, col as usize);
         let mut want = want;
         if want.is_some() && want == ed.stripe {
@@ -682,7 +694,7 @@ impl App {
         } else if hover.is_some() {
             want = None;
         }
-        if want != ed.stripe || hover != ed.hover_button {
+        if want != ed.stripe || hover != ed.hover_button || bar_changed {
             ed.stripe = want;
             ed.hover_button = hover;
             self.draw();
@@ -795,6 +807,22 @@ impl App {
                 self.sync_ime();
                 self.draw();
                 return;
+            }
+        }
+        // SQL コンソールの上の帯
+        if let (Some(f), Some(ed)) = (&self.fonts, &mut self.ed) {
+            let cell = f.cell();
+            let (row, col) = ((self.mouse.1 as f32 / cell.h) as usize, (self.mouse.0.max(0.0) as f32 / cell.w) as usize);
+            if row == 0 && ed.windows_top() > 0 {
+                let (x, w) = ed.windows_x();
+                if col >= x && col < x + w {
+                    if let Some(item) = ed.console_bar(w).into_iter().find(|b| col >= x + b.1 && col < x + b.1 + b.2).map(|b| b.3) {
+                        ed.console_bar_press(item);
+                    }
+                    self.sync_ime();
+                    self.draw();
+                    return;
+                }
             }
         }
         // 右の欄（データベース・Maven）

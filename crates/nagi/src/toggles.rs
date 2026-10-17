@@ -62,7 +62,7 @@ impl Editor {
     pub fn bottom_exists(&self) -> bool {
         match self.bottom_kind {
             crate::result_grid::BottomKind::Grep => self.grep.is_some(),
-            crate::result_grid::BottomKind::Result => self.db_result.is_some(),
+            crate::result_grid::BottomKind::Result => !self.db_results.is_empty(),
         }
     }
 
@@ -76,12 +76,12 @@ impl Editor {
         let mut v = Vec::new();
         match self.left_rect() {
             Some(r) => v.push((Button::HideLeft, r.y, r.x + r.w - 2)),
-            None if self.diff.is_none() && self.log.is_none() => v.push((Button::ShowLeft, 0, 0)),
+            None if self.diff.is_none() && self.log.is_none() && self.db_table.is_none() => v.push((Button::ShowLeft, 0, 0)),
             None => {}
         }
         match self.panel_rect() {
             Some(r) => v.push((Button::HideBottom, r.y, r.x + r.w - 2)),
-            None if self.bottom_exists() && self.diff.is_none() && self.log.is_none() => {
+            None if self.bottom_exists() && self.diff.is_none() && self.log.is_none() && self.db_table.is_none() => {
                 v.push((Button::ShowBottom, self.windows_rows().saturating_sub(1), self.windows_x().0))
             }
             None => {}

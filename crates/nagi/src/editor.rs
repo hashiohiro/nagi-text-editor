@@ -40,6 +40,8 @@ pub enum Mode {
     Log,
     /// ブランチのポップアップ
     Branches,
+    /// テーブルのデータの編集
+    DbTable,
 }
 
 /// リストモードでいるパネル
@@ -276,7 +278,9 @@ pub struct Editor {
     /// 右の欄（データベース・Maven）と、下のパネルのクエリの結果
     pub db: Option<crate::db_panel::DbPanel>,
     pub maven: Option<crate::maven_panel::MavenPanel>,
-    pub db_result: Option<crate::result_grid::ResultGrid>,
+    pub db_results: crate::result_grid::DbResults,
+    /// テーブルのデータの編集（開いている間だけ）
+    pub db_table: Option<crate::db_table::TableEditor>,
     pub bottom_kind: crate::result_grid::BottomKind,
     pub right_tab: crate::right_panel::RightTab,
     pub right_hidden: bool,
@@ -285,6 +289,8 @@ pub struct Editor {
     /// ドラッグで変えた左の欄の幅・下のパネルの高さ（None は既定の大きさ）
     pub left_w: Option<usize>,
     pub bottom_h: Option<usize>,
+    /// マウスを載せている SQL コンソールの帯のボタン
+    pub hover_bar: Option<crate::db_panel::BarItem>,
     /// マウスを載せているボタン
     pub hover_button: Option<crate::toggles::Button>,
     /// 左の欄で出しているタブ（ツリーとコミットのパネルが両方開いているとき）
@@ -401,10 +407,12 @@ impl Editor {
             left_hidden: false,
             bottom_hidden: false,
             hover_button: None,
+            hover_bar: None,
             left_w: None,
             db: None,
             maven: None,
-            db_result: None,
+            db_results: Default::default(),
+            db_table: None,
             bottom_kind: Default::default(),
             right_tab: Default::default(),
             right_hidden: false,
@@ -551,6 +559,9 @@ impl Editor {
     /// 入力欄（IME の確定先）があるモードか
     pub fn has_prompt(&self) -> bool {
         matches!(self.mode, Mode::Command | Mode::Search | Mode::Replace | Mode::Finder | Mode::GrepPrompt | Mode::CommitMsg)
+            || self.db_typing()
+            || self.db_table_typing()
+            || (self.mode == Mode::List && self.list_side == Side::Bottom && self.db_results.editing.is_some())
     }
 
     pub(crate) fn motion(&self) -> Motion<'_> {
@@ -728,6 +739,10 @@ impl Editor {
                 self.branches_key(key);
                 Effect::None
             }
+            Mode::DbTable => {
+                self.db_table_key(key);
+                Effect::None
+            }
         };
         // 検索や :{行} で閉じた折りたたみの途中へ跳んだら開く
         if !self.folds.is_empty() && self.mode == Mode::Normal {
@@ -765,7 +780,13 @@ impl Editor {
                     self.cursor.want_col = display_col(&line, self.cursor.byte, false);
                 }
             }
-            Key::Char(c) => self.insert_text(c.encode_utf8(&mut [0; 4])),
+            Key::Char(c) => {
+                self.insert_text(c.encode_utf8(&mut [0; 4]));
+                // SQL コンソールでは「別名.」の後に列の候補を出す
+                if c == '.' && self.console_source().is_some() {
+                    self.start_sql_completion(true);
+                }
+            }
             _ => {}
         }
     }
@@ -1317,6 +1338,11 @@ impl Editor {
             "Db" | "Database" => self.open_db_panel(),
             "DbAdd" => self.db_add(arg),
             "DbRun" => self.db_run_at_cursor(),
+            "DbSchema" => self.db_set_schema(arg),
+            "DbExport" => self.db_export(arg),
+            "DbCommit" => self.db_tx_command("commit"),
+            "DbRollback" => self.db_tx_command("rollback"),
+            "DbTx" => self.db_tx_command("toggle"),
             "Gpull" => self.run_git_job("pull ", &["pull", "--no-edit"]),
             "Gfetch" => self.run_git_job("フェッチ", &["fetch", "--all", "--prune"]),
             "Gpush" => self.push_from_anywhere(),
@@ -1468,6 +1494,15 @@ impl Editor {
             Mode::GrepPrompt => self.grep_insert(text),
             Mode::CommitMsg => self.commit_msg_insert(text),
             Mode::Branches => self.branches_insert(text),
+            Mode::DbTable => self.db_table_insert(text),
+            Mode::List if self.list_side == Side::Right => {
+                self.db_insert(text);
+            }
+            Mode::List if self.list_side == Side::Bottom => {
+                if let Some((_, p)) = &mut self.db_results.editing {
+                    p.insert(text);
+                }
+            }
             Mode::Log => {
                 if let Some(l) = &mut self.log {
                     if l.filtering {

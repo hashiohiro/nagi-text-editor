@@ -106,7 +106,8 @@ impl Editor {
         }
         let ((x, cols), rows) = (self.windows_x(), self.windows_rows());
         let mut out = Vec::new();
-        collect(&self.layout, Rect { x, y: 0, w: cols, h: rows }, &mut Vec::new(), &mut out);
+        let top = self.windows_top();
+        collect(&self.layout, Rect { x, y: top, w: cols, h: rows.saturating_sub(top) }, &mut Vec::new(), &mut out);
         out.into_iter()
             .find(|(sep, pos, a, b)| {
                 let Sep::Split { vertical, .. } = sep else { return false };

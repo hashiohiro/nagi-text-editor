@@ -80,6 +80,11 @@ const EX_COMMANDS: &[(&str, &str)] = &[
     ("Db", "データベース（右の欄）"),
     ("DbAdd", "接続先を足す（名前 jdbc:URL [利用者]）"),
     ("DbRun", "SQL コンソールでカーソルのある文を実行"),
+    ("DbSchema", "スキーマを切り替える"),
+    ("DbExport", "結果を書き出す（csv / tsv / insert）"),
+    ("DbCommit", "コミット"),
+    ("DbRollback", "ロールバック"),
+    ("DbTx", "トランザクションの自動・手動を切り替える"),
     ("GitHunk", "カーソルの変更の差分"),
     ("GitStage", "カーソルの変更をステージ"),
     ("GitRevert", "カーソルの変更を戻す"),
@@ -189,6 +194,17 @@ impl Editor {
             }
             Some((name, arg)) => {
                 let start = body_at + name.len() + 1;
+                // スキーマ・書き出しの形
+                let fixed: Option<Vec<String>> = match canonical_cmd(name) {
+                    "DbSchema" => Some(self.db_schema_names()),
+                    "DbExport" => Some(vec!["csv".into(), "tsv".into(), "insert".into()]),
+                    _ => None,
+                };
+                if let Some(list) = fixed {
+                    let low = arg.to_lowercase();
+                    let items: Vec<(String, String)> = list.into_iter().filter(|s| s.to_lowercase().starts_with(&low)).map(|s| (s, String::new())).collect();
+                    return (!items.is_empty()).then(|| CmdComplete { items, sel: None, start, original: arg.to_string() });
+                }
                 if matches!(name, "b" | "buffer" | "bd" | "bdelete") {
                     let low = arg.to_lowercase();
                     let items: Vec<(String, String)> = self

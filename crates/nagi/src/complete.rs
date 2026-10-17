@@ -27,6 +27,8 @@ pub struct Completion {
     pub items: Vec<String>,
     /// 選んでいる候補（None は打った語のまま）
     pub sel: Option<usize>,
+    /// 候補ごとの印と補足（SQL の補完の型と表の名前。ふつうの補完では空）
+    pub notes: Vec<(char, String)>,
 }
 
 fn word_char(c: char) -> bool {
@@ -95,7 +97,35 @@ impl Editor {
         }
     }
 
+    /// SQL コンソールの補完（`auto` は `.` を打ったときに一覧だけ出す）
+    pub(crate) fn start_sql_completion(&mut self, auto: bool) {
+        let line = self.buf.line(self.cursor.line);
+        let b = self.cursor.byte.min(line.len());
+        let ws = line[..b].char_indices().rev().take_while(|(_, c)| word_char(*c) || *c == '#').last().map_or(b, |(i, _)| i);
+        let prefix = line[ws..b].to_string();
+        let start = self.buf.line_start(self.cursor.line) + ws;
+        // 別名.
+        let qualifier = line[..ws].strip_suffix('.').map(|q| q.chars().rev().take_while(|c| word_char(*c)).collect::<String>().chars().rev().collect::<String>()).filter(|q| !q.is_empty());
+        let cands = self.sql_candidates(&prefix, qualifier.as_deref());
+        if cands.is_empty() {
+            if !auto {
+                self.message = "-- 補完の候補はありません（列を読んでいるところなら、もう一度 Ctrl+Space）".into();
+            }
+            return;
+        }
+        let items = cands.iter().map(|c| c.0.clone()).collect();
+        let notes = cands.into_iter().map(|c| (c.1, c.2)).collect();
+        self.completion = Some(Completion { start, original: prefix, items, sel: if auto { None } else { Some(0) }, notes });
+        if !auto {
+            self.apply_completion();
+        }
+    }
+
     fn start_completion(&mut self, forward: bool) {
+        if self.console_source().is_some() {
+            self.start_sql_completion(false);
+            return;
+        }
         let line = self.buf.line(self.cursor.line);
         let b = self.cursor.byte.min(line.len());
         let ws = line[..b].char_indices().rev().take_while(|(_, c)| word_char(*c)).last().map_or(b, |(i, _)| i);
@@ -143,7 +173,7 @@ impl Editor {
             self.message = "-- 補完の候補はありません".into();
             return;
         }
-        self.completion = Some(Completion { start, original: prefix, items, sel: Some(0) });
+        self.completion = Some(Completion { start, original: prefix, items, sel: Some(0), notes: Vec::new() });
         self.apply_completion();
     }
 

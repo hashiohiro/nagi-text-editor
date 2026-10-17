@@ -213,6 +213,7 @@ fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
     let gutter = if pane.active { ed.gutter() } else { GUTTER };
     let bw = gutter - GUTTER;
     let now = crate::blame::now_secs();
+    let stmt = if pane.active { ed.console_statement() } else { None };
     let saved_cols = p.cols;
     p.cols = rect.x + rect.w;
     let total = pane.buf.line_count();
@@ -295,6 +296,10 @@ fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
             p.out.push(Instance::fill((rect.x + bw) as f32 * cell.w - cell.w * 0.5, y, 1.0, cell.h, MATCH_BG));
         }
         p.text(&format!("{:>5} ", ln + 1), rect.x + bw, y, num_color);
+        // SQL コンソール: カーソルのある文（Ctrl+Enter で流す範囲）に緑の線
+        if stmt.is_some_and(|(s, e)| ln >= s && ln < e) {
+            p.out.push(Instance::fill((rect.x + gutter) as f32 * cell.w - cell.w * 0.5 - 2.0, y, 3.0, cell.h, GIT_ADD));
+        }
         // git の変更マーカー（行番号の左端の細い帯。消した位置は赤い短い線）
         if let Some(m) = pane.marks.get(&ln) {
             let x = (rect.x + bw) as f32 * cell.w + 1.0;
@@ -396,7 +401,7 @@ fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
                 items.push(Item { g: Cow::Borrowed(" "), width: 1, fg: BG, bg: Some(FG), underline: false });
             }
         }
-        if !is_cursor_line || matches!(ed.mode, Mode::Command | Mode::Search | Mode::Replace | Mode::Finder | Mode::GrepPrompt | Mode::List | Mode::CommitMsg | Mode::Diff | Mode::Log | Mode::Branches) {
+        if !is_cursor_line || matches!(ed.mode, Mode::Command | Mode::Search | Mode::Replace | Mode::Finder | Mode::GrepPrompt | Mode::List | Mode::CommitMsg | Mode::Diff | Mode::Log | Mode::Branches | Mode::DbTable) {
             p.draw(&items, rect.x + gutter, y);
             continue;
         }
@@ -498,20 +503,33 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             fit(d.selected, &mut d.scroll);
         }
     }
-    if let (Some(r), Some(g)) = (ed.panel_rect(), &mut ed.db_result) {
-        let h = r.h.saturating_sub(2).max(1);
-        if g.row < g.scroll {
-            g.scroll = g.row;
-        } else if g.row >= g.scroll + h {
-            g.scroll = g.row + 1 - h;
+    // 表: 選んだ行と列が見える範囲に入るように送る
+    let fit_grid = |row: usize, col: usize, scroll: &mut usize, hscroll: &mut usize, widths: &[usize], h: usize, w: usize| {
+        let h = h.max(1);
+        if row < *scroll {
+            *scroll = row;
+        } else if row >= *scroll + h {
+            *scroll = row + 1 - h;
         }
-        // 選んだ列が見えるように横へ送る
-        if g.col < g.hscroll {
-            g.hscroll = g.col;
+        if col < *hscroll {
+            *hscroll = col;
         }
-        while g.hscroll < g.col && g.widths[g.hscroll..=g.col].iter().map(|w| w + 3).sum::<usize>() + 1 > r.w {
-            g.hscroll += 1;
+        while *hscroll < col && widths[*hscroll..=col.min(widths.len().saturating_sub(1))].iter().map(|w| w + 3).sum::<usize>() + 8 > w {
+            *hscroll += 1;
         }
+    };
+    if let Some(r) = ed.panel_rect() {
+        if let Some(t) = ed.db_results.active_tab_mut() {
+            let head = if t.filterable { 4 } else { 3 };
+            fit_grid(t.row, t.col, &mut t.scroll, &mut t.hscroll, &t.widths.clone(), r.h.saturating_sub(head), r.w);
+        }
+    }
+    let (wx, ww) = ed.windows_x();
+    let wrows = ed.windows_rows();
+    let _ = wx;
+    if let Some(te) = &mut ed.db_table {
+        let widths = te.widths.clone();
+        fit_grid(te.row, te.col, &mut te.scroll, &mut te.hscroll, &widths, wrows.saturating_sub(4), ww);
     }
     if let Some(f) = &mut ed.finder {
         // 選んでいる候補が見える範囲に入るように送る
@@ -600,9 +618,16 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     if let Some(r) = ed.right_rect() {
         draw_right_panel(&mut p, ed, r);
     }
+    if let Some(te) = &ed.db_table {
+        let (x, w) = ed.windows_x();
+        draw_db_table(&mut p, ed, te, Rect { x, y: 0, w, h: ed.windows_rows() });
+    }
+    if ed.windows_top() > 0 {
+        draw_console_bar(&mut p, ed);
+    }
     if ed.bottom_kind == crate::result_grid::BottomKind::Result {
-        if let (Some(r), Some(g)) = (ed.panel_rect(), &ed.db_result) {
-            draw_result_grid(&mut p, g, r, ed.mode == Mode::List && ed.list_side == crate::editor::Side::Bottom);
+        if let Some(r) = ed.panel_rect() {
+            draw_db_results(&mut p, ed, r);
         }
     } else if let (Some(r), Some(g)) = (ed.panel_rect(), &ed.grep) {
         draw_grep_panel(&mut p, g, r, matches!(ed.mode, Mode::List | Mode::GrepPrompt));
@@ -682,6 +707,16 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         }
         Mode::CommitMsg => {
             p.text(if ed.message.is_empty() { "-- コミットメッセージ --   Esc 一覧へ   Ctrl-Enter コミット" } else { &ed.message }, 0, y, FG);
+        }
+        Mode::DbTable => {
+            let n = ed.db_table.as_ref().map_or(0, |t| t.changes());
+            let left = if !ed.message.is_empty() { ed.message.clone() } else if n > 0 { format!("-- 編集 --  変更 {n} 件（未送信）") } else { "-- テーブル --".into() };
+            let end = p.text(&left, 0, y, if n > 0 && ed.message.is_empty() { DIAG_WARN } else { FG });
+            let help = "i 値  c 入れ替え  x NULL  o 行を足す  dd 消す  u 戻す  f/F 絞り込み  s 並べ替え  < > ページ  Ctrl+Enter 送信  q 閉じる ";
+            let pc = cols.saturating_sub(p.width(help));
+            if end + 2 <= pc {
+                p.text(help, pc, y, STATUS_FG);
+            }
         }
         Mode::Branches => {
             let left = if ed.message.is_empty() { "-- ブランチ --".to_string() } else { ed.message.clone() };
@@ -935,90 +970,181 @@ fn draw_right_panel(p: &mut Painter, ed: &Editor, r: Rect) {
     draw_tabs(p, r, &tabs, focused, &extra);
     let saved = p.cols;
     p.cols = r.x + r.w;
-    // (字下げ, 開け閉めの印, 本文, 補足, 本文の色)
-    let mut lines: Vec<(usize, &str, String, String, [f32; 4])> = Vec::new();
+    // (字下げ, 開け閉めの印, 種類の印と色, 本文, 補足, 本文の色)
+    let mut lines: Vec<(usize, &str, (char, [f32; 4]), String, String, [f32; 4])> = Vec::new();
+    let mut top = 1;
     let (selected, scroll) = match tab {
         RightTab::Maven => {
-            let Some(m) = &ed.maven else { return };
+            let Some(m) = &ed.maven else {
+                p.cols = saved;
+                return;
+            };
             for row in &m.rows {
                 let (mark, color) = match &row.kind {
                     crate::maven_panel::RowKind::Folder(k) => (if m.is_open(k) { "▾ " } else { "▸ " }, if row.depth == 0 || k.starts_with("p:") { FG } else { FINDER_MATCH }),
                     crate::maven_panel::RowKind::Goal(..) => ("· ", FG),
                     crate::maven_panel::RowKind::Leaf => ("  ", STATUS_FG),
                 };
-                lines.push((row.depth, mark, row.label.clone(), row.note.clone(), color));
+                lines.push((row.depth, mark, (' ', FG), row.label.clone(), row.note.clone(), color));
             }
             (m.selected, m.scroll)
         }
         RightTab::Database => {
-            let Some(d) = &ed.db else { return };
-            if d.sources.is_empty() {
-                p.text(" 接続先がありません", r.x, y0 + cell.h, STATUS_FG);
-                p.text(" :DbAdd 名前 jdbc:URL 利用者", r.x, y0 + 2.0 * cell.h, STATUS_FG);
+            let Some(d) = &ed.db else {
+                p.cols = saved;
+                return;
+            };
+            // 2 行目: 絞り込みの欄
+            let fy = y0 + cell.h;
+            let c = p.text(" / ", r.x, fy, LINE_NO);
+            if d.filter.text.is_empty() && !d.filtering {
+                p.text("テーブルや列を絞り込み", c, fy, LINE_NO);
+            } else {
+                let end = p.text(&d.filter.text, c, fy, FG);
+                if d.filtering && focused {
+                    p.caret(end, fy);
+                }
             }
-            for row in &d.rows {
-                let (depth, text, note) = d.row_label(row);
-                let (mark, color) = match row {
-                    crate::db_panel::DbRow::Source(i) => {
-                        let open = d.expanded.contains(&format!("s{i}"));
-                        let c = &d.conns[*i];
-                        (if open { "▾ " } else { "▸ " }, if c.error.is_some() { DIAG_ERROR } else if c.connected { GIT_ADD } else { FG })
-                    }
-                    crate::db_panel::DbRow::Table(i, t) => (if d.expanded.contains(&format!("t{i}:{t}")) { "▾ " } else { "▸ " }, FINDER_MATCH),
-                    crate::db_panel::DbRow::Column(..) => ("  ", FG),
-                    crate::db_panel::DbRow::Info(_, s) => ("  ", if s.starts_with("誤り") { DIAG_ERROR } else { STATUS_FG }),
+            p.out.push(Instance::fill(x0, fy + cell.h - 1.0, wpx, 1.0, rgb(0x2a2a2a)));
+            top = 2;
+            if d.sources.is_empty() {
+                p.text(" 接続先がありません。a（＋）で足す", r.x, y0 + 2.0 * cell.h, STATUS_FG);
+            }
+            for (k, row) in d.rows.iter().enumerate() {
+                use crate::db_panel::DbRow;
+                let (_, mark, text, note) = d.row_label(row);
+                let depth = d.depth(k);
+                let open = d.is_open(row);
+                let fold = if row.key().is_some() { if open { "▾ " } else { "▸ " } } else { "  " };
+                let icon = match mark {
+                    'T' => ('T', GIT_ADD),
+                    'V' => ('V', rgb(0xaf87d7)),
+                    'S' | 'R' => (mark, STATUS_FG),
+                    'K' => ('K', rgb(0xd7af5f)),
+                    'F' => ('F', FINDER_MATCH),
+                    'I' => ('I', STATUS_FG),
+                    '●' => ('●', GIT_ADD),
+                    '◌' => ('◌', GIT_MOD),
+                    '○' => ('○', STATUS_FG),
+                    _ => (' ', FG),
                 };
-                lines.push((depth, mark, text, note, color));
+                let color = match row {
+                    DbRow::Source(i) if d.conns[*i].error.is_some() => DIAG_ERROR,
+                    DbRow::Source(_) | DbRow::Schema(..) | DbRow::Column(..) => FG,
+                    DbRow::Info(_, _, s) if s.starts_with("誤り") => DIAG_ERROR,
+                    DbRow::Info(..) | DbRow::Group(..) | DbRow::Sub(..) | DbRow::Others(_) => STATUS_FG,
+                    _ => FG,
+                };
+                lines.push((depth, fold, icon, text, note, color));
             }
             (d.selected, d.scroll)
         }
     };
-    let body = r.h.saturating_sub(2);
-    for (k, (depth, mark, text, note, color)) in lines.iter().enumerate().skip(scroll).take(body) {
-        let y = y0 + (1 + k - scroll) as f32 * cell.h;
+    let body = r.h.saturating_sub(top + 1);
+    for (k, (depth, fold, (icon, icolor), text, note, color)) in lines.iter().enumerate().skip(scroll).take(body) {
+        let y = y0 + (top + k - scroll) as f32 * cell.h;
         let sel = k == selected;
-        let reversed = sel && focused;
+        let reversed = sel && focused && ed.db.as_ref().is_none_or(|d| !d.filtering || tab != RightTab::Database);
         if reversed {
             p.out.push(Instance::fill(x0, y, wpx, cell.h, FG));
         } else if sel {
             p.out.push(Instance::fill(x0, y, wpx, cell.h, MATCH_BG));
         }
-        let c = p.text(&format!(" {}{mark}", "  ".repeat(*depth)), r.x, y, if reversed { BG } else { STATUS_FG });
+        let mut c = p.text(&format!(" {}{fold}", "  ".repeat(*depth)), r.x, y, if reversed { BG } else { STATUS_FG });
+        if *icon != ' ' {
+            let mut b = [0u8; 4];
+            c = p.text(icon.encode_utf8(&mut b), c, y, if reversed { BG } else { *icolor });
+            c = p.text(" ", c, y, FG);
+        }
         let c = p.text(text, c, y, if reversed { BG } else { *color });
         if !note.is_empty() {
             p.text(&format!("  {note}"), c, y, if reversed { BG } else { LINE_NO });
         }
     }
-    // パスワードの入力（欄の下の行）
-    if let Some((i, prompt, _)) = ed.db.as_ref().and_then(|d| d.password.as_ref()) {
-        let y = y0 + (r.h - 1) as f32 * cell.h;
-        p.out.push(Instance::fill(x0, y, wpx, cell.h, rgb(0x1c1c1c)));
-        let user = ed.db.as_ref().map_or("", |d| d.sources[*i].user.as_str());
-        let c = p.text(&format!(" {user} のパスワード: "), r.x, y, STATUS_FG);
-        let c = p.text(&"●".repeat(prompt.text.chars().count()), c, y, FG);
-        p.caret(c, y);
+    // 下の行: パスワード・接続先のフォーム・ドライバーの準備
+    if let (RightTab::Database, Some(d)) = (tab, &ed.db) {
+        if let Some((i, prompt)) = &d.password {
+            let y = y0 + (r.h - 1) as f32 * cell.h;
+            p.out.push(Instance::fill(x0, y, wpx, cell.h, rgb(0x1c1c1c)));
+            let user = &d.sources[*i].user;
+            let c = p.text(&format!(" {user} のパスワード: "), r.x, y, STATUS_FG);
+            let c = p.text(&"●".repeat(prompt.text.chars().count()), c, y, FG);
+            p.caret(c, y);
+        } else if let Some(i) = d.setup_ask {
+            let lines = [
+                format!(" {} にはドライバーが要ります", d.sources[i].name),
+                format!(" Oracle Instant Client Basic Light（約 {} MB）", nagi_workers::drivers::ORACLE_CLIENT_SIZE_MB),
+                format!(" 置き場所: {}", nagi_workers::drivers::drivers_dir().join("oracle").display()),
+                format!(" {} に同意のうえ", nagi_workers::drivers::ORACLE_LICENSE),
+                " y でダウンロード ・ ほかのキーでやめる".to_string(),
+            ];
+            draw_panel_box(p, r, &lines, 0);
+        } else if let Some(f) = &d.form {
+            let mut lines = vec![" 接続先を足す".to_string()];
+            for (k, (label, prompt)) in f.fields.iter().enumerate() {
+                let v = if k == 0 { format!("‹ {} ›", prompt.text) } else { prompt.text.clone() };
+                lines.push(format!(" {label:<6}{}  {v}", if k == f.at { "▸" } else { " " }));
+            }
+            lines.push(" Tab 次の欄 ・ 最後の欄で Enter 保存してつなぐ ・ Esc やめる".to_string());
+            let caret = (f.at > 0).then(|| (f.at + 1, f.fields[f.at].1.text.clone()));
+            let (bx, by) = draw_panel_box(p, r, &lines, f.at + 1);
+            if let Some((row, text)) = caret {
+                let label_w = p.width(&format!(" {:<6}▸  ", f.fields[f.at].0));
+                let x = bx + label_w + p.width(&text);
+                p.caret(x, by + row as f32 * cell.h);
+            }
+        }
     }
     p.cols = saved;
 }
 
-/// クエリの結果の表（下のパネル）。1 行目は見出し、2 行目は列名、3 行目から行
-fn draw_result_grid(p: &mut Painter, g: &crate::result_grid::ResultGrid, r: Rect, focused: bool) {
+/// 右の欄の下に枠を出す（`hl` 行目を強調）。枠の左端の列と上端の y を返す
+fn draw_panel_box(p: &mut Painter, r: Rect, lines: &[String], hl: usize) -> (usize, f32) {
     let cell = p.fonts.cell();
-    let (x0, y0, wpx) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
-    p.out.push(Instance::fill(x0, y0, wpx, r.h as f32 * cell.h, BG));
-    p.out.push(Instance::fill(x0, y0, wpx, 1.0, LINE_NO));
-    let saved = p.cols;
-    p.cols = (r.x + r.w).saturating_sub(3);
-    let end = p.text(&format!("{}   ", g.title), r.x, y0, STATUS_FG);
-    p.text(&g.info, end, y0, if g.error { DIAG_ERROR } else if g.running { STATUS_FG } else { FG });
-    p.cols = r.x + r.w;
-    if g.cols.is_empty() {
-        p.cols = saved;
-        return;
+    let h = lines.len();
+    let top = (r.y + r.h).saturating_sub(h + 1);
+    let (x, y, w) = (r.x as f32 * cell.w + 4.0, top as f32 * cell.h, (r.w as f32 - 0.5) * cell.w - 8.0);
+    p.out.push(Instance::fill(x - 1.0, y - 1.0, w + 2.0, h as f32 * cell.h + 2.0, STATUS_FG));
+    p.out.push(Instance::fill(x, y, w, h as f32 * cell.h, rgb(0x141414)));
+    for (k, l) in lines.iter().enumerate() {
+        let yy = y + k as f32 * cell.h;
+        if k == hl && hl > 0 {
+            p.out.push(Instance::fill(x, yy, w, cell.h, MATCH_BG));
+        }
+        p.text(l, r.x, yy, if k == 0 { FG } else if k + 1 == lines.len() { STATUS_FG } else { FG });
     }
-    // 見える列（hscroll から、幅に収まるだけ）
+    (r.x, y)
+}
+
+/// 表（結果のタブとテーブルの編集で共通）。左に行番号、上に列名と型の 2 行
+struct GridView<'a> {
+    cols: &'a [String],
+    types: &'a [String],
+    widths: &'a [usize],
+    /// 列名の前の印（K / F）
+    marks: Vec<char>,
+    /// 並べ替えている列と向き
+    sort: Option<(String, bool)>,
+    rows: usize,
+    value: &'a dyn Fn(usize, usize) -> Option<String>,
+    /// 行の印（行番号や ＋）と、行の地の色
+    row_style: &'a dyn Fn(usize) -> (String, Option<[f32; 4]>),
+    cell_bg: &'a dyn Fn(usize, usize) -> Option<[f32; 4]>,
+    row: usize,
+    col: usize,
+    scroll: usize,
+    hscroll: usize,
+    focused: bool,
+}
+
+fn draw_grid(p: &mut Painter, g: &GridView, r: Rect) {
+    let cell = p.fonts.cell();
+    let (x0, wpx) = (r.x as f32 * cell.w, r.w as f32 * cell.w);
+    let saved = p.cols;
+    p.cols = r.x + r.w;
+    let rn = 6;
     let mut xs = Vec::new();
-    let mut x = r.x + 1;
+    let mut x = r.x + rn + 1;
     for c in g.hscroll..g.cols.len() {
         if x >= r.x + r.w {
             break;
@@ -1026,34 +1152,289 @@ fn draw_result_grid(p: &mut Painter, g: &crate::result_grid::ResultGrid, r: Rect
         xs.push((c, x));
         x += g.widths[c] + 3;
     }
-    let hy = y0 + cell.h;
+    let hy = r.y as f32 * cell.h;
+    let ty = hy + cell.h;
     for &(c, x) in &xs {
-        p.text(&g.cols[c], x, hy, if c == g.col && focused { FG } else { FINDER_MATCH });
-    }
-    p.out.push(Instance::fill(x0, hy + cell.h - 1.0, wpx, 1.0, LINE_NO));
-    let body = r.h.saturating_sub(2);
-    for (k, row) in g.rows.iter().enumerate().skip(g.scroll).take(body) {
-        let y = y0 + (2 + k - g.scroll) as f32 * cell.h;
-        if k == g.row {
-            p.out.push(Instance::fill(x0, y, wpx, cell.h, MATCH_BG));
+        let mut name = String::new();
+        if g.marks.get(c).is_some_and(|m| *m != ' ') {
+            name.push(g.marks[c]);
+            name.push(' ');
         }
+        name.push_str(&g.cols[c]);
+        if let Some((s, asc)) = &g.sort {
+            if s.trim_matches('"').eq_ignore_ascii_case(&g.cols[c]) {
+                name.push_str(if *asc { " ↑" } else { " ↓" });
+            }
+        }
+        let lim = p.cols;
+        p.cols = (x + g.widths[c] + 1).min(r.x + r.w);
+        p.text(&name, x, hy, if c == g.col && g.focused { FG } else { FINDER_MATCH });
+        p.text(g.types.get(c).map_or("", |s| s.as_str()), x, ty, LINE_NO);
+        p.cols = lim;
+    }
+    p.out.push(Instance::fill(x0, ty + cell.h - 1.0, wpx, 1.0, LINE_NO));
+    let body = r.h.saturating_sub(2);
+    for k in g.scroll..(g.scroll + body).min(g.rows) {
+        let y = (r.y + 2 + k - g.scroll) as f32 * cell.h;
+        let (label, bg) = (g.row_style)(k);
+        if let Some(bg) = bg {
+            p.out.push(Instance::fill(x0, y, wpx, cell.h, bg));
+        } else if k == g.row {
+            p.out.push(Instance::fill(x0, y, wpx, cell.h, rgb(0x262626)));
+        }
+        let lw = p.width(&label);
+        p.text(&label, (r.x + rn).saturating_sub(lw + 1), y, if label.starts_with('＋') { GIT_ADD } else { LINE_NO });
         for &(c, x) in &xs {
-            let v = &row[c];
-            let text = crate::result_grid::show(v);
-            let sel = k == g.row && c == g.col && focused;
+            let v = (g.value)(k, c);
+            let text = crate::result_grid::show(&v);
+            let sel = k == g.row && c == g.col && g.focused;
             if sel {
                 p.out.push(Instance::fill((x - 1) as f32 * cell.w, y, (g.widths[c] + 2) as f32 * cell.w, cell.h, FG));
+            } else if let Some(bg) = (g.cell_bg)(k, c) {
+                p.out.push(Instance::fill((x - 1) as f32 * cell.w, y, (g.widths[c] + 2) as f32 * cell.w, cell.h, bg));
             }
             let lim = p.cols;
             p.cols = (x + g.widths[c]).min(r.x + r.w);
-            p.text(&text, x, y, if sel { BG } else if v.is_none() { LINE_NO } else { FG });
+            let fg = if sel { BG } else if v.is_none() { LINE_NO } else if bg == Some(DIFF_DEL_BG) { rgb(0x8a6a6a) } else { FG };
+            p.text(&text, x, y, fg);
             p.cols = lim;
-            // 列の区切り
             let sx = (x + g.widths[c] + 1) as f32 * cell.w + cell.w * 0.5;
-            p.out.push(Instance::fill(sx, y, 1.0, cell.h, LINE_NO));
+            p.out.push(Instance::fill(sx, y, 1.0, cell.h, rgb(0x2a2a2a)));
         }
     }
     p.cols = saved;
+}
+
+/// 並べ替えの指定（「COL ASC」）を読む
+fn sort_of(order: &str) -> Option<(String, bool)> {
+    let mut it = order.split_whitespace();
+    let c = it.next()?.to_string();
+    let asc = !it.next().is_some_and(|d| d.eq_ignore_ascii_case("desc"));
+    (it.next().is_none()).then_some((c, asc))
+}
+
+/// 絞り込みの行（WHERE と ORDER BY）。入力中ならカーソル
+fn draw_filter_row(p: &mut Painter, r: Rect, y: f32, where_: &str, order: &str, editing: Option<&(crate::result_grid::Field, crate::editor::Prompt)>, right: &str) {
+    use crate::result_grid::Field;
+    let cell = p.fonts.cell();
+    let mut c = p.text(" WHERE ", r.x, y, FINDER_MATCH);
+    let wv = editing.filter(|e| e.0 == Field::Where).map_or(where_.to_string(), |e| e.1.text.clone());
+    let w_box = 36;
+    p.out.push(Instance::fill(c as f32 * cell.w, y + 1.0, w_box as f32 * cell.w, cell.h - 2.0, rgb(0x141414)));
+    let end = p.text(&wv, c + 1, y, FG);
+    if editing.is_some_and(|e| e.0 == Field::Where) {
+        p.caret(end, y);
+    }
+    c += w_box + 2;
+    let c2 = p.text("ORDER BY ", c, y, FINDER_MATCH);
+    let ov = editing.filter(|e| e.0 == Field::Order).map_or(order.to_string(), |e| e.1.text.clone());
+    p.out.push(Instance::fill(c2 as f32 * cell.w, y + 1.0, 28.0 * cell.w, cell.h - 2.0, rgb(0x141414)));
+    let end = p.text(&ov, c2 + 1, y, FG);
+    if editing.is_some_and(|e| e.0 == Field::Order) {
+        p.caret(end, y);
+    }
+    let rw = p.width(right);
+    p.text(right, (r.x + r.w).saturating_sub(rw + 3), y, STATUS_FG);
+}
+
+/// データベースの結果（下のパネル）。1 行目はタブ、出力なら記録、結果なら絞り込みの行と表
+fn draw_db_results(p: &mut Painter, ed: &Editor, r: Rect) {
+    let res = &ed.db_results;
+    let cell = p.fonts.cell();
+    let (x0, y0, wpx) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
+    p.out.push(Instance::fill(x0, y0, wpx, r.h as f32 * cell.h, BG));
+    p.out.push(Instance::fill(x0, y0, wpx, 1.0, LINE_NO));
+    let focused = ed.mode == Mode::List && ed.list_side == crate::editor::Side::Bottom;
+    let saved = p.cols;
+    p.cols = (r.x + r.w).saturating_sub(3);
+    // タブ
+    let mut x = r.x + 1;
+    let labels: Vec<String> = std::iter::once("出力".to_string()).chain(res.tabs.iter().enumerate().map(|(k, t)| crate::result_grid::tab_label(k, t))).collect();
+    for (k, l) in labels.iter().enumerate() {
+        let on = k == res.active;
+        let end = p.text(&format!(" {l} "), x, y0, if on && focused { FG } else if on { rgb(0xc8c8c8) } else { STATUS_FG });
+        if on {
+            p.out.push(Instance::fill(x as f32 * cell.w, y0 + cell.h - 2.0, (end - x) as f32 * cell.w, 2.0, if focused { GIT_MOD } else { STATUS_FG }));
+        }
+        x = end + 1;
+    }
+    p.out.push(Instance::fill(x0, y0 + cell.h - 1.0, wpx, 1.0, rgb(0x2a2a2a)));
+    p.cols = r.x + r.w;
+    match res.active_tab() {
+        None => {
+            // 出力: 新しいものを下に
+            let body = r.h.saturating_sub(1);
+            let end = res.log.len().saturating_sub(res.log_scroll);
+            let start = end.saturating_sub(body);
+            for (k, l) in res.log[start..end].iter().enumerate() {
+                let y = y0 + (1 + k) as f32 * cell.h;
+                let mut c = p.text(&format!(" [{}] ", l.time), r.x, y, LINE_NO);
+                if !l.src.is_empty() {
+                    c = p.text(&format!("{}  ", l.src), c, y, STATUS_FG);
+                }
+                c = p.text(&l.text, c, y, if l.error && l.outcome.is_empty() { DIAG_ERROR } else { FG });
+                if !l.outcome.is_empty() {
+                    p.text(&format!("   {}", l.outcome), c, y, if l.error { DIAG_ERROR } else { STATUS_FG });
+                }
+            }
+            if res.log.is_empty() {
+                p.text(" まだ何も流していません", r.x, y0 + cell.h, LINE_NO);
+            }
+        }
+        Some(t) => {
+            let mut y = y0 + cell.h;
+            let right = format!("{}   {}", t.range_label(), t.info);
+            if t.filterable {
+                draw_filter_row(p, r, y, &t.where_, &t.order, res.editing.as_ref(), &right);
+                y += cell.h;
+            } else {
+                let rw = p.width(&right);
+                p.text(&right, (r.x + r.w).saturating_sub(rw + 3), y, if t.error { DIAG_ERROR } else { STATUS_FG });
+                y += cell.h;
+            }
+            if t.cols.is_empty() {
+                p.text(&format!(" {}", t.info), r.x, y, if t.error { DIAG_ERROR } else if t.running { STATUS_FG } else { FG });
+            } else {
+                let value = |k: usize, c: usize| t.rows[k][c].clone();
+                let row_style = |k: usize| ((t.offset + k + 1).to_string(), None);
+                let cell_bg = |_: usize, _: usize| None;
+                let g = GridView {
+                    cols: &t.cols,
+                    types: &t.types,
+                    widths: &t.widths,
+                    marks: Vec::new(),
+                    sort: sort_of(&t.order),
+                    rows: t.rows.len(),
+                    value: &value,
+                    row_style: &row_style,
+                    cell_bg: &cell_bg,
+                    row: t.row,
+                    col: t.col,
+                    scroll: t.scroll,
+                    hscroll: t.hscroll,
+                    focused,
+                };
+                let top = ((y - y0) / cell.h) as usize;
+                draw_grid(p, &g, Rect { x: r.x, y: r.y + top, w: r.w, h: r.h.saturating_sub(top) });
+            }
+        }
+    }
+    p.cols = saved;
+}
+
+/// テーブルのデータの編集（窓の領域全体）
+fn draw_db_table(p: &mut Painter, ed: &Editor, te: &crate::db_table::TableEditor, r: Rect) {
+    use crate::db_table::RowState;
+    let cell = p.fonts.cell();
+    let (x0, y0, wpx) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
+    p.out.push(Instance::fill(x0, y0, wpx, r.h as f32 * cell.h, BG));
+    let saved = p.cols;
+    p.cols = r.x + r.w;
+    // 1 行目: 名前と接続先、件数
+    let src = ed.db.as_ref().map_or(String::new(), |d| d.sources[te.src].name.clone());
+    let c = p.text(&format!(" {}", crate::db_panel::qualified(&te.schema, &te.table)), r.x, y0, FG);
+    let c = p.text(&format!("（{src}）"), c, y0, STATUS_FG);
+    if te.pk().is_empty() && !te.colinfo.is_empty() {
+        p.text("  主キーが無いので読むだけ", c, y0, DIAG_WARN);
+    }
+    let right = format!("{}   {}{}", te.range_label(), if te.running { "読んでいます…" } else { &te.info }, if te.busy { "   送信しています…" } else { "" });
+    let rw = p.width(&right);
+    p.text(&right, (r.x + r.w).saturating_sub(rw + 1), y0, STATUS_FG);
+    // 2 行目: 絞り込み
+    let fy = y0 + cell.h;
+    draw_filter_row(p, r, fy, &te.where_, &te.order, te.filter_edit.as_ref(), "");
+    p.out.push(Instance::fill(x0, fy + cell.h - 1.0, wpx, 1.0, rgb(0x2a2a2a)));
+    let marks: Vec<char> = te.cols.iter().map(|n| te.colinfo.iter().find(|c| &c.name == n).map_or(' ', |c| if c.pk { 'K' } else if !c.fk.is_empty() { 'F' } else { ' ' })).collect();
+    let value = |d: usize, c: usize| te.value(d, c);
+    let row_style = |d: usize| match te.at(d) {
+        (RowState::Added, _) => ("＋".to_string(), Some(DIFF_ADD_BG)),
+        (RowState::Deleted, r) => ((te.offset + r + 1).to_string(), Some(DIFF_DEL_BG)),
+        (RowState::Normal, r) => ((te.offset + r + 1).to_string(), None),
+    };
+    let cell_bg = |d: usize, c: usize| te.modified(d, c).then_some(rgb(0x1f3550));
+    let g = GridView {
+        cols: &te.cols,
+        types: &te.types,
+        widths: &te.widths,
+        marks,
+        sort: sort_of(&te.order),
+        rows: te.len(),
+        value: &value,
+        row_style: &row_style,
+        cell_bg: &cell_bg,
+        row: te.row,
+        col: te.col,
+        scroll: te.scroll,
+        hscroll: te.hscroll,
+        focused: te.editing.is_none(),
+    };
+    draw_grid(p, &g, Rect { x: r.x, y: r.y + 2, w: r.w, h: r.h.saturating_sub(2) });
+    // 値の入力欄（選んだセルの上に）
+    if let Some(prompt) = &te.editing {
+        if te.row >= te.scroll {
+            let mut x = r.x + 7;
+            for c in te.hscroll..te.col {
+                x += te.widths[c] + 3;
+            }
+            let y = (r.y + 4 + te.row - te.scroll) as f32 * cell.h;
+            let w = (te.widths.get(te.col).copied().unwrap_or(10) + 2).max(p.width(&prompt.text) + 3);
+            p.out.push(Instance::fill((x - 1) as f32 * cell.w - 1.0, y - 1.0, w as f32 * cell.w + 2.0, cell.h + 2.0, FG));
+            p.out.push(Instance::fill((x - 1) as f32 * cell.w, y, w as f32 * cell.w, cell.h, rgb(0x1f3550)));
+            let end = p.text(&prompt.text, x, y, FG);
+            let pre = if ed.preedit.is_empty() { 0 } else { p.width(&ed.preedit) };
+            if pre > 0 {
+                let mut items = p.items(&ed.preedit, FG);
+                items.iter_mut().for_each(|i| i.underline = true);
+                p.draw(&items, end, y);
+            }
+            p.caret(end + pre, y);
+        }
+    }
+    // 送る前の確認（右下に SQL）
+    if let Some(stmts) = &te.preview {
+        let lines: Vec<String> = std::iter::once(format!(" 送信する変更（{} 件） — {src}", stmts.len())).chain(stmts.iter().map(|s| format!(" {s}"))).chain(std::iter::once(" y で送る ・ ほかのキーでやめる".to_string())).collect();
+        let w = lines.iter().map(|l| p.width(l)).max().unwrap_or(20).min(r.w.saturating_sub(4)) + 2;
+        let h = lines.len().min(r.h.saturating_sub(4));
+        let bx = (r.x + r.w).saturating_sub(w + 2);
+        let by = (r.y + r.h).saturating_sub(h + 1);
+        let (x, y) = (bx as f32 * cell.w, by as f32 * cell.h);
+        p.out.push(Instance::fill(x - 1.0, y - 1.0, w as f32 * cell.w + 2.0, h as f32 * cell.h + 2.0, STATUS_FG));
+        p.out.push(Instance::fill(x, y, w as f32 * cell.w, h as f32 * cell.h, rgb(0x141414)));
+        let lim = p.cols;
+        p.cols = bx + w;
+        for (k, l) in lines.iter().take(h).enumerate() {
+            let color = if k == 0 { FG } else if k + 1 == lines.len() { STATUS_FG } else { FINDER_MATCH };
+            p.text(l, bx, y + k as f32 * cell.h, color);
+        }
+        p.cols = lim;
+    }
+    p.cols = saved;
+}
+
+/// SQL コンソールの上の帯（▶ 実行・Tx・未コミット・コミット・ロールバック・接続先 › スキーマ）
+fn draw_console_bar(p: &mut Painter, ed: &Editor) {
+    let cell = p.fonts.cell();
+    let (x, w) = ed.windows_x();
+    let (x0, wpx) = (x as f32 * cell.w, w as f32 * cell.w);
+    p.out.push(Instance::fill(x0, 0.0, wpx, cell.h, BG));
+    p.out.push(Instance::fill(x0, cell.h - 1.0, wpx, 1.0, rgb(0x2a2a2a)));
+    let hover = ed.hover_bar;
+    for (label, bx, bw, item) in ed.console_bar(w) {
+        use crate::db_panel::BarItem;
+        let color = match item {
+            BarItem::Run | BarItem::Commit => GIT_ADD,
+            BarItem::Rollback => DIAG_ERROR,
+            BarItem::Pending => DIAG_WARN,
+            BarItem::Label => LINE_NO,
+            BarItem::Tx if label.contains("手動") => DIAG_WARN,
+            BarItem::Schema => FG,
+            BarItem::Tx => STATUS_FG,
+        };
+        if hover == Some(item) && item != BarItem::Label && item != BarItem::Pending {
+            p.out.push(Instance::fill((x + bx) as f32 * cell.w - 3.0, 1.0, bw as f32 * cell.w + 6.0, cell.h - 2.0, MATCH_BG));
+        }
+        p.text(&label, x + bx, 0.0, color);
+    }
 }
 
 /// コミットのパネル（左の欄の「コミット」タブ）。上から ブランチ、変えたファイル、メッセージの欄、amend、ボタン
@@ -1594,7 +1975,8 @@ fn draw_completion(p: &mut Painter, ed: &Editor, c: &crate::complete::Completion
     let n = c.items.len().min(MAX);
     // 選んでいる候補が見える範囲
     let first = c.sel.map_or(0, |s| s.saturating_sub(MAX - 1));
-    let width = c.items.iter().skip(first).take(n).map(|i| p.width(i)).max().unwrap_or(1) + 2;
+    let notew = c.notes.iter().skip(first).take(n).map(|x| p.width(&x.1)).max().unwrap_or(0);
+    let width = c.items.iter().skip(first).take(n).map(|i| p.width(i)).max().unwrap_or(1) + 2 + if c.notes.is_empty() { 0 } else { notew + 5 };
     let col = col.min(cols.saturating_sub(width));
     let below = row + 1 + n <= rows;
     let top = if below { row + 1 } else { row.saturating_sub(n) };
@@ -1603,7 +1985,25 @@ fn draw_completion(p: &mut Painter, ed: &Editor, c: &crate::complete::Completion
         let selected = c.sel == Some(first + k);
         let (bg, fg) = if selected { (FG, BG) } else { (MATCH_BG, FG) };
         p.out.push(Instance::fill(col as f32 * cell.w, y, width as f32 * cell.w, cell.h, bg));
-        p.text(&format!(" {item}"), col, y, fg);
+        match c.notes.get(first + k) {
+            Some((mark, note)) => {
+                let mut b = [0u8; 4];
+                let mc = match mark {
+                    'K' => rgb(0xd7af5f),
+                    'F' | 'T' => FINDER_MATCH,
+                    'V' => rgb(0xaf87d7),
+                    _ => fg,
+                };
+                let x = p.text(" ", col, y, fg);
+                let x = p.text(mark.encode_utf8(&mut b), x, y, if selected { BG } else { mc });
+                p.text(&format!(" {item}"), x, y, fg);
+                let nw = p.width(note);
+                p.text(note, (col + width).saturating_sub(nw + 1), y, if selected { BG } else { STATUS_FG });
+            }
+            None => {
+                p.text(&format!(" {item}"), col, y, fg);
+            }
+        }
     }
 }
 

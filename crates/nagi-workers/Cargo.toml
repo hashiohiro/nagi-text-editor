@@ -13,6 +13,9 @@ grep-regex = "0.1.14"
 grep-matcher = "0.1.9"
 # 9.0 は rc なので見送る（architecture.md §12）
 notify = { version = "8.2.0", default-features = false }
+# データベース: Oracle は公式の ODPI-C（実行時に Instant Client を読み込む）、SQLite は中に組み込む
+oracle = "0.6.3"
+rusqlite = { version = "0.40.2", features = ["bundled", "column_decltype"] }
 
 [dev-dependencies]
 nagi-core.workspace = true
