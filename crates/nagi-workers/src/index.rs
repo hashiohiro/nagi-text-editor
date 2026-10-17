@@ -268,9 +268,124 @@ pub fn build(root: &Path, waker: Waker) -> Receiver<Progress> {
     rx
 }
 
+/// ファイルの import 文（Java は完全な名前、TS / JS は (取り込む名前, モジュールの指定)）
+pub fn imports_of(src: &str) -> Vec<(Vec<String>, String)> {
+    let mut out = Vec::new();
+    let mut rest = src;
+    while let Some(i) = rest.find("import") {
+        let at_line_start = rest[..i].rsplit('\n').next().is_none_or(|l| l.trim().is_empty());
+        let tail = &rest[i + 6..];
+        rest = tail;
+        if !at_line_start || !tail.starts_with([' ', '\t', '{']) {
+            continue;
+        }
+        let end = tail.find(';').unwrap_or(tail.len()).min(800);
+        let stmt = tail[..end].trim();
+        if let Some(fi) = stmt.rfind("from") {
+            // TS / JS: import { A, B as C } from './x' / import D from 'y'
+            let spec = stmt[fi + 4..].trim().trim_matches(|c| c == '\'' || c == '"' || c == '`').to_string();
+            let names: Vec<String> = stmt[..fi]
+                .replace(['{', '}', ',', '*'], " ")
+                .split_whitespace()
+                .filter(|w| !matches!(*w, "type" | "as"))
+                .map(String::from)
+                .collect();
+            out.push((names, spec));
+        } else {
+            // Java: import [static] a.b.C / a.b.*
+            let fq = stmt.trim_start_matches("static").trim().to_string();
+            if !fq.is_empty() && fq.chars().all(|c| c.is_alphanumeric() || c == '.' || c == '_' || c == '*' || c == '$') {
+                let last = fq.rsplit('.').next().unwrap_or("").to_string();
+                out.push((vec![last], fq));
+            }
+        }
+    }
+    out
+}
+
+/// 定義の候補が複数のとき絞る。① import しているもの ② 今のファイルとパスがいちばん長く共通するもの（同じモジュール）
+/// `from_rel` は今のファイルの根からの相対パス（区切りは `/`）
+pub fn narrow_candidates(from_rel: &str, src: &str, name: &str, cands: Vec<Loc>) -> Vec<Loc> {
+    if cands.len() < 2 {
+        return cands;
+    }
+    // 全部が同じファイルの中（Java のクラスとそのコンストラクタなど）なら、型の定義を 1 つ
+    if cands.iter().all(|c| c.path == cands[0].path) {
+        use nagi_syntax::defs::DefKind::{Class, Enum, Interface, Type};
+        let ty = cands.iter().find(|c| matches!(c.kind, Class | Interface | Enum | Type)).cloned();
+        return vec![ty.unwrap_or_else(|| cands[0].clone())];
+    }
+    let from_dir: Vec<&str> = from_rel.split('/').collect::<Vec<_>>().split_last().map_or(Vec::new(), |x| x.1.to_vec());
+    let stem = |p: &str| p.rsplit_once('.').map_or(p.to_string(), |(a, _)| a.to_string());
+    let mut hit: Vec<Loc> = Vec::new();
+    for (names, spec) in imports_of(src) {
+        if spec.contains('/') || spec.starts_with('.') {
+            // TS / JS: その名前を取り込んでいるモジュールのファイル
+            if !names.iter().any(|n| n == name) || !spec.starts_with('.') {
+                continue;
+            }
+            let mut parts = from_dir.clone();
+            for seg in spec.split('/') {
+                match seg {
+                    "." | "" => {}
+                    ".." => {
+                        parts.pop();
+                    }
+                    s => parts.push(s),
+                }
+            }
+            let target = parts.join("/");
+            hit.extend(cands.iter().filter(|c| stem(&c.path) == target || stem(&c.path) == format!("{target}/index")).cloned());
+        } else if spec.ends_with(".*") || names.iter().any(|n| n == name) {
+            // Java: a.b.C → a/b/C.java、a.b.* → a/b/
+            let path = spec.trim_end_matches(".*").replace('.', "/");
+            let want = if spec.ends_with(".*") { format!("{path}/{name}") } else { path };
+            hit.extend(cands.iter().filter(|c| stem(&c.path).ends_with(&want)).cloned());
+        }
+    }
+    let pool = if hit.is_empty() { cands } else { hit };
+    if pool.len() < 2 {
+        return pool;
+    }
+    // 今のファイルとの共通のパスがいちばん長いもの
+    let common = |p: &str| p.split('/').zip(from_rel.split('/')).take_while(|(a, b)| a == b).count();
+    let best = pool.iter().map(|c| common(&c.path)).max().unwrap_or(0);
+    let top: Vec<Loc> = pool.iter().filter(|c| common(&c.path) == best).cloned().collect();
+    if top.len() < pool.len() { top } else { pool }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn narrow() {
+        let loc = |p: &str| Loc { path: p.into(), line: 0, col: 0, kind: nagi_syntax::defs::DefKind::Class };
+        // Java: 同じパッケージがモジュールごとに複製されている → 同じモジュールのもの
+        let cands = vec![loc("app.core/src/main/java/com/x/error/BusinessException.java"), loc("rest.a/src/main/java/com/x/error/BusinessException.java")];
+        let src = "package com.x.svc;\nimport com.x.error.BusinessException;\n";
+        let r = narrow_candidates("rest.a/src/main/java/com/x/svc/Foo.java", src, "BusinessException", cands.clone());
+        assert_eq!(r.len(), 1);
+        assert!(r[0].path.starts_with("rest.a/"));
+        // import で決まる
+        let cands = vec![loc("m/src/com/a/Item.java"), loc("m/src/com/b/Item.java")];
+        let r = narrow_candidates("m/src/com/c/Use.java", "import com.b.Item;\n", "Item", cands);
+        assert_eq!(&*r[0].path, "m/src/com/b/Item.java");
+        assert_eq!(r.len(), 1);
+        // TS: 相対の import を解く
+        let cands = vec![loc("src/app/a/user.service.ts"), loc("src/app/b/user.service.ts")];
+        let src = "import { Injectable } from '@angular/core';\nimport { UserService } from '../b/user.service';\n";
+        let r = narrow_candidates("src/app/pages/page.component.ts", src, "UserService", cands);
+        assert_eq!(r.len(), 1);
+        assert_eq!(&*r[0].path, "src/app/b/user.service.ts");
+        assert_eq!(imports_of("import {\n  A,\n  B as C,\n} from './x';\n")[0], (vec!["A".to_string(), "B".into(), "C".into()], "./x".to_string()));
+        // クラスとそのコンストラクタ（同じファイル）→ クラス
+        let mut k = loc("m/E.java");
+        k.kind = nagi_syntax::defs::DefKind::Method;
+        k.line = 9;
+        let r = narrow_candidates("m/Use.java", "", "E", vec![k.clone(), loc("m/E.java"), k]);
+        assert_eq!((r.len(), r[0].line), (1, 0));
+    }
 
     #[test]
     fn build_save_and_incremental() {

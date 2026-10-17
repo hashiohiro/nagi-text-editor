@@ -13,28 +13,50 @@ fn defjump_rate() {
         return;
     };
     let root = std::path::PathBuf::from(root);
+    let t0 = std::time::Instant::now();
     let rx = nagi_workers::index::build(&root, std::sync::Arc::new(|| {}));
     let idx = loop {
-        if let Ok(nagi_workers::index::Progress::Done(i)) = rx.recv() {
-            break i;
+        match rx.recv() {
+            Ok(nagi_workers::index::Progress::Done(i)) => break i,
+            Ok(_) => {}
+            Err(_) => panic!("索引を作る処理が終わりを知らせずに止まった"),
         }
     };
+    eprintln!("索引: {:?}", t0.elapsed());
     let mut parser = DefParser::default();
     // 種類ごとに [ファイル内, 1 か所, 複数, なし]
     let mut counts: HashMap<RefKind, [usize; 4]> = HashMap::new();
     let mut same_name_file = (0usize, 0usize);
+    // 型で候補が複数になった名前（名前 → (回数, 候補の数)）
+    let mut multi: HashMap<String, (usize, usize)> = HashMap::new();
+    // 候補が複数だったが import・同じモジュールで 1 か所に絞れた数
+    let mut narrowed: HashMap<RefKind, usize> = HashMap::new();
     let mut files = 0;
     for e in ignore::WalkBuilder::new(&root).build().flatten() {
         let Some(lang) = Lang::detect(e.path()) else { continue };
         let Ok(src) = std::fs::read_to_string(e.path()) else { continue };
         files += 1;
-        for (name, kind, local) in parser.reference_report(lang, &src) {
+        if std::env::var_os("NAGI_RATE_TRACE").is_some() {
+            eprintln!("解析: {}", e.path().display());
+        }
+        let tf = std::time::Instant::now();
+        let report = parser.reference_report(lang, &src);
+        if tf.elapsed().as_millis() > 200 {
+            eprintln!("遅い: {} {:?}", e.path().display(), tf.elapsed());
+        }
+        for (name, kind, local) in report {
             let c = counts.entry(kind).or_default();
             if local {
                 c[0] += 1;
                 continue;
             }
-            let locs = idx.lookup(&name);
+            let all = idx.lookup(&name).to_vec();
+            let many = all.len() > 1;
+            let rel = e.path().strip_prefix(&root).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default();
+            let locs = nagi_workers::index::narrow_candidates(&rel, &src, &name, all);
+            if many && locs.len() == 1 {
+                *narrowed.entry(kind).or_default() += 1;
+            }
             match locs.len() {
                 0 => c[3] += 1,
                 1 => {
@@ -47,12 +69,24 @@ fn defjump_rate() {
                         }
                     }
                 }
-                _ => c[2] += 1,
+                n => {
+                    c[2] += 1;
+                    if kind == RefKind::Type {
+                        *multi.entry(name.clone()).or_insert((0, n)) = (multi.get(&name).map_or(0, |x| x.0) + 1, n);
+                    }
+                }
             }
         }
     }
     eprintln!("ファイル {files}、索引の定義 {}", idx.def_count());
+    let mut m: Vec<_> = multi.iter().collect();
+    m.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+    for (n, (k, c)) in m.iter().take(8) {
+        let locs: Vec<String> = idx.lookup(n).iter().take(3).map(|l| l.path.rsplit(['\\', '/']).take(2).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("/")).collect();
+        eprintln!("候補が複数の型: {n} ×{k}（定義 {c} か所: {}）", locs.join(", "));
+    }
     for (kind, label) in [(RefKind::Type, "型"), (RefKind::Call, "呼び出し")] {
+        eprintln!("{label}: 絞り込みで 1 か所に決まった {}", narrowed.get(&kind).copied().unwrap_or(0));
         let c = counts.get(&kind).copied().unwrap_or_default();
         let all: usize = c.iter().sum();
         let project = c[0] + c[1] + c[2];

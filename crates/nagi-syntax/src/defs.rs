@@ -274,35 +274,16 @@ fn scope_of(id: Node) -> Range<usize> {
     n.byte_range()
 }
 
-/// `at` にある識別子の定義の位置（ファイルの中で見つかれば）。見える束縛のうち一番内側、同じなら手前で一番近いもの
-pub fn find_local_definition(tree: &Tree, at: usize, text: &dyn Fn(Range<usize>) -> String) -> Option<usize> {
-    let root = tree.root_node();
-    let target = root.descendant_for_byte_range(at, at)?;
-    if target.child_count() > 0 {
-        return None;
-    }
-    let name = text(target.byte_range());
-    if name.trim().is_empty() || !name.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_' || c == '$') {
-        return None;
-    }
-    let mut best: Option<(usize, usize)> = None; // (スコープの大きさ, 位置)
+/// ファイルの中の束縛（名前 → (見える範囲, 位置)）。構文木を 1 回たどって集める
+pub fn local_bindings(tree: &Tree, text: &dyn Fn(Range<usize>) -> String) -> std::collections::HashMap<String, Vec<(Range<usize>, usize)>> {
+    let mut out: std::collections::HashMap<String, Vec<(Range<usize>, usize)>> = std::collections::HashMap::new();
     let mut c = tree.walk();
     'walk: loop {
         let n = c.node();
-        if n.child_count() == 0 && n.end_byte() - n.start_byte() == name.len() && is_binding(n) && text(n.byte_range()) == name {
-            let scope = scope_of(n);
-            let visible = scope.start <= at && at <= scope.end;
-            if visible {
-                let size = scope.end - scope.start;
-                let pos = n.start_byte();
-                // 内側のスコープ優先。同じスコープなら、カーソルより手前で一番近いもの（無ければ最初）
-                let better = match best {
-                    None => true,
-                    Some((bs, bp)) => size < bs || (size == bs && pos <= at && (bp > at || pos > bp)),
-                };
-                if better {
-                    best = Some((size, pos));
-                }
+        if n.child_count() == 0 && is_binding(n) {
+            let name = text(n.byte_range());
+            if name.chars().next().is_some_and(|ch| ch.is_alphabetic() || ch == '_' || ch == '$') {
+                out.entry(name).or_default().push((scope_of(n), n.start_byte()));
             }
         }
         if c.goto_first_child() {
@@ -317,7 +298,43 @@ pub fn find_local_definition(tree: &Tree, at: usize, text: &dyn Fn(Range<usize>)
             }
         }
     }
+    out
+}
+
+/// 束縛の候補から、`at` で見えるもののうち一番内側、同じなら手前で一番近いもの（無ければ最初）
+fn pick_binding(cands: &[(Range<usize>, usize)], at: usize) -> Option<usize> {
+    let mut best: Option<(usize, usize)> = None; // (スコープの大きさ, 位置)
+    for (scope, pos) in cands {
+        if !(scope.start <= at && at <= scope.end) {
+            continue;
+        }
+        let (size, pos) = (scope.end - scope.start, *pos);
+        let better = match best {
+            None => true,
+            Some((bs, bp)) => size < bs || (size == bs && pos <= at && (bp > at || pos > bp)),
+        };
+        if better {
+            best = Some((size, pos));
+        }
+    }
     best.map(|(_, p)| p)
+}
+
+/// `at` にある識別子の名前（定義を探せる識別子なら）
+fn ident_at(tree: &Tree, at: usize, text: &dyn Fn(Range<usize>) -> String) -> Option<String> {
+    let target = tree.root_node().descendant_for_byte_range(at, at)?;
+    if target.child_count() > 0 {
+        return None;
+    }
+    let name = text(target.byte_range());
+    (!name.trim().is_empty() && name.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_' || c == '$')).then_some(name)
+}
+
+/// `at` にある識別子の定義の位置（ファイルの中で見つかれば）。見える束縛のうち一番内側、同じなら手前で一番近いもの
+pub fn find_local_definition(tree: &Tree, at: usize, text: &dyn Fn(Range<usize>) -> String) -> Option<usize> {
+    let name = ident_at(tree, at, text)?;
+    let binds = local_bindings(tree, text);
+    pick_binding(binds.get(&name)?, at)
 }
 
 /// 参照の種類（定義ジャンプの的中率を測るため）
@@ -395,10 +412,12 @@ impl DefParser {
         }
         let Some(tree) = self.parser.parse(src, None) else { return Vec::new() };
         let text = |r: Range<usize>| src.get(r).unwrap_or("").to_string();
+        // 束縛の一覧は 1 回だけ作る（参照ごとに構文木をたどると、大きなファイルで終わらなくなる）
+        let binds = local_bindings(&tree, &text);
         reference_sites(&tree, &text)
             .into_iter()
             .map(|(name, k, at)| {
-                let local = find_local_definition(&tree, at, &text).is_some_and(|d| d != at);
+                let local = ident_at(&tree, at, &text).and_then(|n| pick_binding(binds.get(&n)?, at)).is_some_and(|d| d != at);
                 (name, k, local)
             })
             .collect()

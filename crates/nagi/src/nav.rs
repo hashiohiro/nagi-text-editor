@@ -156,7 +156,13 @@ impl Editor {
         // プロジェクトの索引（まだなら、このファイルの定義から）
         let here = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
         let mut cands: Vec<(PathBuf, usize, usize, DefKind)> = match &self.nav.index {
-            Some(idx) => idx.lookup(&name).iter().map(|l| (idx.root.join(&*l.path), l.line as usize, l.col as usize, l.kind)).collect(),
+            Some(idx) => {
+                // 候補が複数なら、import と同じモジュールで絞る
+                let rel = here.as_ref().and_then(|h| h.strip_prefix(&idx.root).ok()).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default();
+                let head = self.buf.slice_string(0, self.buf.len_bytes().min(64 * 1024));
+                let locs = nagi_workers::index::narrow_candidates(&rel, &head, &name, idx.lookup(&name).to_vec());
+                locs.iter().map(|l| (idx.root.join(&*l.path), l.line as usize, l.col as usize, l.kind)).collect()
+            }
             None => Vec::new(),
         };
         if cands.is_empty() {
