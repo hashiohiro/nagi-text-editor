@@ -23,6 +23,10 @@ pub struct GrepPanel {
     job: Option<GrepJob>,
     /// 正規表現の誤り
     pub error: Option<String>,
+    /// 全文検索以外の結果（診断など）の見出し。None なら全文検索
+    pub title: Option<String>,
+    /// 結果を出しているコマンドが動いている（診断）
+    pub running: bool,
     /// 選びを手で動かしたか（動かしていなければ、結果が届いても先頭を選んだまま）
     moved: bool,
     /// リストモードで `g` を 1 回押した（`gg` の途中）
@@ -36,7 +40,7 @@ pub const GREP_LEAD: &str = "検索> ";
 
 impl GrepPanel {
     pub fn searching(&self) -> bool {
-        self.job.is_some()
+        self.job.is_some() || self.running
     }
 
     /// 結果のファイルの数
@@ -98,6 +102,8 @@ impl Editor {
             scroll: 0,
             job: None,
             error: None,
+            title: None,
+            running: false,
             moved: false,
             pending_g: false,
             pending_w: false,
@@ -133,6 +139,8 @@ impl Editor {
         g.scroll = 0;
         g.moved = false;
         g.error = None;
+        g.title = None;
+        g.running = false;
         if g.query.text.is_empty() {
             return;
         }

@@ -25,6 +25,9 @@ const CURSOR: [f32; 4] = rgb(0xcccccc);
 /// Visual で選んだ行末（空行など）にあるカーソル。選択の反転とも地の色とも見分けられる灰色
 const CURSOR_IN_SELECTION: [f32; 4] = rgb(0x6c6c6c);
 const STATUS_FG: [f32; 4] = rgb(0x8a8a8a);
+/// 診断のある行の行番号（エラーと警告）
+const DIAG_ERROR: [f32; 4] = rgb(0xd75f5f);
+const DIAG_WARN: [f32; 4] = rgb(0xd7af5f);
 /// 検索の一致（今いるもの以外）の背景
 const MATCH_BG: [f32; 4] = rgb(0x3a3a3a);
 
@@ -183,6 +186,8 @@ fn glyph_keys(ed: &Editor, fonts: &mut Fonts, from: usize, to: usize) -> Vec<nag
 /// 1 つの窓に描くもの。作業中の窓だけがカーソル・Visual・入力中の検索の強調を持つ
 struct Pane<'a> {
     buf: &'a nagi_core::Buffer,
+    /// 診断のある行（行 → エラーか）。行番号の色に使う
+    diags: std::collections::HashMap<usize, bool>,
     folds: &'a crate::folds::Folds,
     syntax: Option<&'a nagi_syntax::Syntax>,
     cursor: nagi_core::Cursor,
@@ -258,7 +263,13 @@ fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
             p.text("~", rect.x, y, TILDE);
             continue;
         };
-        p.text(&format!("{:>5} ", ln + 1), rect.x, y, LINE_NO);
+        // 診断のある行は行番号の色で示す（エラーは赤、警告は黄色）
+        let num_color = match pane.diags.get(&ln) {
+            Some(true) => DIAG_ERROR,
+            Some(false) => DIAG_WARN,
+            None => LINE_NO,
+        };
+        p.text(&format!("{:>5} ", ln + 1), rect.x, y, num_color);
         // 閉じた折りたたみは 1 行で「+-- 12 行: 頭の行」と薄く出す（Vim の Folded と同じ形）
         if let Some((s, e)) = pane.folds.outer_at(ln).filter(|f| f.0 == ln) {
             let x = (rect.x + GUTTER) as f32 * cell.w;
@@ -453,7 +464,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         let last = buf.line_count().saturating_sub(1);
         let mut cursor = st.cursor;
         cursor.line = cursor.line.min(last);
-        let pane = Pane { buf, folds, syntax, cursor, top: st.top.min(last), frac: if active { ed.frac } else { 0.0 }, active };
+        let pane = Pane { buf, diags: ed.diag_lines(buf.path.as_deref()), folds, syntax, cursor, top: st.top.min(last), frac: if active { ed.frac } else { 0.0 }, active };
         draw_pane(&mut p, ed, &pane, Rect { h: ed.text_rows(rect), ..rect });
     }
     // 窓ごとの状態行（分割中だけ。Vim の laststatus=1 と同じ）と、左右の窓の間の 1px の区切り線
@@ -597,7 +608,12 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
                     None => mode.to_string(),
                 }
             };
-            let end = p.text(&left, 0, y, FG);
+            // 何も出していなければ、カーソルの行の診断を出す
+            let (left, color) = match ed.diag_at_cursor() {
+                Some(d) if left.is_empty() && ed.mode == Mode::Normal => (format!("{}: {}", if d.error { "error" } else { "warning" }, d.msg), if d.error { DIAG_ERROR } else { DIAG_WARN }),
+                _ => (left, FG),
+            };
+            let end = p.text(&left, 0, y, color);
             // 長いメッセージと重なるときは位置表示を出さない（メッセージを優先する）
             let pc = cols.saturating_sub(p.width(&ruler));
             if end + 2 <= pc {
@@ -705,9 +721,10 @@ fn draw_grep_panel(p: &mut Painter, g: &crate::grep_panel::GrepPanel, r: Rect, f
     let (x, y0, w) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
     p.out.push(Instance::fill(x, y0, w, r.h as f32 * cell.h, BG));
     p.out.push(Instance::fill(x, y0, w, 1.0, LINE_NO));
-    let head = match &g.error {
-        Some(e) => format!("正規表現の誤り: {}", e.lines().last().unwrap_or("")),
-        None => format!(
+    let head = match (&g.error, &g.title) {
+        (Some(e), _) => format!("正規表現の誤り: {}", e.lines().last().unwrap_or("")),
+        (None, Some(t)) => format!("{t}   {} 件{}", g.hits.len(), if g.searching() { " …" } else { "" }),
+        (None, None) => format!(
             "全文検索: {}{}   {} 件 / {} ファイル{}{}",
             g.query.text,
             if g.regex { "  [.*]" } else { "" },

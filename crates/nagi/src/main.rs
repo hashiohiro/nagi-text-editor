@@ -15,6 +15,7 @@ mod buffers;
 mod clipboard;
 mod clock;
 mod complete;
+mod diagnostics;
 #[cfg(test)]
 mod difftest;
 mod editor;
@@ -846,6 +847,7 @@ impl ApplicationHandler for App {
             ed.poll_grep();
             ed.poll_tree();
             ed.poll_index();
+            ed.poll_make();
         }
         if self.ed.as_mut().is_some_and(|ed| ed.poll_watch().1) {
             self.reload_rc();

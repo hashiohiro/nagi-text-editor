@@ -571,6 +571,34 @@ impl Syntax {
 }
 
 impl Syntax {
+    /// 構文エラー（ERROR の節と、足りない節）の位置（byte。前から順に）
+    pub fn error_positions(&self) -> Vec<usize> {
+        let Some(tree) = &self.tree else { return Vec::new() };
+        let mut out = Vec::new();
+        let mut c = tree.walk();
+        'walk: loop {
+            let n = c.node();
+            if n.is_error() || n.is_missing() {
+                out.push(n.start_byte());
+            }
+            // エラーを含まない節の中には入らない
+            if n.has_error() && c.goto_first_child() {
+                continue;
+            }
+            loop {
+                if c.goto_next_sibling() {
+                    continue 'walk;
+                }
+                if !c.goto_parent() {
+                    break 'walk;
+                }
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
     /// このファイルの定義の一覧（ファイルの構造）
     pub fn defs(&self, buf: &Buffer) -> Vec<defs::Def> {
         let Some(tree) = &self.tree else { return Vec::new() };

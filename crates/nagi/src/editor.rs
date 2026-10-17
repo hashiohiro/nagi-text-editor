@@ -254,6 +254,9 @@ pub struct Editor {
     pub(crate) in_global: bool,
     /// 直前の :s（& で繰り返す）
     pub(crate) last_sub: Option<crate::ex_cmds::LastSub>,
+    /// 動いている診断のコマンドと、その結果
+    pub(crate) make: Option<crate::diagnostics::MakeState>,
+    pub diags: Vec<crate::diagnostics::Diag>,
     /// 補完の途中（Insert の Ctrl-n / Ctrl-p）
     pub completion: Option<crate::complete::Completion>,
     /// プロジェクトの定義の索引
@@ -333,6 +336,8 @@ impl Editor {
             folds: Default::default(),
             nav: Default::default(),
             completion: None,
+            make: None,
+            diags: Vec::new(),
             block_insert: None,
             reg_blocks: HashMap::new(),
             reg_block_next: None,
@@ -1111,6 +1116,8 @@ impl Editor {
             "Outline" => self.outline(),
             "Refs" | "References" => self.find_references(),
             "Idea" | "IntelliJ" => self.open_in_intellij(),
+            "Make" | "make" => self.make(arg),
+            "eslint" | "Lint" => self.make("npx eslint -f unix ."),
             "Grep" | "grep" | "Rg" | "rg" => self.open_grep(arg),
             "cn" | "cnext" => self.next_hit(true, arg.parse().unwrap_or(1)),
             "cp" | "cprevious" | "cN" | "cNext" => self.next_hit(false, arg.parse().unwrap_or(1)),
@@ -1161,6 +1168,8 @@ impl Editor {
             Some((Some("nav.method_prev"), _)) => self.method_jump(false),
             Some((Some("nav.method_next"), _)) => self.method_jump(true),
             Some((Some("jump.back"), _)) => self.jump(true, 1),
+            Some((Some("nav.error_next"), _)) => self.next_error(true),
+            Some((Some("nav.error_prev"), _)) => self.next_error(false),
             Some((Some("jump.forward"), _)) => self.jump(false, 1),
             Some((Some(cmd), desc)) => self.message = format!("未実装: {desc}（{cmd}）"),
             Some((None, desc)) => self.message = format!("Nagi には無い機能: {desc}"),
