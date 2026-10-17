@@ -10,6 +10,7 @@
 //! メインスレッドはその間にイベントループと非表示のウィンドウを作る。最初のフレームを描いてから表示する。
 
 mod autoread;
+mod block;
 mod buffers;
 mod clipboard;
 mod clock;

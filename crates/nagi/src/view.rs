@@ -238,9 +238,11 @@ fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
         &[]
     };
     let visual = match ed.mode {
-        Mode::Visual { .. } if pane.active => Some(ed.visual_range()),
+        Mode::Visual { block: false, .. } if pane.active => Some(ed.visual_range()),
         _ => None,
     };
+    // 矩形の選択は、見えている行ごとに列の範囲から求める
+    let block = (pane.active && ed.is_block()).then(|| ed.block_sel());
     // 行単位の Visual は、選んでいる行の範囲にしておく（1 文字ごとに位置を引き直さない）
     let visual_lines = visual.map(|(vs, ve, _)| (pane.buf.pos_of(vs).0, pane.buf.pos_of(ve.saturating_sub(1).max(vs)).0));
     let replacing = pane.active && ed.mode == Mode::Replace && !ed.query.text.is_empty();
@@ -272,6 +274,7 @@ fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
             _ => false,
         };
         let is_cursor_line = pane.active && ln == pane.cursor.line;
+        let block_span = block.filter(|b| ln >= b.l1 && ln <= b.l2).map(|b| crate::block::span_in_line(line, b.left, b.right));
         let mut items: Vec<Item> = Vec::with_capacity(line.len());
         let mut cursor_item = None;
         let mut gs = line.grapheme_indices(true).peekable();
@@ -312,6 +315,10 @@ fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
                     it.fg = BG;
                 }
             }
+            if block_span.is_some_and(|(s, e)| b >= s && b < e) {
+                it.bg = Some(it.fg);
+                it.fg = BG;
+            }
             if is_cursor_line && b == pane.cursor.byte {
                 cursor_item = Some(items.len());
             }
@@ -347,7 +354,7 @@ fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
             // ブロックカーソル（文字を反転）。空行や行末では 1 セルの塗り
             // 選択の中では反転をもう一度反転して元の色に戻す（ターミナルの Vim と同じ見え方。行単位の Visual でも位置が分かる）
             match cursor_item {
-                Some(i) if visual.is_some() && items[i].fg == BG && items[i].bg.is_some() => {
+                Some(i) if (visual.is_some() || block.is_some()) && items[i].fg == BG && items[i].bg.is_some() => {
                     items[i].fg = items[i].bg.take().unwrap_or(FG);
                     p.draw(&items, rect.x + GUTTER, y);
                 }
@@ -558,8 +565,9 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             } else {
                 let mode = match ed.mode {
                     Mode::Insert => "-- INSERT --",
-                    Mode::Visual { line: false } => "-- VISUAL --",
-                    Mode::Visual { line: true } => "-- VISUAL LINE --",
+                    Mode::Visual { block: true, .. } => "-- VISUAL BLOCK --",
+                    Mode::Visual { line: false, .. } => "-- VISUAL --",
+                    Mode::Visual { line: true, .. } => "-- VISUAL LINE --",
                     _ => "",
                 };
                 // マクロの記録中は Vim と同じく「recording @a」を出す

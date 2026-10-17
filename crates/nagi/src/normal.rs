@@ -92,10 +92,40 @@ impl Editor {
         effect
     }
 
+    /// v / V / Ctrl-v: 同じ種類なら抜け、違う種類なら切り替える
+    fn toggle_visual(&mut self, line: bool, block: bool) {
+        match self.mode {
+            Mode::Visual { line: l, block: b } if (l, b) == (line, block) => self.mode = Mode::Normal,
+            Mode::Visual { .. } => self.mode = Mode::Visual { line, block },
+            _ => {
+                self.anchor = self.abs();
+                self.mode = Mode::Visual { line, block };
+            }
+        }
+    }
+
+    /// 矩形の選択に対するコマンド。扱ったら true
+    fn block_exec(&mut self, cmd: &Cmd) -> bool {
+        match cmd.kind {
+            Kind::VisualOp(op) => self.block_op(op, cmd.reg),
+            Kind::Act(Action::Insert(c @ ('I' | 'A'))) => self.block_insert_cmd(c == 'A'),
+            Kind::Act(Action::Replace(ch)) => self.block_map_chars(|_| ch.to_string()),
+            Kind::Act(Action::ToggleCase) => self.block_map_chars(|g| g.chars().map(|c| if c.is_uppercase() { c.to_lowercase().collect::<String>() } else { c.to_uppercase().collect() }).collect()),
+            Kind::Act(Action::Join) => self.block_join(),
+            Kind::VisualCorner => self.block_swap_corner(),
+            Kind::VisualObj { .. } => {}
+            _ => return false,
+        }
+        true
+    }
+
     fn exec_inner(&mut self, cmd: Cmd) -> Effect {
+        if self.is_block() && self.block_exec(&cmd) {
+            return Effect::None;
+        }
         let n = cmd.count.unwrap_or(1);
         let visual = match self.mode {
-            Mode::Visual { line } => Some(line),
+            Mode::Visual { line, .. } => Some(line),
             _ => None,
         };
         match cmd.kind {
@@ -122,11 +152,11 @@ impl Editor {
                     self.anchor = s;
                     self.set_abs(self.prev_grapheme(e).max(s));
                     if lw {
-                        self.mode = Mode::Visual { line: true };
+                        self.mode = Mode::Visual { line: true, block: false };
                     }
                 }
             }
-            Kind::VisualSwap => {
+            Kind::VisualSwap | Kind::VisualCorner => {
                 let a = self.abs();
                 self.set_abs(self.anchor);
                 self.anchor = a;
@@ -346,7 +376,7 @@ impl Editor {
         let b = self.abs();
         let (s, e) = (a.min(b), a.max(b));
         match self.mode {
-            Mode::Visual { line: true } => {
+            Mode::Visual { line: true, .. } => {
                 let (l1, l2) = (self.buf.pos_of(s).0, self.buf.pos_of(e).0);
                 let (s, e) = self.lines_range(l1, l2);
                 (s, e, true)
@@ -603,30 +633,69 @@ impl Editor {
 
     // ---------------------------------------------------------------- レジスタ
 
-    fn set_register(&mut self, reg: Option<char>, text: String, linewise: bool, yank: bool) {
+    /// 矩形の操作から書く（行単位ではない）
+    pub(crate) fn set_register_pub(&mut self, reg: Option<char>, text: String, yank: bool) {
+        self.set_register(reg, text, false, yank);
+    }
+
+    /// レジスタが矩形で取ったものなら、その幅
+    fn reg_block(&self, reg: Option<char>) -> Option<usize> {
         match reg {
-            Some('_') => return,
+            Some(c @ ('a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '"')) => self.reg_blocks.get(&c.to_ascii_lowercase()).copied(),
+            // 無名と + はクリップボードを通る: 自分が入れた内容のままなら、矩形の印も引き継ぐ
+            _ => {
+                let (t, _) = self.get_register(reg);
+                let mine = self.registers.get(&'"').is_some_and(|(u, _)| u.replace("\r\n", "\n") == t.replace("\r\n", "\n"));
+                if mine { self.reg_blocks.get(&'"').copied() } else { None }
+            }
+        }
+    }
+
+    fn set_register(&mut self, reg: Option<char>, text: String, linewise: bool, yank: bool) {
+        let block = self.reg_block_next.take();
+        if reg == Some('_') {
+            return;
+        }
+        // 書いたレジスタ（矩形の印を付け直すため）
+        let mut written = vec!['"'];
+        match reg {
             Some(c @ 'a'..='z') => {
                 self.registers.insert(c, (text.clone(), linewise));
+                written.push(c);
             }
             Some(c @ 'A'..='Z') => {
                 let e = self.registers.entry(c.to_ascii_lowercase()).or_default();
                 e.0.push_str(&text);
                 e.1 |= linewise;
+                written.push(c.to_ascii_lowercase());
             }
             _ => {}
         }
         if yank {
             self.registers.insert('0', (text.clone(), linewise));
-        } else if linewise || text.contains('\n') {
+            written.push('0');
+        } else if linewise || text.contains('\n') || block.is_some() {
             for i in (1..9).rev() {
-                if let Some(v) = self.registers.get(&char::from(b'0' + i)).cloned() {
-                    self.registers.insert(char::from(b'0' + i + 1), v);
+                let (from, to) = (char::from(b'0' + i), char::from(b'0' + i + 1));
+                if let Some(v) = self.registers.get(&from).cloned() {
+                    self.registers.insert(to, v);
                 }
+                match self.reg_blocks.get(&from).copied() {
+                    Some(w) => self.reg_blocks.insert(to, w),
+                    None => self.reg_blocks.remove(&to),
+                };
             }
             self.registers.insert('1', (text.clone(), linewise));
+            written.push('1');
         } else {
             self.registers.insert('-', (text.clone(), linewise));
+            written.push('-');
+        }
+        for c in written {
+            match block {
+                Some(w) => self.reg_blocks.insert(c, w),
+                None => self.reg_blocks.remove(&c),
+            };
         }
         // 無名レジスタ。clipboard=unnamedplus なら OS のクリップボードも
         self.registers.insert('"', (text.clone(), linewise));
@@ -754,14 +823,8 @@ impl Editor {
                     }
                 }
             }
-            Action::Visual { line } => match visual {
-                Some(cur) if cur == line => self.mode = Mode::Normal,
-                Some(_) => self.mode = Mode::Visual { line },
-                None => {
-                    self.anchor = self.abs();
-                    self.mode = Mode::Visual { line };
-                }
-            },
+            Action::Visual { line } => self.toggle_visual(line, false),
+            Action::VisualBlock => self.toggle_visual(false, true),
             Action::Scroll { half, down } => {
                 let amount = if half { (self.rows / 2).max(1) } else { self.rows.saturating_sub(2).max(1) } * n;
                 let d = if down { amount as isize } else { -(amount as isize) };
@@ -811,6 +874,11 @@ impl Editor {
     fn put(&mut self, after: bool, indent: bool, reg: Option<char>) {
         let (text, linewise) = self.get_register(reg);
         if text.is_empty() {
+            return;
+        }
+        if let Some(w) = self.reg_block(reg) {
+            let text = text.replace("\r\n", "\n");
+            self.put_block(&text, w, after);
             return;
         }
         let nl = self.buf.newline();

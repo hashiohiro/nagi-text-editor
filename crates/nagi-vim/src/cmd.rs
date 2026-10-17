@@ -82,6 +82,8 @@ pub enum Action {
     SearchWord { forward: bool },
     /// v / V
     Visual { line: bool },
+    /// Ctrl-v（Ctrl-q）
+    VisualBlock,
     Scroll { half: bool, down: bool },
     LastChange,
     /// `Ctrl-^`（直前のバッファ）
@@ -114,6 +116,8 @@ pub enum Kind {
     VisualObj { inner: bool, obj: TextObj },
     /// Visual モードの `o`（選択の両端を入れ替える）
     VisualSwap,
+    /// Visual block の `O`（同じ行の反対の角へ）
+    VisualCorner,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -378,6 +382,7 @@ pub fn parse_normal(keys: &[Key]) -> Parse {
         Key::Char('#') => Action::SearchWord { forward: false },
         Key::Char('v') => Action::Visual { line: false },
         Key::Char('V') => Action::Visual { line: true },
+        Key::Ctrl('v' | 'q') => Action::VisualBlock,
         Key::Ctrl('d') => Action::Scroll { half: true, down: true },
         Key::Ctrl('u') => Action::Scroll { half: true, down: false },
         Key::Ctrl('f') | Key::PageDown => Action::Scroll { half: false, down: true },
@@ -411,6 +416,7 @@ pub fn parse_visual(keys: &[Key]) -> Parse {
         Key::Char('x') | Key::Delete => return done(Kind::VisualOp(Op::Delete)),
         Key::Char('s') => return done(Kind::VisualOp(Op::Change)),
         Key::Char('o') => return done(Kind::VisualSwap),
+        Key::Char('O') => return done(Kind::VisualCorner),
         _ => {}
     }
     if let Some(r) = text_obj(&mut p) {
@@ -429,6 +435,8 @@ pub fn parse_visual(keys: &[Key]) -> Parse {
         Key::Esc | Key::Ctrl('c') => Action::Esc,
         Key::Char('v') => Action::Visual { line: false },
         Key::Char('V') => Action::Visual { line: true },
+        Key::Ctrl('v' | 'q') => Action::VisualBlock,
+        Key::Char(c @ ('I' | 'A')) => Action::Insert(c),
         Key::Char('J') => Action::Join,
         Key::Char('~') => Action::ToggleCase,
         Key::Char('p') | Key::Char('P') => Action::Put { after: true, indent: false },

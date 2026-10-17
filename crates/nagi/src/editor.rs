@@ -18,7 +18,8 @@ pub const GUTTER: usize = 6;
 pub enum Mode {
     Normal,
     Insert,
-    Visual { line: bool },
+    /// `line` は行単位（V）、`block` は矩形（Ctrl-v）
+    Visual { line: bool, block: bool },
     /// `:` のコマンドライン
     Command,
     /// `/` `?` の検索（最下行）
@@ -253,6 +254,11 @@ pub struct Editor {
     pub(crate) in_global: bool,
     /// 直前の :s（& で繰り返す）
     pub(crate) last_sub: Option<crate::ex_cmds::LastSub>,
+    /// 矩形の I A c で、Insert を抜けたときにほかの行へ入れる約束
+    pub(crate) block_insert: Option<crate::block::BlockInsert>,
+    /// 矩形で取ったレジスタ（レジスタ → 矩形の幅）と、次に書くレジスタを矩形にする印
+    pub(crate) reg_blocks: HashMap<char, usize>,
+    pub(crate) reg_block_next: Option<usize>,
     /// 記録中のマクロ（レジスタ, 打ったキー）
     pub recording: Option<(char, Vec<Key>)>,
     /// 直前に再生したマクロ（`@@`）
@@ -318,6 +324,9 @@ impl Editor {
             line_anchors: Vec::new(),
             in_global: false,
             last_sub: None,
+            block_insert: None,
+            reg_blocks: HashMap::new(),
+            reg_block_next: None,
             recording: None,
             last_macro: None,
             macro_depth: 0,
@@ -482,12 +491,14 @@ impl Editor {
     }
 
     fn leave_insert(&mut self) {
+        // 矩形の I A c: 打った文字列をほかの行へ（同じ undo のグループに入れる）
+        let placed = self.finish_block_insert();
         self.hist.close();
         self.mode = Mode::Normal;
         self.preedit.clear();
         self.preedit_cursor = None;
-        // Vim と同じく、Insert を抜けるとカーソルは 1 つ左へ
-        if self.cursor.byte > 0 {
+        // Vim と同じく、Insert を抜けるとカーソルは 1 つ左へ（矩形の I A は左上の角に置いた）
+        if self.cursor.byte > 0 && !placed {
             self.with_motion(|m, c| m.left(c, 1));
         }
         self.clamp_normal();
@@ -1217,7 +1228,7 @@ impl Editor {
         }
         if !matches!(self.mode, Mode::Visual { .. }) {
             self.anchor = anchor;
-            self.mode = Mode::Visual { line: false };
+            self.mode = Mode::Visual { line: false, block: false };
         }
         self.cursor = self.pos_at(row, col);
         self.clamp_normal();
@@ -1338,7 +1349,7 @@ mod tests {
         e.click(0, GUTTER + 2);
         let anchor = e.abs();
         e.drag(anchor, 1, GUTTER + 3);
-        assert_eq!(e.mode, Mode::Visual { line: false });
+        assert_eq!(e.mode, Mode::Visual { line: false, block: false });
         assert_eq!((e.cursor.line, e.cursor.byte), (1, 3));
         assert_eq!(e.visual_range(), (2, 16, false));
     }
@@ -1348,7 +1359,7 @@ mod tests {
         let mut e = ed("abc\n");
         e.key(Key::Char('i'));
         e.drag(0, 0, GUTTER + 2);
-        assert_eq!(e.mode, Mode::Visual { line: false });
+        assert_eq!(e.mode, Mode::Visual { line: false, block: false });
     }
 
     #[test]
@@ -1357,7 +1368,7 @@ mod tests {
         e.select_at(0, GUTTER + 5, 2);
         assert_eq!(e.visual_range(), (4, 8, false), "単語 name");
         e.select_at(0, GUTTER + 5, 3);
-        assert_eq!(e.mode, Mode::Visual { line: true });
+        assert_eq!(e.mode, Mode::Visual { line: true, block: false });
     }
 
     #[test]
