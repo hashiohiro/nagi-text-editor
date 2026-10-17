@@ -231,6 +231,8 @@ pub struct Editor {
     pub tree: Option<crate::tree_panel::TreePanel>,
     /// リストモードでいるパネル
     pub list_side: Side,
+    /// マウスを寄せていて出しているストライプ（App がマウスの位置から入れる）
+    pub stripe: Option<Side>,
     /// 一度集めたプロジェクトのファイル一覧（根 → 相対パス）
     pub(crate) file_cache: HashMap<PathBuf, Vec<String>>,
     /// ファイルの見張り（外部での変更と設定ファイル）
@@ -283,6 +285,7 @@ impl Editor {
             grep: None,
             tree: None,
             list_side: Side::Bottom,
+            stripe: None,
             file_cache: HashMap::new(),
             watcher: None,
             rc_files: Vec::new(),

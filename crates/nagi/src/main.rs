@@ -141,6 +141,9 @@ fn title_for(path: Option<&std::path::Path>) -> String {
     }
 }
 
+/// ストライプの幅（セル。全角 1 字がちょうど入る）
+const STRIPE_W: usize = 2;
+
 struct App {
     /// 題名に出しているパス（バッファを切り替えたら題名を変える）
     title_path: Option<std::path::PathBuf>,
@@ -572,6 +575,51 @@ impl App {
         Some((row, col.saturating_sub(rect.x)))
     }
 
+    /// マウスを画面の端に寄せている間だけストライプを出す（architecture.md §9 の hover）。
+    /// 左端の 1 セル（出ている間は帯の 2 セル）で左のストライプ、最下行で下のストライプ
+    fn update_stripe(&mut self) {
+        let (Some(f), Some(ed)) = (&self.fonts, &mut self.ed) else { return };
+        let cell = f.cell();
+        let (col, row) = (self.mouse.0 / cell.w as f64, (self.mouse.1 / cell.h as f64) as usize);
+        let edge = if ed.stripe == Some(editor::Side::Left) { STRIPE_W as f64 } else { 1.0 };
+        let rows = ed.screen.1;
+        let want = if col < edge && row < ed.windows_rows() {
+            Some(editor::Side::Left)
+        } else if row >= rows && ed.status_rows() == 1 {
+            Some(editor::Side::Bottom)
+        } else if ed.stripe == Some(editor::Side::Bottom) && row + 1 == rows && col < 10.0 {
+            Some(editor::Side::Bottom)
+        } else {
+            None
+        };
+        if want != ed.stripe {
+            ed.stripe = want;
+            self.draw();
+        }
+    }
+
+    /// ストライプのラベルのクリック。押したら true
+    fn press_stripe(&mut self) -> bool {
+        let (Some(f), Some(ed)) = (&self.fonts, &mut self.ed) else { return false };
+        let cell = f.cell();
+        let (col, row) = ((self.mouse.0 / cell.w as f64) as usize, (self.mouse.1 / cell.h as f64) as usize);
+        match ed.stripe {
+            Some(editor::Side::Left) if col < STRIPE_W && row < ed.windows_rows() => ed.toggle_tree(),
+            Some(editor::Side::Bottom) if row + 1 == ed.screen.1 && col < 8 => {
+                if ed.grep.is_some() {
+                    ed.close_grep();
+                } else {
+                    ed.open_grep("");
+                }
+            }
+            _ => return false,
+        }
+        ed.stripe = None;
+        self.sync_ime();
+        self.draw();
+        true
+    }
+
     /// マウスの下の窓へ移る。窓の状態行や区切りの上なら false（本文のクリックとしては扱わない）
     fn focus_under_mouse(&mut self) -> bool {
         let Some(f) = &self.fonts else { return false };
@@ -587,6 +635,9 @@ impl App {
 
     fn on_press(&mut self) {
         self.sync_screen();
+        if self.press_stripe() {
+            return;
+        }
         // パネルの上なら、パネルの行を選ぶ（ダブルクリックで開く）
         if let (Some(f), Some(ed)) = (&self.fonts, &mut self.ed) {
             let cell = f.cell();
@@ -874,6 +925,8 @@ impl ApplicationHandler for App {
                 self.mouse = (position.x, position.y);
                 if self.press.is_some() {
                     self.on_drag();
+                } else {
+                    self.update_stripe();
                 }
             }
             WindowEvent::MouseInput { state, button: winit::event::MouseButton::Left, .. } => match state {

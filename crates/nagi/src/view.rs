@@ -478,6 +478,11 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     if let Some(f) = &ed.finder {
         draw_finder(&mut p, f, rows, cols);
     }
+    match ed.stripe {
+        Some(crate::editor::Side::Left) => draw_stripe_left(&mut p, ed.windows_rows(), ed.tree.is_some()),
+        Some(crate::editor::Side::Bottom) => draw_stripe_bottom(&mut p, rows, cols, ed.grep.is_some()),
+        None => {}
+    }
     // ---- 最下行: 左にモード・メッセージ・入力欄、右に位置（Vim の showmode と ruler と同じ形）
     let y = rows as f32 * cell.h;
     // はみ出した本文の最終行（スムーズスクロール中）を最下行の地で隠す
@@ -567,6 +572,39 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         }
     }
     p.out
+}
+
+/// 左のストライプ（マウスを左端に寄せている間だけ）。幅 2 セルの帯に「ツリー」を縦に書く。開いているパネルは反転
+fn draw_stripe_left(p: &mut Painter, rows: usize, open: bool) {
+    let cell = p.fonts.cell();
+    let w = 2.0 * cell.w;
+    p.out.push(Instance::fill(0.0, 0.0, w, rows as f32 * cell.h, BG));
+    p.out.push(Instance::fill(w, 0.0, 1.0, rows as f32 * cell.h, LINE_NO));
+    let label = "ツリー";
+    let n = label.chars().count();
+    if open {
+        p.out.push(Instance::fill(0.0, 0.0, w, n as f32 * cell.h, FG));
+    }
+    for (k, c) in label.chars().enumerate() {
+        // 縦書きでは長音を縦の線にする
+        let c = if c == 'ー' { '｜' } else { c };
+        let mut buf = [0u8; 4];
+        p.text(c.encode_utf8(&mut buf), 0, k as f32 * cell.h, if open { BG } else { STATUS_FG });
+    }
+}
+
+/// 下のストライプ（マウスを最下行に寄せている間だけ）。最下行のすぐ上に「検索」を出す
+fn draw_stripe_bottom(p: &mut Painter, rows: usize, cols: usize, open: bool) {
+    let cell = p.fonts.cell();
+    let y = (rows - 1) as f32 * cell.h;
+    p.out.push(Instance::fill(0.0, y, cols as f32 * cell.w, cell.h, BG));
+    p.out.push(Instance::fill(0.0, y, cols as f32 * cell.w, 1.0, LINE_NO));
+    let label = " 検索 ";
+    let w = p.width(label);
+    if open {
+        p.out.push(Instance::fill(0.0, y, w as f32 * cell.w, cell.h, FG));
+    }
+    p.text(label, 0, y, if open { BG } else { STATUS_FG });
 }
 
 /// ファイルツリー。1 行目は根の名前、2 行目から字下げした木（フォルダは青で `▸` `▾`）。右端に 1px の区切り線
