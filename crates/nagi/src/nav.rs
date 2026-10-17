@@ -492,10 +492,10 @@ mod tests {
         keys(&mut e, &format!(":e {}<CR>", dir.join("src/b.ts").display()));
         e.outline();
         assert_eq!(e.finder.as_ref().unwrap().items.len(), 2, "helper と Box");
-        keys(&mut e, "<Esc>");
+        keys(&mut e, "<Esc><Esc>");
         e.symbol_search(true);
         assert_eq!(e.finder.as_ref().unwrap().items.len(), 2, "型は Box が 2 つ");
-        keys(&mut e, "<Esc>");
+        keys(&mut e, "<Esc><Esc>");
     }
 
     #[test]

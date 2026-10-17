@@ -11,6 +11,7 @@ use nagi_vim::Key;
 use nagi_workers::files::FileWalk;
 
 use crate::editor::{Editor, Effect, Mode, Prompt};
+use crate::vim_field::FieldOut;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Source {
@@ -75,9 +76,23 @@ impl Source {
     }
 }
 
+impl Finder {
+    /// 欄の中身を絞り込みの語に写して絞り直す
+    pub fn sync_query(&mut self) {
+        self.query.text = self.field.text();
+        self.query.cursor = self.field.cursor().1.min(self.query.text.len());
+        self.refilter();
+        self.selected = 0;
+        self.scroll = 0;
+    }
+}
+
 pub struct Finder {
     pub source: Source,
+    /// 絞り込みの語（field の中身の写し。IME の位置と絞り込みに使う）
     pub query: Prompt,
+    /// 絞り込みの欄（Vim 風。Insert で始め、Esc でノーマル: j / k で候補を選ぶ、w や ciw で直す。もう一度 Esc で閉じる）
+    pub field: crate::vim_field::VimField,
     /// ファイルの候補の根（候補はここからの相対パス）
     pub root: PathBuf,
     /// 候補（画面に出す文字列）
@@ -177,6 +192,7 @@ impl Editor {
         let mut f = Finder {
             source,
             query: Prompt::default(),
+            field: crate::vim_field::VimField::new("", false),
             root: root.clone(),
             items: Vec::new(),
             docs: Vec::new(),
@@ -298,31 +314,43 @@ impl Editor {
             self.mode = Mode::Normal;
             return Effect::None;
         };
+        let normal = !f.field.is_insert() && f.field.ed.pending_keys.is_empty() && f.field.visual().is_none();
+        let up = |f: &mut Finder| f.selected = (f.selected + 1).min(f.hits.len().saturating_sub(1));
+        let down = |f: &mut Finder| f.selected = f.selected.saturating_sub(1);
         match key {
-            Key::Esc | Key::Ctrl('c') | Key::Ctrl('g') | Key::Ctrl('[') => self.close_finder(),
+            Key::Ctrl('c') | Key::Ctrl('g') => self.close_finder(),
             Key::Enter => return self.accept_finder(None),
             Key::Ctrl('v') => return self.accept_finder(Some(true)),
             Key::Ctrl('x') | Key::Ctrl('s') => return self.accept_finder(Some(false)),
             // 良い候補は下にあるので、上へ = 次の候補
-            Key::Up | Key::Ctrl('p') | Key::Ctrl('k') => f.selected = (f.selected + 1).min(f.hits.len().saturating_sub(1)),
-            Key::Down | Key::Ctrl('n') | Key::Ctrl('j') | Key::Tab => f.selected = f.selected.saturating_sub(1),
-            k => {
-                if f.query.key(k) {
-                    f.refilter();
-                    f.selected = 0;
-                    f.scroll = 0;
+            Key::Up | Key::Ctrl('p') | Key::Ctrl('k') => up(f),
+            Key::Down | Key::Ctrl('n') | Key::Ctrl('j') | Key::Tab => down(f),
+            // ノーマルでは j / k で候補を選ぶ（下が良い候補なので j は下へ）
+            Key::Char('j') if normal => down(f),
+            Key::Char('k') if normal => up(f),
+            k => match self.feed_field(k, |e| e.finder.as_mut().map(|f| &mut f.field)) {
+                FieldOut::Changed => {
+                    if let Some(f) = &mut self.finder {
+                        f.sync_query();
+                    }
                 }
-            }
+                FieldOut::Submit => return self.accept_finder(None),
+                FieldOut::Cancel => self.close_finder(),
+                FieldOut::None => {
+                    if let Some(f) = &mut self.finder {
+                        f.query.cursor = f.field.cursor().1.min(f.query.text.len());
+                    }
+                }
+            },
         }
         Effect::None
     }
 
     pub(crate) fn finder_insert(&mut self, text: &str) {
         if let Some(f) = &mut self.finder {
-            f.query.insert(text);
-            f.refilter();
-            f.selected = 0;
-            f.scroll = 0;
+            if f.field.insert_text(text) == FieldOut::Changed {
+                f.sync_query();
+            }
         }
     }
 
@@ -431,10 +459,20 @@ mod tests {
         e.open_finder(Source::Files);
         wait_walk(&mut e);
         assert_eq!(e.finder.as_ref().unwrap().items.len(), 4);
-        keys(&mut e, "<Esc>");
-        // Esc で閉じても何も変えない
+        keys(&mut e, "<Esc><Esc>");
+        // 欄は Vim 風: Esc でノーマル（j / k で選ぶ、ciw で直す）、もう一度 Esc で閉じる。閉じても何も変えない
         e.open_finder(Source::Files);
         keys(&mut e, "read<Esc>");
+        assert_eq!(e.mode, Mode::Finder);
+        assert!(!e.finder.as_ref().unwrap().field.is_insert());
+        keys(&mut e, "ciwmain<Esc>");
+        assert_eq!(e.finder.as_ref().unwrap().query.text, "main");
+        let hits = e.finder.as_ref().unwrap().hits.len();
+        keys(&mut e, "k");
+        assert_eq!(e.finder.as_ref().unwrap().selected, 1.min(hits - 1), "k で次の候補");
+        keys(&mut e, "j");
+        assert_eq!(e.finder.as_ref().unwrap().selected, 0);
+        keys(&mut e, "<Esc>");
         assert_eq!(e.mode, Mode::Normal);
         assert_eq!(e.buf.line(0), "main");
     }

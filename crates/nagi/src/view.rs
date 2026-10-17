@@ -791,8 +791,15 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         }
         Mode::Finder if ed.finder.is_some() => {
             let f = ed.finder.as_ref().unwrap();
-            prompt_line(&mut p, "> ", &f.query.text, f.query.cursor, &ed.preedit, y, true);
-            let info = format!("{}  {}/{}{} ", f.source.label(), f.hits.len(), f.items.len(), if f.walking() { " …" } else { "" });
+            if f.field.is_insert() {
+                prompt_line(&mut p, "> ", &f.query.text, f.query.cursor, &ed.preedit, y, true);
+            } else {
+                // ノーマル・Visual: Vim の欄（四角のカーソル・選んだ所の反転）
+                p.text("> ", 0, y, FG);
+                draw_vim_line(&mut p, &f.field, 0, 2, y, "", true);
+            }
+            let mode = if f.field.is_insert() { String::new() } else { format!("-- {} --  j/k 選ぶ  Esc 閉じる   ", f.field.mode_label()) };
+            let info = format!("{mode}{}  {}/{}{} ", f.source.label(), f.hits.len(), f.items.len(), if f.walking() { " …" } else { "" });
             let pc = cols.saturating_sub(p.width(&info));
             p.text(&info, pc, y, STATUS_FG);
         }

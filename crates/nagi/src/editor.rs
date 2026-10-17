@@ -562,7 +562,8 @@ impl Editor {
 
     /// 入力欄（IME の確定先）があるモードか
     pub fn has_prompt(&self) -> bool {
-        matches!(self.mode, Mode::Command | Mode::Search | Mode::Replace | Mode::Finder | Mode::GrepPrompt)
+        matches!(self.mode, Mode::Command | Mode::Search | Mode::Replace | Mode::GrepPrompt)
+            || (self.mode == Mode::Finder && self.finder.as_ref().is_some_and(|f| f.field.is_insert()))
             || (self.mode == Mode::CommitMsg && self.commit.as_ref().is_some_and(|c| c.msg.is_insert()))
             || (self.mode == Mode::Log && self.log.as_ref().is_some_and(|l| l.filter.as_ref().is_some_and(|f| f.is_insert())))
             || (self.mode == Mode::Branches && self.branch_popup.as_ref().is_some_and(|b| b.naming.as_ref().is_none_or(|n| n.1.is_insert())))
