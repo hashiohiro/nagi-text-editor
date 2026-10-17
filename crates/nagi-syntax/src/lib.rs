@@ -15,6 +15,7 @@ use tree_sitter::{InputEdit, Language, Node, Parser, Point, Query, QueryCursor, 
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Lang {
+    Rust,
     TypeScript,
     Tsx,
     JavaScript,
@@ -30,7 +31,8 @@ pub enum Lang {
     Vim,
 }
 
-const ALL: [Lang; 13] = [
+const ALL: [Lang; 14] = [
+    Lang::Rust,
     Lang::TypeScript,
     Lang::Tsx,
     Lang::JavaScript,
@@ -78,12 +80,14 @@ impl Lang {
             "js" | "mjs" | "cjs" | "jsx" => Lang::JavaScript,
             "java" => Lang::Java,
             "kt" | "kts" => Lang::Kotlin,
+            "rs" => Lang::Rust,
             _ => return None,
         })
     }
 
     pub fn name(self) -> &'static str {
         match self {
+            Lang::Rust => "Rust",
             Lang::TypeScript => "TypeScript",
             Lang::Tsx => "TSX",
             Lang::JavaScript => "JavaScript",
@@ -118,6 +122,7 @@ impl Lang {
 
     fn language(self) -> Language {
         match self {
+            Lang::Rust => tree_sitter_rust::LANGUAGE.into(),
             Lang::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
             Lang::Tsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
             Lang::JavaScript => tree_sitter_javascript::LANGUAGE.into(),
@@ -142,6 +147,7 @@ impl Lang {
             }
             Lang::JavaScript => format!("{}\n{}", tree_sitter_javascript::HIGHLIGHT_QUERY, tree_sitter_javascript::JSX_HIGHLIGHT_QUERY),
             Lang::Java => tree_sitter_java::HIGHLIGHTS_QUERY.to_string(),
+            Lang::Rust => tree_sitter_rust::HIGHLIGHTS_QUERY.to_string(),
             Lang::Kotlin => include_str!("../queries/kotlin/highlights.scm").to_string(),
             Lang::Python => tree_sitter_python::HIGHLIGHTS_QUERY.to_string(),
             Lang::Bash => tree_sitter_bash::HIGHLIGHT_QUERY.to_string(),
@@ -412,6 +418,20 @@ mod tests {
         assert_eq!(s.tree.as_ref().unwrap().root_node().to_sexp(), fresh.tree.as_ref().unwrap().root_node().to_sexp());
         let hl = s.highlight(&buf, 0..buf.len_bytes());
         assert!(hl.iter().any(|(r, h)| *h == Hl::Keyword && buf.slice_string(r.start, r.end) == "const"), "{hl:?}");
+    }
+
+    #[test]
+    fn rust() {
+        let k = kinds(Lang::Rust, "// c\n/// 文書\n#[derive(Debug)]\nfn f(x: u32) -> String { let s = \"a\\n\"; println!(\"{}\", 1); s.to_string() }\n");
+        assert!(k.contains(&("// c\n".into(), Hl::Comment)) || k.iter().any(|(t, h)| t.starts_with("// c") && *h == Hl::Comment), "{k:?}");
+        assert!(k.iter().any(|(t, h)| t.starts_with("/// 文書") && *h == Hl::Comment), "{k:?}");
+        assert!(k.contains(&("fn".into(), Hl::Keyword)), "{k:?}");
+        assert!(k.contains(&("let".into(), Hl::Keyword)), "{k:?}");
+        assert!(k.contains(&("u32".into(), Hl::Type)), "{k:?}");
+        assert!(k.contains(&("String".into(), Hl::Type)), "{k:?}");
+        assert!(k.iter().any(|(t, h)| t == "\\n" && *h == Hl::Escape) || k.iter().any(|(t, h)| t.starts_with('"') && *h == Hl::String), "{k:?}");
+        assert!(k.contains(&("1".into(), Hl::Number)), "{k:?}");
+        assert!(Lang::detect(Path::new("src/main.rs")) == Some(Lang::Rust));
     }
 
     #[test]
