@@ -11,6 +11,7 @@
 
 mod autoread;
 mod blame;
+mod branches;
 mod block;
 mod buffers;
 mod clipboard;
@@ -880,6 +881,7 @@ impl ApplicationHandler for App {
             ed.poll_commit();
             ed.poll_blame();
             ed.poll_log();
+            ed.poll_branches();
         }
         // ダイアログで選んだ名前で保存する（ダイアログが上書きを確かめている）
         if let Some(r) = self.save_dialog.as_ref().and_then(|rx| rx.try_recv().ok()) {

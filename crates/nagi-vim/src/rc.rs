@@ -42,7 +42,30 @@ pub fn load_rc() -> Rc {
     if path.exists() {
         source(&mut rc, &path, 0);
     }
+    add_default_maps(&mut rc);
     rc
+}
+
+/// git の既定の割り当て。設定で同じ左辺（またはその途中・その先）を決めていれば足さない
+pub fn add_default_maps(rc: &mut Rc) {
+    const DEFAULTS: [(&str, &str); 8] = [
+        ("<leader>gg", ":<C-u>Gcommit<CR>"),
+        ("<leader>gd", ":<C-u>Gdiff<CR>"),
+        ("<leader>gb", ":<C-u>Gblame<CR>"),
+        ("<leader>gl", ":<C-u>Glog<CR>"),
+        ("<leader>gB", ":<C-u>Gbranches<CR>"),
+        ("<leader>hp", ":<C-u>GitHunk<CR>"),
+        ("<leader>hs", ":<C-u>GitStage<CR>"),
+        ("<leader>hu", ":<C-u>GitRevert<CR>"),
+    ];
+    for (lhs, rhs) in DEFAULTS {
+        let lhs = parse_keys(lhs, &rc.leader);
+        let taken = rc.keymap.normal.iter().any(|m| m.lhs.starts_with(&lhs) || lhs.starts_with(&m.lhs));
+        if !taken {
+            let rhs = parse_keys(rhs, &rc.leader);
+            rc.keymap.add(lhs, rhs, true);
+        }
+    }
 }
 
 fn source(rc: &mut Rc, path: &Path, depth: usize) {
@@ -158,6 +181,10 @@ nnoremap <leader><leader>R :<C-u>source ~/.ideavimrc \| echo "Reloaded"<CR>
         assert!(rc.has("clipboard=unnamedplus"));
         assert!(rc.has("surround"));
         assert_eq!(rc.keymap.normal.len(), 3, "後から定義した <leader>zj が勝つ");
+        // 既定の git の割り当ては、設定と重ならない分だけ足す
+        let mut rc2 = parse_rc("let mapleader = \" \"\nnnoremap <leader>g :echo<CR>\n");
+        add_default_maps(&mut rc2);
+        assert_eq!(rc2.keymap.normal.len(), 1 + 3, "<leader>g と重なる g〜 は足さない");
         let zj = rc.keymap.normal.iter().find(|m| m.lhs == vec![Key::Char(' '), Key::Char('z'), Key::Char('j')]).unwrap();
         assert_eq!(zj.rhs, parse_keys(":action Back<CR>", " "));
         assert_eq!(rc.notes.len(), 1, "{:?}", rc.notes);

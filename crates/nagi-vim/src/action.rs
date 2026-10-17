@@ -57,6 +57,8 @@ pub fn ideavim(name: &str) -> Option<(Option<&'static str>, &'static str)> {
         "CheckinProject" => (Some("git.commit"), "コミット（コミットのパネル）"),
         "Vcs.Push" => (Some("git.push"), "push"),
         "Vcs.UpdateProject" => (Some("git.pull"), "pull"),
+        "Git.Branches" => (Some("git.branches"), "ブランチ"),
+        "Git.Fetch" => (Some("git.fetch"), "フェッチ"),
         // Nagi に相当する機能が無い（LSP・IDE 固有）
         "OptimizeImports" => (None, "import の整理（LSP なしのため対象外）"),
         "QuickJavaDoc" => (None, "ドキュメント表示（LSP なしのため対象外）"),

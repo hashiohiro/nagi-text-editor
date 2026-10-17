@@ -38,6 +38,8 @@ pub enum Mode {
     Diff,
     /// 履歴（グラフ付きのログ）の画面
     Log,
+    /// ブランチのポップアップ
+    Branches,
 }
 
 /// リストモードでいるパネル
@@ -266,6 +268,10 @@ pub struct Editor {
     pub(crate) last_sub: Option<crate::ex_cmds::LastSub>,
     /// git（status・HEAD の版・差分・ポップアップ）
     pub(crate) git: crate::git_ui::GitState,
+    /// ブランチのポップアップ（開いている間だけ）
+    pub branch_popup: Option<crate::branches::BranchPopup>,
+    /// 裏で動かしているフェッチ・pull（見出し, 結果）
+    pub git_job: Option<(String, std::sync::mpsc::Receiver<Result<String, String>>)>,
     /// 履歴の画面（開いている間だけ）
     pub log: Option<crate::log_view::LogView>,
     /// blame（出している間だけ）
@@ -369,6 +375,8 @@ impl Editor {
             commit: None,
             blame: None,
             log: None,
+            branch_popup: None,
+            git_job: None,
             diff: None,
             diff_return: None,
             diff_pending: None,
@@ -660,6 +668,10 @@ impl Editor {
             }
             Mode::Log => {
                 self.log_key(key);
+                Effect::None
+            }
+            Mode::Branches => {
+                self.branches_key(key);
                 Effect::None
             }
         };
@@ -1235,6 +1247,9 @@ impl Editor {
             "Glog" | "Gl" => self.open_log(false),
             "Ghistory" | "Gfilelog" => self.open_log(true),
             "Gbranch" => self.git_new_branch(arg),
+            "Gbranches" | "Gbr" => self.open_branches(),
+            "Gpull" => self.run_git_job("pull ", &["pull", "--no-edit"]),
+            "Gfetch" => self.run_git_job("フェッチ", &["fetch", "--all", "--prune"]),
             "Gpush" => self.push_from_anywhere(),
             "GitStage" => self.stage_hunk(),
             "GitRevert" => self.revert_hunk(),
@@ -1295,6 +1310,9 @@ impl Editor {
             Some((Some("git.blame"), _)) => self.toggle_blame(),
             Some((Some("git.file_history"), _)) => self.open_log(true),
             Some((Some("git.log"), _)) => self.open_log(false),
+            Some((Some("git.branches"), _)) => self.open_branches(),
+            Some((Some("git.pull"), _)) => self.run_git_job("pull ", &["pull", "--no-edit"]),
+            Some((Some("git.fetch"), _)) => self.run_git_job("フェッチ", &["fetch", "--all", "--prune"]),
             Some((Some("git.push"), _)) => self.push_from_anywhere(),
             Some((Some("git.hunk_prev"), _)) => self.hunk_jump(false, 1),
             Some((Some("git.hunk_popup"), _)) => self.open_hunk_popup(),
@@ -1378,6 +1396,15 @@ impl Editor {
             Mode::Finder => self.finder_insert(text),
             Mode::GrepPrompt => self.grep_insert(text),
             Mode::CommitMsg => self.commit_msg_insert(text),
+            Mode::Branches => self.branches_insert(text),
+            Mode::Log => {
+                if let Some(l) = &mut self.log {
+                    if l.filtering {
+                        l.filter.insert(text);
+                        l.refilter_pub();
+                    }
+                }
+            }
             _ => {}
         }
     }

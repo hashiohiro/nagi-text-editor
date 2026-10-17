@@ -137,6 +137,11 @@ impl LogView {
         self.visible.get(self.selected).and_then(|&i| self.rows[i].commit.as_ref())
     }
 
+    pub fn refilter_pub(&mut self) {
+        self.refilter();
+        self.detail = None;
+    }
+
     fn refilter(&mut self) {
         let q = self.filter.text.to_lowercase();
         self.visible = if q.is_empty() {
@@ -158,6 +163,15 @@ impl LogView {
 impl Editor {
     /// `:Glog`（`file` ならそのファイルの履歴）
     pub(crate) fn open_log(&mut self, file: bool) {
+        self.open_log_with(file, None);
+    }
+
+    /// 2 つのブランチの差（`main..topic`: topic にだけあるコミット）
+    pub(crate) fn open_log_range(&mut self, range: &str) {
+        self.open_log_with(false, Some(range.to_string()));
+    }
+
+    fn open_log_with(&mut self, file: bool, range: Option<String>) {
         if self.git.root.is_none() {
             self.start_git();
         }
@@ -173,12 +187,16 @@ impl Editor {
         };
         let r2 = root.clone();
         let p2 = path.clone();
+        let range2 = range.clone();
         let rx_log = spawn(self.waker.clone(), move || {
             let fmt = "--format=\x1f%h\x1f%D\x1f%s\x1f%an\x1f%at\x1f%H";
             let out = match &p2 {
                 // ファイルの履歴は名前の変更をたどる（--follow はグラフと一緒に使えない）
                 Some(p) => nagi_workers::git::git(&r2, &["log", "--follow", "-n", "1000", fmt, "--", p]),
-                None => nagi_workers::git::git(&r2, &["log", "--graph", "--all", "--date-order", "-n", "1000", fmt]),
+                None => match &range2 {
+                    Some(r) => nagi_workers::git::git(&r2, &["log", "--graph", "--date-order", "-n", "1000", fmt, r, "--"]),
+                    None => nagi_workers::git::git(&r2, &["log", "--graph", "--all", "--date-order", "-n", "1000", fmt]),
+                },
             }?;
             Ok(parse_log(&String::from_utf8_lossy(&out)))
         });
@@ -213,7 +231,7 @@ impl Editor {
             file_sel: 0,
             filter: Prompt::default(),
             filtering: false,
-            path,
+            path: path.or(range.map(|r| format!("比較 {r}"))),
             confirm: None,
             loading: true,
             rx_log,

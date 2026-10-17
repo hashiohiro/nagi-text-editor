@@ -65,6 +65,19 @@ const EX_COMMANDS: &[(&str, &str)] = &[
     ("Idea", "IntelliJ で開く"),
     ("source", "設定（ideavimrc）を読み直す"),
     ("NagiStats", "入力の遅延の計測"),
+    ("Gcommit", "コミット（変更の一覧とメッセージ）"),
+    ("Gdiff", "今のファイルと HEAD の差分"),
+    ("Gblame", "行ごとのコミット（出す・消す）"),
+    ("Glog", "グラフ付きの履歴"),
+    ("Ghistory", "今のファイルの履歴"),
+    ("Gbranches", "ブランチ"),
+    ("Gbranch", "ブランチを作る（名前 [起点]）"),
+    ("Gpush", "push（送る前に確かめる）"),
+    ("Gpull", "pull"),
+    ("Gfetch", "フェッチ"),
+    ("GitHunk", "カーソルの変更の差分"),
+    ("GitStage", "カーソルの変更をステージ"),
+    ("GitRevert", "カーソルの変更を戻す"),
 ];
 
 /// ファイル名を取るコマンド

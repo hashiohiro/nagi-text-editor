@@ -396,7 +396,7 @@ fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
                 items.push(Item { g: Cow::Borrowed(" "), width: 1, fg: BG, bg: Some(FG), underline: false });
             }
         }
-        if !is_cursor_line || matches!(ed.mode, Mode::Command | Mode::Search | Mode::Replace | Mode::Finder | Mode::GrepPrompt | Mode::List | Mode::CommitMsg | Mode::Diff | Mode::Log) {
+        if !is_cursor_line || matches!(ed.mode, Mode::Command | Mode::Search | Mode::Replace | Mode::Finder | Mode::GrepPrompt | Mode::List | Mode::CommitMsg | Mode::Diff | Mode::Log | Mode::Branches) {
             p.draw(&items, rect.x + gutter, y);
             continue;
         }
@@ -572,6 +572,9 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     if let Some(f) = &ed.finder {
         draw_finder(&mut p, f, rows, cols);
     }
+    if let Some(b) = &ed.branch_popup {
+        draw_branch_popup(&mut p, b, rows, cols);
+    }
     if ed.git.popup.is_some() && ed.mode == Mode::Normal {
         draw_hunk_popup(&mut p, ed, rows, cols);
     } else if ed.blame_active() && ed.mode == Mode::Normal {
@@ -634,6 +637,15 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         }
         Mode::CommitMsg => {
             p.text(if ed.message.is_empty() { "-- コミットメッセージ --   Esc 一覧へ   Ctrl-Enter コミット" } else { &ed.message }, 0, y, FG);
+        }
+        Mode::Branches => {
+            let left = if ed.message.is_empty() { "-- ブランチ --".to_string() } else { ed.message.clone() };
+            let end = p.text(&left, 0, y, FG);
+            let help = "打つと絞り込み  ↑↓ 移動  Enter チェックアウト  → 操作  Esc 閉じる ";
+            let pc = cols.saturating_sub(p.width(help));
+            if end + 2 <= pc {
+                p.text(help, pc, y, STATUS_FG);
+            }
         }
         Mode::Log => {
             let l = ed.log.as_ref();
@@ -906,6 +918,87 @@ fn draw_commit_panel(p: &mut Painter, ed: &Editor, c: &crate::commit_panel::Comm
     // 下の行: キーの案内
     let hy = y0 + (r.h - 1) as f32 * cell.h;
     p.text(" Space 選択  a すべて  Enter 開く  d 差分  u 戻す  c メッセージへ  Ctrl-Enter コミット  P コミットしてプッシュ  r 読み直す  q 閉じる", r.x, hy, STATUS_FG);
+}
+
+/// ブランチのポップアップ（画面の上の中央。IntelliJ の Git Branches と同じ並び）
+fn draw_branch_popup(p: &mut Painter, b: &crate::branches::BranchPopup, rows: usize, cols: usize) {
+    use crate::branches::Entry;
+    let cell = p.fonts.cell();
+    let w = 56.min(cols.saturating_sub(4));
+    let list_h = b.entries.len().min(rows.saturating_sub(8)).max(1);
+    let h = list_h + 1;
+    let x0 = (cols.saturating_sub(w)) / 2;
+    let top = 2;
+    let (x, y) = (x0 as f32 * cell.w, top as f32 * cell.h);
+    p.out.push(Instance::fill(x - 1.0, y - 1.0, w as f32 * cell.w + 2.0, h as f32 * cell.h + 2.0, STATUS_FG));
+    p.out.push(Instance::fill(x, y, w as f32 * cell.w, h as f32 * cell.h, rgb(0x141414)));
+    let saved = p.cols;
+    p.cols = x0 + w;
+    // 上の欄: 名前を打っているときはその欄、そうでなければ絞り込み
+    let (label, text) = match &b.naming {
+        Some((crate::branches::Naming::New(from), pr)) => (format!(" 新しいブランチ{}: ", from.as_ref().map_or(String::new(), |f| format!("（{f} から）"))), pr.text.clone()),
+        Some((crate::branches::Naming::Rename(old), pr)) => (format!(" {old} の新しい名前: "), pr.text.clone()),
+        None => (" 🔍 ".to_string(), b.query.text.clone()),
+    };
+    let c = p.text(&label, x0, y, STATUS_FG);
+    let c = p.text(&text, c, y, FG);
+    p.out.push(Instance::fill(c as f32 * cell.w, y + 2.0, 2.0, cell.h - 4.0, FG));
+    p.out.push(Instance::fill(x, y + cell.h - 1.0, w as f32 * cell.w, 1.0, LINE_NO));
+    // 一覧（選んだ行が見えるように流す）
+    let scroll = (b.selected + 1).saturating_sub(list_h);
+    for (k, e) in b.entries.iter().enumerate().skip(scroll).take(list_h) {
+        let yy = y + (1 + k - scroll) as f32 * cell.h;
+        let sel = k == b.selected && b.naming.is_none();
+        if sel {
+            p.out.push(Instance::fill(x, yy, w as f32 * cell.w, cell.h, rgb(0x2c4a70)));
+        }
+        match e {
+            Entry::NewBranch => {
+                p.text(" ＋ 新しいブランチ…", x0, yy, FG);
+            }
+            Entry::Fetch => {
+                p.text(" ⟳ フェッチ", x0, yy, FG);
+            }
+            Entry::Header(t) => {
+                p.text(&format!(" {t}"), x0, yy, STATUS_FG);
+            }
+            Entry::Branch(i) => {
+                let br = &b.branches[*i];
+                let mark = if br.current { "●" } else { " " };
+                let c = p.text(&format!("   {mark} "), x0, yy, GIT_ADD);
+                let c = p.text(&br.name, c, yy, if br.current { rgb(0xe8e8e8) } else { FG });
+                if !br.track.is_empty() {
+                    let t = br.track.replace("ahead", "↑").replace("behind", "↓").replace(['[', ']'], "");
+                    p.text(&format!("  {t}"), c, yy, STATUS_FG);
+                }
+                if sel && b.ops.is_none() {
+                    p.text("›", x0 + w - 2, yy, FG);
+                }
+            }
+        }
+    }
+    p.cols = saved;
+    // 操作の一覧（選んだ行の右に）
+    if let Some((ops, osel)) = &b.ops {
+        let cur = b.current_name();
+        let labels: Vec<String> = ops.iter().map(|o| format!(" {} ", o.label(&cur))).collect();
+        let ow = labels.iter().map(|l| p.width(l)).max().unwrap_or(10);
+        let ox = (x0 + w + 1).min(cols.saturating_sub(ow + 1));
+        let oy = top + 1 + b.selected.saturating_sub(scroll);
+        let (fx, fy) = (ox as f32 * cell.w, oy as f32 * cell.h);
+        p.out.push(Instance::fill(fx - 1.0, fy - 1.0, ow as f32 * cell.w + 2.0, labels.len() as f32 * cell.h + 2.0, STATUS_FG));
+        p.out.push(Instance::fill(fx, fy, ow as f32 * cell.w, labels.len() as f32 * cell.h, rgb(0x1c1c1c)));
+        let saved = p.cols;
+        p.cols = ox + ow;
+        for (k, l) in labels.iter().enumerate() {
+            let yy = fy + k as f32 * cell.h;
+            if k == *osel {
+                p.out.push(Instance::fill(fx, yy, ow as f32 * cell.w, cell.h, rgb(0x2c4a70)));
+            }
+            p.text(l, ox, yy, FG);
+        }
+        p.cols = saved;
+    }
 }
 
 /// 履歴（窓の領域全体）。左にブランチ、中央にグラフ付きのコミット、右に選んだコミットの中身
