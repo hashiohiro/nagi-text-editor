@@ -50,6 +50,8 @@ pub enum Effect {
     ReloadRc,
     /// `:NagiStats`（`!` 付きは記録を消す）
     Stats { reset: bool },
+    /// 「名前を付けて保存」のダイアログを出す（App が出し、選んだパスで保存する）
+    SaveDialog,
 }
 
 /// OS のクリップボード（`set clipboard+=unnamedplus` のとき無名レジスタの代わりに使う）
@@ -1114,6 +1116,10 @@ impl Editor {
             "sav" | "saveas" | "sav!" | "saveas!" if !arg.is_empty() => {
                 self.write_as(arg, name.ends_with('!'), true);
             }
+            // 名前を書かない :saveas と、名前の無いバッファの :w はダイアログで選ぶ
+            "sav" | "saveas" | "sav!" | "saveas!" => return Effect::SaveDialog,
+            "w" | "write" | "w!" | "write!" | "wq" | "x" if self.buf.path.is_none() => return Effect::SaveDialog,
+            "browse" if arg.starts_with('w') || arg.starts_with("sav") => return Effect::SaveDialog,
             "w" | "write" | "w!" | "write!" => {
                 self.write();
             }

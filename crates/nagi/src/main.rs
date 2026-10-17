@@ -27,6 +27,7 @@ mod grep_panel;
 mod macros;
 mod marks;
 mod nav;
+mod save_dialog;
 mod tree_panel;
 mod normal;
 mod stats;
@@ -154,6 +155,8 @@ fn title_for(path: Option<&std::path::Path>) -> String {
 const STRIPE_W: usize = 2;
 
 struct App {
+    /// 開いている「名前を付けて保存」のダイアログ
+    save_dialog: Option<std::sync::mpsc::Receiver<Option<std::path::PathBuf>>>,
     /// 題名に出しているパス（バッファを切り替えたら題名を変える）
     title_path: Option<std::path::PathBuf>,
     opts: Opts,
@@ -349,6 +352,19 @@ impl App {
         [t1 - t0, t2 - t1, t3 - t2, t3.elapsed()]
     }
 
+    /// 「名前を付けて保存」のダイアログを出す（別のスレッドで。選んだら user_event で保存する）
+    fn open_save_dialog(&mut self) {
+        let (Some(w), Some(ed)) = (&self.window, &self.ed) else { return };
+        let owner = match w.window_handle().map(|h| h.as_raw()) {
+            Ok(winit::raw_window_handle::RawWindowHandle::Win32(h)) => h.hwnd.get(),
+            _ => 0,
+        };
+        let path = ed.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
+        let dir = path.as_ref().and_then(|p| p.parent().map(|d| d.to_path_buf())).or_else(|| std::env::current_dir().ok());
+        let name = path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned());
+        self.save_dialog = Some(save_dialog::open(owner, dir, name, ed.waker.clone()));
+    }
+
     /// 設定（vimrc）を読み直して反映する（`:source` と、設定ファイルが書き換わったとき）
     fn reload_rc(&mut self) {
         let t = Instant::now();
@@ -499,6 +515,7 @@ impl App {
                     }
                 }
                 Effect::ReloadRc => self.reload_rc(),
+                Effect::SaveDialog => self.open_save_dialog(),
             }
         }
         false
@@ -851,6 +868,13 @@ impl ApplicationHandler for App {
             ed.poll_make();
             ed.poll_cmd_files();
         }
+        // ダイアログで選んだ名前で保存する（ダイアログが上書きを確かめている）
+        if let Some(r) = self.save_dialog.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            self.save_dialog = None;
+            if let (Some(p), Some(ed)) = (r, &mut self.ed) {
+                ed.write_as(&p.to_string_lossy(), true, true);
+            }
+        }
         if self.ed.as_mut().is_some_and(|ed| ed.poll_watch().1) {
             self.reload_rc();
         }
@@ -1050,6 +1074,7 @@ fn main() {
         replay_deadline: None,
         prefetched_top: None,
         title_path: None,
+        save_dialog: None,
     };
     event_loop.run_app(&mut app).unwrap();
 }

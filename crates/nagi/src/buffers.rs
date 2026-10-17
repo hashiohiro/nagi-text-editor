@@ -423,4 +423,19 @@ mod write_as_tests {
         assert_eq!(e.buf.path.as_deref(), Some(c.as_path()));
         assert_eq!(std::fs::read_to_string(&c).unwrap(), "hello!");
     }
+
+    #[test]
+    fn unnamed_write_opens_dialog() {
+        let mut e = Editor::new(Buffer::from_str(""), None);
+        let mut last = crate::editor::Effect::None;
+        for k in nagi_vim::parse_keys("ihi<Esc>:w<CR>", " ") {
+            last = e.key(k);
+        }
+        assert!(matches!(last, crate::editor::Effect::SaveDialog));
+        let mut last = crate::editor::Effect::None;
+        for k in nagi_vim::parse_keys(":saveas<CR>", " ") {
+            last = e.key(k);
+        }
+        assert!(matches!(last, crate::editor::Effect::SaveDialog));
+    }
 }
