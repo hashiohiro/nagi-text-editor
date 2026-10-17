@@ -29,9 +29,8 @@ pub struct CommitPanel {
     pub items: Vec<Item>,
     pub selected: usize,
     pub scroll: usize,
-    /// コミットのメッセージ（複数行）と、その中のカーソル（byte）
-    pub msg: String,
-    pub cursor: usize,
+    /// コミットのメッセージ（複数行の Vim 風の入力欄。Ctrl+Enter でコミット）
+    pub msg: crate::vim_field::VimField,
     pub amend: bool,
     /// 送るコミットの確認（ブランチの行き先, コミットの一覧）
     pub confirm_push: Option<(String, Vec<String>)>,
@@ -52,10 +51,7 @@ impl CommitPanel {
 
     /// メッセージのカーソルの (行, 行の中の byte)
     pub fn cursor_pos(&self) -> (usize, usize) {
-        let before = &self.msg[..self.cursor];
-        let line = before.matches('\n').count();
-        let col = before.rfind('\n').map_or(before.len(), |i| before.len() - i - 1);
-        (line, col)
+        self.msg.cursor()
     }
 }
 
@@ -129,8 +125,7 @@ impl Editor {
                 items: Vec::new(),
                 selected: 0,
                 scroll: 0,
-                msg: String::new(),
-                cursor: 0,
+                msg: crate::vim_field::VimField::new("", true),
                 amend: false,
                 confirm_push: None,
                 confirm_revert: None,
@@ -178,8 +173,7 @@ impl Editor {
         p.busy_label = None;
         match (job, r) {
             (Job::Commit { push }, Ok(out)) => {
-                p.msg.clear();
-                p.cursor = 0;
+                p.msg = crate::vim_field::VimField::new("", true);
                 p.amend = false;
                 self.message = format!("コミットしました: {}", out.trim());
                 self.refresh_git();
@@ -207,7 +201,7 @@ impl Editor {
         if p.running.is_some() {
             return;
         }
-        let msg = p.msg.trim().to_string();
+        let msg = p.msg.text().trim().to_string();
         if msg.is_empty() && !p.amend {
             self.message = "コミットのメッセージを書いてください（c で欄へ）".into();
             return;
@@ -341,6 +335,7 @@ impl Editor {
                 self.commit_list_key(Key::Char('d'));
             }
         } else if row >= l.msg && row < l.msg + l.msg_h {
+            p.msg.reinsert();
             self.mode = Mode::CommitMsg;
         } else if row == l.amend {
             p.amend = !p.amend;
@@ -396,7 +391,10 @@ impl Editor {
                 p.items.iter_mut().for_each(|i| i.checked = !all);
             }
             Key::Char('A') => p.amend = !p.amend,
-            Key::Char('c') | Key::Char('i') => self.mode = Mode::CommitMsg,
+            Key::Char('c') | Key::Char('i') => {
+                p.msg.reinsert();
+                self.mode = Mode::CommitMsg;
+            }
             Key::Ctrl('m') => self.commit(false),
             Key::Char('P') => self.commit(true),
             Key::Char('u') => {
@@ -437,56 +435,29 @@ impl Editor {
 
     /// メッセージの欄にいる間のキー
     pub(crate) fn commit_msg_key(&mut self, key: Key) {
-        let Some(p) = &mut self.commit else {
+        use crate::vim_field::FieldOut;
+        if self.commit.is_none() {
             self.mode = Mode::Normal;
             return;
-        };
-        let prev = |t: &str, i: usize| t[..i].chars().next_back().map_or(0, char::len_utf8);
-        match key {
-            Key::Esc | Key::Tab => self.mode = Mode::List,
-            Key::Ctrl('m') => {
+        }
+        // Tab は一覧へ。ほかは Vim 風の欄（Ctrl+Enter でコミット、ノーマルの Esc で一覧へ）
+        if key == Key::Tab {
+            self.mode = Mode::List;
+            return;
+        }
+        match self.feed_field(key, |e| e.commit.as_mut().map(|c| &mut c.msg)) {
+            FieldOut::Submit => {
                 self.mode = Mode::List;
                 self.commit(false);
             }
-            Key::Enter => {
-                p.msg.insert(p.cursor, '\n');
-                p.cursor += 1;
-            }
-            Key::Char(c) => {
-                p.msg.insert(p.cursor, c);
-                p.cursor += c.len_utf8();
-            }
-            Key::Backspace if p.cursor > 0 => {
-                let n = prev(&p.msg, p.cursor);
-                p.cursor -= n;
-                p.msg.replace_range(p.cursor..p.cursor + n, "");
-            }
-            Key::Left => p.cursor -= prev(&p.msg, p.cursor),
-            Key::Right => p.cursor += p.msg[p.cursor..].chars().next().map_or(0, char::len_utf8),
-            Key::Up | Key::Down => {
-                // 前・次の行の同じ列へ
-                let (line, col) = p.cursor_pos();
-                let lines: Vec<&str> = p.msg.split('\n').collect();
-                let to = if key == Key::Up { line.checked_sub(1) } else { Some(line + 1).filter(|&l| l < lines.len()) };
-                if let Some(t) = to {
-                    let start: usize = lines[..t].iter().map(|l| l.len() + 1).sum();
-                    let mut c = col.min(lines[t].len());
-                    while !lines[t].is_char_boundary(c) {
-                        c -= 1;
-                    }
-                    p.cursor = start + c;
-                }
-            }
-            Key::Home => p.cursor = p.msg[..p.cursor].rfind('\n').map_or(0, |i| i + 1),
-            Key::End => p.cursor += p.msg[p.cursor..].find('\n').unwrap_or(p.msg.len() - p.cursor),
+            FieldOut::Cancel => self.mode = Mode::List,
             _ => {}
         }
     }
 
     pub(crate) fn commit_msg_insert(&mut self, text: &str) {
         if let Some(p) = &mut self.commit {
-            p.msg.insert_str(p.cursor, text);
-            p.cursor += text.len();
+            p.msg.insert_text(text);
         }
     }
 }
@@ -543,7 +514,7 @@ mod tests {
         // b を外し、new を入れて、メッセージを書いてコミット
         keys(&mut e, "j<Space><Space>");
         keys(&mut e, "cfix a<CR><CR>body<Esc>");
-        assert_eq!(e.commit.as_ref().unwrap().msg, "fix a\n\nbody");
+        assert_eq!(e.commit.as_ref().unwrap().msg.text(), "fix a\n\nbody");
         keys(&mut e, "<C-m>");
         wait(&mut e);
         wait(&mut e);
@@ -554,7 +525,7 @@ mod tests {
         // b はコミットしていないので残る。一覧も作り直される
         let p = e.commit.as_ref().unwrap();
         assert_eq!(p.items.iter().map(|i| i.change.path.as_str()).collect::<Vec<_>>(), vec!["b.txt"]);
-        assert!(p.msg.is_empty());
+        assert!(p.msg.text().is_empty());
         // b の変更を戻す（確認してから）
         keys(&mut e, "u");
         assert!(e.message.contains("y で戻す"));

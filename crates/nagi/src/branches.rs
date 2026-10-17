@@ -73,7 +73,7 @@ pub struct BranchPopup {
     pub selected: usize,
     /// 開いている操作の一覧と、その中で選んでいるもの
     pub ops: Option<(Vec<Op>, usize)>,
-    pub naming: Option<(Naming, Prompt)>,
+    pub naming: Option<(Naming, crate::vim_field::VimField)>,
     /// 削除の確認（名前, 強制か）
     pub confirm_delete: Option<(String, bool)>,
     rx: Option<Receiver<Result<Vec<Branch>, String>>>,
@@ -276,7 +276,7 @@ impl Editor {
             Op::Checkout => self.checkout_branch(&b),
             Op::NewFrom => {
                 if let Some(p) = &mut self.branch_popup {
-                    p.naming = Some((Naming::New(Some(b.name.clone())), Prompt::default()));
+                    p.naming = Some((Naming::New(Some(b.name.clone())), crate::vim_field::VimField::new("", false)));
                 }
             }
             Op::Merge => {
@@ -299,10 +299,7 @@ impl Editor {
             }
             Op::Rename => {
                 if let Some(p) = &mut self.branch_popup {
-                    p.naming = Some((Naming::Rename(b.name.clone()), Prompt::default()));
-                    if let Some((_, pr)) = &mut p.naming {
-                        pr.set(&b.name);
-                    }
+                    p.naming = Some((Naming::Rename(b.name.clone()), crate::vim_field::VimField::new(&b.name, false)));
                 }
             }
             Op::Delete => {
@@ -346,13 +343,15 @@ impl Editor {
             return;
         }
         // 名前を打っている
-        if let Some((kind, prompt)) = &mut p.naming {
-            match key {
-                Key::Esc => p.naming = None,
-                Key::Enter => {
-                    let name = prompt.text.trim().to_string();
-                    let kind = kind.clone();
-                    p.naming = None;
+        if p.naming.is_some() {
+            use crate::vim_field::FieldOut;
+            let out = self.feed_field(key, |e| e.branch_popup.as_mut().and_then(|p| p.naming.as_mut()).map(|n| &mut n.1));
+            let Some(p) = &mut self.branch_popup else { return };
+            match out {
+                FieldOut::Cancel => p.naming = None,
+                FieldOut::Submit => {
+                    let (kind, f) = p.naming.take().unwrap();
+                    let name = f.text().trim().to_string();
                     if name.is_empty() {
                         return;
                     }
@@ -370,9 +369,7 @@ impl Editor {
                         self.close_branches();
                     }
                 }
-                k => {
-                    prompt.key(k);
-                }
+                _ => {}
             }
             return;
         }
@@ -416,7 +413,7 @@ impl Editor {
                 }
             }
             Key::Enter => match p.entries.get(p.selected).cloned() {
-                Some(Entry::NewBranch) => p.naming = Some((Naming::New(None), Prompt::default())),
+                Some(Entry::NewBranch) => p.naming = Some((Naming::New(None), crate::vim_field::VimField::new("", false))),
                 Some(Entry::Fetch) => {
                     self.close_branches();
                     self.run_git_job("フェッチ", &["fetch", "--all", "--prune"]);
@@ -439,7 +436,9 @@ impl Editor {
     pub(crate) fn branches_insert(&mut self, text: &str) {
         let Some(p) = &mut self.branch_popup else { return };
         match &mut p.naming {
-            Some((_, pr)) => pr.insert(text),
+            Some((_, f)) => {
+                f.insert_text(text);
+            }
             None => {
                 p.query.insert(text);
                 p.rebuild();

@@ -12,7 +12,8 @@ use nagi_vim::Key;
 use nagi_workers::db::{Column, Reply};
 
 use crate::db_panel::{MAX_ROWS, ident, literal, qualified};
-use crate::editor::{Editor, Mode, Prompt};
+use crate::editor::{Editor, Mode};
+use crate::vim_field::{FieldOut, VimField};
 use crate::result_grid::{Field, ResultTab, widths};
 
 enum Change {
@@ -57,9 +58,9 @@ pub struct TableEditor {
     pub running: bool,
     pub busy: bool,
     pub info: String,
-    /// 値を直している欄
-    pub editing: Option<Prompt>,
-    pub filter_edit: Option<(Field, Prompt)>,
+    /// 値を直している欄（Vim 風）
+    pub editing: Option<VimField>,
+    pub filter_edit: Option<(Field, VimField)>,
     /// 送る前に見せる SQL
     pub preview: Option<Vec<String>>,
     pending: Option<char>,
@@ -330,16 +331,16 @@ impl Editor {
     /// 入力欄に IME の確定を入れる
     pub(crate) fn db_table_insert(&mut self, text: &str) {
         let Some(te) = &mut self.db_table else { return };
-        if let Some(p) = &mut te.editing {
-            p.insert(text);
-        } else if let Some((_, p)) = &mut te.filter_edit {
-            p.insert(text);
+        if let Some(f) = &mut te.editing {
+            f.insert_text(text);
+        } else if let Some((_, f)) = &mut te.filter_edit {
+            f.insert_text(text);
         }
     }
 
     /// IME を使う入力欄にいるか
     pub fn db_table_typing(&self) -> bool {
-        self.mode == Mode::DbTable && self.db_table.as_ref().is_some_and(|t| t.editing.is_some() || t.filter_edit.is_some())
+        self.mode == Mode::DbTable && self.db_table.as_ref().is_some_and(|t| t.editing.as_ref().is_some_and(|f| f.is_insert()) || t.filter_edit.as_ref().is_some_and(|f| f.1.is_insert()))
     }
 
     pub(crate) fn db_table_key(&mut self, key: Key) {
@@ -364,32 +365,33 @@ impl Editor {
             }
             return;
         }
-        // 値の入力中
-        if let Some(p) = &mut te.editing {
-            match key {
-                Key::Esc => te.editing = None,
-                Key::Enter | Key::Tab => {
-                    let v = std::mem::take(&mut p.text);
-                    te.editing = None;
+        // 値の入力中（Vim 風。Enter か Tab で決める、ノーマルの Esc でやめる）
+        if te.editing.is_some() {
+            let out = if key == Key::Tab { FieldOut::Submit } else { self.feed_field(key, |e| e.db_table.as_mut().and_then(|t| t.editing.as_mut())) };
+            let Some(te) = &mut self.db_table else { return };
+            match out {
+                FieldOut::Cancel => te.editing = None,
+                FieldOut::Submit => {
+                    let v = te.editing.take().map(|f| f.text()).unwrap_or_default();
                     let (d, c) = (te.row, te.col);
                     te.set_value(d, c, Some(v));
                     if key == Key::Tab {
                         te.col = (te.col + 1).min(te.cols.len().saturating_sub(1));
                     }
                 }
-                k => {
-                    p.key(k);
-                }
+                _ => {}
             }
             return;
         }
         // 絞り込みの欄の入力中
-        if let Some((field, p)) = &mut te.filter_edit {
-            match key {
-                Key::Esc => te.filter_edit = None,
-                Key::Enter => {
-                    let (field, text) = (*field, p.text.clone());
-                    te.filter_edit = None;
+        if te.filter_edit.is_some() {
+            let out = self.feed_field(key, |e| e.db_table.as_mut().and_then(|t| t.filter_edit.as_mut()).map(|x| &mut x.1));
+            let Some(te) = &mut self.db_table else { return };
+            match out {
+                FieldOut::Cancel => te.filter_edit = None,
+                FieldOut::Submit => {
+                    let (field, f) = te.filter_edit.take().unwrap();
+                    let text = f.text();
                     match field {
                         Field::Where => te.where_ = text,
                         Field::Order => te.order = text,
@@ -398,9 +400,7 @@ impl Editor {
                     te.total = None;
                     self.db_table_reload();
                 }
-                k => {
-                    p.key(k);
-                }
+                _ => {}
             }
             return;
         }
@@ -439,9 +439,7 @@ impl Editor {
                 if te.at(te.row).0 == RowState::Deleted {
                     self.message = "消す行は直せません（dd で取り消し）".into();
                 } else {
-                    let mut p = Prompt::default();
-                    p.set(&te.value(te.row, te.col).unwrap_or_default());
-                    te.editing = Some(p);
+                    te.editing = Some(VimField::new(&te.value(te.row, te.col).unwrap_or_default(), false));
                 }
             }
             // c: 空にしてから直す（値を入れ替える）
@@ -449,7 +447,7 @@ impl Editor {
                 if te.at(te.row).0 == RowState::Deleted {
                     self.message = "消す行は直せません（dd で取り消し）".into();
                 } else {
-                    te.editing = Some(Prompt::default());
+                    te.editing = Some(VimField::new("", false));
                 }
             }
             (_, Key::Char('x')) if !te.cols.is_empty() && te.len() > 0 => {
@@ -476,9 +474,7 @@ impl Editor {
             },
             (_, Key::Char('f') | Key::Char('F')) if !dirty => {
                 let field = if key == Key::Char('f') { Field::Where } else { Field::Order };
-                let mut p = Prompt::default();
-                p.set(if field == Field::Where { &te.where_ } else { &te.order });
-                te.filter_edit = Some((field, p));
+                te.filter_edit = Some((field, VimField::new(if field == Field::Where { &te.where_ } else { &te.order }, false)));
             }
             (_, Key::Char('s')) if !dirty && !te.cols.is_empty() => {
                 let c = ident(&te.cols[te.col]);
@@ -560,8 +556,9 @@ mod tests {
         wait(&mut e, &|e| e.db_table.as_ref().is_some_and(|t| !t.running && !t.colinfo.is_empty() && t.total.is_some()));
         assert_eq!(e.db_table.as_ref().unwrap().range_label(), "1–3 / 3");
         // 1 行目の name を直す、2 行目の note を NULL に、3 行目を消す、行を足す
+        // i は今の値の後ろから Insert。Esc でノーマルにして cc で入れ替える（Vim 風の欄）
         keys(&mut e, "li");
-        keys(&mut e, "<C-u>りんご<CR>");
+        keys(&mut e, "<Esc>ccりんご<CR>");
         keys(&mut e, "jlx");
         keys(&mut e, "jdd");
         keys(&mut e, "o0i9<Tab>inew<CR>");

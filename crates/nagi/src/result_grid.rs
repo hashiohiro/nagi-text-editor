@@ -9,7 +9,8 @@ use nagi_vim::Key;
 use nagi_workers::db::Reply;
 
 use crate::db_panel::MAX_ROWS;
-use crate::editor::{Editor, Mode, Prompt, Side};
+use crate::editor::{Editor, Mode, Side};
+use crate::vim_field::{FieldOut, VimField};
 
 /// 下のパネルに出しているもの
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -165,8 +166,8 @@ pub struct DbResults {
     pub log: Vec<LogLine>,
     pub log_scroll: usize,
     next_id: u64,
-    /// 絞り込みの欄の入力中
-    pub editing: Option<(Field, Prompt)>,
+    /// 絞り込みの欄の入力中（Vim 風）
+    pub editing: Option<(Field, VimField)>,
     pending_g: bool,
 }
 
@@ -327,14 +328,15 @@ impl Editor {
     /// 結果のパネルにいる間のキー
     pub(crate) fn result_key(&mut self, key: Key) -> crate::editor::Effect {
         let half = (self.panel_rect().map_or(10, |r| r.h) / 2).max(1);
-        let r = &mut self.db_results;
-        // 絞り込みの欄の入力中
-        if let Some((field, prompt)) = &mut r.editing {
-            match key {
-                Key::Esc => r.editing = None,
-                Key::Enter => {
-                    let (field, text) = (*field, prompt.text.clone());
-                    r.editing = None;
+        // 絞り込みの欄の入力中（Vim 風。Enter で決める、ノーマルの Esc でやめる）
+        if self.db_results.editing.is_some() {
+            let out = self.feed_field(key, |e| e.db_results.editing.as_mut().map(|x| &mut x.1));
+            let r = &mut self.db_results;
+            match out {
+                FieldOut::Cancel => r.editing = None,
+                FieldOut::Submit => {
+                    let (field, f) = r.editing.take().unwrap();
+                    let text = f.text();
                     if let Some(t) = r.active_tab_mut() {
                         match field {
                             Field::Where => t.where_ = text,
@@ -347,12 +349,11 @@ impl Editor {
                         self.db_requery(id);
                     }
                 }
-                k => {
-                    prompt.key(k);
-                }
+                _ => {}
             }
             return crate::editor::Effect::None;
         }
+        let r = &mut self.db_results;
         let pending = std::mem::take(&mut r.pending_g);
         match key {
             Key::Char(']') | Key::Ctrl('n') => r.active = (r.active + 1) % (r.tabs.len() + 1),
@@ -409,9 +410,8 @@ impl Editor {
                     }
                     Key::Char('f') | Key::Char('F') if t.filterable => {
                         let field = if k == Key::Char('f') { Field::Where } else { Field::Order };
-                        let mut p = Prompt::default();
-                        p.set(if field == Field::Where { &t.where_ } else { &t.order });
-                        r.editing = Some((field, p));
+                        let f = VimField::new(if field == Field::Where { &t.where_ } else { &t.order }, false);
+                        r.editing = Some((field, f));
                     }
                     Key::Char('s') if t.filterable && !t.cols.is_empty() => {
                         let c = crate::db_panel::ident(&t.cols[t.col]);
@@ -481,9 +481,8 @@ impl Editor {
         let head = if t.filterable { 4 } else { 3 };
         if row == 1 && t.filterable {
             let field = if col < 40 { Field::Where } else { Field::Order };
-            let mut p = Prompt::default();
-            p.set(if field == Field::Where { &t.where_ } else { &t.order });
-            r.editing = Some((field, p));
+            let f = VimField::new(if field == Field::Where { &t.where_ } else { &t.order }, false);
+            r.editing = Some((field, f));
             return;
         }
         if row < head {

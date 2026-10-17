@@ -734,8 +734,8 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             let l = ed.log.as_ref();
             let left = if !ed.message.is_empty() {
                 ed.message.clone()
-            } else if l.is_some_and(|l| l.filtering) {
-                format!("/{}", l.map_or("", |l| l.filter.text.as_str()))
+            } else if l.is_some_and(|l| l.filter.is_some()) {
+                format!("/{}", l.map_or(String::new(), |l| l.filter_text.clone()))
             } else {
                 "-- 履歴 --".into()
             };
@@ -1001,10 +1001,16 @@ fn draw_right_panel(p: &mut Painter, ed: &Editor, r: Rect) {
             // 2 行目: 絞り込みの欄
             let fy = y0 + cell.h;
             let c = p.text(" / ", r.x, fy, LINE_NO);
-            if d.filter.text.is_empty() && !d.filtering {
-                p.text("テーブルや列を絞り込み", c, fy, LINE_NO);
-            } else {
-                field(p, &d.filter.text, d.filter.cursor, &ed.preedit, c, fy, d.filtering && focused);
+            match &d.filter {
+                Some(f) if focused => {
+                    draw_vim_field(p, f, c, fy, &ed.preedit);
+                }
+                _ if d.filter_text.is_empty() => {
+                    p.text("テーブルや列を絞り込み", c, fy, LINE_NO);
+                }
+                _ => {
+                    p.text(&d.filter_text, c, fy, FG);
+                }
             }
             p.out.push(Instance::fill(x0, fy + cell.h - 1.0, wpx, 1.0, rgb(0x2a2a2a)));
             top = 2;
@@ -1045,7 +1051,7 @@ fn draw_right_panel(p: &mut Painter, ed: &Editor, r: Rect) {
     for (k, (depth, fold, (icon, icolor), text, note, color)) in lines.iter().enumerate().skip(scroll).take(body) {
         let y = y0 + (top + k - scroll) as f32 * cell.h;
         let sel = k == selected;
-        let reversed = sel && focused && ed.db.as_ref().is_none_or(|d| !d.filtering || tab != RightTab::Database);
+        let reversed = sel && focused && ed.db.as_ref().is_none_or(|d| d.filter.is_none() || tab != RightTab::Database);
         if reversed {
             p.out.push(Instance::fill(x0, y, wpx, cell.h, FG));
         } else if sel {
@@ -1088,15 +1094,14 @@ fn draw_right_panel(p: &mut Painter, ed: &Editor, r: Rect) {
             // 見出しは表示の幅（12 セル）でそろえる
             let pad = |p: &Painter, l: &str| format!("{l}{}", " ".repeat(12usize.saturating_sub(p.width(l))));
             for (k, (label, prompt)) in f.fields.iter().enumerate() {
-                let v = if k == 0 { format!("‹ {} ›", prompt.text) } else if k == f.at { String::new() } else { prompt.text.clone() };
+                let v = if k == 0 { format!("‹ {} ›", prompt.text()) } else if k == f.at { String::new() } else { prompt.text() };
                 lines.push(format!(" {}{}  {v}", pad(p, label), if k == f.at { "▸" } else { " " }));
             }
             lines.push(" Tab 次の欄 ・ 最後の欄で Enter 保存してつなぐ ・ Esc やめる".to_string());
             let (bx, by) = draw_panel_box(p, r, &lines, f.at + 1);
             if f.at > 0 {
                 let label_w = 1 + 12.max(p.width(f.fields[f.at].0)) + p.width("▸  ");
-                let pr = &f.fields[f.at].1;
-                field(p, &pr.text, pr.cursor, &ed.preedit, bx + label_w, by + (f.at + 1) as f32 * cell.h, true);
+                draw_vim_field(p, &f.fields[f.at].1, bx + label_w, by + (f.at + 1) as f32 * cell.h, &ed.preedit);
             }
         }
     }
@@ -1219,15 +1224,15 @@ fn sort_of(order: &str) -> Option<(String, bool)> {
 }
 
 /// 絞り込みの行（WHERE と ORDER BY）。入力中ならカーソル
-fn draw_filter_row(p: &mut Painter, r: Rect, y: f32, where_: &str, order: &str, editing: Option<&(crate::result_grid::Field, crate::editor::Prompt)>, right: &str, preedit: &str) {
+fn draw_filter_row(p: &mut Painter, r: Rect, y: f32, where_: &str, order: &str, editing: Option<&(crate::result_grid::Field, crate::vim_field::VimField)>, right: &str, preedit: &str) {
     use crate::result_grid::Field;
     let cell = p.fonts.cell();
     let mut c = p.text(" WHERE ", r.x, y, FINDER_MATCH);
     let w_box = 36;
     p.out.push(Instance::fill(c as f32 * cell.w, y + 1.0, w_box as f32 * cell.w, cell.h - 2.0, rgb(0x141414)));
     match editing.filter(|e| e.0 == Field::Where) {
-        Some((_, pr)) => {
-            field(p, &pr.text, pr.cursor, preedit, c + 1, y, true);
+        Some((_, f)) => {
+            draw_vim_field(p, f, c + 1, y, preedit);
         }
         None => {
             p.text(where_, c + 1, y, FG);
@@ -1237,8 +1242,8 @@ fn draw_filter_row(p: &mut Painter, r: Rect, y: f32, where_: &str, order: &str, 
     let c2 = p.text("ORDER BY ", c, y, FINDER_MATCH);
     p.out.push(Instance::fill(c2 as f32 * cell.w, y + 1.0, 28.0 * cell.w, cell.h - 2.0, rgb(0x141414)));
     match editing.filter(|e| e.0 == Field::Order) {
-        Some((_, pr)) => {
-            field(p, &pr.text, pr.cursor, preedit, c2 + 1, y, true);
+        Some((_, f)) => {
+            draw_vim_field(p, f, c2 + 1, y, preedit);
         }
         None => {
             p.text(order, c2 + 1, y, FG);
@@ -1381,24 +1386,17 @@ fn draw_db_table(p: &mut Painter, ed: &Editor, te: &crate::db_table::TableEditor
     };
     draw_grid(p, &g, Rect { x: r.x, y: r.y + 2, w: r.w, h: r.h.saturating_sub(2) });
     // 値の入力欄（選んだセルの上に）
-    if let Some(prompt) = &te.editing {
+    if let Some(f) = &te.editing {
         if te.row >= te.scroll {
             let mut x = r.x + 7;
             for c in te.hscroll..te.col {
                 x += te.widths[c] + 3;
             }
             let y = (r.y + 4 + te.row - te.scroll) as f32 * cell.h;
-            let w = (te.widths.get(te.col).copied().unwrap_or(10) + 2).max(p.width(&prompt.text) + 3);
+            let w = (te.widths.get(te.col).copied().unwrap_or(10) + 2).max(p.width(&f.text()) + p.width(&ed.preedit) + 3);
             p.out.push(Instance::fill((x - 1) as f32 * cell.w - 1.0, y - 1.0, w as f32 * cell.w + 2.0, cell.h + 2.0, FG));
             p.out.push(Instance::fill((x - 1) as f32 * cell.w, y, w as f32 * cell.w, cell.h, rgb(0x1f3550)));
-            let end = p.text(&prompt.text, x, y, FG);
-            let pre = if ed.preedit.is_empty() { 0 } else { p.width(&ed.preedit) };
-            if pre > 0 {
-                let mut items = p.items(&ed.preedit, FG);
-                items.iter_mut().for_each(|i| i.underline = true);
-                p.draw(&items, end, y);
-            }
-            p.caret(end + pre, y);
+            draw_vim_field(p, f, x, y, &ed.preedit);
         }
     }
     // 送る前の確認（右下に SQL）
@@ -1541,24 +1539,15 @@ fn draw_commit_panel(p: &mut Painter, ed: &Editor, c: &crate::commit_panel::Comm
     p.out.push(Instance::fill(bx, box_top - 1.0, 1.0, bh + 2.0, border));
     p.out.push(Instance::fill(bx + bw - 1.0, box_top - 1.0, 1.0, bh + 2.0, border));
     p.cols = mx + mw;
-    if c.msg.is_empty() && !editing {
+    if c.msg.text().is_empty() && !editing {
         p.text("c で書く（1 行目が件名）", mx, box_top, STATUS_FG);
     }
-    let (cl, cc) = c.cursor_pos();
+    let (cl, _) = c.cursor_pos();
     let first = cl.saturating_sub(l.msg_h.saturating_sub(1));
-    for (k, line) in c.msg.split('\n').enumerate().skip(first).take(l.msg_h) {
+    let n = c.msg.ed.buf.line_count();
+    for k in first..(first + l.msg_h).min(n) {
         let y = box_top + (k - first) as f32 * cell.h;
-        p.text(line, mx, y, FG);
-        if editing && k == cl {
-            let col = mx + p.width(&line[..cc.min(line.len())]);
-            let pre = if ed.preedit.is_empty() { 0 } else { p.width(&ed.preedit) };
-            if pre > 0 {
-                let mut items = p.items(&ed.preedit, FG);
-                items.iter_mut().for_each(|i| i.underline = true);
-                p.draw(&items, col, y);
-            }
-            p.caret(col + pre, y);
-        }
+        draw_vim_line(p, &c.msg, k, mx, y, &ed.preedit, editing);
     }
     p.cols = r.x + r.w;
     // amend とボタン（右寄せ）
@@ -1589,12 +1578,19 @@ fn draw_branch_popup(p: &mut Painter, b: &crate::branches::BranchPopup, rows: us
     p.cols = x0 + w;
     // 上の欄: 名前を打っているときはその欄、そうでなければ絞り込み
     let (label, text) = match &b.naming {
-        Some((crate::branches::Naming::New(from), pr)) => (format!(" 新しいブランチ{}: ", from.as_ref().map_or(String::new(), |f| format!("（{f} から）"))), pr),
-        Some((crate::branches::Naming::Rename(old), pr)) => (format!(" {old} の新しい名前: "), pr),
-        None => (" / ".to_string(), &b.query),
+        Some((crate::branches::Naming::New(from), f)) => (format!(" 新しいブランチ{}: ", from.as_ref().map_or(String::new(), |f| format!("（{f} から）"))), Some(f)),
+        Some((crate::branches::Naming::Rename(old), f)) => (format!(" {old} の新しい名前: "), Some(f)),
+        None => (" / ".to_string(), None),
     };
     let c = p.text(&label, x0, y, STATUS_FG);
-    field(p, &text.text, text.cursor, preedit, c, y, true);
+    match text {
+        Some(f) => {
+            draw_vim_field(p, f, c, y, preedit);
+        }
+        None => {
+            field(p, &b.query.text, b.query.cursor, preedit, c, y, true);
+        }
+    }
     p.out.push(Instance::fill(x, y + cell.h - 1.0, w as f32 * cell.w, 1.0, LINE_NO));
     // 一覧（選んだ行が見えるように流す）
     let scroll = (b.selected + 1).saturating_sub(list_h);
@@ -1668,14 +1664,14 @@ fn draw_log_view(p: &mut Painter, l: &crate::log_view::LogView, r: Rect, preedit
     let n = l.visible.iter().filter(|&&i| l.rows[i].commit.is_some()).count();
     let head = format!(
         " {}{}   {} 件{}",
-        if l.filter.text.is_empty() { "/ で絞り込み".to_string() } else { format!("/{}", l.filter.text) },
+        if l.filter_text.is_empty() { "/ で絞り込み".to_string() } else { format!("/{}", l.filter_text) },
         l.path.as_ref().map_or(String::new(), |p| format!("   ファイル: {p}")),
         n,
         if l.loading { " …" } else { "" }
     );
-    if l.filtering {
+    if let Some(f) = &l.filter {
         let c = p.text(" /", r.x, y0, FG);
-        let end = field(p, &l.filter.text, l.filter.cursor, preedit, c, y0, true);
+        let end = draw_vim_field(p, f, c, y0, preedit);
         p.text(&format!("   {n} 件"), end, y0, STATUS_FG);
     } else {
         p.text(&head, r.x, y0, STATUS_FG);
@@ -2163,6 +2159,43 @@ fn field(p: &mut Painter, text: &str, cursor: usize, preedit: &str, col: usize, 
         p.caret(caret + pre_w, y);
     }
     end
+}
+
+/// Vim 風の入力欄の 1 行（Insert は縦棒と IME の変換中の文字、ノーマルは四角のカーソル、Visual は選んだ所の地）
+fn draw_vim_line(p: &mut Painter, f: &crate::vim_field::VimField, l: usize, col: usize, y: f32, preedit: &str, active: bool) -> usize {
+    let cell = p.fonts.cell();
+    let text = f.ed.buf.line(l);
+    let (cl, cb) = f.cursor();
+    let cb = cb.min(text.len());
+    // Visual の範囲
+    if let (true, Some((a, b))) = (active, f.visual()) {
+        let ls = f.line_start(l);
+        let (s, e) = (a.max(ls).saturating_sub(ls).min(text.len()), b.saturating_sub(ls).min(text.len()));
+        if a <= ls + text.len() && b > ls && s <= e {
+            let x0 = col + p.width(&text[..s]);
+            let w = p.width(&text[s..e]).max(1);
+            p.out.push(Instance::fill(x0 as f32 * cell.w, y, w as f32 * cell.w, cell.h, MATCH_BG));
+        }
+    }
+    if active && l == cl && f.is_insert() {
+        return field(p, &text, cb, preedit, col, y, true);
+    }
+    let end = col + p.width(&text);
+    p.text(&text, col, y, FG);
+    if active && l == cl {
+        // 四角のカーソル（その字を地の色で描き直す）
+        let x = col + p.width(&text[..cb]);
+        let ch = text[cb..].graphemes(true).next().unwrap_or(" ");
+        let w = p.width(ch).max(1);
+        p.out.push(Instance::fill(x as f32 * cell.w, y, w as f32 * cell.w, cell.h, CURSOR));
+        p.text(ch, x, y, BG);
+    }
+    end
+}
+
+/// 1 行の Vim 風の入力欄
+fn draw_vim_field(p: &mut Painter, f: &crate::vim_field::VimField, col: usize, y: f32, preedit: &str) -> usize {
+    draw_vim_line(p, f, 0, col, y, preedit, true)
 }
 
 fn prompt_line(p: &mut Painter, lead: &str, text: &str, cursor: usize, preedit: &str, y: f32, active: bool) {

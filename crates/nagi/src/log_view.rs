@@ -7,7 +7,7 @@ use std::sync::mpsc::{Receiver, channel};
 
 use nagi_vim::Key;
 
-use crate::editor::{Editor, Mode, Prompt};
+use crate::editor::{Editor, Mode};
 
 #[derive(Clone, Debug, Default)]
 pub struct Commit {
@@ -56,8 +56,9 @@ pub struct LogView {
     pub detail: Option<Detail>,
     pub focus_files: bool,
     pub file_sel: usize,
-    pub filter: Prompt,
-    pub filtering: bool,
+    /// 絞り込み（決めた文字）と、打っている間の Vim 風の入力欄
+    pub filter_text: String,
+    pub filter: Option<crate::vim_field::VimField>,
     /// ファイルの履歴なら、そのパス
     pub path: Option<String>,
     pub confirm: Option<Confirm>,
@@ -143,7 +144,7 @@ impl LogView {
     }
 
     fn refilter(&mut self) {
-        let q = self.filter.text.to_lowercase();
+        let q = self.filter_text.to_lowercase();
         self.visible = if q.is_empty() {
             (0..self.rows.len()).collect()
         } else {
@@ -229,8 +230,8 @@ impl Editor {
             detail: None,
             focus_files: false,
             file_sel: 0,
-            filter: Prompt::default(),
-            filtering: false,
+            filter_text: String::new(),
+            filter: None,
             path: path.or(range.map(|r| format!("比較 {r}"))),
             confirm: None,
             loading: true,
@@ -317,15 +318,18 @@ impl Editor {
             }
             return;
         }
-        if l.filtering {
-            match key {
-                Key::Enter | Key::Esc => l.filtering = false,
-                k => {
-                    if l.filter.key(k) {
-                        l.refilter();
-                        l.detail = None;
-                    }
+        if l.filter.is_some() {
+            use crate::vim_field::FieldOut;
+            let out = self.feed_field(key, |e| e.log.as_mut().and_then(|l| l.filter.as_mut()));
+            let Some(l) = &mut self.log else { return };
+            match out {
+                FieldOut::Changed => {
+                    l.filter_text = l.filter.as_ref().map(|f| f.text()).unwrap_or_default();
+                    l.refilter();
+                    l.detail = None;
                 }
+                FieldOut::Submit | FieldOut::Cancel => l.filter = None,
+                FieldOut::None => {}
             }
             return;
         }
@@ -372,7 +376,7 @@ impl Editor {
                     step(l, 1);
                 }
             }
-            Key::Char('/') => l.filtering = true,
+            Key::Char('/') => l.filter = Some(crate::vim_field::VimField::new(&l.filter_text, false)),
             Key::Tab | Key::Enter | Key::Char('l') => {
                 if l.detail.as_ref().is_some_and(|d| !d.files.is_empty()) {
                     l.focus_files = true;

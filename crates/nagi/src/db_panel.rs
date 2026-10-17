@@ -20,6 +20,7 @@ use nagi_workers::drivers::{self, DlMsg, Download};
 
 use crate::editor::{Editor, Effect, Mode, Prompt};
 use crate::right_panel::RightTab;
+use crate::vim_field::{FieldOut, VimField};
 
 /// 表に出す行の上限（1 ページ）
 pub const MAX_ROWS: usize = 500;
@@ -165,8 +166,8 @@ impl DbRow {
 /// 接続先の追加のフォーム
 pub struct Form {
     pub kind: Kind,
-    /// (見出し, 入力欄)。0 番は種類（← → で切り替え）
-    pub fields: Vec<(&'static str, Prompt)>,
+    /// (見出し, 入力欄)。0 番は種類（← → で切り替え）。入力欄は Vim 風
+    pub fields: Vec<(&'static str, VimField)>,
     pub at: usize,
 }
 
@@ -179,12 +180,8 @@ impl Form {
 
     fn set_kind(&mut self, kind: Kind) {
         self.kind = kind;
-        let p = |s: &str| {
-            let mut p = Prompt::default();
-            p.set(s);
-            p
-        };
-        let name = self.fields.get(1).map(|f| f.1.text.clone()).unwrap_or_default();
+        let p = |s: &str| VimField::new(s, false);
+        let name = self.fields.get(1).map(|f| f.1.text()).unwrap_or_default();
         self.fields = match kind {
             Kind::Oracle => vec![("種類", p("Oracle")), ("名前", p(&name)), ("ホスト", p("localhost")), ("ポート", p("1521")), ("サービス名", p("")), ("利用者", p(""))],
             Kind::Sqlite => vec![("種類", p("SQLite")), ("名前", p(&name)), ("ファイル", p(""))],
@@ -194,7 +191,7 @@ impl Form {
     }
 
     fn get(&self, label: &str) -> String {
-        self.fields.iter().find(|f| f.0 == label).map_or(String::new(), |f| f.1.text.trim().to_string())
+        self.fields.iter().find(|f| f.0 == label).map_or(String::new(), |f| f.1.text().trim().to_string())
     }
 
     /// 入力から接続先を作る
@@ -231,9 +228,9 @@ pub struct DbPanel {
     pub rows: Vec<DbRow>,
     pub selected: usize,
     pub scroll: usize,
-    /// 名前の絞り込み（打っている間は filtering）
-    pub filter: Prompt,
-    pub filtering: bool,
+    /// 名前の絞り込み（決めた文字）と、打っている間の Vim 風の入力欄
+    pub filter_text: String,
+    pub filter: Option<VimField>,
     /// パスワードの入力（接続先, 入力欄）
     pub password: Option<(usize, Prompt)>,
     /// ドライバーのダウンロードの確認（接続先）
@@ -328,11 +325,11 @@ impl DbPanel {
     }
 
     pub fn is_open(&self, r: &DbRow) -> bool {
-        r.key().is_some_and(|k| self.expanded.contains(&k)) || (!self.filter.text.is_empty() && matches!(r, DbRow::Group(..)))
+        r.key().is_some_and(|k| self.expanded.contains(&k)) || (!self.filter_text.is_empty() && matches!(r, DbRow::Group(..)))
     }
 
     fn matches(&self, name: &str) -> bool {
-        self.filter.text.is_empty() || name.to_lowercase().contains(&self.filter.text.to_lowercase())
+        self.filter_text.is_empty() || name.to_lowercase().contains(&self.filter_text.to_lowercase())
     }
 
     pub(crate) fn rebuild(&mut self) {
@@ -396,7 +393,7 @@ impl DbPanel {
         ];
         for (g, names) in groups {
             let names: Vec<String> = names.into_iter().filter(|n| self.matches(n) || self.column_matches(i, s, n)).collect();
-            if names.is_empty() && (g != Group::Tables || !self.filter.text.is_empty()) {
+            if names.is_empty() && (g != Group::Tables || !self.filter_text.is_empty()) {
                 continue;
             }
             let r = DbRow::Group(i, s.to_string(), g, names.len());
@@ -417,7 +414,7 @@ impl DbPanel {
     }
 
     fn column_matches(&self, i: usize, s: &str, t: &str) -> bool {
-        !self.filter.text.is_empty() && self.conns[i].columns.get(&(s.to_string(), t.to_string())).is_some_and(|cs| cs.iter().any(|c| self.matches(&c.name)))
+        !self.filter_text.is_empty() && self.conns[i].columns.get(&(s.to_string(), t.to_string())).is_some_and(|cs| cs.iter().any(|c| self.matches(&c.name)))
     }
 
     fn push_object(&self, i: usize, s: &str, t: &str, d: usize, rows: &mut Vec<DbRow>) {
@@ -542,8 +539,8 @@ impl Editor {
                 rows: Vec::new(),
                 selected: 0,
                 scroll: 0,
-                filter: Prompt::default(),
-                filtering: false,
+                filter_text: String::new(),
+                filter: None,
                 password: None,
                 setup_ask: None,
                 download: None,
@@ -1188,13 +1185,15 @@ impl Editor {
         let Some(p) = &mut self.db else { return false };
         if let Some(f) = &mut p.form {
             if f.at > 0 {
-                f.fields[f.at].1.insert(text);
+                f.fields[f.at].1.insert_text(text);
             }
             return true;
         }
-        if p.filtering {
-            p.filter.insert(text);
-            p.rebuild();
+        if let Some(f) = &mut p.filter {
+            if f.insert_text(text) == FieldOut::Changed {
+                p.filter_text = f.text();
+                p.rebuild();
+            }
             return true;
         }
         false
@@ -1202,7 +1201,7 @@ impl Editor {
 
     /// IME を使う入力欄にいるか（パスワードでは使わない）
     pub fn db_typing(&self) -> bool {
-        self.right_focused() && self.db.as_ref().is_some_and(|p| p.form.as_ref().is_some_and(|f| f.at > 0) || p.filtering)
+        self.right_focused() && self.db.as_ref().is_some_and(|p| p.form.as_ref().is_some_and(|f| f.at > 0 && f.fields[f.at].1.is_insert()) || p.filter.as_ref().is_some_and(|f| f.is_insert()))
     }
 
     pub(crate) fn db_key(&mut self, key: Key) -> Effect {
@@ -1231,21 +1230,41 @@ impl Editor {
         }
         // 接続先を足すフォーム
         if let Some(f) = &mut p.form {
-            match key {
-                Key::Esc => {
-                    p.form = None;
-                    self.message = "やめました".into();
+            // 欄の行き来と種類はフォームが受け、ほかは今の欄（Vim 風）へ
+            let out = match key {
+                Key::Tab | Key::Down => {
+                    f.at = (f.at + 1).min(f.fields.len() - 1);
+                    f.fields[f.at].1.reinsert();
+                    FieldOut::None
                 }
-                Key::Tab | Key::Down => f.at = (f.at + 1).min(f.fields.len() - 1),
-                Key::Up => f.at = f.at.saturating_sub(1),
+                Key::Up => {
+                    f.at = f.at.saturating_sub(1);
+                    f.fields[f.at].1.reinsert();
+                    FieldOut::None
+                }
                 Key::Left | Key::Right | Key::Char(' ') if f.at == 0 => {
                     let order = [Kind::Oracle, Kind::Sqlite, Kind::Salesforce];
                     let k = order.iter().position(|k| *k == f.kind).unwrap_or(0);
                     let k = if key == Key::Left { (k + 2) % 3 } else { (k + 1) % 3 };
                     f.set_kind(order[k]);
+                    FieldOut::None
                 }
-                Key::Enter if f.at + 1 < f.fields.len() => f.at += 1,
-                Key::Enter => match f.source() {
+                Key::Esc if f.at == 0 => FieldOut::Cancel,
+                Key::Enter if f.at == 0 => FieldOut::Submit,
+                k => self.feed_field(k, |e| e.db.as_mut().and_then(|p| p.form.as_mut()).map(|f| &mut f.fields[f.at].1)),
+            };
+            let Some(p) = &mut self.db else { return Effect::None };
+            let Some(f) = &mut p.form else { return Effect::None };
+            match out {
+                FieldOut::Cancel => {
+                    p.form = None;
+                    self.message = "やめました".into();
+                }
+                FieldOut::Submit if f.at + 1 < f.fields.len() => {
+                    f.at += 1;
+                    f.fields[f.at].1.reinsert();
+                }
+                FieldOut::Submit => match f.source() {
                     Ok(ds) => {
                         p.form = None;
                         self.db_push_source(ds, true);
@@ -1254,28 +1273,27 @@ impl Editor {
                     }
                     Err(e) => self.message = e,
                 },
-                k if f.at > 0 => {
-                    f.fields[f.at].1.key(k);
-                }
                 _ => {}
             }
             return Effect::None;
         }
-        // 絞り込みの入力中
-        if p.filtering {
-            match key {
-                Key::Esc => {
-                    p.filtering = false;
-                    p.filter = Prompt::default();
+        // 絞り込みの入力中（Vim 風。Enter で決める、ノーマルの Esc で消す）
+        if p.filter.is_some() {
+            let out = self.feed_field(key, |e| e.db.as_mut().and_then(|p| p.filter.as_mut()));
+            let Some(p) = &mut self.db else { return Effect::None };
+            match out {
+                FieldOut::Changed => {
+                    p.filter_text = p.filter.as_ref().map(|f| f.text()).unwrap_or_default();
+                    p.rebuild();
+                    p.selected = p.rows.iter().position(|r| matches!(r, DbRow::Object(..))).unwrap_or(p.selected);
+                }
+                FieldOut::Submit => p.filter = None,
+                FieldOut::Cancel => {
+                    p.filter = None;
+                    p.filter_text.clear();
                     p.rebuild();
                 }
-                Key::Enter => p.filtering = false,
-                k => {
-                    if p.filter.key(k) {
-                        p.rebuild();
-                        p.selected = p.rows.iter().position(|r| matches!(r, DbRow::Object(..))).unwrap_or(p.selected);
-                    }
-                }
+                FieldOut::None => {}
             }
             return Effect::None;
         }
@@ -1288,8 +1306,8 @@ impl Editor {
             Key::Char('G') => p.selected = last,
             Key::Char('g') => p.selected = 0,
             Key::Char('/') => {
-                p.filtering = true;
-                self.message = "絞り込み: 名前の一部を打つ（Enter で決める・Esc で消す）".into();
+                p.filter = Some(VimField::new(&p.filter_text, false));
+                self.message = "絞り込み: 名前の一部を打つ（Enter で決める・Esc 2 回で消す）".into();
             }
             Key::Enter | Key::Char('l') | Key::Right => self.db_activate(),
             Key::Char('h') | Key::Left => {
@@ -1309,6 +1327,9 @@ impl Editor {
             Key::Char('o') => self.db_open_selected(),
             Key::Char('a') => {
                 p.form = Some(Form::new(Kind::Oracle));
+                if let Some(f) = &mut p.form {
+                    f.fields[f.at].1.reinsert();
+                }
                 self.message = "接続先を足す: Tab で次の欄、種類は ← →、最後の欄で Enter で保存してつなぐ".into();
             }
             Key::Char('D') => self.db_ddl(),
@@ -1382,7 +1403,9 @@ impl Editor {
         let Some(p) = &mut self.db else { return };
         // 1 行目はタブ、2 行目は絞り込みの欄
         if row == 1 {
-            p.filtering = true;
+            if p.filter.is_none() {
+                p.filter = Some(VimField::new(&p.filter_text, false));
+            }
             self.focus_right(RightTab::Database);
             return;
         }
@@ -1551,7 +1574,8 @@ pub(crate) mod tests {
         e.focus_right(RightTab::Database);
         keys(&mut e, "/zzz<CR>");
         assert!(!e.db.as_ref().unwrap().rows.iter().any(|r| matches!(r, DbRow::Object(..))));
-        keys(&mut e, "/<Esc>");
+        // Vim 風: Esc でノーマル、もう一度 Esc で消す
+        keys(&mut e, "/<Esc><Esc>");
         assert!(e.db.as_ref().unwrap().rows.iter().any(|r| matches!(r, DbRow::Object(..))));
     }
 }

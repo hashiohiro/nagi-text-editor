@@ -46,6 +46,7 @@ mod tree_panel;
 mod normal;
 mod stats;
 mod view;
+mod vim_field;
 mod panes;
 
 use std::path::PathBuf;
@@ -576,20 +577,7 @@ impl App {
             self.ime_allowed = want;
         }
         if want && ed.mode == Mode::CommitMsg {
-            // コミットのメッセージの欄のカーソル
-            if let (Some(r), Some(c)) = (ed.commit_rect(), &ed.commit) {
-                let cell = f.cell();
-                let l = commit_panel::layout(r.h);
-                let (cl, cc) = c.cursor_pos();
-                let first = cl.saturating_sub(l.msg_h.saturating_sub(1));
-                let line = c.msg.split('\n').nth(cl).unwrap_or("");
-                let col = r.x + 1 + nagi_core::display_col(line, cc.min(line.len()), false);
-                let row = r.y + l.msg + cl - first;
-                w.set_ime_cursor_area(
-                    winit::dpi::PhysicalPosition::new((col as f32 * cell.w) as i32, (row as f32 * cell.h) as i32),
-                    winit::dpi::PhysicalSize::new(cell.w as u32, cell.h as u32),
-                );
-            }
+            // コミットメッセージの欄は、描いた縦棒の位置を draw で IME に知らせる
         } else if want {
             let cell = f.cell();
             let (col, row) = if ed.has_prompt() {

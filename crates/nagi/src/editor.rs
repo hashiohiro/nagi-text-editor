@@ -69,6 +69,7 @@ pub enum Effect {
 }
 
 /// OS のクリップボード（`set clipboard+=unnamedplus` のとき無名レジスタの代わりに使う）
+#[derive(Clone, Copy)]
 pub struct Clipboard {
     pub get: fn() -> Option<String>,
     pub set: fn(&str),
@@ -561,10 +562,13 @@ impl Editor {
 
     /// 入力欄（IME の確定先）があるモードか
     pub fn has_prompt(&self) -> bool {
-        matches!(self.mode, Mode::Command | Mode::Search | Mode::Replace | Mode::Finder | Mode::GrepPrompt | Mode::CommitMsg)
+        matches!(self.mode, Mode::Command | Mode::Search | Mode::Replace | Mode::Finder | Mode::GrepPrompt)
+            || (self.mode == Mode::CommitMsg && self.commit.as_ref().is_some_and(|c| c.msg.is_insert()))
+            || (self.mode == Mode::Log && self.log.as_ref().is_some_and(|l| l.filter.as_ref().is_some_and(|f| f.is_insert())))
+            || (self.mode == Mode::Branches && self.branch_popup.as_ref().is_some_and(|b| b.naming.as_ref().is_none_or(|n| n.1.is_insert())))
             || self.db_typing()
             || self.db_table_typing()
-            || (self.mode == Mode::List && self.list_side == Side::Bottom && self.db_results.editing.is_some())
+            || (self.mode == Mode::List && self.list_side == Side::Bottom && self.db_results.editing.as_ref().is_some_and(|e| e.1.is_insert()))
     }
 
     pub(crate) fn motion(&self) -> Motion<'_> {
@@ -1470,7 +1474,7 @@ impl Editor {
     fn paste_target(&self) -> bool {
         self.has_prompt()
             || matches!(self.mode, Mode::Branches)
-            || (self.mode == Mode::Log && self.log.as_ref().is_some_and(|l| l.filtering))
+            || (self.mode == Mode::Log && self.log.as_ref().is_some_and(|l| l.filter.is_some()))
             || (self.right_focused() && self.db.as_ref().is_some_and(|p| p.password.is_some()))
     }
 
@@ -1540,14 +1544,15 @@ impl Editor {
                 self.db_insert(text);
             }
             Mode::List if self.list_side == Side::Bottom => {
-                if let Some((_, p)) = &mut self.db_results.editing {
-                    p.insert(text);
+                if let Some((_, f)) = &mut self.db_results.editing {
+                    f.insert_text(text);
                 }
             }
             Mode::Log => {
                 if let Some(l) = &mut self.log {
-                    if l.filtering {
-                        l.filter.insert(text);
+                    if let Some(f) = &mut l.filter {
+                        f.insert_text(text);
+                        l.filter_text = f.text();
                         l.refilter_pub();
                     }
                 }
