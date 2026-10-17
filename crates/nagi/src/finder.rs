@@ -10,14 +10,48 @@ use nagi_core::fuzzy::{Query, rank_ids, sort_hits};
 use nagi_vim::Key;
 use nagi_workers::files::FileWalk;
 
-use crate::editor::{Editor, Mode, Prompt};
+use crate::editor::{Editor, Effect, Mode, Prompt};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Source {
     Files,
     Buffers,
     Recent,
+    /// コマンドパレット
+    Commands,
 }
+
+/// コマンドパレットの項目（説明, Ex コマンド）
+const COMMANDS: &[(&str, &str)] = &[
+    ("ファイルを開く", "Files"),
+    ("バッファを切り替える", "Buffers"),
+    ("最近のファイル", "Recent"),
+    ("全文検索", "Grep"),
+    ("ファイルツリーの表示切替", "Tree"),
+    ("保存", "w"),
+    ("すべて保存", "wa"),
+    ("閉じる", "q"),
+    ("すべて閉じて終了", "qa"),
+    ("保存せずに終了", "qa!"),
+    ("次のバッファ", "bn"),
+    ("前のバッファ", "bp"),
+    ("バッファを閉じる", "bd"),
+    ("開いているバッファの一覧", "ls"),
+    ("上下に分割", "split"),
+    ("左右に分割", "vsplit"),
+    ("新しいバッファを上下に分割して開く", "new"),
+    ("ほかの窓を閉じる", "only"),
+    ("窓を閉じる", "close"),
+    ("次の検索結果", "cn"),
+    ("前の検索結果", "cp"),
+    ("検索結果のパネルへ", "copen"),
+    ("検索結果のパネルを閉じる", "cclose"),
+    ("検索の強調を消す", "noh"),
+    ("ファイルを読み直す（変更を捨てる）", "e!"),
+    ("設定（ideavimrc）を読み直す", "source"),
+    ("入力の遅延の計測を表示", "NagiStats"),
+    ("入力の遅延の計測を消す", "NagiStats!"),
+];
 
 impl Source {
     pub fn label(self) -> &'static str {
@@ -25,6 +59,7 @@ impl Source {
             Source::Files => "ファイル",
             Source::Buffers => "バッファ",
             Source::Recent => "最近のファイル",
+            Source::Commands => "コマンド",
         }
     }
 }
@@ -145,6 +180,11 @@ impl Editor {
                     f.docs.push(i);
                 }
             }
+            Source::Commands => {
+                for (label, cmd) in COMMANDS {
+                    f.items.push(format!("{label}  :{cmd}"));
+                }
+            }
             Source::Recent => {
                 let (tx, rx) = std::sync::mpsc::channel();
                 let waker = self.waker.clone();
@@ -207,16 +247,16 @@ impl Editor {
         changed
     }
 
-    pub(crate) fn finder_key(&mut self, key: Key) {
+    pub(crate) fn finder_key(&mut self, key: Key) -> Effect {
         let Some(f) = &mut self.finder else {
             self.mode = Mode::Normal;
-            return;
+            return Effect::None;
         };
         match key {
             Key::Esc | Key::Ctrl('c') | Key::Ctrl('g') | Key::Ctrl('[') => self.close_finder(),
-            Key::Enter => self.accept_finder(None),
-            Key::Ctrl('v') => self.accept_finder(Some(true)),
-            Key::Ctrl('x') | Key::Ctrl('s') => self.accept_finder(Some(false)),
+            Key::Enter => return self.accept_finder(None),
+            Key::Ctrl('v') => return self.accept_finder(Some(true)),
+            Key::Ctrl('x') | Key::Ctrl('s') => return self.accept_finder(Some(false)),
             // 良い候補は下にあるので、上へ = 次の候補
             Key::Up | Key::Ctrl('p') | Key::Ctrl('k') => f.selected = (f.selected + 1).min(f.hits.len().saturating_sub(1)),
             Key::Down | Key::Ctrl('n') | Key::Ctrl('j') | Key::Tab => f.selected = f.selected.saturating_sub(1),
@@ -228,6 +268,7 @@ impl Editor {
                 }
             }
         }
+        Effect::None
     }
 
     pub(crate) fn finder_insert(&mut self, text: &str) {
@@ -244,13 +285,13 @@ impl Editor {
         self.mode = Mode::Normal;
     }
 
-    /// 選んだ候補を開く。`split` は分割して開く（true: 左右、false: 上下）
-    fn accept_finder(&mut self, split: Option<bool>) {
-        let Some(f) = self.finder.take() else { return };
+    /// 選んだ候補を開く（コマンドなら実行する）。`split` は分割して開く（true: 左右、false: 上下）
+    fn accept_finder(&mut self, split: Option<bool>) -> Effect {
+        let Some(f) = self.finder.take() else { return Effect::None };
         self.mode = Mode::Normal;
-        let Some(&(i, _)) = f.hits.get(f.selected) else { return };
+        let Some(&(i, _)) = f.hits.get(f.selected) else { return Effect::None };
         let i = i as usize;
-        if let Some(v) = split {
+        if let (Some(v), false) = (split, f.source == Source::Commands) {
             self.split(v);
         }
         match f.source {
@@ -260,7 +301,12 @@ impl Editor {
                 self.edit_file(if p.is_absolute() { p } else { f.root.join(p) });
             }
             Source::Buffers => self.switch_doc(f.docs[i]),
+            Source::Commands => {
+                let cmd = f.items[i].rsplit_once("  :").map_or("", |(_, c)| c).to_string();
+                return self.run_ex(&cmd);
+            }
         }
+        Effect::None
     }
 }
 
@@ -356,5 +402,25 @@ mod tests {
         e.open_finder(Source::Buffers);
         e.ime_commit("pan");
         assert_eq!(e.finder.as_ref().unwrap().hits.len(), 1);
+    }
+
+    #[test]
+    fn palette_runs_commands() {
+        let mut e = Editor::new(Buffer::from_str("x\n"), None);
+        e.set_screen(100, 40);
+        e.open_finder(Source::Commands);
+        // 日本語の説明で絞って実行する（IME で打った語）
+        e.ime_commit("左右");
+        assert_eq!(e.finder.as_ref().unwrap().hits.len(), 1);
+        keys(&mut e, "<CR>");
+        assert!(e.is_split());
+        // コマンド名でも当たる。終了の知らせは App へ返す
+        e.open_finder(Source::Commands);
+        keys(&mut e, "qa!");
+        let mut last = Effect::None;
+        for key in nagi_vim::parse_keys("<CR>", " ") {
+            last = e.key(key);
+        }
+        assert!(matches!(last, Effect::Quit));
     }
 }

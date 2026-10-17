@@ -422,9 +422,12 @@ impl App {
 
     /// 1 打をマッピングに通してからエディタに流す。終了したら true
     fn feed(&mut self, k: VKey, el: &ActiveEventLoop) -> bool {
-        // マッピングは Normal モードだけ（ideavimrc は nnoremap だけを使っている）
-        let normal = self.ed.as_ref().is_some_and(|e| e.mode == Mode::Normal);
-        let out = if normal {
+        // マッピングは Normal モードだけ（ideavimrc は nnoremap だけを使っている）。
+        // リストモード（ツリー・検索結果）では leader で始まるものだけを通す（j/k などは置き換えない。architecture.md §7.1）
+        let mode = self.ed.as_ref().map(|e| e.mode);
+        let leader = nagi_vim::parse_keys(&self.rc.leader, &self.rc.leader).first().copied();
+        let list_leader = mode == Some(Mode::List) && (!self.matcher.pending().is_empty() || Some(k) == leader);
+        let out = if mode == Some(Mode::Normal) || list_leader {
             match self.matcher.feed(&self.rc.keymap, k) {
                 Feed::Pending => {
                     self.map_deadline = Some(Instant::now() + TIMEOUT_LEN);

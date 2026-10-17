@@ -502,10 +502,7 @@ impl Editor {
                 self.replace_key(key);
                 Effect::None
             }
-            Mode::Finder => {
-                self.finder_key(key);
-                Effect::None
-            }
+            Mode::Finder => self.finder_key(key),
             Mode::GrepPrompt => {
                 self.grep_prompt_key(key);
                 Effect::None
@@ -926,6 +923,11 @@ impl Editor {
         }
     }
 
+    /// Ex コマンドを実行する（コマンドパレットから）
+    pub(crate) fn run_ex(&mut self, cmd: &str) -> Effect {
+        self.ex(cmd)
+    }
+
     fn ex(&mut self, cmd: &str) -> Effect {
         let cmd = cmd.trim_start_matches(':').trim();
         if self.is_substitute(cmd) {
@@ -985,6 +987,7 @@ impl Editor {
             "Files" => self.open_finder(crate::finder::Source::Files),
             "Buffers" => self.open_finder(crate::finder::Source::Buffers),
             "Recent" | "History" => self.open_finder(crate::finder::Source::Recent),
+            "Commands" | "Palette" => self.open_finder(crate::finder::Source::Commands),
             "Grep" | "grep" | "Rg" | "rg" => self.open_grep(arg),
             "cn" | "cnext" => self.next_hit(true, arg.parse().unwrap_or(1)),
             "cp" | "cprevious" | "cN" | "cNext" => self.next_hit(false, arg.parse().unwrap_or(1)),
@@ -1106,6 +1109,7 @@ impl Editor {
             Some((Some("buffer.close"), _)) => self.delete_buffer("", false),
             Some((Some("search.project"), _)) => self.open_grep(""),
             Some((Some("tool.project"), _)) => self.toggle_tree(),
+            Some((Some("palette"), _)) => self.open_finder(crate::finder::Source::Commands),
             Some((Some(cmd), desc)) => self.message = format!("未実装: {desc}（{cmd}）"),
             Some((None, desc)) => self.message = format!("Nagi には無い機能: {desc}"),
             None => self.message = format!("不明なアクション: {name}"),
