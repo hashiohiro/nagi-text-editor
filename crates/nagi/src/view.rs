@@ -10,6 +10,7 @@ use nagi_text::Fonts;
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::editor::{Editor, GUTTER, Mode};
+use crate::panes::Rect;
 
 const fn rgb(hex: u32) -> [f32; 4] {
     [((hex >> 16) & 0xff) as f32 / 255.0, ((hex >> 8) & 0xff) as f32 / 255.0, (hex & 0xff) as f32 / 255.0, 1.0]
@@ -179,15 +180,22 @@ fn glyph_keys(ed: &Editor, fonts: &mut Fonts, from: usize, to: usize) -> Vec<nag
     keys
 }
 
-pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instance> {
-    let cell = fonts.cell();
-    let (w, h) = r.size();
-    let cols = (w as f32 / cell.w) as usize;
-    let rows = ((h as f32 / cell.h) as usize).saturating_sub(ed.status_rows()).max(1);
-    let bar = (cell.w / 6.0).round().max(2.0);
-    let underline = (cell.h / 16.0).round().max(1.0);
-    let mut p = Painter { out: Vec::with_capacity(cols * rows + 64), fonts, r, cols, bar, underline };
-    let total = ed.buf.line_count();
+/// 1 つの窓に描くもの。作業中の窓だけがカーソル・Visual・入力中の検索の強調を持つ
+struct Pane<'a> {
+    buf: &'a nagi_core::Buffer,
+    syntax: Option<&'a nagi_syntax::Syntax>,
+    cursor: nagi_core::Cursor,
+    top: usize,
+    frac: f32,
+    active: bool,
+}
+
+/// 窓 1 つを `rect`（本文の行だけ。状態行は含まない）に描く
+fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
+    let cell = p.fonts.cell();
+    let saved_cols = p.cols;
+    p.cols = rect.x + rect.w;
+    let total = pane.buf.line_count();
     let debug = std::env::var_os("NAGI_DEBUG_BUILD").is_some();
     let t0 = std::time::Instant::now();
     // 強調は画面に見えている範囲だけを探す（入力中も、確定後の hlsearch も）。
@@ -196,57 +204,56 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     let highlight = searching || ed.search.highlight;
     let t_matches = t0.elapsed();
     // スムーズスクロール中は 1 行多く描き、全体を frac 行ぶん上へずらす
-    let frac = ed.frac;
-    let drawn = rows + usize::from(frac > 0.0);
+    let frac = pane.frac;
+    let drawn = rect.h + usize::from(frac > 0.0);
 
     // 画面に見えている範囲だけにハイライトのクエリをかける
-    let view_start = ed.buf.line_start(ed.top);
-    let view_end = ed.buf.line_start((ed.top + drawn).min(total));
+    let view_start = pane.buf.line_start(pane.top);
+    let view_end = pane.buf.line_start((pane.top + drawn).min(total));
     // 行は画面に入る分だけ取り出す（折り返さないので、それより右は見えない。数 MB の 1 行でも毎回全体を作らない）
-    let budget = line_budget(cols);
-    let heads: Vec<(String, usize, bool)> = (ed.top..(ed.top + drawn).min(total))
+    let budget = line_budget(rect.w);
+    let heads: Vec<(String, usize, bool)> = (pane.top..(pane.top + drawn).min(total))
         .map(|ln| {
-            let (s, cut) = ed.buf.line_head(ln, budget);
-            (s, ed.buf.line_start(ln), cut)
+            let (s, cut) = pane.buf.line_head(ln, budget);
+            (s, pane.buf.line_start(ln), cut)
         })
         .collect();
-    let spans = match &ed.syntax {
+    let spans = match pane.syntax {
         // 長い行があるときは、行ごとに見えている部分だけを問い合わせる
-        Some(syn) if heads.iter().any(|h| h.2) => heads.iter().flat_map(|(s, abs, _)| syn.highlight(&ed.buf, *abs..*abs + s.len())).collect(),
-        Some(syn) => syn.highlight(&ed.buf, view_start..view_end.max(view_start)),
+        Some(syn) if heads.iter().any(|h| h.2) => heads.iter().flat_map(|(s, abs, _)| syn.highlight(pane.buf, *abs..*abs + s.len())).collect(),
+        Some(syn) => syn.highlight(pane.buf, view_start..view_end.max(view_start)),
         None => Vec::new(),
     };
     let t_hl = t0.elapsed();
-    let ed: &Editor = ed;
-    let visible_matches: Vec<(usize, usize)>;
+        let visible_matches: Vec<(usize, usize)>;
     let all_matches: &[(usize, usize)] = if highlight && heads.iter().any(|h| h.2) {
         // 長い行は見えている部分だけを探す
-        visible_matches = heads.iter().flat_map(|(s, abs, _)| ed.visible_matches(*abs, *abs + s.len())).collect();
+        visible_matches = heads.iter().flat_map(|(s, abs, _)| ed.visible_matches_in(pane.buf, *abs, *abs + s.len())).collect();
         &visible_matches
     } else if highlight {
-        let end = if ed.top + drawn >= total { ed.buf.len_bytes() } else { view_end };
-        visible_matches = ed.visible_matches(view_start, end);
+        let end = if pane.top + drawn >= total { pane.buf.len_bytes() } else { view_end };
+        visible_matches = ed.visible_matches_in(pane.buf, view_start, end);
         &visible_matches
     } else {
         &[]
     };
     let visual = match ed.mode {
-        Mode::Visual { .. } => Some(ed.visual_range()),
+        Mode::Visual { .. } if pane.active => Some(ed.visual_range()),
         _ => None,
     };
     // 行単位の Visual は、選んでいる行の範囲にしておく（1 文字ごとに位置を引き直さない）
-    let visual_lines = visual.map(|(vs, ve, _)| (ed.buf.pos_of(vs).0, ed.buf.pos_of(ve.saturating_sub(1).max(vs)).0));
-    let replacing = ed.mode == Mode::Replace && !ed.query.text.is_empty();
+    let visual_lines = visual.map(|(vs, ve, _)| (pane.buf.pos_of(vs).0, pane.buf.pos_of(ve.saturating_sub(1).max(vs)).0));
+    let replacing = pane.active && ed.mode == Mode::Replace && !ed.query.text.is_empty();
 
     for row in 0..drawn {
-        let ln = ed.top + row;
-        let y = (row as f32 - frac) * cell.h;
+        let ln = pane.top + row;
+        let y = (rect.y as f32 + row as f32 - frac) * cell.h;
         if ln >= total {
             // ファイル末尾より後ろは Vim と同じく ~
-            p.text("~", 0, y, TILDE);
+            p.text("~", rect.x, y, TILDE);
             continue;
         }
-        p.text(&format!("{:>5} ", ln + 1), 0, y, LINE_NO);
+        p.text(&format!("{:>5} ", ln + 1), rect.x, y, LINE_NO);
         let (line, abs, cut) = &heads[row];
         let (line, abs, cut) = (line.as_str(), *abs, *cut);
         // byte ごとの文字色。外側のキャプチャの後に内側が来るので、後から塗ったものが勝つ
@@ -264,7 +271,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             (Some((_, _, true)), Some((a, b))) => a <= ln && ln <= b,
             _ => false,
         };
-        let is_cursor_line = ln == ed.cursor.line;
+        let is_cursor_line = pane.active && ln == pane.cursor.line;
         let mut items: Vec<Item> = Vec::with_capacity(line.len());
         let mut cursor_item = None;
         let mut gs = line.grapheme_indices(true).peekable();
@@ -291,7 +298,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             let mut it = Item { g: Cow::Borrowed(g), width, fg: colors.get(b).copied().unwrap_or(FG), bg: None, underline: false };
             if let Some(&(ms, me)) = line_matches.get(mi) {
                 if a >= ms && a < me {
-                    if Some((ms, me)) == ed.search.current && matches!(ed.mode, Mode::Search) {
+                    if pane.active && Some((ms, me)) == ed.search.current && matches!(ed.mode, Mode::Search) {
                         it.bg = Some(it.fg);
                         it.fg = BG;
                     } else {
@@ -305,7 +312,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
                     it.fg = BG;
                 }
             }
-            if is_cursor_line && b == ed.cursor.byte {
+            if is_cursor_line && b == pane.cursor.byte {
                 cursor_item = Some(items.len());
             }
             items.push(it);
@@ -315,12 +322,12 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         if let Some((vs, ve, lw)) = visual {
             let eol = abs + line.len();
             eol_selected = if lw { line_selected } else { eol >= vs && eol < ve };
-            if eol_selected && !(is_cursor_line && ed.cursor.byte >= line.len()) {
+            if eol_selected && !(is_cursor_line && pane.cursor.byte >= line.len()) {
                 items.push(Item { g: Cow::Borrowed(" "), width: 1, fg: BG, bg: Some(FG), underline: false });
             }
         }
         if !is_cursor_line || matches!(ed.mode, Mode::Command | Mode::Search | Mode::Replace) {
-            p.draw(&items, GUTTER, y);
+            p.draw(&items, rect.x + GUTTER, y);
             continue;
         }
         if ed.mode == Mode::Insert {
@@ -334,23 +341,23 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             };
             let before: usize = items[..at].iter().map(|i| i.width).sum();
             items.splice(at..at, pre);
-            p.draw(&items, GUTTER, y);
-            p.caret(GUTTER + before + caret_in_pre, y);
+            p.draw(&items, rect.x + GUTTER, y);
+            p.caret(rect.x + GUTTER + before + caret_in_pre, y);
         } else {
             // ブロックカーソル（文字を反転）。空行や行末では 1 セルの塗り
             // 選択の中では反転をもう一度反転して元の色に戻す（ターミナルの Vim と同じ見え方。行単位の Visual でも位置が分かる）
             match cursor_item {
                 Some(i) if visual.is_some() && items[i].fg == BG && items[i].bg.is_some() => {
                     items[i].fg = items[i].bg.take().unwrap_or(FG);
-                    p.draw(&items, GUTTER, y);
+                    p.draw(&items, rect.x + GUTTER, y);
                 }
                 Some(i) => {
                     items[i].bg = Some(CURSOR);
                     items[i].fg = BG;
-                    p.draw(&items, GUTTER, y);
+                    p.draw(&items, rect.x + GUTTER, y);
                 }
                 None => {
-                    let c = p.draw(&items, GUTTER, y);
+                    let c = p.draw(&items, rect.x + GUTTER, y);
                     // 切った行でカーソルが見えている部分より右にあるときは描かない
                     if !cut {
                         let color = if eol_selected { CURSOR_IN_SELECTION } else { CURSOR };
@@ -365,23 +372,96 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     if debug {
         eprintln!("build matches={:?} highlight={:?} lines={:?} n_matches={}", t_matches, t_hl - t_matches, t_lines - t_hl, all_matches.len());
     }
+    p.cols = saved_cols;
+}
+
+pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instance> {
+    let cell = fonts.cell();
+    let (w, h) = r.size();
+    let cols = (w as f32 / cell.w) as usize;
+    let rows = ((h as f32 / cell.h) as usize).saturating_sub(ed.status_rows()).max(1);
+    ed.set_screen(cols, rows);
+    let bar = (cell.w / 6.0).round().max(2.0);
+    let underline = (cell.h / 16.0).round().max(1.0);
+    let mut p = Painter { out: Vec::with_capacity(cols * rows + 64), fonts, r, cols, bar, underline };
+    let ed: &Editor = ed;
+    let split = ed.is_split();
+    let rects = ed.window_rects();
+    for &(win, rect) in &rects {
+        let Some(st) = ed.win_state(win) else { continue };
+        let active = win == ed.cur_win;
+        let (buf, syntax) = if st.doc == ed.cur_doc {
+            (&ed.buf, ed.syntax.as_ref())
+        } else {
+            match ed.parked_doc(st.doc) {
+                Some(d) => (&d.buf, d.syntax.as_ref()),
+                None => continue,
+            }
+        };
+        // ほかの窓で同じバッファを編集して短くなっていたら、表示位置を詰める
+        let last = buf.line_count().saturating_sub(1);
+        let mut cursor = st.cursor;
+        cursor.line = cursor.line.min(last);
+        let pane = Pane { buf, syntax, cursor, top: st.top.min(last), frac: if active { ed.frac } else { 0.0 }, active };
+        draw_pane(&mut p, ed, &pane, Rect { h: ed.text_rows(rect), ..rect });
+    }
+    // 窓ごとの状態行（分割中だけ。Vim の laststatus=1 と同じ）と、左右の窓の間の 1px の区切り線
+    if split {
+        for &(win, rect) in &rects {
+            if rect.x > 0 {
+                let x = ((rect.x as f32 - 0.5) * cell.w).round();
+                p.out.push(Instance::fill(x, rect.y as f32 * cell.h, 1.0, rect.h as f32 * cell.h, LINE_NO));
+            }
+            let Some(st) = ed.win_state(win) else { continue };
+            let active = win == ed.cur_win;
+            let y = (rect.y + rect.h - 1) as f32 * cell.h;
+            // はみ出した本文（スムーズスクロール中の 1 行）を地で隠してから書く
+            p.out.push(Instance::fill(rect.x as f32 * cell.w, y, rect.w as f32 * cell.w, cell.h, BG));
+            let (path, dirty, line) = if st.doc == ed.cur_doc {
+                (ed.buf.path.as_ref(), ed.buf.dirty, st.cursor.line)
+            } else {
+                match ed.parked_doc(st.doc) {
+                    Some(d) => (d.buf.path.as_ref(), d.buf.dirty, st.cursor.line),
+                    None => continue,
+                }
+            };
+            let name = path.map_or("[No Name]".to_string(), |p| p.display().to_string());
+            let color = if active { FG } else { LINE_NO };
+            let saved = p.cols;
+            p.cols = rect.x + rect.w;
+            let left = format!("{name}{}", if dirty { " [+]" } else { "" });
+            let end = p.text(&left, rect.x, y, color);
+            let pos = if active { format!("{},{} ", line + 1, ruler_col(ed)) } else { format!("{} ", line + 1) };
+            let pc = (rect.x + rect.w).saturating_sub(p.width(&pos));
+            if end + 1 < pc {
+                p.text(&pos, pc, y, color);
+            }
+            // 作業中の窓は、状態行に細い下線を引いて見分けやすくする
+            if active {
+                p.out.push(Instance::fill(rect.x as f32 * cell.w, y + cell.h - p.underline, rect.w as f32 * cell.w, p.underline, LINE_NO));
+            }
+            p.cols = saved;
+        }
+    }
     // ---- 最下行: 左にモード・メッセージ・入力欄、右に位置（Vim の showmode と ruler と同じ形）
     let y = rows as f32 * cell.h;
-    if frac > 0.0 {
-        // はみ出した本文の最終行を最下行の地で隠す
-        p.out.push(Instance::fill(0.0, y, w as f32, h as f32 - y, BG));
-    }
+    // はみ出した本文の最終行（スムーズスクロール中）を最下行の地で隠す
+    p.out.push(Instance::fill(0.0, y, w as f32, h as f32 - y, BG));
     let name = ed.buf.path.as_ref().map_or("[No Name]".to_string(), |p| p.display().to_string());
-    let ruler = format!(
-        "{}{}   {}{}   {}{},{} ",
-        ed.pending_keys.iter().map(|k| k.label()).collect::<String>(),
-        ed.showcmd,
-        name,
-        if ed.buf.dirty { " [+]" } else { "" },
-        ed.syntax.as_ref().map_or(String::new(), |s| format!("{}   ", s.lang.name())),
-        ed.cursor.line + 1,
-        ruler_col(ed)
-    );
+    let keys = format!("{}{}", ed.pending_keys.iter().map(|k| k.label()).collect::<String>(), ed.showcmd);
+    // 分割中は位置を窓ごとの状態行に出すので、最下行には入力中のキーだけを出す
+    let ruler = if split {
+        format!("{keys} ")
+    } else {
+        format!(
+            "{keys}   {}{}   {}{},{} ",
+            name,
+            if ed.buf.dirty { " [+]" } else { "" },
+            ed.syntax.as_ref().map_or(String::new(), |s| format!("{}   ", s.lang.name())),
+            ed.cursor.line + 1,
+            ruler_col(ed)
+        )
+    };
     let re = if ed.search.regex { "  [.*]" } else { "" };
     let count = match (ed.search.current, ed.match_count()) {
         _ if ed.query.text.is_empty() => format!("{re} "),

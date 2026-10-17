@@ -201,6 +201,14 @@ pub struct Editor {
     pub(crate) cur_doc: usize,
     /// 直前のバッファ（`Ctrl-^` `:b#`）
     pub(crate) alt_doc: Option<usize>,
+    /// 窓（作業中のものは `WinSlot::Active` で、カーソルと表示位置はこの構造体の欄にある）
+    pub(crate) wins: Vec<crate::panes::WinSlot>,
+    pub(crate) cur_win: usize,
+    /// 直前の窓（`Ctrl-w p`）
+    pub(crate) prev_win: Option<usize>,
+    pub(crate) layout: crate::panes::Layout,
+    /// 画面の本文の範囲（列, 行）。最下行は含まない（App が描画前に入れる）
+    pub(crate) screen: (usize, usize),
 }
 
 impl Editor {
@@ -238,6 +246,11 @@ impl Editor {
             docs: vec![crate::buffers::Slot::Active],
             cur_doc: 0,
             alt_doc: None,
+            wins: vec![crate::panes::WinSlot::Active],
+            cur_win: 0,
+            prev_win: None,
+            layout: crate::panes::Layout::Leaf(0),
+            screen: (80, 24),
         }
     }
 
@@ -627,9 +640,10 @@ impl Editor {
     }
 
     /// 今の検索語の、[start, end) の中の一致（画面の強調用）
-    pub fn visible_matches(&self, start: usize, end: usize) -> Vec<(usize, usize)> {
+    /// 別の窓のバッファでも同じ語を強調する（hlsearch はどの窓にも出る）
+    pub fn visible_matches_in(&self, buf: &Buffer, start: usize, end: usize) -> Vec<(usize, usize)> {
         let Some((pattern, regex)) = self.active_pattern() else { return Vec::new() };
-        let text = self.buf.slice_string(start, end);
+        let text = buf.slice_string(start, end);
         find_matches(&text, &pattern, regex).into_iter().map(|(s, e)| (s + start, e + start)).collect()
     }
 
@@ -882,6 +896,25 @@ impl Editor {
             "" => {}
             "w" | "write" => {
                 self.write();
+            }
+            // 分割中の :q は今の窓だけを閉じる（バッファは隠れたまま残る）
+            "q" | "quit" | "q!" | "quit!" | "clo" | "close" if self.is_split() => self.close_window(self.cur_win),
+            "wq" | "x" | "xit" if self.is_split() => {
+                if self.write() {
+                    self.close_window(self.cur_win);
+                }
+            }
+            "clo" | "close" => self.message = "E444: 最後のウィンドウは閉じられません".into(),
+            "on" | "only" => self.only_window(),
+            "sp" | "split" | "vs" | "vsplit" => {
+                self.split(name.starts_with('v'));
+                if !arg.is_empty() {
+                    self.edit_file(PathBuf::from(arg));
+                }
+            }
+            "new" | "vne" | "vnew" => {
+                self.split(name.starts_with('v'));
+                self.new_empty_buffer();
             }
             "q" | "quit" | "qa" | "qall" | "quitall" if self.buf.dirty => self.message = "E37: 変更が保存されていません（:q! で破棄して終了）".into(),
             "q" | "quit" | "qa" | "qall" | "quitall" if !self.dirty_docs().is_empty() => {

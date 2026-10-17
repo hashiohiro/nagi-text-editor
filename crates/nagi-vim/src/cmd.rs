@@ -84,6 +84,8 @@ pub enum Action {
     LastChange,
     /// `Ctrl-^`（直前のバッファ）
     AltBuffer,
+    /// `Ctrl-w {c}`（窓の操作。`Ctrl-w Ctrl-h` などは `h` と同じ）
+    Window(char),
     Esc,
 }
 
@@ -324,6 +326,12 @@ pub fn parse_normal(keys: &[Key]) -> Parse {
         Key::Char('u') => Action::Undo,
         Key::Ctrl('r') => Action::Redo,
         Key::Ctrl('^' | '6') => Action::AltBuffer,
+        Key::Ctrl('w') => match p.next() {
+            None => return Parse::Incomplete,
+            Some(Key::Char(c)) => Action::Window(c),
+            Some(Key::Ctrl(c)) => Action::Window(c),
+            Some(_) => return Parse::Invalid,
+        },
         Key::Char('.') => Action::Dot,
         Key::Char(c @ (':' | '/' | '?')) => Action::Cmdline(c),
         Key::Char('*') => Action::SearchWord { forward: true },

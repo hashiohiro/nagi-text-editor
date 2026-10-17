@@ -146,6 +146,11 @@ impl Editor {
         self.message = message;
     }
 
+    /// `:new`。空のバッファを足して作業中にする
+    pub(crate) fn new_empty_buffer(&mut self) {
+        self.push_doc(Buffer::from_str(""));
+    }
+
     /// `:e!`。作業中のバッファを読み直す（変更は捨てる）
     pub(crate) fn reload(&mut self) {
         let Some(path) = self.buf.path.clone() else { return };
@@ -220,6 +225,8 @@ impl Editor {
             self.message = format!("E89: バッファ {} の変更が保存されていません（:bd! で破棄）", id + 1);
             return;
         }
+        // 消すバッファを出しているほかの窓は閉じる（Vim と同じ）
+        self.close_windows_of(id);
         if id != self.cur_doc {
             self.docs[id] = Slot::Deleted;
             return;

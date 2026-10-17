@@ -18,6 +18,7 @@ mod editor;
 mod normal;
 mod stats;
 mod view;
+mod panes;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -260,10 +261,24 @@ impl App {
 
 
     /// 本文に使える行数（最下行の分を除く。置換中は 2 行）
+    /// 画面の本文の行数（最下行を除く。分割中は全部の窓を合わせた高さ）
     fn rows(&self) -> usize {
         let (Some(r), Some(f)) = (&self.renderer, &self.fonts) else { return 1 };
         let status = self.ed.as_ref().map_or(1, |e| e.status_rows());
         ((r.size().1 as f32 / f.cell().h) as usize).saturating_sub(status).max(1)
+    }
+
+    fn cols(&self) -> usize {
+        let (Some(r), Some(f)) = (&self.renderer, &self.fonts) else { return 80 };
+        (r.size().0 as f32 / f.cell().w) as usize
+    }
+
+    /// 画面の大きさをエディタに伝え、作業中の窓の本文の行数を返す（マウスの処理の前に呼ぶ）
+    fn sync_screen(&mut self) -> usize {
+        let (cols, rows) = (self.cols(), self.rows());
+        let Some(ed) = &mut self.ed else { return rows };
+        ed.set_screen(cols, rows);
+        ed.rows
     }
 
     /// 1 フレーム描く。戻り値は内訳（構文木の更新, スワップチェーンの待ち, 組み立て, 送出）
@@ -290,7 +305,8 @@ impl App {
         r.wait_frame();
         let t2 = Instant::now();
         let status = ed.status_rows();
-        ed.rows = ((r.size().1 as f32 / f.cell().h) as usize).saturating_sub(status).max(1);
+        let rows = ((r.size().1 as f32 / f.cell().h) as usize).saturating_sub(status).max(1);
+        ed.set_screen((r.size().0 as f32 / f.cell().w) as usize, rows);
         ed.scroll_into_view();
         ed.showcmd = self.matcher.pending().iter().map(|k| k.label()).collect();
         let insts = view::build(ed, f, r);
@@ -422,10 +438,10 @@ impl App {
 
     /// マッピング展開後のキーをエディタに流す。終了したら true
     fn run_keys(&mut self, keys: Vec<VKey>, el: &ActiveEventLoop) -> bool {
-        let rows = self.rows();
+        // 窓の行数は、分割や窓の移動のたびにエディタが合わせる
+        self.sync_screen();
         for k in keys {
             let Some(ed) = &mut self.ed else { return true };
-            ed.rows = rows;
             match ed.key(k) {
                 Effect::None => {}
                 Effect::Quit => {
@@ -492,7 +508,8 @@ impl App {
             } else {
                 // 画面の幅より右は見えないので、そこまでの幅だけ数える（数 MB の行で全体を数えない）
                 let line = ed.buf.line_head(ed.cursor.line, ed.cursor.byte.min(4096) + 4).0;
-                (editor::GUTTER + nagi_core::display_col(&line, ed.cursor.byte.min(line.len()), false), ed.cursor.line.saturating_sub(ed.top))
+                let rect = ed.active_rect();
+                (rect.x + editor::GUTTER + nagi_core::display_col(&line, ed.cursor.byte.min(line.len()), false), rect.y + ed.cursor.line.saturating_sub(ed.top))
             };
             w.set_ime_cursor_area(
                 winit::dpi::PhysicalPosition::new((col as f32 * cell.w) as i32, (row as f32 * cell.h) as i32),
@@ -515,16 +532,38 @@ impl App {
         self.draw();
     }
 
-    /// マウスの位置にあたる (本文の行, セル列)。行は負や本文の外にもなる
+    /// マウスの位置にあたる、作業中の窓の中の (本文の行, セル列)。行は負や窓の外にもなる
     fn mouse_cell(&self) -> Option<(isize, usize)> {
         let (f, ed) = (self.fonts.as_ref()?, self.ed.as_ref()?);
         let cell = f.cell();
-        let row = (self.mouse.1 as f32 / cell.h + ed.frac).floor() as isize;
-        Some((row, (self.mouse.0.max(0.0) as f32 / cell.w) as usize))
+        let rect = ed.active_rect();
+        let row = (self.mouse.1 as f32 / cell.h - rect.y as f32 + ed.frac).floor() as isize;
+        let col = (self.mouse.0.max(0.0) as f32 / cell.w) as usize;
+        Some((row, col.saturating_sub(rect.x)))
+    }
+
+    /// マウスの下の窓へ移る。窓の状態行や区切りの上なら false（本文のクリックとしては扱わない）
+    fn focus_under_mouse(&mut self) -> bool {
+        let Some(f) = &self.fonts else { return false };
+        let cell = f.cell();
+        let (row, col) = ((self.mouse.1 as f32 / cell.h) as usize, (self.mouse.0.max(0.0) as f32 / cell.w) as usize);
+        let Some(ed) = &mut self.ed else { return false };
+        let Some((w, rect)) = ed.window_at(row, col) else { return false };
+        if w != ed.cur_win {
+            ed.focus_window(w);
+        }
+        row < rect.y + ed.text_rows(rect)
     }
 
     fn on_press(&mut self) {
-        let rows = self.rows();
+        self.sync_screen();
+        let on_text = self.focus_under_mouse();
+        let rows = self.sync_screen();
+        if !on_text {
+            self.sync_ime();
+            self.draw();
+            return;
+        }
         let Some((row, col)) = self.mouse_cell() else { return };
         // 最下行（入力欄・ルーラー）は対象外
         if row < 0 || row as usize >= rows {
@@ -552,7 +591,7 @@ impl App {
     }
 
     fn on_drag(&mut self) {
-        let rows = self.rows();
+        let rows = self.sync_screen();
         let Some(press) = &self.press else { return };
         if press.selected {
             return;
@@ -580,7 +619,7 @@ impl App {
 
     /// ドラッグで画面外にいる間、一定間隔で 1 行ずつ送る
     fn on_autoscroll(&mut self) {
-        let rows = self.rows();
+        let rows = self.sync_screen();
         let (Some(press), Some((row, col))) = (&self.press, self.mouse_cell()) else {
             self.autoscroll_deadline = None;
             return;
@@ -603,7 +642,7 @@ impl App {
     }
 
     fn on_wheel(&mut self, delta: winit::event::MouseScrollDelta) {
-        let rows = self.rows();
+        let rows = self.sync_screen();
         let (Some(ed), Some(f)) = (&mut self.ed, &self.fonts) else { return };
         ed.rows = rows;
         let now = Instant::now();
