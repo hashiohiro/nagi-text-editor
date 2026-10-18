@@ -18,45 +18,7 @@ fn options() -> Options {
 
 /// コードブロックの言語名 → 言語
 pub fn code_lang(name: &str) -> Option<Lang> {
-    let n = name.trim().split([' ', ',', '{']).next().unwrap_or("").to_ascii_lowercase();
-    Some(match n.as_str() {
-        "rust" | "rs" => Lang::Rust,
-        "ts" | "typescript" => Lang::TypeScript,
-        "tsx" => Lang::Tsx,
-        "js" | "javascript" | "jsx" | "mjs" => Lang::JavaScript,
-        "java" => Lang::Java,
-        "kotlin" | "kt" | "kts" => Lang::Kotlin,
-        "python" | "py" => Lang::Python,
-        "sh" | "bash" | "shell" | "zsh" | "console" => Lang::Bash,
-        "bat" | "cmd" | "batch" => Lang::Batch,
-        "powershell" | "ps1" | "pwsh" => Lang::PowerShell,
-        "ini" | "properties" => Lang::Ini,
-        "toml" => Lang::Toml,
-        "c" | "h" => Lang::C,
-        "cpp" | "c++" | "cc" | "cxx" | "hpp" => Lang::Cpp,
-        "go" | "golang" => Lang::Go,
-        "cs" | "csharp" | "c#" => Lang::CSharp,
-        "php" => Lang::Php,
-        "ruby" | "rb" => Lang::Ruby,
-        "lua" => Lang::Lua,
-        "scala" => Lang::Scala,
-        "swift" => Lang::Swift,
-        "dart" => Lang::Dart,
-        "zig" => Lang::Zig,
-        "haskell" | "hs" => Lang::Haskell,
-        "elixir" | "ex" | "exs" => Lang::Elixir,
-        "r" => Lang::R,
-        "sql" | "mysql" | "postgresql" | "postgres" | "plsql" => Lang::Sql,
-        "xml" | "svg" | "xaml" => Lang::Xml,
-        "make" | "makefile" => Lang::Make,
-        "cmake" => Lang::CMake,
-        "dockerfile" | "docker" => Lang::Dockerfile,
-        "groovy" | "gradle" => Lang::Groovy,
-        "json" | "jsonc" => Lang::Json,
-        "yaml" | "yml" => Lang::Yaml,
-        "vim" => Lang::Vim,
-        _ => return None,
-    })
+    Lang::from_fence(name.trim().split([' ', ',', '{']).next().unwrap_or(""))
 }
 
 /// 文章全体のハイライト（位置は文章の byte）。外側の範囲が先、内側（記号・コードの中）が後（後のものが勝つ）

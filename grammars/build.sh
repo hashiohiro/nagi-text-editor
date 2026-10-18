@@ -20,7 +20,8 @@ if [ -z "${CARGO:-}" ]; then
   CARGO="$(command -v cargo.exe || true)"
   [ -n "$CARGO" ] || CARGO="$(wslpath "$(cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\r')")/.cargo/bin/cargo.exe"
 fi
-ALL="c cpp go csharp php ruby lua scala swift dart zig haskell elixir r sql toml make cmake dockerfile groovy rust typescript tsx javascript java kotlin python vim css html scss"
+# 言語の一覧は nagi-syntax の表（LANGS の Source::Download）から読む（同じ一覧を 2 か所に持たない）
+ALL="$(grep -oP 'Source::Download\("\K[a-z]+' crates/nagi-syntax/src/lib.rs | tr '\n' ' ')"
 IDS="${*:-$ALL}"
 DIST=target/grammars/dist
 mkdir -p "$DIST"

@@ -60,46 +60,72 @@ pub enum Lang {
     Groovy,
 }
 
-const ALL: [Lang; 38] = [
-    Lang::Rust,
-    Lang::TypeScript,
-    Lang::Tsx,
-    Lang::JavaScript,
-    Lang::Java,
-    Lang::Kotlin,
-    Lang::Python,
-    Lang::Bash,
-    Lang::Batch,
-    Lang::PowerShell,
-    Lang::Ini,
-    Lang::Json,
-    Lang::Yaml,
-    Lang::Vim,
-    Lang::Css,
-    Lang::Scss,
-    Lang::Html,
-    Lang::C,
-    Lang::Cpp,
-    Lang::Go,
-    Lang::CSharp,
-    Lang::Php,
-    Lang::Ruby,
-    Lang::Lua,
-    Lang::Scala,
-    Lang::Swift,
-    Lang::Dart,
-    Lang::Zig,
-    Lang::Haskell,
-    Lang::Elixir,
-    Lang::R,
-    Lang::Sql,
-    Lang::Toml,
-    Lang::Xml,
-    Lang::Make,
-    Lang::CMake,
-    Lang::Dockerfile,
-    Lang::Groovy,
+/// 言語の表（1 行に 1 言語。並びは enum Lang と同じ）。言語を足すときはここと enum に 1 行ずつ
+pub(crate) const LANGS: [Spec; 38] = [
+    Spec { lang: Lang::Rust, name: "Rust", exts: &["rs"], files: &[], source: Source::Download("rust"), query: include_str!("../queries/rust/highlights.scm"), fences: &["rust", "rs"] },
+    Spec { lang: Lang::TypeScript, name: "TypeScript", exts: &["ts", "mts", "cts"], files: &[], source: Source::Download("typescript"), query: include_str!("../queries/typescript/highlights.scm"), fences: &["ts", "typescript"] },
+    Spec { lang: Lang::Tsx, name: "TSX", exts: &["tsx"], files: &[], source: Source::Download("tsx"), query: include_str!("../queries/tsx/highlights.scm"), fences: &["tsx"] },
+    Spec { lang: Lang::JavaScript, name: "JavaScript", exts: &["js", "mjs", "cjs", "jsx"], files: &[], source: Source::Download("javascript"), query: include_str!("../queries/javascript/highlights.scm"), fences: &["js", "javascript", "jsx", "mjs"] },
+    Spec { lang: Lang::Java, name: "Java", exts: &["java"], files: &[], source: Source::Download("java"), query: include_str!("../queries/java/highlights.scm"), fences: &["java"] },
+    Spec { lang: Lang::Kotlin, name: "Kotlin", exts: &["kt", "kts"], files: &[], source: Source::Download("kotlin"), query: include_str!("../queries/kotlin/highlights.scm"), fences: &["kotlin", "kt", "kts"] },
+    Spec { lang: Lang::Python, name: "Python", exts: &["py", "pyw", "pyi"], files: &[], source: Source::Download("python"), query: include_str!("../queries/python/highlights.scm"), fences: &["python", "py"] },
+    Spec { lang: Lang::Bash, name: "Bash", exts: &["sh", "bash"], files: &[".bashrc", ".bash_profile", ".profile", ".zshrc"], source: Source::Builtin(tree_sitter_bash::LANGUAGE), query: tree_sitter_bash::HIGHLIGHT_QUERY, fences: &["sh", "bash", "shell", "zsh", "console"] },
+    Spec { lang: Lang::Batch, name: "Batch", exts: &["bat", "cmd"], files: &[], source: Source::Builtin(tree_sitter_batch::LANGUAGE), query: tree_sitter_batch::HIGHLIGHTS_QUERY, fences: &["bat", "cmd", "batch"] },
+    Spec { lang: Lang::PowerShell, name: "PowerShell", exts: &["ps1", "psm1", "psd1"], files: &[], source: Source::Builtin(tree_sitter_powershell::LANGUAGE), query: tree_sitter_powershell::HIGHLIGHTS_QUERY, fences: &["powershell", "ps1", "pwsh"] },
+    Spec { lang: Lang::Ini, name: "INI", exts: &["ini", "cfg", "conf", "properties"], files: &[".gitconfig", ".editorconfig", ".npmrc"], source: Source::Builtin(tree_sitter_ini::LANGUAGE), query: tree_sitter_ini::HIGHLIGHTS_QUERY, fences: &["ini", "properties"] },
+    Spec { lang: Lang::Json, name: "JSON", exts: &["json", "jsonc", "json5"], files: &[], source: Source::Builtin(tree_sitter_json::LANGUAGE), query: tree_sitter_json::HIGHLIGHTS_QUERY, fences: &["json", "jsonc"] },
+    Spec { lang: Lang::Yaml, name: "YAML", exts: &["yml", "yaml"], files: &[], source: Source::Builtin(tree_sitter_yaml::LANGUAGE), query: tree_sitter_yaml::HIGHLIGHTS_QUERY, fences: &["yaml", "yml"] },
+    Spec { lang: Lang::Vim, name: "Vim", exts: &["vim"], files: &[".vimrc", "_vimrc", ".ideavimrc", "_ideavimrc", ".gvimrc", "nagi.vim"], source: Source::Download("vim"), query: include_str!("../queries/vim/highlights.scm"), fences: &["vim"] },
+    Spec { lang: Lang::Css, name: "CSS", exts: &["css"], files: &[], source: Source::Download("css"), query: include_str!("../queries/css/highlights.scm"), fences: &["css"] },
+    Spec { lang: Lang::Scss, name: "SCSS", exts: &["scss"], files: &[], source: Source::Download("scss"), query: include_str!("../queries/scss/highlights.scm"), fences: &["scss"] },
+    Spec { lang: Lang::Html, name: "HTML", exts: &["html", "htm", "xhtml"], files: &[], source: Source::Download("html"), query: include_str!("../queries/html/highlights.scm"), fences: &["html"] },
+    Spec { lang: Lang::C, name: "C", exts: &["c"], files: &[], source: Source::Download("c"), query: include_str!("../queries/c/highlights.scm"), fences: &["c", "h"] },
+    Spec { lang: Lang::Cpp, name: "C++", exts: &["h", "cpp", "cc", "cxx", "c++", "hpp", "hh", "hxx", "h++", "ino", "ipp", "tpp"], files: &[], source: Source::Download("cpp"), query: include_str!("../queries/cpp/highlights.scm"), fences: &["cpp", "c++", "cc", "cxx", "hpp"] },
+    Spec { lang: Lang::Go, name: "Go", exts: &["go"], files: &[], source: Source::Download("go"), query: include_str!("../queries/go/highlights.scm"), fences: &["go", "golang"] },
+    Spec { lang: Lang::CSharp, name: "C#", exts: &["cs", "csx"], files: &[], source: Source::Download("csharp"), query: include_str!("../queries/csharp/highlights.scm"), fences: &["cs", "csharp", "c#"] },
+    Spec { lang: Lang::Php, name: "PHP", exts: &["php", "phtml", "php8"], files: &[], source: Source::Download("php"), query: include_str!("../queries/php/highlights.scm"), fences: &["php"] },
+    Spec { lang: Lang::Ruby, name: "Ruby", exts: &["rb", "rake", "gemspec", "ru"], files: &["gemfile", "rakefile", "podfile", "vagrantfile"], source: Source::Download("ruby"), query: include_str!("../queries/ruby/highlights.scm"), fences: &["ruby", "rb"] },
+    Spec { lang: Lang::Lua, name: "Lua", exts: &["lua"], files: &[], source: Source::Download("lua"), query: include_str!("../queries/lua/highlights.scm"), fences: &["lua"] },
+    Spec { lang: Lang::Scala, name: "Scala", exts: &["scala", "sc", "sbt"], files: &[], source: Source::Download("scala"), query: include_str!("../queries/scala/highlights.scm"), fences: &["scala"] },
+    Spec { lang: Lang::Swift, name: "Swift", exts: &["swift"], files: &[], source: Source::Download("swift"), query: include_str!("../queries/swift/highlights.scm"), fences: &["swift"] },
+    Spec { lang: Lang::Dart, name: "Dart", exts: &["dart"], files: &[], source: Source::Download("dart"), query: include_str!("../queries/dart/highlights.scm"), fences: &["dart"] },
+    Spec { lang: Lang::Zig, name: "Zig", exts: &["zig", "zon"], files: &[], source: Source::Download("zig"), query: include_str!("../queries/zig/highlights.scm"), fences: &["zig"] },
+    Spec { lang: Lang::Haskell, name: "Haskell", exts: &["hs", "lhs"], files: &[], source: Source::Download("haskell"), query: include_str!("../queries/haskell/highlights.scm"), fences: &["haskell", "hs"] },
+    Spec { lang: Lang::Elixir, name: "Elixir", exts: &["ex", "exs", "heex"], files: &[], source: Source::Download("elixir"), query: include_str!("../queries/elixir/highlights.scm"), fences: &["elixir", "ex", "exs"] },
+    Spec { lang: Lang::R, name: "R", exts: &["r"], files: &[], source: Source::Download("r"), query: include_str!("../queries/r/highlights.scm"), fences: &["r"] },
+    Spec { lang: Lang::Sql, name: "SQL", exts: &["sql", "ddl", "dml"], files: &[], source: Source::Download("sql"), query: include_str!("../queries/sql/highlights.scm"), fences: &["sql", "mysql", "postgresql", "postgres", "plsql"] },
+    Spec { lang: Lang::Toml, name: "TOML", exts: &["toml"], files: &[], source: Source::Download("toml"), query: include_str!("../queries/toml/highlights.scm"), fences: &["toml"] },
+    Spec { lang: Lang::Xml, name: "XML", exts: &["xml", "xsd", "xsl", "xslt", "svg", "csproj", "fsproj", "vbproj", "props", "targets", "fxml", "plist", "xaml", "wsdl"], files: &[], source: Source::Builtin(tree_sitter_xml::LANGUAGE_XML), query: include_str!("../queries/xml/highlights.scm"), fences: &["xml", "svg", "xaml"] },
+    Spec { lang: Lang::Make, name: "Makefile", exts: &["mk", "mak"], files: &["makefile", "gnumakefile"], source: Source::Download("make"), query: include_str!("../queries/make/highlights.scm"), fences: &["make", "makefile"] },
+    Spec { lang: Lang::CMake, name: "CMake", exts: &["cmake"], files: &["cmakelists.txt"], source: Source::Download("cmake"), query: include_str!("../queries/cmake/highlights.scm"), fences: &["cmake"] },
+    Spec { lang: Lang::Dockerfile, name: "Dockerfile", exts: &["dockerfile"], files: &["dockerfile", "containerfile"], source: Source::Download("dockerfile"), query: include_str!("../queries/dockerfile/highlights.scm"), fences: &["dockerfile", "docker"] },
+    Spec { lang: Lang::Groovy, name: "Groovy", exts: &["groovy", "gradle", "gvy", "gy"], files: &["jenkinsfile"], source: Source::Download("groovy"), query: include_str!("../queries/groovy/highlights.scm"), fences: &["groovy", "gradle"] },
 ];
+
+/// 1 つの言語
+pub(crate) struct Spec {
+    pub lang: Lang,
+    /// 画面に出す名前
+    pub name: &'static str,
+    /// 拡張子（小文字）
+    pub exts: &'static [&'static str],
+    /// 拡張子でなくファイル名で決まるもの（小文字）
+    pub files: &'static [&'static str],
+    pub source: Source,
+    /// 色分けの規則（tree-sitter のクエリ）
+    pub query: &'static str,
+    /// Markdown のコードブロックの言語名（小文字）
+    pub fences: &'static [&'static str],
+}
+
+/// 文法の在りか
+pub(crate) enum Source {
+    /// exe に入っている
+    Builtin(tree_sitter_language::LanguageFn),
+    /// 使うときにダウンロードする（grammar.rs の名前）
+    Download(&'static str),
+}
+
 
 
 
@@ -107,103 +133,29 @@ impl Lang {
     pub fn detect(path: &Path) -> Option<Lang> {
         // 拡張子ではなくファイル名で決まるもの
         let name = path.file_name()?.to_str()?.to_ascii_lowercase();
-        match name.as_str() {
-            ".vimrc" | "_vimrc" | ".ideavimrc" | "_ideavimrc" | ".gvimrc" | "nagi.vim" => return Some(Lang::Vim),
-            ".bashrc" | ".bash_profile" | ".profile" | ".zshrc" => return Some(Lang::Bash),
-            ".gitconfig" | ".editorconfig" | ".npmrc" => return Some(Lang::Ini),
-            "makefile" | "gnumakefile" => return Some(Lang::Make),
-            "cmakelists.txt" => return Some(Lang::CMake),
-            "dockerfile" | "containerfile" => return Some(Lang::Dockerfile),
-            "gemfile" | "rakefile" | "podfile" | "vagrantfile" => return Some(Lang::Ruby),
-            "jenkinsfile" => return Some(Lang::Groovy),
-            _ if name.starts_with("dockerfile.") => return Some(Lang::Dockerfile),
-            _ => {}
+        if let Some(s) = LANGS.iter().find(|s| s.files.contains(&name.as_str())) {
+            return Some(s.lang);
+        }
+        if name.starts_with("dockerfile.") {
+            return Some(Lang::Dockerfile);
         }
         let ext = path.extension()?.to_str()?.to_ascii_lowercase();
-        Some(match ext.as_str() {
-            "py" | "pyw" | "pyi" => Lang::Python,
-            "sh" | "bash" => Lang::Bash,
-            "bat" | "cmd" => Lang::Batch,
-            "ps1" | "psm1" | "psd1" => Lang::PowerShell,
-            "ini" | "cfg" | "conf" | "properties" => Lang::Ini,
-            "json" | "jsonc" | "json5" => Lang::Json,
-            "yml" | "yaml" => Lang::Yaml,
-            "vim" => Lang::Vim,
-            "ts" | "mts" | "cts" => Lang::TypeScript,
-            "tsx" => Lang::Tsx,
-            "js" | "mjs" | "cjs" | "jsx" => Lang::JavaScript,
-            "java" => Lang::Java,
-            "kt" | "kts" => Lang::Kotlin,
-            "rs" => Lang::Rust,
-            "css" => Lang::Css,
-            "scss" => Lang::Scss,
-            "html" | "htm" | "xhtml" => Lang::Html,
-            "c" => Lang::C,
-            "h" | "cpp" | "cc" | "cxx" | "c++" | "hpp" | "hh" | "hxx" | "h++" | "ino" | "ipp" | "tpp" => Lang::Cpp,
-            "go" => Lang::Go,
-            "cs" | "csx" => Lang::CSharp,
-            "php" | "phtml" | "php8" => Lang::Php,
-            "rb" | "rake" | "gemspec" | "ru" => Lang::Ruby,
-            "lua" => Lang::Lua,
-            "scala" | "sc" | "sbt" => Lang::Scala,
-            "swift" => Lang::Swift,
-            "dart" => Lang::Dart,
-            "zig" | "zon" => Lang::Zig,
-            "hs" | "lhs" => Lang::Haskell,
-            "ex" | "exs" | "heex" => Lang::Elixir,
-            "r" => Lang::R,
-            "sql" | "ddl" | "dml" => Lang::Sql,
-            "toml" => Lang::Toml,
-            "xml" | "xsd" | "xsl" | "xslt" | "svg" | "csproj" | "fsproj" | "vbproj" | "props" | "targets" | "fxml" | "plist" | "xaml" | "wsdl" => Lang::Xml,
-            "mk" | "mak" => Lang::Make,
-            "cmake" => Lang::CMake,
-            "dockerfile" => Lang::Dockerfile,
-            "groovy" | "gradle" | "gvy" | "gy" => Lang::Groovy,
-            _ => return None,
-        })
+        LANGS.iter().find(|s| s.exts.contains(&ext.as_str())).map(|s| s.lang)
+    }
+
+    /// 表の行
+    fn spec(self) -> &'static Spec {
+        &LANGS[self as usize]
+    }
+
+    /// Markdown のコードブロックの言語名から
+    pub fn from_fence(name: &str) -> Option<Lang> {
+        let n = name.to_ascii_lowercase();
+        LANGS.iter().find(|s| s.fences.contains(&n.as_str())).map(|s| s.lang)
     }
 
     pub fn name(self) -> &'static str {
-        match self {
-            Lang::Rust => "Rust",
-            Lang::TypeScript => "TypeScript",
-            Lang::Tsx => "TSX",
-            Lang::JavaScript => "JavaScript",
-            Lang::Java => "Java",
-            Lang::Kotlin => "Kotlin",
-            Lang::Python => "Python",
-            Lang::Bash => "Bash",
-            Lang::Batch => "Batch",
-            Lang::PowerShell => "PowerShell",
-            Lang::Ini => "INI",
-            Lang::Json => "JSON",
-            Lang::Yaml => "YAML",
-            Lang::Vim => "Vim",
-            Lang::Css => "CSS",
-            Lang::Scss => "SCSS",
-            Lang::Html => "HTML",
-            Lang::C => "C",
-            Lang::Cpp => "C++",
-            Lang::Go => "Go",
-            Lang::CSharp => "C#",
-            Lang::Php => "PHP",
-            Lang::Ruby => "Ruby",
-            Lang::Lua => "Lua",
-            Lang::Scala => "Scala",
-            Lang::Swift => "Swift",
-            Lang::Dart => "Dart",
-            Lang::Zig => "Zig",
-            Lang::Haskell => "Haskell",
-            Lang::Elixir => "Elixir",
-            Lang::R => "R",
-            Lang::Sql => "SQL",
-            Lang::Toml => "TOML",
-            Lang::Xml => "XML",
-            Lang::Make => "Makefile",
-            Lang::CMake => "CMake",
-            Lang::Dockerfile => "Dockerfile",
-            Lang::Groovy => "Groovy",
-        }
+        self.spec().name
     }
 
     /// 設定・データの言語（キーを色分けする）
@@ -227,46 +179,16 @@ impl Lang {
     }
 
     /// 対応している言語すべて
-    pub fn all() -> &'static [Lang] {
-        &ALL
+    pub fn all() -> Vec<Lang> {
+        LANGS.iter().map(|s| s.lang).collect()
     }
 
     /// 文法をダウンロードする言語の名前（grammar.rs。exe に入っている言語は None）
     pub fn grammar_id(self) -> Option<&'static str> {
-        Some(match self {
-            Lang::C => "c",
-            Lang::Cpp => "cpp",
-            Lang::Go => "go",
-            Lang::CSharp => "csharp",
-            Lang::Php => "php",
-            Lang::Ruby => "ruby",
-            Lang::Lua => "lua",
-            Lang::Scala => "scala",
-            Lang::Swift => "swift",
-            Lang::Dart => "dart",
-            Lang::Zig => "zig",
-            Lang::Haskell => "haskell",
-            Lang::Elixir => "elixir",
-            Lang::R => "r",
-            Lang::Sql => "sql",
-            Lang::Toml => "toml",
-            Lang::Make => "make",
-            Lang::CMake => "cmake",
-            Lang::Dockerfile => "dockerfile",
-            Lang::Groovy => "groovy",
-            Lang::Rust => "rust",
-            Lang::TypeScript => "typescript",
-            Lang::Tsx => "tsx",
-            Lang::JavaScript => "javascript",
-            Lang::Java => "java",
-            Lang::Kotlin => "kotlin",
-            Lang::Python => "python",
-            Lang::Vim => "vim",
-            Lang::Css => "css",
-            Lang::Html => "html",
-            Lang::Scss => "scss",
-            _ => return None,
-        })
+        match self.spec().source {
+            Source::Download(id) => Some(id),
+            Source::Builtin(_) => None,
+        }
     }
 
     /// 文法を使える（exe に入っているか、ダウンロード済み）
@@ -276,74 +198,21 @@ impl Lang {
 
     /// tree-sitter の言語。ダウンロードする言語で、まだ入っていなければ None
     pub fn language(self) -> Option<Language> {
-        if let Some(id) = self.grammar_id() {
-            return grammar::load(id);
-        }
-        Some(match self {
-            Lang::Bash => tree_sitter_bash::LANGUAGE.into(),
-            Lang::Batch => tree_sitter_batch::LANGUAGE.into(),
-            Lang::PowerShell => tree_sitter_powershell::LANGUAGE.into(),
-            Lang::Ini => tree_sitter_ini::LANGUAGE.into(),
-            Lang::Json => tree_sitter_json::LANGUAGE.into(),
-            Lang::Yaml => tree_sitter_yaml::LANGUAGE.into(),
-            Lang::Xml => tree_sitter_xml::LANGUAGE_XML.into(),
-            _ => unreachable!("ダウンロードする文法は grammar_id で返した"),
-        })
-    }
-
-    /// ハイライトのクエリ。TypeScript は JavaScript のクエリに TS 固有分を足して使う（grammar の想定どおり）
-    fn highlights_source(self) -> String {
-        match self {
-            Lang::Rust => include_str!("../queries/rust/highlights.scm").to_string(),
-            Lang::TypeScript => include_str!("../queries/typescript/highlights.scm").to_string(),
-            Lang::Tsx => include_str!("../queries/tsx/highlights.scm").to_string(),
-            Lang::JavaScript => include_str!("../queries/javascript/highlights.scm").to_string(),
-            Lang::Java => include_str!("../queries/java/highlights.scm").to_string(),
-            Lang::Kotlin => include_str!("../queries/kotlin/highlights.scm").to_string(),
-            Lang::Python => include_str!("../queries/python/highlights.scm").to_string(),
-            Lang::Vim => include_str!("../queries/vim/highlights.scm").to_string(),
-            Lang::Css => include_str!("../queries/css/highlights.scm").to_string(),
-            Lang::Html => include_str!("../queries/html/highlights.scm").to_string(),
-            Lang::Scss => include_str!("../queries/scss/highlights.scm").to_string(),
-            Lang::Bash => tree_sitter_bash::HIGHLIGHT_QUERY.to_string(),
-            Lang::Batch => tree_sitter_batch::HIGHLIGHTS_QUERY.to_string(),
-            Lang::PowerShell => tree_sitter_powershell::HIGHLIGHTS_QUERY.to_string(),
-            Lang::Ini => tree_sitter_ini::HIGHLIGHTS_QUERY.to_string(),
-            Lang::Json => tree_sitter_json::HIGHLIGHTS_QUERY.to_string(),
-            Lang::Yaml => tree_sitter_yaml::HIGHLIGHTS_QUERY.to_string(),
-            Lang::C => include_str!("../queries/c/highlights.scm").to_string(),
-            Lang::Cpp => include_str!("../queries/cpp/highlights.scm").to_string(),
-            Lang::Go => include_str!("../queries/go/highlights.scm").to_string(),
-            Lang::CSharp => include_str!("../queries/csharp/highlights.scm").to_string(),
-            Lang::Php => include_str!("../queries/php/highlights.scm").to_string(),
-            Lang::Ruby => include_str!("../queries/ruby/highlights.scm").to_string(),
-            Lang::Lua => include_str!("../queries/lua/highlights.scm").to_string(),
-            Lang::Scala => include_str!("../queries/scala/highlights.scm").to_string(),
-            Lang::Swift => include_str!("../queries/swift/highlights.scm").to_string(),
-            Lang::Dart => include_str!("../queries/dart/highlights.scm").to_string(),
-            Lang::Zig => include_str!("../queries/zig/highlights.scm").to_string(),
-            Lang::Haskell => include_str!("../queries/haskell/highlights.scm").to_string(),
-            Lang::Elixir => include_str!("../queries/elixir/highlights.scm").to_string(),
-            Lang::R => include_str!("../queries/r/highlights.scm").to_string(),
-            Lang::Sql => include_str!("../queries/sql/highlights.scm").to_string(),
-            Lang::Toml => include_str!("../queries/toml/highlights.scm").to_string(),
-            Lang::Xml => include_str!("../queries/xml/highlights.scm").to_string(),
-            Lang::Make => include_str!("../queries/make/highlights.scm").to_string(),
-            Lang::CMake => include_str!("../queries/cmake/highlights.scm").to_string(),
-            Lang::Dockerfile => include_str!("../queries/dockerfile/highlights.scm").to_string(),
-            Lang::Groovy => include_str!("../queries/groovy/highlights.scm").to_string(),
+        match self.spec().source {
+            Source::Builtin(f) => Some(f.into()),
+            Source::Download(id) => grammar::load(id),
         }
     }
 
     /// 言語ごとに 1 回だけコンパイルしたクエリ
     pub fn highlights(self) -> &'static Result<Query, String> {
-        static Q: [OnceLock<Result<Query, String>>; ALL.len()] = [const { OnceLock::new() }; ALL.len()];
+        static Q: [OnceLock<Result<Query, String>>; LANGS.len()] = [const { OnceLock::new() }; LANGS.len()];
         static MISSING: OnceLock<Result<Query, String>> = OnceLock::new();
         // 文法がまだ無ければ覚えない（ダウンロードした後に作る）
         let Some(language) = self.language() else {
             return MISSING.get_or_init(|| Err("文法がまだダウンロードされていません".into()));
         };
-        Q[self as usize].get_or_init(|| Query::new(&language, &self.highlights_source()).map_err(|e| format!("{e}")))
+        Q[self as usize].get_or_init(|| Query::new(&language, self.spec().query).map_err(|e| format!("{e}")))
     }
 }
 
@@ -1102,7 +971,7 @@ mod tests {
 
     #[test]
     fn queries_compile() {
-        for lang in ALL {
+        for lang in Lang::all() {
             if let Err(e) = lang.highlights() {
                 panic!("{}: {e}", lang.name());
             }
@@ -1328,7 +1197,26 @@ mod tests {
     /// どの言語も、文法と色分けの規則が組み合わさる（規則の誤りで色が付かなくならないように）
     #[test]
     fn all_highlight_queries_compile() {
-        let bad: Vec<String> = ALL.iter().filter_map(|l| l.highlights().as_ref().err().map(|e| format!("{}: {e}", l.name()))).collect();
+        let bad: Vec<String> = Lang::all().iter().filter_map(|l| l.highlights().as_ref().err().map(|e| format!("{}: {e}", l.name()))).collect();
         assert!(bad.is_empty(), "{bad:#?}");
+    }
+
+    /// 表の並びが enum と同じ（Lang を表の添え字に使う）。拡張子・ファイル名・コードブロックの名前は 1 つの言語にだけ
+    #[test]
+    fn table_is_consistent() {
+        for (i, s) in LANGS.iter().enumerate() {
+            assert_eq!(s.lang as usize, i, "{} の並び", s.name);
+        }
+        for key in [|s: &Spec| s.exts, |s: &Spec| s.files, |s: &Spec| s.fences] {
+            let mut seen = std::collections::HashMap::new();
+            for s in &LANGS {
+                for k in key(s) {
+                    assert!(seen.insert(*k, s.name).is_none(), "{k} が {} と {} の両方にある", seen[k], s.name);
+                }
+            }
+        }
+        assert_eq!(Lang::detect(Path::new("x/Dockerfile.dev")), Some(Lang::Dockerfile));
+        assert_eq!(Lang::detect(Path::new("CMakeLists.txt")), Some(Lang::CMake));
+        assert_eq!(Lang::from_fence("C#"), Some(Lang::CSharp));
     }
 }
