@@ -97,8 +97,16 @@ pub fn download_oracle(waker: Waker) -> Download {
 }
 
 pub fn download_zip(url: &str, expect: u64, dest: &Path, waker: Waker) -> Download {
+    let find = |dest: &Path| -> Option<PathBuf> {
+        oracle_client_dir().filter(|d| d.starts_with(dest)).or_else(|| std::fs::read_dir(dest).ok()?.flatten().map(|e| e.path()).find(|p| p.join("oci.dll").is_file()))
+    };
+    download_and_extract(url, expect, dest, Box::new(find), "oci.dll", waker)
+}
+
+/// zip をダウンロードして `dest` に展開し、`find` で目当てのフォルダを探す（裏のスレッド）。`what` は見つからないときの知らせ用
+pub fn download_and_extract(url: &str, expect: u64, dest: &Path, find: Box<dyn Fn(&Path) -> Option<PathBuf> + Send>, what: &str, waker: Waker) -> Download {
     let (tx, rx) = channel();
-    let (url, dest) = (url.to_string(), dest.to_path_buf());
+    let (url, dest, what) = (url.to_string(), dest.to_path_buf(), what.to_string());
     let _ = std::thread::Builder::new().name("download".into()).spawn(move || {
         let send = |m: DlMsg| {
             let _ = tx.send(m);
@@ -130,9 +138,7 @@ pub fn download_zip(url: &str, expect: u64, dest: &Path, waker: Waker) -> Downlo
             if !out.status.success() {
                 return Err(format!("展開できません: {}", String::from_utf8_lossy(&out.stderr).trim()));
             }
-            oracle_client_dir().filter(|d| d.starts_with(&dest)).or_else(|| {
-                std::fs::read_dir(&dest).ok()?.flatten().map(|e| e.path()).find(|p| p.join("oci.dll").is_file())
-            }).ok_or_else(|| "展開したものの中に oci.dll がありません".to_string())
+            find(&dest).ok_or_else(|| format!("展開したものの中に {what} がありません"))
         };
         send(DlMsg::Done(run()));
     });

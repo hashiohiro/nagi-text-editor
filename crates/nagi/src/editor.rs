@@ -319,6 +319,8 @@ pub struct Editor {
     pub auto_complete_at: Option<std::time::Instant>,
     /// 設定の外観（フォント・大きさ・行の高さ）が変わった（App がフォントを作り直す）
     pub appearance_changed: bool,
+    /// JDK のダウンロード（版, 進み具合）
+    pub jdk_download: Option<(u32, nagi_workers::drivers::Download)>,
     pub right_tab: crate::right_panel::RightTab,
     pub right_hidden: bool,
     pub right_w: Option<usize>,
@@ -475,6 +477,7 @@ impl Editor {
             rc_clipboard: false,
             auto_complete_at: None,
             appearance_changed: false,
+            jdk_download: None,
             right_tab: Default::default(),
             right_hidden: false,
             right_w: None,

@@ -1341,6 +1341,7 @@ impl ApplicationHandler for App {
             ed.poll_tree();
             ed.poll_index();
             ed.poll_make();
+            ed.poll_jdk_download();
             ed.poll_cmd_files();
             ed.poll_git();
             ed.poll_commit();

@@ -21,6 +21,8 @@ pub enum SKind {
     Key,
     /// フォントの名前（Windows に入っているフォントから選ぶ）
     Font,
+    /// JDK のフォルダ（入っているものから選ぶか、ダウンロードする）
+    Jdk,
 }
 
 /// 項目 1 つ
@@ -49,7 +51,7 @@ const T: SKind = SKind::Text;
 const K: SKind = SKind::Key;
 
 /// 分類（画面の左の一覧の並び）
-pub const CATEGORIES: [&str; 9] = ["外観", "エディタ", "Vim", "入力補完", "キーマップ", "ツール", "プロジェクト", "その他", "（すべて）"];
+pub const CATEGORIES: [&str; 10] = ["外観", "エディタ", "Vim", "入力補完", "キーマップ", "ビルド・実行", "ツール", "プロジェクト", "その他", "（すべて）"];
 
 pub static SCHEMA: &[Item] = &[
     // 外観
@@ -114,10 +116,11 @@ pub static SCHEMA: &[Item] = &[
     item("terminal.shell", "ツール", "ターミナル: 既定のシェル", T, "", "空なら最後に選んだもの（cmd・powershell・pwsh・bash・wsl、またはコマンド）"),
     item("terminal.start_dir", "ツール", "ターミナル: 始めるフォルダ", SKind::Choice(&[("project", "プロジェクト"), ("file", "開いているファイルのフォルダ"), ("home", "ホーム")]), "project", ""),
     item("terminal.utf8", "ツール", "ターミナル: UTF-8 で始める", B, "true", "オフなら Windows の既定（CP932）"),
-    pitem("maven.path", "ツール", "Maven: mvn の場所", T, "", "空なら PATH の mvn"),
-    pitem("maven.use_wrapper", "ツール", "Maven: Wrapper（mvnw）を使う", B, "true", "設定ファイルもそろっているときだけ"),
-    pitem("maven.jdk", "ツール", "Maven・Gradle: JDK", T, "", "JAVA_HOME にするフォルダ。空なら JAVA_HOME か ~\\.jdks から探す"),
-    pitem("maven.options", "ツール", "Maven: 追加のオプション", T, "", "いつも付ける（-o・-T 4 など）"),
+    pitem("maven.jdk", "ビルド・実行", "JDK（コンパイル・実行）", SKind::Jdk, "", "Enter で入っているものから選ぶか、Eclipse Temurin をダウンロード（~\\.jdks に置く）。空なら JAVA_HOME か ~\\.jdks から探す"),
+    item("build.jdk_env", "ビルド・実行", "JDK を nagi から起動するものに渡す", B, "true", "ターミナル・実行の構成・Maven に JAVA_HOME と PATH（JDK の bin）として"),
+    pitem("maven.path", "ビルド・実行", "Maven: mvn の場所", T, "", "空なら PATH の mvn"),
+    pitem("maven.use_wrapper", "ビルド・実行", "Maven: Wrapper（mvnw）を使う", B, "true", "設定ファイルもそろっているときだけ"),
+    pitem("maven.options", "ビルド・実行", "Maven: 追加のオプション", T, "", "いつも付ける（-o・-T 4 など）"),
     item("tools.extra_path", "ツール", "追加の PATH", T, "", "gradle・npm・cargo などの場所（; で区切る）"),
     item("git.path", "ツール", "Git: git の場所", T, "", "空なら PATH の git"),
     item("git.wsl", "ツール", "Git: WSL のプロジェクトは WSL の git", B, "true", ""),
@@ -315,8 +318,24 @@ impl crate::editor::Editor {
         if !cfg!(test) {
             static BASE_PATH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
             let base = BASE_PATH.get_or_init(|| std::env::var("PATH").unwrap_or_default());
-            let extra = self.settings.list("tools.extra_path").join(";");
+            let mut extra = self.settings.list("tools.extra_path");
+            // 設定の JDK を渡す（JAVA_HOME と、java・javac が先に見つかるように PATH の頭に bin）
+            static BASE_JAVA_HOME: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+            let base_jh = BASE_JAVA_HOME.get_or_init(|| std::env::var("JAVA_HOME").ok());
+            let jdk = self.settings.text("maven.jdk").filter(|j| self.settings.bool("build.jdk_env") && Path::new(j).join("bin").is_dir());
+            if let Some(j) = &jdk {
+                extra.insert(0, Path::new(j).join("bin").display().to_string());
+            }
+            let extra = extra.join(";");
             let path = if extra.is_empty() { base.clone() } else { format!("{extra};{base}") };
+            // SAFETY: 下と同じ（UI のスレッドだけが書く）
+            unsafe {
+                match (&jdk, base_jh) {
+                    (Some(j), _) => std::env::set_var("JAVA_HOME", j),
+                    (None, Some(b)) => std::env::set_var("JAVA_HOME", b),
+                    (None, None) => std::env::remove_var("JAVA_HOME"),
+                }
+            }
             // SAFETY: 設定を適用するのは UI のスレッドだけで、ほかのスレッドが同時に環境変数を書くことはない
             unsafe {
                 std::env::set_var("PATH", path);

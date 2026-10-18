@@ -3004,6 +3004,16 @@ fn draw_settings_dialog(p: &mut Painter, ed: &Editor, d: &crate::settings_dialog
             _ if it.default.is_empty() => "空",
             _ => it.default,
         };
+        // JDK は、使う java の場所も出す
+        let desc = if it.kind == SKind::Jdk {
+            let jdk = d.work.text(it.key).map(std::path::PathBuf::from).or_else(nagi_workers::jobs::java_home_fix).or_else(|| std::env::var_os("JAVA_HOME").map(std::path::PathBuf::from));
+            match jdk {
+                Some(j) => format!("java: {}", j.join("bin").join("java.exe").display()),
+                None => "java: 見つかりません（Enter でダウンロード）".into(),
+            }
+        } else {
+            desc
+        };
         p.text(&format!("{desc}{}既定: {def}   r で既定に戻す", if desc.is_empty() { "" } else { "   " }), rx, y(h - 3), STATUS_FG);
     }
     // 下: 案内とボタン
@@ -3034,7 +3044,7 @@ fn draw_settings_dialog(p: &mut Painter, ed: &Editor, d: &crate::settings_dialog
     let mut combo_rows = Vec::new();
     if let (Some(c), Some(&(irow, _, ivx))) = (&d.combo, item_rows.iter().find(|r| r.1 == d.selected)) {
         let shown = c.shown();
-        let cw = 46.min((x0 + w).saturating_sub(ivx + 1)).max(20);
+        let cw = 64.min((x0 + w).saturating_sub(ivx + 1)).max(20);
         let list_h = shown.len().clamp(1, 12);
         let total = list_h + 1;
         let below = irow + 1 + total <= y0 + h - 2;
@@ -3058,10 +3068,11 @@ fn draw_settings_dialog(p: &mut Painter, ed: &Editor, d: &crate::settings_dialog
             if on {
                 p.out.push(Instance::fill(ivx as f32 * cell.w, cy(r), cw as f32 * cell.w, cell.h, ACCENT));
             }
-            let (name, mono) = &c.items[i];
-            let end = p.text(&format!(" {name}"), ivx, cy(r), if on { BG } else { FG });
-            if *mono {
-                let tag = "等幅 ";
+            let item = &c.items[i];
+            let end = p.text(&format!(" {}", item.label), ivx, cy(r), if on { BG } else { FG });
+            if !item.tag.is_empty() {
+                let tag = format!("{} ", item.tag);
+                let tag = tag.as_str();
                 let tx = (ivx + cw).saturating_sub(p.width(tag));
                 if tx > end {
                     p.text(tag, tx, cy(r), if on { BG } else { STATUS_FG });

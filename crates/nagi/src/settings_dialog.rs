@@ -27,10 +27,17 @@ pub enum SFocus {
     Combo,
 }
 
-/// コンボボックス（フォントの一覧）。打つと絞り込み、↑↓ で選び、Enter で決める
+/// コンボボックスの 1 行（出す名前, 決める値, 右に出す印）
+#[derive(Clone, Debug)]
+pub struct ComboItem {
+    pub label: String,
+    pub value: String,
+    pub tag: String,
+}
+
+/// コンボボックス（フォント・JDK の一覧）。打つと絞り込み、↑↓ で選び、Enter で決める
 pub struct Combo {
-    /// (名前, 等幅か)
-    pub items: Vec<(String, bool)>,
+    pub items: Vec<ComboItem>,
     pub filter: VimField,
     pub sel: usize,
     pub top: usize,
@@ -40,7 +47,7 @@ impl Combo {
     /// 絞り込んだ一覧（元の番号）
     pub fn shown(&self) -> Vec<usize> {
         let q = self.filter.text().to_lowercase();
-        (0..self.items.len()).filter(|&i| q.is_empty() || self.items[i].0.to_lowercase().contains(&q)).collect()
+        (0..self.items.len()).filter(|&i| q.is_empty() || self.items[i].label.to_lowercase().contains(&q)).collect()
     }
 }
 
@@ -142,10 +149,18 @@ impl SettingsDialog {
         let Some(it) = self.current() else { return };
         match it.kind {
             SKind::Bool | SKind::Choice(_) => self.cycle(1),
-            SKind::Font => {
-                let items = self.fonts.get_or_insert_with(nagi_text::font_families).clone();
+            SKind::Font | SKind::Jdk => {
+                let items: Vec<ComboItem> = if it.kind == SKind::Font {
+                    self.fonts
+                        .get_or_insert_with(nagi_text::font_families)
+                        .iter()
+                        .map(|(n, mono)| ComboItem { label: n.clone(), value: n.clone(), tag: if *mono { "等幅".into() } else { String::new() } })
+                        .collect()
+                } else {
+                    jdk_items()
+                };
                 let cur = self.value(it);
-                let sel = items.iter().position(|f| f.0.eq_ignore_ascii_case(&cur)).unwrap_or(0);
+                let sel = items.iter().position(|f| f.value.eq_ignore_ascii_case(&cur)).unwrap_or(0);
                 self.combo = Some(Combo { items, filter: VimField::new("", false), sel, top: sel.saturating_sub(5) });
                 self.focus = SFocus::Combo;
             }
@@ -156,15 +171,18 @@ impl SettingsDialog {
         }
     }
 
-    /// コンボボックスで選んだものに決める
-    fn choose_combo(&mut self, index: Option<usize>) {
-        let (Some(it), Some(c)) = (self.current(), self.combo.take()) else { return };
+    /// コンボボックスで選んだものに決める。ダウンロードを選んだら、その版を返す（Editor が始める）
+    fn choose_combo(&mut self, index: Option<usize>) -> Option<u32> {
+        let (Some(it), Some(c)) = (self.current(), self.combo.take()) else { return None };
         self.focus = SFocus::Items;
         let shown = c.shown();
         let pick = index.or_else(|| shown.get(c.sel).copied());
-        if let Some(name) = pick.and_then(|i| c.items.get(i)).map(|f| f.0.clone()) {
-            self.set(it, &name);
+        let value = pick.and_then(|i| c.items.get(i)).map(|f| f.value.clone())?;
+        if let Some(v) = value.strip_prefix("download:") {
+            return v.parse().ok();
         }
+        self.set(it, &value);
+        None
     }
 
     /// 直した値を決める（数は範囲を確かめる）。うまくいけば None、だめなら理由
@@ -198,7 +216,70 @@ impl SettingsDialog {
     }
 }
 
+/// JDK のコンボボックスの一覧: 自動・入っているもの・ダウンロード（Eclipse Temurin）
+fn jdk_items() -> Vec<ComboItem> {
+    let mut v = vec![ComboItem { label: "自動（JAVA_HOME か ~\\.jdks から探す）".into(), value: String::new(), tag: String::new() }];
+    for j in nagi_workers::jdk::installed() {
+        let name = j.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        v.push(ComboItem { label: format!("{}  {}", j.version, name), value: j.path.display().to_string(), tag: if j.vendor.is_empty() { "入っている".into() } else { j.vendor.clone() } });
+    }
+    for ver in nagi_workers::jdk::DOWNLOADS {
+        v.push(ComboItem { label: format!("＋ ダウンロード: Eclipse Temurin {ver}"), value: format!("download:{ver}"), tag: "LTS".into() });
+    }
+    v
+}
+
 impl Editor {
+    /// JDK（Eclipse Temurin の `version`）をダウンロードし始める。進み具合は状態の行に、終わったら設定に入れる
+    pub(crate) fn start_jdk_download(&mut self, version: u32) {
+        if self.jdk_download.is_some() {
+            self.message = "JDK をダウンロードしています。終わるまでお待ちください".into();
+            return;
+        }
+        if cfg!(test) {
+            self.message = format!("（試験）JDK {version} のダウンロード");
+            return;
+        }
+        let waker = self.waker.clone().unwrap_or_else(|| std::sync::Arc::new(|| {}));
+        self.jdk_download = Some((version, nagi_workers::jdk::download_temurin(version, waker)));
+        self.message = format!("Eclipse Temurin {version} をダウンロードしています（約 200MB。~\\.jdks に置く）");
+    }
+
+    /// ダウンロードの進み具合を受け取る。変わったら true
+    pub fn poll_jdk_download(&mut self) -> bool {
+        use nagi_workers::drivers::DlMsg;
+        let Some((ver, d)) = &self.jdk_download else { return false };
+        let ver = *ver;
+        let mut changed = false;
+        let mut done = None;
+        while let Ok(m) = d.rx.try_recv() {
+            changed = true;
+            match m {
+                DlMsg::Progress(got, _) => self.message = format!("Eclipse Temurin {ver} をダウンロードしています… {} MB", got / 1024 / 1024),
+                DlMsg::Extracting => self.message = format!("Eclipse Temurin {ver} を展開しています…"),
+                DlMsg::Done(r) => done = Some(r),
+            }
+        }
+        if let Some(r) = done {
+            self.jdk_download = None;
+            match r {
+                Ok(path) => {
+                    let p = path.display().to_string();
+                    let old = self.settings.clone();
+                    self.settings.set("maven.jdk", &p, false);
+                    let _ = self.settings.save();
+                    self.apply_settings(Some(&old));
+                    if let Some(d) = &mut self.settings_dialog {
+                        d.work.set("maven.jdk", &p, false);
+                    }
+                    self.message = format!("JDK を入れました: {p}（設定の JDK にしました）");
+                }
+                Err(e) => self.message = format!("JDK をダウンロードできません: {e}"),
+            }
+        }
+        changed
+    }
+
     /// 設定の画面を開く（Ctrl+Alt+S・:Settings）。`query` があれば絞り込んで
     pub(crate) fn open_settings(&mut self, query: &str) {
         let mut work = self.settings.clone();
@@ -346,7 +427,11 @@ impl Editor {
                             c.sel = c.sel.saturating_sub(1);
                         }
                     }
-                    Key::Enter => d.choose_combo(None),
+                    Key::Enter => {
+                        if let Some(v) = d.choose_combo(None) {
+                            self.start_jdk_download(v);
+                        }
+                    }
                     Key::Esc if normal || d.combo.as_ref().is_some_and(|c| c.filter.text().is_empty()) => {
                         d.combo = None;
                         d.focus = SFocus::Items;
@@ -456,7 +541,11 @@ impl Editor {
         if d.combo.is_some() {
             let hit = d.combo_rows.borrow().iter().find(|(r, c0, c1, _)| *r == row && col >= *c0 && col < *c1).map(|x| x.3);
             match hit {
-                Some(i) => d.choose_combo(Some(i)),
+                Some(i) => {
+                    if let Some(v) = d.choose_combo(Some(i)) {
+                        self.start_jdk_download(v);
+                    }
+                }
                 None => {
                     d.combo = None;
                     d.focus = SFocus::Items;
@@ -552,7 +641,7 @@ mod tests {
         let d = e.settings_dialog.as_ref().unwrap();
         assert_eq!(d.focus, SFocus::Combo);
         let c = d.combo.as_ref().unwrap();
-        assert!(c.items.iter().any(|f| f.0 == "Consolas" && f.1), "Consolas は等幅として一覧にある");
+        assert!(c.items.iter().any(|f| f.label == "Consolas" && f.tag == "等幅"), "Consolas は等幅として一覧にある");
         // 打って絞り込み、Enter で決める
         keys(&mut e, "consol<CR>");
         let d = e.settings_dialog.as_ref().unwrap();
@@ -561,5 +650,20 @@ mod tests {
         // Esc でやめると変わらない
         keys(&mut e, "<CR>cour<Esc><Esc>");
         assert_eq!(e.settings_dialog.as_ref().unwrap().work.get("appearance.font"), "Consolas");
+    }
+
+    /// JDK はコンボボックス: 自動・入っているもの・ダウンロード。ダウンロードを選ぶと始める（試験では始めない）
+    #[test]
+    fn jdk_combo() {
+        let mut e = Editor::new(Buffer::from_str(""), None);
+        e.set_screen(140, 40);
+        e.open_settings("JDK（コンパイル");
+        keys(&mut e, "<CR>");
+        let c = e.settings_dialog.as_ref().unwrap().combo.as_ref().unwrap();
+        assert!(c.items[0].label.starts_with("自動"));
+        assert!(c.items.iter().any(|i| i.value == "download:21"));
+        keys(&mut e, "temurin 21<CR>");
+        assert!(e.message.contains("JDK 21"), "{}", e.message);
+        assert_eq!(e.settings_dialog.as_ref().unwrap().work.get("maven.jdk"), "", "ダウンロードが終わるまでは変えない");
     }
 }

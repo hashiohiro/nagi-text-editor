@@ -7,6 +7,7 @@ pub mod files;
 pub mod git;
 pub mod grep;
 pub mod index;
+pub mod jdk;
 pub mod jobs;
 pub mod maven;
 pub mod project;
