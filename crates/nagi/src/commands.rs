@@ -188,6 +188,37 @@ pub static COMMANDS: &[Cmd] = &[
     cmd!(["Terminal", "term"], "ターミナル（下の欄。Alt+F12）。後に cmd・powershell・bash・wsl を書けばそのシェルで新しい窓", Args::Text, |e, c| e.terminal_command(c.arg)),
     cmd!(["MarkdownPreview", "MdPreview"], "Markdown のプレビュー（右の欄）を出す・閉じる", Args::None, |e, c| e.toggle_md_preview()),
     cmd!(["Maven", "Mvn"], "Maven（右の欄）。後にゴールを書けば実行", Args::Text, |e, c| if c.arg.is_empty() { e.open_maven() } else { e.maven_run(c.arg) }),
+    // 欄の出し入れ（IntelliJ のツールウィンドウ。キーマップの Alt+1 など）
+    cmd!(["ToolProject"], "プロジェクトの欄を出す・隠す（Alt+1）", Args::None, |e, c| e.toggle_left_tab(crate::tree_panel::LeftTab::Project)),
+    cmd!(["ToolCommit"], "コミットの欄を出す・隠す（Alt+0）", Args::None, |e, c| e.toggle_left_tab(crate::tree_panel::LeftTab::Commit)),
+    cmd!(["ToolGit"], "Git の欄を出す・隠す（Alt+9）", Args::None, |e, c| e.toggle_bottom_tab(crate::result_grid::BottomKind::Git)),
+    cmd!(["ToolFind"], "検索の欄を出す・隠す（Alt+3）", Args::None, |e, c| e.toggle_bottom_tab(crate::result_grid::BottomKind::Grep)),
+    cmd!(["ToolProblems"], "問題の欄を出す・隠す（Alt+6）", Args::None, |e, c| e.toggle_bottom_tab(crate::result_grid::BottomKind::Problems)),
+    cmd!(["ToolLog"], "ログの欄を出す・隠す（Alt+4）", Args::None, |e, c| e.toggle_bottom_tab(crate::result_grid::BottomKind::Output)),
+    cmd!(["ToolTerminal"], "ターミナルの欄を出す・隠す（Alt+F12）", Args::None, |e, c| e.toggle_bottom_tab(crate::result_grid::BottomKind::Terminal)),
+    cmd!(["ToolMaven"], "Maven の欄を出す・隠す", Args::None, |e, c| e.toggle_right_tab(crate::right_panel::RightTab::Maven)),
+    cmd!(["ToolDatabase"], "データベースの欄を出す・隠す", Args::None, |e, c| e.toggle_right_tab(crate::right_panel::RightTab::Database)),
+    cmd!(["HideAll"], "左・右・下の欄をすべて隠す（Ctrl+Shift+F12）", Args::None, |e, c| {
+        e.hide_left();
+        e.hide_right();
+        e.hide_bottom()
+    }),
+    cmd!(["SelectInTree"], "開いているファイルを木で選ぶ", Args::None, |e, c| e.select_in_tree()),
+    // 移動（IntelliJ の Navigate）
+    cmd!(["GotoImplementation", "Implementation"], "実装へ", Args::None, |e, c| e.goto_implementation()),
+    cmd!(["MethodNext"], "次のメソッドへ", Args::None, |e, c| e.method_jump(true)),
+    cmd!(["MethodPrev"], "前のメソッドへ", Args::None, |e, c| e.method_jump(false)),
+    cmd!(["JumpBack"], "前の場所へ（Ctrl-o）", Args::None, |e, c| e.jump(true, 1)),
+    cmd!(["JumpForward"], "次の場所へ（Ctrl-i）", Args::None, |e, c| e.jump(false, 1)),
+    cmd!(["JumpLastChange"], "最後に変えた場所へ", Args::None, |e, c| e.jump_last_change()),
+    cmd!(["ErrorNext"], "次のエラーへ", Args::None, |e, c| e.next_error(true)),
+    cmd!(["ErrorPrev"], "前のエラーへ", Args::None, |e, c| e.next_error(false)),
+    cmd!(["HunkNext"], "次の変更へ", Args::None, |e, c| e.hunk_jump(true, 1)),
+    cmd!(["HunkPrev"], "前の変更へ", Args::None, |e, c| e.hunk_jump(false, 1)),
+    cmd!(["Find"], "ファイルの中を探す（/）", Args::None, |e, c| e.start_search(true, false, "")),
+    cmd!(["Replace"], "ファイルの中を置き換える", Args::None, |e, c| e.start_search(true, true, "")),
+    cmd!(["RunAgain"], "最後に動かした構成をもう一度（Ctrl+F5）", Args::None, |e, c| e.run_again()),
+    cmd!(["GotoDefinition", "Definition"], "定義へ（F12）", Args::None, |e, c| e.goto_definition()),
     // git
     cmd!(["Git", "G", "Gcommit"], "コミット（変更の一覧とメッセージ）", Args::None, |e, c| e.open_commit_panel()),
     cmd!(["Gdiff", "Gd"], "今のファイルと HEAD の差分", Args::None, |e, c| e.diff_current()),
@@ -213,6 +244,57 @@ pub static COMMANDS: &[Cmd] = &[
     cmd!(["DbTx"], "トランザクションの自動・手動を切り替える", Args::None, |e, c| e.db_tx_command("toggle")),
     cmd!(["DbLogout"], "Salesforce の保存したログインを消す", Args::None, |e, c| e.db_logout()),
     cmd!(["DbNew", "DbQuery"], "新しいクエリを開く（Ctrl+Enter で実行）", Args::None, |e, c| e.db_new_query_command()),
+];
+
+/// IdeaVim の `:action <IntelliJ のアクション>` の対応（nagi_vim::action が返す名前, コマンド）
+pub const ACTIONS: &[(&str, &str)] = &[
+    ("jump.last_change", "JumpLastChange"),
+    ("search.buffer", "Find"),
+    ("replace.buffer", "Replace"),
+    ("finder.files", "Files"),
+    ("finder.everything", "Files"),
+    ("finder.recent", "Recent"),
+    ("buffer.close", "bd"),
+    ("search.project", "Grep"),
+    ("tool.project", "Tree"),
+    ("palette", "Commands"),
+    ("finder.symbols", "Symbols"),
+    ("finder.projects", "Project"),
+    ("tool.terminal", "ToolTerminal"),
+    ("tool.problems", "ToolProblems"),
+    ("tool.git", "ToolGit"),
+    ("tool.find", "ToolFind"),
+    ("tool.output", "ToolLog"),
+    ("tool.hide_all", "HideAll"),
+    ("tree.select_file", "SelectInTree"),
+    ("markdown.preview", "MarkdownPreview"),
+    ("finder.types", "Types"),
+    ("outline", "Outline"),
+    ("nav.definition", "GotoDefinition"),
+    ("nav.implementation", "GotoImplementation"),
+    ("nav.references", "Refs"),
+    ("nav.method_prev", "MethodPrev"),
+    ("nav.method_next", "MethodNext"),
+    ("jump.back", "JumpBack"),
+    ("jump.forward", "JumpForward"),
+    ("nav.error_next", "ErrorNext"),
+    ("nav.error_prev", "ErrorPrev"),
+    ("git.hunk_next", "HunkNext"),
+    ("git.hunk_prev", "HunkPrev"),
+    ("git.commit", "Git"),
+    ("git.changes", "Git"),
+    ("git.blame", "Gblame"),
+    ("git.file_history", "Ghistory"),
+    ("git.log", "Glog"),
+    ("git.branches", "Gbranches"),
+    ("tool.maven", "ToolMaven"),
+    ("tool.database", "ToolDatabase"),
+    ("db.new_query", "DbNew"),
+    ("git.pull", "Gpull"),
+    ("git.fetch", "Gfetch"),
+    ("git.push", "Gpush"),
+    ("git.hunk_popup", "GitHunk"),
+    ("git.hunk_revert", "GitRevert"),
 ];
 
 /// パレットにだけ出す行（`!` 付きなど。説明, 打つ行）
@@ -370,6 +452,9 @@ mod tests {
         assert_eq!(find("gblame").map(|c| c.0.names[0]), Some("Gblame"));
         assert_eq!(find("q!").map(|c| (c.0.names[0], c.1)), Some(("q", true)));
         assert_eq!(args_of("e"), Args::File);
+        for (id, cmd) in ACTIONS {
+            assert!(find(cmd).is_some(), ":action {id} の :{cmd} がコマンドの表に無い");
+        }
         assert!(find("nosuch").is_none());
     }
 }

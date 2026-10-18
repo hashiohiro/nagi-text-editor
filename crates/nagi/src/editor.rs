@@ -379,6 +379,19 @@ pub struct Editor {
 }
 
 impl Editor {
+    /// キーマップの組み合わせで `cmd`（コマンドの表の名前）を動かす。入力欄の最中や、ダイアログ・ファインダーを
+    /// 出している間は動かさない（None。キーはその部品へ）。Insert・Visual は抜けてから
+    pub fn shortcut(&mut self, cmd: &str) -> Option<Effect> {
+        let ok = !self.has_prompt() && matches!(self.mode, Mode::Normal | Mode::Visual { .. } | Mode::Insert | Mode::List | Mode::CommitMsg | Mode::Log | Mode::Terminal | Mode::Diff);
+        if !ok {
+            return None;
+        }
+        if matches!(self.mode, Mode::Insert | Mode::Visual { .. }) {
+            self.key(Key::Esc);
+        }
+        Some(crate::commands::run(self, cmd))
+    }
+
     /// 裏の処理から届いたものを全部受け取る（UI が起こされたとき）。どれかが変われば true。
     /// 裏の処理を足したら、その受け取りをここに 1 行足す（ADR 0016 の 1）
     pub fn poll_background(&mut self) -> bool {
@@ -800,12 +813,6 @@ impl Editor {
             self.paste_clipboard();
             return Effect::None;
         }
-        // F12 は Insert・Visual の最中でも定義へ（抜けてから）
-        if key == Key::F(12) && matches!(self.mode, Mode::Insert | Mode::Visual { .. }) {
-            self.key(Key::Esc);
-            self.goto_definition();
-            return Effect::None;
-        }
         // データを変える SQL の確認（y で実行）
         if self.db_confirm_key(key) {
             return Effect::None;
@@ -815,50 +822,11 @@ impl Editor {
             self.db_run_at_cursor();
             return Effect::None;
         }
-        // 設定（Ctrl+Alt+S。IntelliJ と同じ）
-        if key == Key::F(45) && !self.has_prompt() && !matches!(self.mode, Mode::Finder | Mode::Settings | Mode::RunDialog | Mode::Launcher) {
-            if self.mode == Mode::Insert {
-                self.key(Key::Esc);
+        // キーマップの組み合わせ（Alt+1・F12 など。再生・マクロ・試験で届くもの）: 付けたコマンドを動かす
+        if let Some(crate::keymap::Action::Cmd(c)) = crate::keymap::chord_of_key(key).and_then(|ch| crate::keymap::action_for(&self.settings, &ch)) {
+            if let Some(eff) = self.shortcut(c) {
+                return eff;
             }
-            self.open_settings("");
-            return Effect::None;
-        }
-        // 実行の構成（IntelliJ と同じ。入力欄にいるとき以外はどのモードからでも）
-        if matches!(key, Key::F(40..=43)) && !self.has_prompt() && self.mode != Mode::Finder {
-            if self.mode == Mode::Insert {
-                self.key(Key::Esc);
-            }
-            match key {
-                Key::F(40) => self.run_command(""),
-                Key::F(41) => self.open_run_chooser(),
-                Key::F(42) => self.run_stop(),
-                _ => self.run_again(),
-            }
-            return Effect::None;
-        }
-        // Alt-1 プロジェクト、Alt-0 コミット（IntelliJ と同じ。どのモードからでも）
-        // 下の欄（IntelliJ と同じ）: Alt+9 Git、Alt+3 検索、Alt+6 問題、Alt+4 ログ、Alt+F12 ターミナル
-        let bottom = match key {
-            Key::Alt('9') => Some(crate::result_grid::BottomKind::Git),
-            Key::Alt('3') => Some(crate::result_grid::BottomKind::Grep),
-            Key::Alt('6') => Some(crate::result_grid::BottomKind::Problems),
-            Key::Alt('4') => Some(crate::result_grid::BottomKind::Output),
-            Key::F(24) => Some(crate::result_grid::BottomKind::Terminal),
-            _ => None,
-        };
-        if let Some(k) = bottom.filter(|_| matches!(self.mode, Mode::Normal | Mode::Insert | Mode::List | Mode::CommitMsg | Mode::Log | Mode::Terminal)) {
-            if self.mode == Mode::Insert {
-                self.key(Key::Esc);
-            }
-            self.toggle_bottom_tab(k);
-            return Effect::None;
-        }
-        if matches!(key, Key::Alt('1') | Key::Alt('0')) && matches!(self.mode, Mode::Normal | Mode::Insert | Mode::List | Mode::CommitMsg) {
-            if self.mode == Mode::Insert {
-                self.key(Key::Esc);
-            }
-            self.toggle_left_tab(if key == Key::Alt('1') { crate::tree_panel::LeftTab::Project } else { crate::tree_panel::LeftTab::Commit });
-            return Effect::None;
         }
         // マクロの記録を止める q（Normal と Visual で、ほかのキーの途中でないとき）
         if self.recording.is_some()
@@ -1435,57 +1403,13 @@ impl Editor {
     /// IdeaVim の `:action <IntelliJ のアクション名>` を Nagi の機能に振り分ける
     pub(crate) fn action(&mut self, name: &str) {
         match nagi_vim::action::ideavim(name) {
-            Some((Some("jump.last_change"), _)) => self.jump_last_change(),
-            Some((Some("search.buffer"), _)) => self.start_search(true, false, ""),
-            Some((Some("replace.buffer"), _)) => self.start_search(true, true, ""),
-            Some((Some("finder.files" | "finder.everything"), _)) => self.open_finder(crate::finder::Source::Files),
-            Some((Some("finder.recent"), _)) => self.open_finder(crate::finder::Source::Recent),
-            Some((Some("buffer.close"), _)) => self.delete_buffer("", false),
-            Some((Some("search.project"), _)) => self.open_grep(""),
-            Some((Some("tool.project"), _)) => self.toggle_tree(),
-            Some((Some("palette"), _)) => self.open_finder(crate::finder::Source::Commands),
-            Some((Some("finder.symbols"), _)) => self.symbol_search(false),
-            Some((Some("finder.projects"), _)) => self.pick_project(),
-            Some((Some("tool.terminal"), _)) => self.toggle_bottom_tab(crate::result_grid::BottomKind::Terminal),
-            Some((Some("tool.problems"), _)) => self.toggle_bottom_tab(crate::result_grid::BottomKind::Problems),
-            Some((Some("tool.git"), _)) => self.toggle_bottom_tab(crate::result_grid::BottomKind::Git),
-            Some((Some("tool.find"), _)) => self.toggle_bottom_tab(crate::result_grid::BottomKind::Grep),
-            Some((Some("tool.output"), _)) => self.toggle_bottom_tab(crate::result_grid::BottomKind::Output),
-            // HideAllWindows（Ctrl+Shift+F12）: 左・右・下の欄をすべて隠す
-            Some((Some("tool.hide_all"), _)) => {
-                self.hide_left();
-                self.hide_right();
-                self.hide_bottom();
-            }
-            Some((Some("tree.select_file"), _)) => self.select_in_tree(),
-            Some((Some("markdown.preview"), _)) => self.toggle_md_preview(),
-            Some((Some("finder.types"), _)) => self.symbol_search(true),
-            Some((Some("outline"), _)) => self.outline(),
-            Some((Some("nav.definition"), _)) => self.goto_definition(),
-            Some((Some("nav.implementation"), _)) => self.goto_implementation(),
-            Some((Some("nav.references"), _)) => self.find_references(),
-            Some((Some("nav.method_prev"), _)) => self.method_jump(false),
-            Some((Some("nav.method_next"), _)) => self.method_jump(true),
-            Some((Some("jump.back"), _)) => self.jump(true, 1),
-            Some((Some("nav.error_next"), _)) => self.next_error(true),
-            Some((Some("git.hunk_next"), _)) => self.hunk_jump(true, 1),
-            Some((Some("git.commit" | "git.changes"), _)) => self.open_commit_panel(),
-            Some((Some("git.blame"), _)) => self.toggle_blame(),
-            Some((Some("git.file_history"), _)) => self.open_log(true),
-            Some((Some("git.log"), _)) => self.open_log(false),
-            Some((Some("git.branches"), _)) => self.open_branches(),
-            Some((Some("tool.maven"), _)) => self.toggle_right_tab(crate::right_panel::RightTab::Maven),
-            Some((Some("tool.database"), _)) => self.toggle_right_tab(crate::right_panel::RightTab::Database),
-            Some((Some("db.new_query"), _)) => self.db_new_query_command(),
-            Some((Some("git.pull"), _)) => self.run_git_job("pull ", &["pull", "--no-edit"]),
-            Some((Some("git.fetch"), _)) => self.run_git_job("フェッチ", &["fetch", "--all", "--prune"]),
-            Some((Some("git.push"), _)) => self.push_from_anywhere(),
-            Some((Some("git.hunk_prev"), _)) => self.hunk_jump(false, 1),
-            Some((Some("git.hunk_popup"), _)) => self.open_hunk_popup(),
-            Some((Some("git.hunk_revert"), _)) => self.revert_hunk(),
-            Some((Some("nav.error_prev"), _)) => self.next_error(false),
-            Some((Some("jump.forward"), _)) => self.jump(false, 1),
-            Some((Some(cmd), desc)) => self.notify.info(format!("未実装: {desc}（{cmd}）")),
+            // 対応するコマンドがあればコマンドの表を通して動かす（commands::ACTIONS）
+            Some((Some(id), desc)) => match crate::commands::ACTIONS.iter().find(|(a, _)| *a == id) {
+                Some((_, cmd)) => {
+                    crate::commands::run(self, cmd);
+                }
+                None => self.notify.info(format!("未実装: {desc}（{id}）")),
+            },
             Some((None, desc)) => self.notify.info(format!("Nagi には無い機能: {desc}")),
             None => self.notify.info(format!("不明なアクション: {name}")),
         }

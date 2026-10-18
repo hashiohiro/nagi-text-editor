@@ -1,7 +1,7 @@
 //! キーマップ（設定の「キーマップ」）。`Ctrl+Alt+S` のような書き方のキーの組み合わせと、それに付けた操作。
 //!
-//! main.rs の on_key で、押したキーを組み合わせの文字に直して `action_for` で引き、当たれば操作のキー（VKey）に置き換える。
-//! 操作のキーは、エディタの中で操作を表す内部のキー（F(40) 実行 など）か、元からあるキー（Alt+1 など）。
+//! main.rs の on_key で、押したキーを組み合わせの文字に直して `action_for` で引き、当たればその操作をする。
+//! 操作はコマンドの表（commands.rs）の名前（Editor::shortcut で動かす）か、そのまま流すキー（入力補完の Ctrl+Space）。
 
 use nagi_vim::Key;
 
@@ -68,27 +68,46 @@ pub fn parse_chord(s: &str) -> Option<Chord> {
     Some(c)
 }
 
-/// 操作（設定のキー, 操作のキー）
-pub const ACTIONS: [(&str, Key); 14] = [
-    ("keymap.settings", Key::F(45)),
-    ("keymap.complete", Key::Ctrl(' ')),
-    ("keymap.run", Key::F(40)),
-    ("keymap.run_choose", Key::F(41)),
-    ("keymap.run_stop", Key::F(42)),
-    ("keymap.run_again", Key::F(43)),
-    ("keymap.goto_def", Key::F(12)),
-    ("keymap.terminal", Key::F(24)),
-    ("keymap.project", Key::Alt('1')),
-    ("keymap.commit", Key::Alt('0')),
-    ("keymap.git", Key::Alt('9')),
-    ("keymap.find", Key::Alt('3')),
-    ("keymap.problems", Key::Alt('6')),
-    ("keymap.log", Key::Alt('4')),
+/// 組み合わせに付ける操作: コマンドの表（commands.rs）の名前か、そのまま流すキー（入力補完のように、その場に合わせて動くもの）
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Action {
+    Cmd(&'static str),
+    Key(Key),
+}
+
+/// 操作（設定のキー, 操作）
+pub const ACTIONS: [(&str, Action); 14] = [
+    ("keymap.settings", Action::Cmd("Settings")),
+    ("keymap.complete", Action::Key(Key::Ctrl(' '))),
+    ("keymap.run", Action::Cmd("Run")),
+    ("keymap.run_choose", Action::Cmd("RunConfigs")),
+    ("keymap.run_stop", Action::Cmd("RunStop")),
+    ("keymap.run_again", Action::Cmd("RunAgain")),
+    ("keymap.goto_def", Action::Cmd("GotoDefinition")),
+    ("keymap.terminal", Action::Cmd("ToolTerminal")),
+    ("keymap.project", Action::Cmd("ToolProject")),
+    ("keymap.commit", Action::Cmd("ToolCommit")),
+    ("keymap.git", Action::Cmd("ToolGit")),
+    ("keymap.find", Action::Cmd("ToolFind")),
+    ("keymap.problems", Action::Cmd("ToolProblems")),
+    ("keymap.log", Action::Cmd("ToolLog")),
 ];
 
-/// 押したキーの組み合わせに付けた操作のキー（設定で付け替えたものを含む）。どれにも付いていなければ None
-pub fn action_for(settings: &Settings, chord: &Chord) -> Option<Key> {
+/// 押したキーの組み合わせに付けた操作（設定で付け替えたものを含む）。どれにも付いていなければ None
+pub fn action_for(settings: &Settings, chord: &Chord) -> Option<Action> {
     ACTIONS.iter().find(|(k, _)| parse_chord(&settings.get(k)).as_ref() == Some(chord)).map(|a| a.1)
+}
+
+/// エディタのキー（再生・マクロ・試験で届くもの）を組み合わせに（Alt+1・Ctrl+X・F12 など。文字そのものは None）
+pub fn chord_of_key(key: Key) -> Option<Chord> {
+    let c = |ctrl, alt, key: String| Some(Chord { ctrl, alt, shift: false, key });
+    match key {
+        Key::Alt(ch) if ch.is_ascii_graphic() => c(false, true, ch.to_ascii_uppercase().to_string()),
+        Key::Ctrl(' ') => c(true, false, "Space".into()),
+        Key::Ctrl(ch) if ch.is_ascii_graphic() => c(true, false, ch.to_ascii_uppercase().to_string()),
+        Key::F(n) if (1..=24).contains(&n) => c(false, false, format!("F{n}")),
+        _ => None,
+    }
 }
 
 /// 既定のキーの組み合わせが、付け替えで別の操作に移った・外れたか（そのときは元のキーとしては扱わない）
@@ -112,9 +131,16 @@ mod tests {
         assert!(parse_chord("Hyper+X").is_none());
         assert!(parse_chord("F99").is_none());
         let mut s = Settings::default();
-        assert_eq!(action_for(&s, &parse_chord("Shift+F10").unwrap()), Some(Key::F(40)));
+        assert_eq!(action_for(&s, &parse_chord("Shift+F10").unwrap()), Some(Action::Cmd("Run")));
         s.set("keymap.run", "Ctrl+R", false);
-        assert_eq!(action_for(&s, &parse_chord("Ctrl+R").unwrap()), Some(Key::F(40)));
+        assert_eq!(action_for(&s, &parse_chord("Ctrl+R").unwrap()), Some(Action::Cmd("Run")));
+        // 操作の名前はどれもコマンドの表にある
+        for (_, a) in ACTIONS {
+            if let Action::Cmd(c) = a {
+                assert!(crate::commands::find(c).is_some(), ":{c} がコマンドの表に無い");
+            }
+        }
+        assert_eq!(chord_of_key(Key::Alt('1')).unwrap().label(), "Alt+1");
         assert!(default_moved(&s, &parse_chord("Shift+F10").unwrap()));
     }
 }

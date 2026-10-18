@@ -256,10 +256,10 @@ mod tests {
         }
         assert!(ok, "出力が出ない");
         // もう一度（Ctrl+F5）: 窓は増えない
-        e.key(nagi_vim::Key::F(43));
+        e.shortcut("RunAgain");
         assert_eq!(e.terminals.list.len(), 1);
         // 一覧（Alt+Shift+F10）
-        e.key(nagi_vim::Key::F(41));
+        e.shortcut("RunConfigs");
         assert_eq!(e.mode, Mode::Finder);
         assert!(e.run_list_items()[0].contains("あいさつ"));
         // 最後の行は「追加・編集」

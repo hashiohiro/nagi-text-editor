@@ -584,12 +584,28 @@ impl App {
         // キーマップ（設定。Ctrl+Alt+S・Shift+F10 などの IntelliJ の組み合わせは既定値）: 付けた操作にする。
         // 元の組み合わせから別のキーへ移した操作は、元のキーでは動かさない
         if let Some(chord) = chord_of(&ev.logical_key, self.modifiers) {
-            if let Some(action) = keymap::action_for(&ed.settings, &chord) {
-                self.held = None;
-                self.handle_keys(vec![action], el);
-                return;
+            let (action, moved) = (keymap::action_for(&ed.settings, &chord), keymap::default_moved(&ed.settings, &chord));
+            match action {
+                Some(keymap::Action::Key(k)) => {
+                    self.held = None;
+                    self.handle_keys(vec![k], el);
+                    return;
+                }
+                // コマンドの表の操作（今の状態で動かせないときは、キーとしてそのまま流す）
+                Some(keymap::Action::Cmd(c)) => {
+                    self.sync_screen();
+                    if let Some(eff) = self.ed.as_mut().and_then(|ed| ed.shortcut(c)) {
+                        self.held = None;
+                        if !self.apply_effect(eff, el) {
+                            self.draw();
+                            self.sync_ime();
+                        }
+                        return;
+                    }
+                }
+                None => {}
             }
-            if keymap::default_moved(&ed.settings, &chord) {
+            if moved {
                 return;
             }
         }
@@ -729,26 +745,35 @@ impl App {
         self.sync_screen();
         for k in keys {
             let Some(ed) = &mut self.ed else { return true };
-            match ed.key(k) {
-                Effect::None => {}
-                Effect::Quit => {
-                    el.exit();
-                    return true;
-                }
-                Effect::Stats { reset } => {
-                    let msg = if reset {
-                        self.stats.clear();
-                        "計測の記録を消しました".to_string()
-                    } else {
-                        self.stats.summary(clock::at("window visible"), clock::memory_mb().0)
-                    };
-                    if let Some(ed) = &mut self.ed {
-                        ed.notify.info(msg);
-                    }
-                }
-                Effect::ReloadRc => self.reload_rc(),
-                Effect::SaveDialog => self.open_save_dialog(),
+            let eff = ed.key(k);
+            if self.apply_effect(eff, el) {
+                return true;
             }
+        }
+        false
+    }
+
+    /// エディタが返した効果（終了・計測・設定の読み直し・保存のダイアログ）を行う。終了したら true
+    fn apply_effect(&mut self, eff: Effect, el: &ActiveEventLoop) -> bool {
+        match eff {
+            Effect::None => {}
+            Effect::Quit => {
+                el.exit();
+                return true;
+            }
+            Effect::Stats { reset } => {
+                let msg = if reset {
+                    self.stats.clear();
+                    "計測の記録を消しました".to_string()
+                } else {
+                    self.stats.summary(clock::at("window visible"), clock::memory_mb().0)
+                };
+                if let Some(ed) = &mut self.ed {
+                    ed.notify.info(msg);
+                }
+            }
+            Effect::ReloadRc => self.reload_rc(),
+            Effect::SaveDialog => self.open_save_dialog(),
         }
         false
     }
