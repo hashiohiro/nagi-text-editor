@@ -32,11 +32,64 @@ pub struct MakeState {
     output: bool,
     /// 出力の中の「BUILD SUCCESS」「BUILD FAILURE」
     status: Option<String>,
+    /// 複数行で出る診断の前の行（rustc の error: …、Python の File "…", line N）
+    pending: Pending,
+}
+
+/// 複数行で出る診断の途中
+#[derive(Default)]
+pub struct Pending {
+    /// rustc・clang などの見出し（エラーか, 本文）。次の --> の行で位置が分かる
+    header: Option<(bool, String)>,
+    /// Python の File "x.py", line N（次の XxxError: の行で本文が分かる）
+    py: Option<(String, usize)>,
+}
+
+/// 複数行で出る診断を読む（rustc の見出しと --> の行、Python の File の行と XxxError の行）
+pub fn parse_multi(p: &mut Pending, line: &str, root: &Path) -> Option<Diag> {
+    static RS_HEAD: OnceLock<Regex> = OnceLock::new();
+    static RS_AT: OnceLock<Regex> = OnceLock::new();
+    static PY_AT: OnceLock<Regex> = OnceLock::new();
+    static PY_ERR: OnceLock<Regex> = OnceLock::new();
+    let head = RS_HEAD.get_or_init(|| Regex::new(r"^(error|warning)(\[\w+\])?: (.+)$").unwrap());
+    let at = RS_AT.get_or_init(|| Regex::new(r"^\s*--> (.+?):(\d+):(\d+)\s*$").unwrap());
+    let py_at = PY_AT.get_or_init(|| Regex::new(r#"^\s*File "(.+?)", line (\d+)"#).unwrap());
+    let py_err = PY_ERR.get_or_init(|| Regex::new(r"^(\w+(?:Error|Exception|Warning)): (.*)$").unwrap());
+    let line = line.trim_end();
+    if let Some(c) = head.captures(line) {
+        p.header = Some((&c[1] == "error", c[3].to_string()));
+        return None;
+    }
+    if let Some(c) = at.captures(line) {
+        let (error, msg) = p.header.take()?;
+        let (l, col) = (c[2].parse::<usize>().ok()?, c[3].parse::<usize>().ok()?);
+        return Some(Diag { path: diag_path(&c[1], root), line: l.saturating_sub(1), col: col.saturating_sub(1), error, msg });
+    }
+    if let Some(c) = py_at.captures(line) {
+        p.py = Some((c[1].to_string(), c[2].parse().unwrap_or(1)));
+        return None;
+    }
+    if let Some(c) = py_err.captures(line) {
+        let (f, l) = p.py.take()?;
+        return Some(Diag { path: diag_path(&f, root), line: l.saturating_sub(1), col: 0, error: !c[1].ends_with("Warning"), msg: format!("{}: {}", &c[1], &c[2]) });
+    }
+    None
+}
+
+/// 出力の中のパス（相対なら根から、WSL の /home/... は UNC に）
+fn diag_path(f: &str, root: &Path) -> PathBuf {
+    let p = PathBuf::from(f.trim().replace('/', std::path::MAIN_SEPARATOR_STR));
+    match nagi_workers::wsl::split_unc(root).map(|(d, _)| d) {
+        Some(d) if f.starts_with('/') => nagi_workers::wsl::to_unc(&d, f),
+        _ if p.is_absolute() => p,
+        _ => root.join(p),
+    }
 }
 
 /// 診断を指すとみなす拡張子（`http://host:80:` のような行を拾わないため）
 const SOURCE_EXT: &[&str] = &[
-    "ts", "tsx", "js", "jsx", "mjs", "cjs", "vue", "java", "kt", "kts", "rs", "py", "go", "c", "cc", "cpp", "h", "hpp", "cs", "scala", "groovy", "gradle", "xml", "json", "yml", "yaml", "properties", "sql",
+    "ts", "tsx", "js", "jsx", "mjs", "cjs", "vue", "java", "kt", "kts", "rs", "py", "go", "c", "cc", "cpp", "cxx", "c++", "h", "hpp", "hh", "hxx", "inl", "ipp", "m", "mm", "cs", "fs", "vb", "scala", "sbt", "groovy", "gradle", "xml",
+    "json", "yml", "yaml", "properties", "sql", "php", "rb", "lua", "swift", "dart", "zig", "hs", "lhs", "ex", "exs", "r", "pl", "toml", "cmake", "txt",
 ];
 
 fn patterns() -> &'static [Regex] {
@@ -45,14 +98,26 @@ fn patterns() -> &'static [Regex] {
         [
             // tsc: src/a.ts(3,5): error TS2304: …
             r"^(?P<f>[^\s(][^(]*)\((?P<l>\d+),(?P<c>\d+)\): (?P<s>error|warning) (?P<m>.*)$",
+            // MSVC（cl）・dotnet: C:\x\a.cpp(12): error C2065: … / a.cs(12,5): warning CS0168: …
+            r"^\s*(?P<f>(?:[A-Za-z]:)?[^(:]+)\((?P<l>\d+)(?:,(?P<c>\d+))?\)\s*:\s*(?:fatal )?(?P<s>error|warning) (?P<m>.*)$",
+            // sbt（Scala）: [error] /x/A.scala:3:5: …
+            r"^\[(?P<s>error|warn)\] (?P<f>.+?):(?P<l>\d+):(?P<c>\d+): (?P<m>.*)$",
+            // dart analyze --format machine: ERROR|COMPILE_TIME_ERROR|UNDEFINED_IDENTIFIER|/x/a.dart|3|5|1|…
+            r"^(?P<s>ERROR|WARNING|INFO)\|[A-Z_]+\|[A-Z_]+\|(?P<f>[^|]+)\|(?P<l>\d+)\|(?P<c>\d+)\|\d+\|(?P<m>.*)$",
+            // PHP: PHP Parse error: syntax error, … in x.php on line 3
+            r"^(?:PHP )?(?:Parse|Fatal) error:\s+(?P<m>.*) in (?P<f>.+?) on line (?P<l>\d+)",
+            // Elixir: ** (CompileError) lib/a.ex:3: …
+            r"^\*\* \(\w+Error\) (?P<f>\S+?):(?P<l>\d+):(?:(?P<c>\d+):)? (?P<m>.*)$",
             // Maven: [ERROR] /x/A.java:[12,5] …
             r"^\[(?P<s>ERROR|WARNING)\] (?P<f>.+?):\[(?P<l>\d+),(?P<c>\d+)\] (?P<m>.*)$",
             // Kotlin（Gradle）: e: file:///C:/x/A.kt:12:5 …
             r"^(?P<s>e|w): (?:file:///)?(?P<f>.+?):(?P<l>\d+):(?P<c>\d+) (?P<m>.*)$",
             // javac（Gradle）: C:\x\A.java:12: error: …
             r"^(?P<f>(?:[A-Za-z]:)?[^:]+):(?P<l>\d+): (?P<s>error|warning): (?P<m>.*)$",
-            // gcc 形式（cargo の short、eslint の unix）: src\a.rs:3:5: error[E0425]: …
-            r"^(?P<f>(?:[A-Za-z]:)?[^:]+):(?P<l>\d+):(?P<c>\d+):? (?:(?P<s>error|warning|note)\S*?:)?\s*(?P<m>.*)$",
+            // gcc 形式（cargo の short、eslint の unix、go vet、clang、zig、swift、ghc）: src\a.rs:3:5: error[E0425]: …
+            r"^(?P<f>(?:[A-Za-z]:)?[^:\s][^:]*):(?P<l>\d+):(?P<c>\d+):? (?:(?P<s>error|warning|note)\S*?:)?\s*(?P<m>.*)$",
+            // 列の無い形（ruby -wc、luac）: a.rb:3: syntax error, … / luac: a.lua:3: …
+            r"^(?:luac: )?(?P<f>(?:[A-Za-z]:)?[^:\s][^:]*):(?P<l>\d+): (?:(?P<s>warning|error):\s*)?(?P<m>.*)$",
         ]
         .iter()
         .map(|p| Regex::new(p).unwrap())
@@ -91,10 +156,63 @@ pub fn parse_line(line: &str, root: &Path) -> Option<Diag> {
     None
 }
 
-/// プロジェクトの根のファイルから、型や文法を確かめるコマンドを決める
-fn detect_command(root: &Path) -> Option<String> {
+/// プロジェクトの根のファイルから、型や文法を確かめるコマンドを決める。プロジェクトとしてのビルドが無ければ、
+/// 開いているファイル（`file`）を言語ごとに検査する（Python・PHP・Ruby・Lua）
+fn detect_command(root: &Path, file: Option<&Path>) -> Option<String> {
     let has = |f: &str| root.join(f).exists();
-    Some(if has("tsconfig.json") {
+    let has_ext = |e: &str| std::fs::read_dir(root).into_iter().flatten().flatten().any(|x| x.path().extension().is_some_and(|x| x.eq_ignore_ascii_case(e)));
+    let wsl = nagi_workers::wsl::split_unc(root).is_some();
+    if let Some(c) = project_command(root, &has, &has_ext, wsl) {
+        return Some(c);
+    }
+    // 開いているファイルの検査（WSL なら Linux のパス）
+    let f = file?;
+    let q = format!("\"{}\"", if wsl { nagi_workers::wsl::shell_path(f) } else { f.display().to_string() });
+    let ext = f.extension()?.to_str()?.to_ascii_lowercase();
+    Some(match ext.as_str() {
+        "py" | "pyw" => format!("{} -m py_compile {q}", if wsl { "python3" } else { "python" }),
+        "php" => format!("php -l {q}"),
+        "rb" => format!("ruby -wc {q}"),
+        "lua" => format!("luac -p {q}"),
+        "c" => format!("{} -fsyntax-only -Wall {q}", if wsl { "gcc" } else { "clang" }),
+        "cpp" | "cc" | "cxx" => format!("{} -fsyntax-only -Wall {q}", if wsl { "g++" } else { "clang++" }),
+        "go" => format!("go vet {q}"),
+        "rs" => format!("rustc --edition 2021 --error-format short --emit metadata -o {} {q}", if wsl { "/dev/null" } else { "NUL" }),
+        "swift" => format!("swiftc -parse {q}"),
+        "dart" => format!("dart analyze --format machine {q}"),
+        "zig" => format!("zig ast-check {q}"),
+        "hs" => format!("ghc -fno-code {q}"),
+        "exs" | "ex" => format!("elixirc --ignore-module-conflict -o {} {q}", if wsl { "/tmp" } else { "%TEMP%" }),
+        _ => return None,
+    })
+}
+
+/// プロジェクトのファイルから決まるコマンド
+fn project_command(root: &Path, has: &dyn Fn(&str) -> bool, has_ext: &dyn Fn(&str) -> bool, wsl: bool) -> Option<String> {
+    let _ = root;
+    Some(if has("go.mod") {
+        "go vet ./...".into()
+    } else if has_ext("sln") || has_ext("csproj") || has_ext("fsproj") {
+        "dotnet build -nologo -v q -clp:NoSummary".into()
+    } else if has("build.zig") {
+        "zig build".into()
+    } else if has("Package.swift") {
+        "swift build".into()
+    } else if has("pubspec.yaml") {
+        "dart analyze --format machine".into()
+    } else if has("mix.exs") {
+        "mix compile --force".into()
+    } else if has("stack.yaml") {
+        "stack build --fast".into()
+    } else if has_ext("cabal") {
+        "cabal build".into()
+    } else if has("build.sbt") {
+        "sbt -batch compile".into()
+    } else if has("CMakeLists.txt") {
+        if wsl { "cmake -S . -B build && cmake --build build".into() } else { "cmake -S . -B build && cmake --build build".into() }
+    } else if has("Makefile") || has("makefile") || has("GNUmakefile") {
+        "make -k".into()
+    } else if has("tsconfig.json") {
         "npx tsc --noEmit --pretty false".into()
     } else if has("gradlew") && nagi_workers::wsl::split_unc(root).is_some() {
         // WSL のプロジェクトは WSL の中で動かす
@@ -121,7 +239,8 @@ impl Editor {
     pub(crate) fn make(&mut self, arg: &str) {
         let root = self.nav_root();
         let cmd = if arg.trim().is_empty() {
-            match detect_command(&root) {
+            let file = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
+            match detect_command(&root, file.as_deref()) {
                 Some(c) => c,
                 None => {
                     self.message = "コマンドが決められません（:Make の後にコマンドを書いてください）".into();
@@ -152,7 +271,7 @@ impl Editor {
                 if let Some(g) = &mut self.grep {
                     g.root = root.to_path_buf();
                 }
-                self.make = Some(MakeState { job, cmd: cmd.to_string(), root: root.to_path_buf(), output, status: None });
+                self.make = Some(MakeState { job, cmd: cmd.to_string(), root: root.to_path_buf(), output, status: None, pending: Pending::default() });
             }
             Err(e) => self.message = format!("コマンドを起動できません: {e}"),
         }
@@ -173,7 +292,12 @@ impl Editor {
         }
         let (root, output) = (m.root.clone(), m.output);
         for l in lines {
-            match parse_line(&l, &root) {
+            // 1 行の形 → だめなら複数行の形（rustc・Python）
+            let multi = match &mut self.make {
+                Some(m) => parse_multi(&mut m.pending, &l, &root),
+                None => None,
+            };
+            match multi.or_else(|| parse_line(&l, &root)) {
                 Some(d) => {
                     if let Some(g) = self.output_panel_mut() {
                         let head = if d.error { "error" } else { "warning" };
@@ -366,5 +490,41 @@ mod tests {
         e.message.clear();
         assert_eq!(e.diag_at_cursor().map(|d| d.msg.as_str()), Some("boom"));
         assert_eq!(e.diag_lines(e.buf.path.as_deref()).len(), 2);
+    }
+
+    /// 言語ごとの出力の形（1 行・複数行）
+    #[test]
+    fn more_formats() {
+        let root = Path::new(r"C:\work\p");
+        let one = |l: &str| parse_line(l, root).map(|d| (d.path.file_name().unwrap().to_string_lossy().into_owned(), d.line + 1, d.col + 1, d.error));
+        assert_eq!(one(r"C:\work\p\a.cpp(12): error C2065: 'x': undeclared identifier"), Some(("a.cpp".into(), 12, 1, true)));
+        assert_eq!(one(r"Program.cs(7,13): warning CS0168: The variable 'e' is declared but never used [C:\work\p\p.csproj]"), Some(("Program.cs".into(), 7, 13, false)));
+        assert_eq!(one("./main.go:5:2: undefined: foo"), Some(("main.go".into(), 5, 2, true)));
+        assert_eq!(one("[error] /work/p/src/A.scala:3:5: not found: value x"), Some(("A.scala".into(), 3, 5, true)));
+        assert_eq!(one("ERROR|COMPILE_TIME_ERROR|UNDEFINED_IDENTIFIER|C:\\work\\p\\a.dart|3|5|1|Undefined name 'x'."), Some(("a.dart".into(), 3, 5, true)));
+        assert_eq!(one("PHP Parse error:  syntax error, unexpected end of file in C:\\work\\p\\a.php on line 4"), Some(("a.php".into(), 4, 1, true)));
+        assert_eq!(one("a.rb:3: syntax error, unexpected end-of-input"), Some(("a.rb".into(), 3, 1, true)));
+        assert_eq!(one("src/main.zig:3:5: error: use of undeclared identifier 'x'"), Some(("main.zig".into(), 3, 5, true)));
+        assert_eq!(one("  --> src/main.rs:3:21"), None, "rustc の位置の行は 1 行の形としては読まない");
+        // 複数行: rustc
+        let mut p = Pending::default();
+        assert!(parse_multi(&mut p, "error[E0308]: mismatched types", root).is_none());
+        let d = parse_multi(&mut p, "  --> src/main.rs:3:21", root).unwrap();
+        assert_eq!((d.line + 1, d.col + 1, d.error, d.msg.as_str()), (3, 21, true, "mismatched types"));
+        // 複数行: Python
+        assert!(parse_multi(&mut p, r#"  File "C:\work\p\a.py", line 2"#, root).is_none());
+        let d = parse_multi(&mut p, "SyntaxError: invalid syntax", root).unwrap();
+        assert_eq!((d.path.file_name().unwrap().to_str().unwrap(), d.line + 1, d.msg.as_str()), ("a.py", 2, "SyntaxError: invalid syntax"));
+        // 見分け方
+        let dir = std::env::temp_dir().join(format!("nagi-detect-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("go.mod"), "module x\n").unwrap();
+        assert_eq!(detect_command(&dir, None).as_deref(), Some("go vet ./..."));
+        std::fs::remove_file(dir.join("go.mod")).unwrap();
+        std::fs::write(dir.join("app.csproj"), "<Project/>").unwrap();
+        assert!(detect_command(&dir, None).unwrap().starts_with("dotnet build"));
+        std::fs::remove_file(dir.join("app.csproj")).unwrap();
+        assert_eq!(detect_command(&dir, Some(&dir.join("a.rb"))).as_deref(), Some(format!("ruby -wc \"{}\"", dir.join("a.rb").display()).as_str()));
     }
 }
