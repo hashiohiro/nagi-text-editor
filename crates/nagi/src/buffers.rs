@@ -15,7 +15,7 @@ pub(crate) struct Doc {
     pub buf: Buffer,
     pub hist: History,
     pub syntax: Option<nagi_syntax::Syntax>,
-    pub pending_syntax: Option<std::sync::mpsc::Receiver<nagi_syntax::Syntax>>,
+    pub pending_syntax: Option<nagi_core::task::Task<nagi_syntax::Syntax>>,
     pub last_change: Option<usize>,
     pub marks: crate::marks::Marks,
     pub folds: crate::folds::Folds,

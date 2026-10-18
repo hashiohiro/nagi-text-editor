@@ -3,7 +3,6 @@
 //! 窓の領域全体に、左にブランチ、中央にグラフ付きのコミット、右に選んだコミットのメッセージと変えたファイルを並べる。
 //! ログ・ブランチ・コミットの中身は裏で git から取る。ファイルの上で Enter を押すと、1 つ前の版との差分を開く。
 
-use std::sync::mpsc::{Receiver, channel};
 
 use nagi_vim::Key;
 
@@ -43,7 +42,7 @@ pub enum Confirm {
     CherryPick(String),
 }
 
-type Rx<T> = Option<Receiver<Result<T, String>>>;
+type Rx<T> = Option<nagi_core::task::Task<Result<T, String>>>;
 
 pub struct LogView {
     /// 下の欄の「Git」タブに収めている（全画面でない）
@@ -124,13 +123,8 @@ pub fn pretty_graph(g: &str) -> String {
 }
 
 fn spawn<T: Send + 'static>(waker: Option<std::sync::Arc<dyn Fn() + Send + Sync>>, f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Rx<T> {
-    let (tx, rx) = channel();
-    let _ = std::thread::Builder::new().name("git-log".into()).spawn(move || {
-        if tx.send(f()).is_ok() {
-            if let Some(w) = waker {
-                w();
-            }
-        }
+    let rx = nagi_core::task::spawn("git-log", waker.unwrap_or_else(nagi_core::task::no_waker), move |ctx| {
+        ctx.send(f());
     });
     Some(rx)
 }

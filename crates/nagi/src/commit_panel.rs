@@ -6,7 +6,6 @@
 //! git は裏のスレッドで動かし、終わったら UI を起こす。
 
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, channel};
 
 use nagi_vim::Key;
 use nagi_workers::git::{Change, FileState};
@@ -36,7 +35,7 @@ pub struct CommitPanel {
     pub confirm_push: Option<(String, Vec<String>)>,
     /// 戻す前の確認（項目の番号）
     pub confirm_revert: Option<usize>,
-    running: Option<(Job, Receiver<Result<String, String>>)>,
+    running: Option<(Job, nagi_core::task::Task<Result<String, String>>)>,
     pub busy_label: Option<String>,
 }
 
@@ -96,14 +95,9 @@ pub fn buttons(w: usize) -> [(&'static str, usize, usize, bool); 2] {
     [(push, px, pw, true), (main, mx, mw, false)]
 }
 
-fn run_git<F: FnOnce() -> Result<String, String> + Send + 'static>(waker: Option<std::sync::Arc<dyn Fn() + Send + Sync>>, f: F) -> Receiver<Result<String, String>> {
-    let (tx, rx) = channel();
-    let _ = std::thread::Builder::new().name("git-job".into()).spawn(move || {
-        if tx.send(f()).is_ok() {
-            if let Some(w) = waker {
-                w();
-            }
-        }
+fn run_git<F: FnOnce() -> Result<String, String> + Send + 'static>(waker: Option<std::sync::Arc<dyn Fn() + Send + Sync>>, f: F) -> nagi_core::task::Task<Result<String, String>> {
+    let rx = nagi_core::task::spawn("git-job", waker.unwrap_or_else(nagi_core::task::no_waker), move |ctx| {
+        ctx.send(f());
     });
     rx
 }

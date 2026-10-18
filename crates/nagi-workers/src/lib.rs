@@ -21,4 +21,4 @@ pub mod wsl;
 pub mod watch;
 
 /// UI のイベントループを起こす関数
-pub type Waker = std::sync::Arc<dyn Fn() + Send + Sync>;
+pub use nagi_core::task::Waker;

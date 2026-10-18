@@ -8,7 +8,6 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, channel};
 
 use nagi_core::fuzzy::Query;
 use nagi_vim::Key;
@@ -48,13 +47,13 @@ pub struct Launcher {
     pub selected: usize,
     pub scroll: usize,
     pub field: VimField,
-    pub loading: Option<Receiver<Vec<Entry>>>,
+    pub loading: Option<nagi_core::task::Task<Vec<Entry>>>,
     pub previews: HashMap<PathBuf, Preview>,
-    pub preview_rx: Option<(PathBuf, Receiver<Preview>)>,
+    pub preview_rx: Option<(PathBuf, nagi_core::task::Task<Preview>)>,
     /// o（フォルダを開く）・g（git から取得）の入力
     pub ask: Option<(Ask, VimField)>,
     /// git clone の実行中（URL, 結果）
-    pub cloning: Option<(String, Receiver<Result<PathBuf, String>>)>,
+    pub cloning: Option<(String, nagi_core::task::Task<Result<PathBuf, String>>)>,
     pending_d: bool,
     pub message: String,
     /// 描いた一覧の (画面の行, hits の添字)。クリックで使う
@@ -62,7 +61,7 @@ pub struct Launcher {
     /// 描いた左の操作の (画面の行, 操作の文字) と左の欄の幅。クリックで使う
     pub act_map: std::cell::RefCell<(Vec<(usize, char)>, usize)>,
     /// フォルダを選ぶダイアログを出している
-    pub picking: Option<Receiver<Option<PathBuf>>>,
+    pub picking: Option<nagi_core::task::Task<Option<PathBuf>>>,
     /// ダイアログを開いたとき入力中だったか（閉じたら戻す。ダイアログで押した Esc などが漏れてきても変わらないように）
     pick_insert: bool,
 }
@@ -161,14 +160,8 @@ fn build_preview(dir: PathBuf) -> Preview {
 impl Editor {
     /// ランチャーを出す（一覧は裏で集める）
     pub(crate) fn open_launcher(&mut self) {
-        let (tx, rx) = channel();
-        let waker = self.waker.clone();
-        let _ = std::thread::Builder::new().name("launcher".into()).spawn(move || {
-            if tx.send(recent_entries()).is_ok() {
-                if let Some(w) = waker {
-                    w();
-                }
-            }
+        let rx = nagi_core::task::spawn("launcher", self.waker(), move |ctx| {
+            ctx.send(recent_entries());
         });
         self.launcher = Some(Launcher {
             all: Vec::new(),
@@ -260,21 +253,16 @@ impl Editor {
 
     /// 選んでいるプロジェクトのプレビューがまだなら作り始める
     fn want_preview(&mut self) -> bool {
+        let waker = self.waker();
         let Some(l) = &mut self.launcher else { return false };
         let Some(e) = l.selected_entry() else { return false };
         if e.missing || l.previews.contains_key(&e.path) || l.preview_rx.as_ref().is_some_and(|(p, _)| *p == e.path) {
             return false;
         }
         let dir = e.path.clone();
-        let (tx, rx) = channel();
-        let waker = self.waker.clone();
         let d2 = dir.clone();
-        let _ = std::thread::Builder::new().name("preview".into()).spawn(move || {
-            if tx.send(build_preview(d2)).is_ok() {
-                if let Some(w) = waker {
-                    w();
-                }
-            }
+        let rx = nagi_core::task::spawn("preview", waker, move |ctx| {
+            ctx.send(build_preview(d2));
         });
         l.preview_rx = Some((dir, rx));
         false
@@ -426,22 +414,17 @@ impl Editor {
         let name = url.trim_end_matches('/').rsplit(['/', ':']).next().unwrap_or("repo").trim_end_matches(".git").to_string();
         let base = std::env::var_os("USERPROFILE").map(|h| PathBuf::from(h).join("IdeaProjects")).unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
         let dest = base.join(&name);
+        let waker = self.waker();
         let Some(l) = &mut self.launcher else { return };
         if dest.exists() {
             l.message = format!("もうあります: {}（o で開けます）", dest.display());
             return;
         }
-        let (tx, rx) = channel();
-        let waker = self.waker.clone();
         let u = url.clone();
-        let _ = std::thread::Builder::new().name("clone".into()).spawn(move || {
+        let rx = nagi_core::task::spawn("clone", waker, move |ctx| {
             let _ = std::fs::create_dir_all(&base);
             let r = nagi_workers::git::git(&base, &["clone", &u, &name]).map(|_| dest);
-            if tx.send(r).is_ok() {
-                if let Some(w) = waker {
-                    w();
-                }
-            }
+            ctx.send(r);
         });
         l.message = format!("git clone {url} …");
         l.cloning = Some((url, rx));
@@ -785,7 +768,7 @@ mod tests {
         // ダイアログ（ここでは本物の代わりの通り道）を開いている間のキーは受けず、閉じたら開いたときの入力の状態に戻る
         e.launcher_key(Key::Char('i'));
         assert!(e.launcher.as_ref().unwrap().field.is_insert());
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (tx, rx) = nagi_core::task::manual();
         let l = e.launcher.as_mut().unwrap();
         l.pick_insert = l.field.is_insert();
         l.picking = Some(rx);

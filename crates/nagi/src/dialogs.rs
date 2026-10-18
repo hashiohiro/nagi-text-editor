@@ -2,22 +2,16 @@
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
-use std::sync::mpsc::{Receiver, channel};
 
 /// Nagi の窓（ダイアログの持ち主にする。main が窓を作ったときに入れる）
 pub static MAIN_HWND: OnceLock<isize> = OnceLock::new();
 
 /// フォルダを選ぶダイアログを出す。選んだら Some(パス)、やめたら None を送る。`start` はダイアログの最初のフォルダ
-pub fn pick_folder(title: &str, start: Option<PathBuf>, waker: Option<nagi_workers::Waker>) -> Receiver<Option<PathBuf>> {
-    let (tx, rx) = channel();
+pub fn pick_folder(title: &str, start: Option<PathBuf>, waker: Option<nagi_workers::Waker>) -> nagi_core::task::Task<Option<PathBuf>> {
     let title = title.to_string();
-    let _ = std::thread::Builder::new().name("folder-dialog".into()).spawn(move || {
+    let rx = nagi_core::task::spawn("folder-dialog", waker.unwrap_or_else(nagi_core::task::no_waker), move |ctx| {
         let r = show(&title, start.as_deref());
-        if tx.send(r).is_ok() {
-            if let Some(w) = waker {
-                w();
-            }
-        }
+        ctx.send(r);
     });
     rx
 }

@@ -222,7 +222,7 @@ pub struct Editor {
     /// 大きなファイルの全体（先頭部分だけを先に表示している間。届いたら `poll_load` で差し替える）
     loading: Option<std::sync::mpsc::Receiver<Buffer>>,
     /// 裏で解析中の構文木（届いたら `poll_syntax` で受け取る）
-    pub(crate) pending_syntax: Option<std::sync::mpsc::Receiver<nagi_syntax::Syntax>>,
+    pub(crate) pending_syntax: Option<nagi_core::task::Task<nagi_syntax::Syntax>>,
     /// 裏の解析が終わったときに UI スレッドを起こす（App が入れる）
     pub waker: Option<std::sync::Arc<dyn Fn() + Send + Sync>>,
     /// Normal / Visual で解釈中のキー列
@@ -347,7 +347,7 @@ pub struct Editor {
     /// ブランチのポップアップ（開いている間だけ）
     pub branch_popup: Option<crate::branches::BranchPopup>,
     /// 裏で動かしているフェッチ・pull（見出し, 結果）
-    pub git_job: Option<(String, std::sync::mpsc::Receiver<Result<String, String>>)>,
+    pub git_job: Option<(String, nagi_core::task::Task<Result<String, String>>)>,
     /// 履歴の画面（開いている間だけ）
     pub log: Option<crate::log_view::LogView>,
     /// blame（出している間だけ）
@@ -385,6 +385,11 @@ pub struct Editor {
 }
 
 impl Editor {
+    /// UI を起こす関数（裏の処理に渡す。UI の無い試験では何もしない）
+    pub(crate) fn waker(&self) -> nagi_core::task::Waker {
+        self.waker.clone().unwrap_or_else(nagi_core::task::no_waker)
+    }
+
     pub fn new(buf: Buffer, syntax: Option<nagi_syntax::Syntax>) -> Self {
         Self {
             buf,
@@ -581,22 +586,14 @@ impl Editor {
             return;
         }
         let mut snap = self.buf.snapshot();
-        let (tx, rx) = std::sync::mpsc::channel();
-        let waker = self.waker.clone();
-        let spawned = std::thread::Builder::new().name("syntax".into()).spawn(move || {
+        let rx = nagi_core::task::spawn("syntax", self.waker(), move |ctx| {
             let Some(mut s) = nagi_syntax::Syntax::new(lang) else { return };
             s.parse(&mut snap);
             // ハイライトのクエリのコンパイル（大きい言語で数十 ms）もここで済ませる
             let _ = lang.highlights();
-            if tx.send(s).is_ok() {
-                if let Some(w) = waker {
-                    w();
-                }
-            }
+            ctx.send(s);
         });
-        if spawned.is_ok() {
-            self.pending_syntax = Some(rx);
-        }
+        self.pending_syntax = Some(rx);
     }
 
     /// tree-sitter を使わない言語（Markdown・Sass）なら、文章全体のハイライト（版が変わったときだけ解析し直す）

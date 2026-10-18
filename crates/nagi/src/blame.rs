@@ -6,7 +6,6 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, channel};
 
 use crate::editor::Editor;
 
@@ -32,7 +31,7 @@ pub struct Blame {
     /// 行ごとのコミット（commits の番号）
     pub lines: Vec<usize>,
     pub commits: Vec<CommitInfo>,
-    rx: Option<Receiver<Result<(Vec<usize>, Vec<CommitInfo>), String>>>,
+    rx: Option<nagi_core::task::Task<Result<(Vec<usize>, Vec<CommitInfo>), String>>>,
 }
 
 /// `git blame --porcelain` を読む
@@ -126,15 +125,9 @@ impl Editor {
         let Ok(rel) = path.strip_prefix(&root) else { return };
         let rel = rel.to_string_lossy().replace('\\', "/");
         let text = self.buf.text();
-        let (tx, rx) = channel();
-        let waker = self.waker.clone();
-        let _ = std::thread::Builder::new().name("git-blame".into()).spawn(move || {
+        let rx = nagi_core::task::spawn("git-blame", self.waker(), move |ctx| {
             let r = nagi_workers::git::git_input(&root, &["blame", "--porcelain", "--contents", "-", "--", &rel], Some(text.as_bytes())).map(|b| parse_porcelain(&String::from_utf8_lossy(&b)));
-            if tx.send(r).is_ok() {
-                if let Some(w) = waker {
-                    w();
-                }
-            }
+            ctx.send(r);
         });
         let keep = self.blame.take().filter(|b| b.path == path);
         let (lines, commits) = keep.map(|b| (b.lines, b.commits)).unwrap_or_default();

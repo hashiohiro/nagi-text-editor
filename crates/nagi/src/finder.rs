@@ -129,9 +129,9 @@ pub struct Finder {
     walk: Option<FileWalk>,
     /// 覚えた一覧を出しながら集め直している間の新しい一覧（集め終えたら差し替える）
     fresh: Option<Vec<String>>,
-    recent_rx: Option<std::sync::mpsc::Receiver<Vec<PathBuf>>>,
+    recent_rx: Option<nagi_core::task::Task<Vec<PathBuf>>>,
     /// 最近のプロジェクト（表示, 場所）を裏で集めている
-    projects_rx: Option<std::sync::mpsc::Receiver<Vec<(String, PathBuf)>>>,
+    projects_rx: Option<nagi_core::task::Task<Vec<(String, PathBuf)>>>,
     /// Eclipse のワークスペースの中から選んでいる（選んだらそのまま開く）
     pick_member: bool,
     /// hits を数えたときの検索語と、そのときの候補の数
@@ -260,30 +260,18 @@ impl Editor {
             }
             Source::RunConfigs => f.items = self.run_list_items(),
             Source::Projects => {
-                let (tx, rx) = std::sync::mpsc::channel();
-                let waker = self.waker.clone();
-                let _ = std::thread::Builder::new().name("projects".into()).spawn(move || {
-                    if tx.send(crate::project_open::recent_list()).is_ok() {
-                        if let Some(w) = waker {
-                            w();
-                        }
-                    }
+                let rx = nagi_core::task::spawn("projects", self.waker(), move |ctx| {
+                    ctx.send(crate::project_open::recent_list());
                 });
                 f.projects_rx = Some(rx);
             }
             Source::Recent => {
-                let (tx, rx) = std::sync::mpsc::channel();
-                let waker = self.waker.clone();
-                let _ = std::thread::Builder::new().name("recent".into()).spawn(move || {
+                let rx = nagi_core::task::spawn("recent", self.waker(), move |ctx| {
                     let list: Vec<PathBuf> = recent_file()
                         .and_then(|f| std::fs::read_to_string(f).ok())
                         .map(|s| s.lines().filter(|l| !l.is_empty()).map(PathBuf::from).filter(|p| p.exists()).collect())
                         .unwrap_or_default();
-                    if tx.send(list).is_ok() {
-                        if let Some(w) = waker {
-                            w();
-                        }
-                    }
+                    ctx.send(list);
                 });
                 f.recent_rx = Some(rx);
             }

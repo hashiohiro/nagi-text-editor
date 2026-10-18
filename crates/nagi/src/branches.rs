@@ -4,7 +4,6 @@
 //! Enter でチェックアウト（リモートなら追跡するローカルのブランチを作る）、→ で操作の一覧。
 //! フェッチと pull はネットワークを使うので裏で行う。
 
-use std::sync::mpsc::{Receiver, channel};
 
 use nagi_core::fuzzy::Query;
 use nagi_vim::Key;
@@ -76,7 +75,7 @@ pub struct BranchPopup {
     pub naming: Option<(Naming, crate::vim_field::VimField)>,
     /// 削除の確認（名前, 強制か）
     pub confirm_delete: Option<(String, bool)>,
-    rx: Option<Receiver<Result<Vec<Branch>, String>>>,
+    rx: Option<nagi_core::task::Task<Result<Vec<Branch>, String>>>,
 }
 
 impl BranchPopup {
@@ -160,16 +159,10 @@ impl Editor {
             self.message = "git のリポジトリではありません".into();
             return;
         };
-        let (tx, rx) = channel();
-        let waker = self.waker.clone();
-        let _ = std::thread::Builder::new().name("git-refs".into()).spawn(move || {
+        let rx = nagi_core::task::spawn("git-refs", self.waker(), move |ctx| {
             let r = nagi_workers::git::git(&root, &["for-each-ref", "--sort=-committerdate", "--format=%(HEAD)\x1f%(refname)\x1f%(refname:short)\x1f%(upstream:track)", "refs/heads", "refs/remotes"])
                 .map(|b| parse_refs(&String::from_utf8_lossy(&b)));
-            if tx.send(r).is_ok() {
-                if let Some(w) = waker {
-                    w();
-                }
-            }
+            ctx.send(r);
         });
         let mut p = BranchPopup { query: Prompt::default(), branches: Vec::new(), entries: Vec::new(), selected: 0, ops: None, naming: None, confirm_delete: None, rx: Some(rx) };
         p.rebuild();
@@ -221,16 +214,10 @@ impl Editor {
     pub(crate) fn run_git_job(&mut self, label: &str, args: &[&str]) {
         let Some(root) = self.git.root.clone() else { return };
         let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-        let (tx, rx) = channel();
-        let waker = self.waker.clone();
-        let _ = std::thread::Builder::new().name("git-net".into()).spawn(move || {
+        let rx = nagi_core::task::spawn("git-net", self.waker(), move |ctx| {
             let a: Vec<&str> = args.iter().map(String::as_str).collect();
             let r = nagi_workers::git::git(&root, &a).map(|b| String::from_utf8_lossy(&b).into_owned());
-            if tx.send(r).is_ok() {
-                if let Some(w) = waker {
-                    w();
-                }
-            }
+            ctx.send(r);
         });
         self.message = format!("{label}しています…");
         self.git_job = Some((label.to_string(), rx));
