@@ -11,51 +11,193 @@ use nagi_workers::project::{self, Kind};
 use crate::editor::{Editor, Mode};
 use crate::finder::Source;
 
-/// Nagi で開いたプロジェクトの記録（`%LOCALAPPDATA%\nagi\projects.txt`、新しい順）
-fn projects_file() -> Option<PathBuf> {
-    std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("nagi").join("projects.txt"))
+/// Nagi の設定フォルダのファイル（`%LOCALAPPDATA%\nagi\<name>`）
+fn data_file(name: &str) -> Option<PathBuf> {
+    std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("nagi").join(name))
 }
 
-fn remember_project(root: &Path) {
+/// 1 行 1 つのパスの一覧を読む（タブの後ろは付け足しの情報）
+fn read_list(name: &str) -> Vec<(PathBuf, String)> {
+    data_file(name)
+        .and_then(|f| std::fs::read_to_string(f).ok())
+        .map(|s| s.lines().filter(|l| !l.is_empty()).map(|l| l.split_once('\t').map_or((PathBuf::from(l), String::new()), |(a, b)| (PathBuf::from(a), b.to_string()))).collect())
+        .unwrap_or_default()
+}
+
+fn write_list(name: &str, items: &[(PathBuf, String)]) {
     // 試験で開いた一時フォルダを、使っている人の記録に残さない
     if cfg!(test) {
         return;
     }
-    let Some(file) = projects_file() else { return };
-    let me = root.to_string_lossy().into_owned();
-    let old = std::fs::read_to_string(&file).unwrap_or_default();
-    let mut lines = vec![me.clone()];
-    lines.extend(old.lines().filter(|l| !l.eq_ignore_ascii_case(&me) && !l.is_empty() && Path::new(l).is_dir()).take(99).map(String::from));
+    let Some(file) = data_file(name) else { return };
     if let Some(d) = file.parent() {
         let _ = std::fs::create_dir_all(d);
     }
-    let _ = std::fs::write(&file, lines.join("\n") + "\n");
+    let text: String = items.iter().map(|(p, x)| if x.is_empty() { format!("{}\n", p.display()) } else { format!("{}\t{x}\n", p.display()) }).collect();
+    let _ = std::fs::write(&file, text);
 }
 
-/// 最近のプロジェクト（Nagi で開いたもの → IntelliJ・WebStorm など → Eclipse）: (表示, 場所)
-pub(crate) fn recent_list() -> Vec<(String, PathBuf)> {
-    let mut out: Vec<(String, PathBuf)> = Vec::new();
-    let mut push = |p: PathBuf, from: &str| {
-        if p.is_dir() && !out.iter().any(|(_, q)| q.to_string_lossy().eq_ignore_ascii_case(&p.to_string_lossy())) {
-            let name = p.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned());
-            out.push((format!("{name}  {from}  {}", p.display()), p));
-        }
-    };
-    if let Some(s) = projects_file().and_then(|f| std::fs::read_to_string(f).ok()) {
-        for l in s.lines().filter(|l| !l.is_empty()) {
-            push(PathBuf::from(l), "Nagi");
-        }
+fn same(a: &Path, b: &Path) -> bool {
+    a.to_string_lossy().eq_ignore_ascii_case(&b.to_string_lossy())
+}
+
+pub(crate) fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
+}
+
+fn remember_project(root: &Path) {
+    let mut v = read_list("projects.txt");
+    v.retain(|(p, _)| !same(p, root) && p.is_dir());
+    v.insert(0, (root.to_path_buf(), now_ms().to_string()));
+    v.truncate(100);
+    write_list("projects.txt", &v);
+    // 外していたものを開き直したら、一覧に戻す
+    let mut h = read_list("hidden-projects.txt");
+    if h.iter().any(|(p, _)| same(p, root)) {
+        h.retain(|(p, _)| !same(p, root));
+        write_list("hidden-projects.txt", &h);
+    }
+}
+
+/// ピン留めを切り替える（付けたら true）
+pub(crate) fn toggle_pin(path: &Path) -> bool {
+    let mut v = read_list("pinned-projects.txt");
+    let on = !v.iter().any(|(p, _)| same(p, path));
+    if on {
+        v.push((path.to_path_buf(), String::new()));
+    } else {
+        v.retain(|(p, _)| !same(p, path));
+    }
+    write_list("pinned-projects.txt", &v);
+    on
+}
+
+/// 一覧から外す（IntelliJ などの履歴は書き換えず、Nagi の側で隠す）
+pub(crate) fn hide_project(path: &Path) {
+    let mut v = read_list("projects.txt");
+    v.retain(|(p, _)| !same(p, path));
+    write_list("projects.txt", &v);
+    let mut p = read_list("pinned-projects.txt");
+    p.retain(|(x, _)| !same(x, path));
+    write_list("pinned-projects.txt", &p);
+    let mut h = read_list("hidden-projects.txt");
+    if !h.iter().any(|(x, _)| same(x, path)) {
+        h.push((path.to_path_buf(), String::new()));
+    }
+    write_list("hidden-projects.txt", &h);
+}
+
+/// ランチャーの一覧の 1 行
+#[derive(Clone, Debug)]
+pub(crate) struct Entry {
+    pub name: String,
+    pub path: PathBuf,
+    /// どこで開いたか（Nagi・IntelliJIdea・WebStorm・Eclipse）
+    pub from: String,
+    /// 最後に開いた時刻（ミリ秒、分からなければ 0）
+    pub when: u64,
+    pub pinned: bool,
+    /// フォルダがもう無い
+    pub missing: bool,
+    /// 種類（Maven 3 モジュール・npm・Angular など）
+    pub kind: String,
+    /// git のブランチ（git でなければ None）
+    pub branch: Option<String>,
+}
+
+/// 最近のプロジェクト（ピン留め → Nagi・IntelliJ・WebStorm・Eclipse を新しい順に。同じ場所は 1 つ、外したものは出さない）
+pub(crate) fn recent_entries() -> Vec<Entry> {
+    let pinned = read_list("pinned-projects.txt");
+    let hidden = read_list("hidden-projects.txt");
+    let mut raw: Vec<(PathBuf, String, u64)> = Vec::new();
+    for (p, t) in read_list("projects.txt") {
+        raw.push((p, "Nagi".into(), t.parse().unwrap_or(0)));
     }
     for r in project::recent_projects() {
-        push(r.path, &r.from);
+        raw.push((r.path, r.from, r.when));
     }
+    let mut out: Vec<Entry> = Vec::new();
+    for (path, from, when) in raw {
+        if hidden.iter().any(|(h, _)| same(h, &path)) {
+            continue;
+        }
+        if let Some(e) = out.iter_mut().find(|e| same(&e.path, &path)) {
+            // 同じ場所: 新しい方の時刻（どこで開いたかは Nagi より IDE の名前を残す）
+            if when > e.when {
+                e.when = when;
+            }
+            if e.from == "Nagi" {
+                e.from = from;
+            }
+            continue;
+        }
+        out.push(entry(path, from, when, false));
+    }
+    for (p, _) in &pinned {
+        match out.iter_mut().find(|e| same(&e.path, p)) {
+            Some(e) => e.pinned = true,
+            None => out.push(entry(p.clone(), "Nagi".into(), 0, true)),
+        }
+    }
+    out.sort_by(|a, b| b.pinned.cmp(&a.pinned).then(b.when.cmp(&a.when)));
     out
+}
+
+fn entry(path: PathBuf, from: String, when: u64, pinned: bool) -> Entry {
+    let name = path.file_name().map_or(path.display().to_string(), |n| n.to_string_lossy().into_owned());
+    let missing = !path.is_dir();
+    let kind = if missing { String::new() } else { kind_of(&path) };
+    let branch = if missing { None } else { branch_of(&path) };
+    Entry { name, path, from, when, pinned, missing, kind, branch }
+}
+
+/// プロジェクトの種類（ビルドの仕組みと、npm なら枠組み）
+pub(crate) fn kind_of(dir: &Path) -> String {
+    if let Ok(pom) = std::fs::read_to_string(dir.join("pom.xml")) {
+        let n = pom.matches("<module>").count();
+        return if n > 0 { format!("Maven {n} モジュール") } else { "Maven".into() };
+    }
+    if dir.join("build.gradle").is_file() || dir.join("build.gradle.kts").is_file() {
+        return "Gradle".into();
+    }
+    if let Ok(pkg) = std::fs::read_to_string(dir.join("package.json")) {
+        let fw = [("\"@angular/core\"", "Angular"), ("\"next\"", "Next.js"), ("\"svelte\"", "Svelte"), ("\"vue\"", "Vue"), ("\"react\"", "React")].iter().find(|(k, _)| pkg.contains(k)).map(|(_, v)| *v);
+        return fw.map_or("npm".into(), |f| format!("npm・{f}"));
+    }
+    if dir.join("Cargo.toml").is_file() {
+        return "Cargo".into();
+    }
+    if dir.join(".classpath").is_file() {
+        return ".classpath".into();
+    }
+    if dir.join("pyproject.toml").is_file() || dir.join("requirements.txt").is_file() {
+        return "Python".into();
+    }
+    if dir.join(".metadata").is_dir() {
+        return "ワークスペース".into();
+    }
+    String::new()
+}
+
+/// git のブランチ（.git/HEAD を読むだけ）
+pub(crate) fn branch_of(dir: &Path) -> Option<String> {
+    let head = std::fs::read_to_string(dir.join(".git").join("HEAD")).ok()?;
+    let h = head.trim();
+    Some(match h.strip_prefix("ref: refs/heads/") {
+        Some(b) => b.to_string(),
+        None => h.chars().take(7).collect(),
+    })
+}
+
+/// 最近のプロジェクト（選択肢の表示, 場所）
+pub(crate) fn recent_list() -> Vec<(String, PathBuf)> {
+    recent_entries().into_iter().filter(|e| !e.missing).map(|e| (format!("{}  {}  {}", e.name, e.from, e.path.display()), e.path)).collect()
 }
 
 impl Editor {
     /// `:Project`（引数なし）・ManageRecentProjects: 最近のプロジェクトから選ぶ
     pub(crate) fn pick_project(&mut self) {
-        self.open_finder(Source::Projects);
+        self.open_launcher();
     }
 
     /// フォルダをプロジェクトとして開く

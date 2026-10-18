@@ -42,6 +42,8 @@ pub enum Mode {
     Branches,
     /// テーブルのデータの編集
     DbTable,
+    /// ランチャー（起動時のプロジェクトの選択）
+    Launcher,
 }
 
 /// リストモードでいるパネル
@@ -243,6 +245,8 @@ pub struct Editor {
     /// 画面の本文の範囲（列, 行）。最下行は含まない（App が描画前に入れる）
     pub(crate) screen: (usize, usize),
     pub finder: Option<crate::finder::Finder>,
+    /// ランチャー（起動時のプロジェクトの選択）
+    pub launcher: Option<crate::launcher::Launcher>,
     /// 全文検索のパネル（開いている間だけ）
     pub grep: Option<crate::grep_panel::GrepPanel>,
     /// ファイルツリー（開いている間だけ）
@@ -379,6 +383,7 @@ impl Editor {
             layout: crate::panes::Layout::Leaf(0),
             screen: (80, 24),
             finder: None,
+            launcher: None,
             grep: None,
             tree: None,
             list_side: Side::Bottom,
@@ -564,6 +569,7 @@ impl Editor {
     pub fn has_prompt(&self) -> bool {
         matches!(self.mode, Mode::Command | Mode::Search | Mode::Replace | Mode::GrepPrompt)
             || (self.mode == Mode::Finder && self.finder.as_ref().is_some_and(|f| f.field.is_insert()))
+            || (self.mode == Mode::Launcher && self.launcher.as_ref().is_some_and(|l| l.ask.as_ref().map_or(l.field.is_insert(), |a| a.1.is_insert())))
             || (self.mode == Mode::CommitMsg && self.commit.as_ref().is_some_and(|c| c.msg.is_insert()))
             || (self.mode == Mode::Log && self.log.as_ref().is_some_and(|l| l.filter.as_ref().is_some_and(|f| f.is_insert())))
             || (self.mode == Mode::Branches && self.branch_popup.as_ref().is_some_and(|b| b.naming.as_ref().is_none_or(|n| n.1.is_insert())))
@@ -731,6 +737,10 @@ impl Editor {
                 Effect::None
             }
             Mode::Finder => self.finder_key(key),
+            Mode::Launcher => {
+                self.launcher_key(key);
+                Effect::None
+            }
             Mode::GrepPrompt => {
                 self.grep_prompt_key(key);
                 Effect::None
@@ -1557,6 +1567,7 @@ impl Editor {
                 self.update_cmd_complete();
             }
             Mode::Finder => self.finder_insert(text),
+            Mode::Launcher => self.launcher_insert(text),
             Mode::GrepPrompt => self.grep_insert(text),
             Mode::CommitMsg => self.commit_msg_insert(text),
             Mode::Branches => self.branches_insert(text),

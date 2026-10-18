@@ -10,6 +10,7 @@
 //! メインスレッドはその間にイベントループと非表示のウィンドウを作る。最初のフレームを描いてから表示する。
 
 mod autoread;
+mod launcher;
 mod project_open;
 mod blame;
 mod db_panel;
@@ -284,6 +285,9 @@ impl App {
             if let Some(dir) = self.opts.file.clone().filter(|p| p.is_dir()) {
                 ed.open_project(dir);
                 clock::mark("project opened");
+            } else if self.opts.file.is_none() {
+                // 引数なしで起動したら、ランチャー（最近のプロジェクトから選ぶ）
+                ed.open_launcher();
             }
             // 定義の索引も表示の後に裏で作る（保存したものがあれば差分だけ）
             ed.start_index();
@@ -586,7 +590,7 @@ impl App {
             w.set_ime_allowed(want);
             self.ime_allowed = want;
         }
-        if want && ed.mode == Mode::CommitMsg {
+        if want && matches!(ed.mode, Mode::CommitMsg | Mode::Launcher) {
             // コミットメッセージの欄は、描いた縦棒の位置を draw で IME に知らせる
         } else if want {
             let cell = f.cell();
@@ -754,6 +758,25 @@ impl App {
     }
 
     fn on_press(&mut self) {
+        // ランチャー: 一覧の行を押すと選び、2 回で開く
+        if let (Some(ed), Some(f)) = (&mut self.ed, &self.fonts) {
+            if ed.mode == Mode::Launcher {
+                let row = (self.mouse.1 as f32 / f.cell().h).floor().max(0.0) as usize;
+                let now = Instant::now();
+                let clicks = match self.last_click {
+                    Some((t, c, n)) if now - t <= double_click_time() && c == (row, usize::MAX - 2) => n % 3 + 1,
+                    _ => 1,
+                };
+                self.last_click = Some((now, (row, usize::MAX - 2), clicks));
+                let hit = ed.launcher.as_ref().and_then(|l| l.row_map.borrow().iter().find(|(r, _)| *r == row).map(|x| x.1));
+                if let Some(i) = hit {
+                    ed.launcher_click(i, clicks);
+                }
+                self.sync_ime();
+                self.draw();
+                return;
+            }
+        }
         self.sync_screen();
         if self.press_stripe() {
             return;
@@ -1089,6 +1112,7 @@ impl ApplicationHandler for App {
             }
             ed.poll_search();
             ed.poll_finder();
+            ed.poll_launcher();
             ed.poll_grep();
             ed.poll_tree();
             ed.poll_index();
