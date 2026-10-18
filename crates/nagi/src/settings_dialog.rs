@@ -135,7 +135,11 @@ impl SettingsDialog {
                 Ok(n) if n >= lo && n <= hi => self.set(it, &n.to_string()),
                 _ => return Some(format!("{} は {lo}〜{hi} の数です", it.label)),
             },
-            SKind::Key if !v.is_empty() && crate::keymap::parse_chord(&v).is_none() => return Some(format!("キーの書き方が分かりません: {v}（例: Ctrl+Alt+S・Shift+F10）")),
+            SKind::Key if !v.is_empty() => match crate::keymap::parse_chord(&v) {
+                // 書き方をそろえて入れる（ctrl+alt+s → Ctrl+Alt+S）
+                Some(c) => self.set(it, &c.label()),
+                None => return Some(format!("キーの書き方が分かりません: {v}（例: Ctrl+Alt+S・Shift+F10）")),
+            },
             _ => self.set(it, &v),
         }
         None

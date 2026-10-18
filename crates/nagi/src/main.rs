@@ -509,9 +509,19 @@ impl App {
         }
         let ctrl = self.modifiers.control_key();
         let alt = self.modifiers.alt_key();
+        // キーマップ（設定。Ctrl+Alt+S・Shift+F10 などの IntelliJ の組み合わせは既定値）: 付けた操作にする。
+        // 元の組み合わせから別のキーへ移した操作は、元のキーでは動かさない
+        if let Some(chord) = chord_of(&ev.logical_key, self.modifiers) {
+            if let Some(action) = keymap::action_for(&ed.settings, &chord) {
+                self.held = None;
+                self.handle_keys(vec![action], el);
+                return;
+            }
+            if keymap::default_moved(&ed.settings, &chord) {
+                return;
+            }
+        }
         let keys: Vec<VKey> = match &ev.logical_key {
-            // Ctrl+Alt+S: 設定（IntelliJ と同じ）
-            Key::Character(c) if alt && ctrl && c.eq_ignore_ascii_case("s") => vec![VKey::F(45)],
             Key::Character(c) if alt && !ctrl => c.chars().next().map(|ch| VKey::Alt(ch.to_ascii_lowercase())).into_iter().collect(),
             Key::Character(c) if ctrl => c.chars().next().map(|ch| VKey::Ctrl(ch.to_ascii_lowercase())).into_iter().collect(),
             Key::Character(_) => ev.text.as_deref().unwrap_or("").chars().map(VKey::Char).collect(),
@@ -536,15 +546,7 @@ impl App {
                 NamedKey::End => vec![VKey::End],
                 NamedKey::PageUp => vec![VKey::PageUp],
                 NamedKey::PageDown => vec![VKey::PageDown],
-                // F12: 定義へ（IntelliJ・VS Code と同じ）
-                // Alt+F12: ターミナル（IntelliJ と同じ。F24 として渡す）
-                // 実行の構成（IntelliJ と同じ）: Shift+F10 実行、Alt+Shift+F10 選んで実行、Ctrl+F2 止める、Ctrl+F5 もう一度
-                NamedKey::F10 if alt && self.modifiers.shift_key() => vec![VKey::F(41)],
-                NamedKey::F10 if self.modifiers.shift_key() => vec![VKey::F(40)],
-                NamedKey::F2 if ctrl => vec![VKey::F(42)],
-                NamedKey::F5 if ctrl => vec![VKey::F(43)],
-                NamedKey::F12 if alt => vec![VKey::F(24)],
-                NamedKey::F12 => vec![VKey::F(12)],
+                // F12・Alt+F12・Shift+F10 などはキーマップ（上）で操作にする
                 _ => return,
             },
             _ => return,
@@ -1478,6 +1480,44 @@ fn route_stderr_to_log() {
     use std::os::windows::io::IntoRawHandle;
     let h = windows::Win32::Foundation::HANDLE(file.into_raw_handle());
     let _ = unsafe { SetStdHandle(STD_ERROR_HANDLE, h) };
+}
+
+/// 押したキーをキーマップの組み合わせに直す。文字を打つのを妨げないよう、Ctrl・Alt を伴うものと F キーなどだけ
+fn chord_of(key: &Key, m: winit::keyboard::ModifiersState) -> Option<keymap::Chord> {
+    let (ctrl, alt, shift) = (m.control_key(), m.alt_key(), m.shift_key());
+    let (name, special) = match key {
+        Key::Character(c) => {
+            let ch = c.chars().next().filter(|c| c.is_ascii_graphic())?;
+            (ch.to_ascii_uppercase().to_string(), false)
+        }
+        Key::Named(n) => {
+            let dbg = format!("{n:?}");
+            let name = match n {
+                NamedKey::Space => "Space".to_string(),
+                NamedKey::Enter => "Enter".into(),
+                NamedKey::Tab => "Tab".into(),
+                NamedKey::Escape => "Esc".into(),
+                NamedKey::Backspace => "Backspace".into(),
+                NamedKey::Delete => "Delete".into(),
+                NamedKey::Insert => "Insert".into(),
+                NamedKey::Home => "Home".into(),
+                NamedKey::End => "End".into(),
+                NamedKey::PageUp => "PageUp".into(),
+                NamedKey::PageDown => "PageDown".into(),
+                NamedKey::ArrowUp => "Up".into(),
+                NamedKey::ArrowDown => "Down".into(),
+                NamedKey::ArrowLeft => "Left".into(),
+                NamedKey::ArrowRight => "Right".into(),
+                // F1〜F24
+                _ if dbg.len() <= 3 && dbg.starts_with('F') && dbg[1..].parse::<u8>().is_ok_and(|n| (1..=24).contains(&n)) => dbg.clone(),
+                _ => return None,
+            };
+            let f = name.starts_with('F') && name.len() <= 3 && name != "F";
+            (name, f)
+        }
+        _ => return None,
+    };
+    (ctrl || alt || special).then_some(keymap::Chord { ctrl, alt, shift, key: name })
 }
 
 fn main() {
