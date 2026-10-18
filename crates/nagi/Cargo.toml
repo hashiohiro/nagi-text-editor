@@ -9,6 +9,8 @@ name = "nagi"
 path = "src/main.rs"
 
 [dependencies]
+# ターミナルの画面の色（nagi-workers の vt100 と同じ版）
+vt100 = "=0.16.2"
 nagi-core.workspace = true
 nagi-text.workspace = true
 nagi-render.workspace = true

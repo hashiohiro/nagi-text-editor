@@ -299,6 +299,8 @@ pub struct Editor {
     pub grep_other: Option<crate::grep_panel::GrepPanel>,
     /// 下の欄の「問題」
     pub problems: crate::bottom_panel::ProblemsView,
+    /// 下の欄の「ターミナル」
+    pub terminal: Option<crate::terminal::TermView>,
     pub right_tab: crate::right_panel::RightTab,
     pub right_hidden: bool,
     pub right_w: Option<usize>,
@@ -440,6 +442,7 @@ impl Editor {
             bottom_kind: Default::default(),
             grep_other: None,
             problems: Default::default(),
+            terminal: None,
             right_tab: Default::default(),
             right_hidden: false,
             right_w: None,
@@ -611,6 +614,7 @@ impl Editor {
     pub fn has_prompt(&self) -> bool {
         matches!(self.mode, Mode::Command | Mode::Search | Mode::Replace | Mode::GrepPrompt)
             || (self.mode == Mode::Finder && self.finder.as_ref().is_some_and(|f| f.field.is_insert()))
+            || self.mode == Mode::Terminal
             || (self.mode == Mode::Launcher && self.launcher.as_ref().is_some_and(|l| l.ask.as_ref().map_or(l.field.is_insert(), |a| a.1.is_insert())))
             || (self.mode == Mode::CommitMsg && self.commit.as_ref().is_some_and(|c| c.msg.is_insert()))
             || (self.mode == Mode::Log && self.log.as_ref().is_some_and(|l| l.filter.as_ref().is_some_and(|f| f.is_insert())))
@@ -1408,6 +1412,9 @@ impl Editor {
             "e" | "edit" if !arg.is_empty() && std::path::Path::new(arg).is_dir() => self.open_project(PathBuf::from(arg)),
             "e" | "edit" if !arg.is_empty() => self.edit_file(PathBuf::from(arg)),
             "MarkdownPreview" | "MdPreview" => self.toggle_md_preview(),
+            "Terminal" | "term" => self.select_bottom_tab(crate::result_grid::BottomKind::Terminal),
+            "Problems" => self.select_bottom_tab(crate::result_grid::BottomKind::Problems),
+            "Output" => self.select_bottom_tab(crate::result_grid::BottomKind::Output),
             "TreeSync" => {
                 self.tree_sync = !self.tree_sync;
                 self.message = if self.tree_sync { "木を開いているファイルに合わせます".into() } else { "木を開いているファイルに合わせません".into() };
@@ -1497,6 +1504,12 @@ impl Editor {
             Some((Some("palette"), _)) => self.open_finder(crate::finder::Source::Commands),
             Some((Some("finder.symbols"), _)) => self.symbol_search(false),
             Some((Some("finder.projects"), _)) => self.pick_project(),
+            Some((Some("tool.terminal"), _)) => self.toggle_bottom_tab(crate::result_grid::BottomKind::Terminal),
+            Some((Some("tool.problems"), _)) => self.toggle_bottom_tab(crate::result_grid::BottomKind::Problems),
+            Some((Some("tool.git"), _)) => self.toggle_bottom_tab(crate::result_grid::BottomKind::Git),
+            Some((Some("tool.find"), _)) => self.toggle_bottom_tab(crate::result_grid::BottomKind::Grep),
+            Some((Some("tool.output"), _)) => self.toggle_bottom_tab(crate::result_grid::BottomKind::Output),
+            Some((Some("tool.hide_bottom"), _)) => self.hide_bottom(),
             Some((Some("tree.select_file"), _)) => self.select_in_tree(),
             Some((Some("markdown.preview"), _)) => self.toggle_md_preview(),
             Some((Some("finder.types"), _)) => self.symbol_search(true),
@@ -1639,6 +1652,7 @@ impl Editor {
             }
             Mode::Finder => self.finder_insert(text),
             Mode::Launcher => self.launcher_insert(text),
+            Mode::Terminal => self.terminal_input(text),
             Mode::GrepPrompt => self.grep_insert(text),
             Mode::CommitMsg => self.commit_msg_insert(text),
             Mode::Branches => self.branches_insert(text),
@@ -1684,7 +1698,7 @@ impl Editor {
 
     /// パネル（木・検索の結果・右の欄など）にいたら本文の操作に戻る（本文をクリックしたとき）
     fn leave_panel(&mut self) {
-        if self.mode == Mode::List {
+        if matches!(self.mode, Mode::List | Mode::Terminal) {
             self.mode = Mode::Normal;
             self.pending_keys.clear();
         }

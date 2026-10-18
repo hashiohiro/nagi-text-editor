@@ -596,7 +596,7 @@ impl App {
             w.set_ime_allowed(want);
             self.ime_allowed = want;
         }
-        if want && matches!(ed.mode, Mode::CommitMsg | Mode::Launcher) {
+        if want && matches!(ed.mode, Mode::CommitMsg | Mode::Launcher | Mode::Terminal) {
             // コミットメッセージの欄は、描いた縦棒の位置を draw で IME に知らせる
         } else if want {
             let cell = f.cell();
@@ -1037,6 +1037,17 @@ impl App {
         let rows = self.sync_screen();
         let (Some(ed), Some(f)) = (&mut self.ed, &self.fonts) else { return };
         ed.rows = rows;
+        // ターミナルの上ならさかのぼる
+        let (row, col) = ((self.mouse.1 as f32 / f.cell().h) as usize, (self.mouse.0.max(0.0) as f32 / f.cell().w) as usize);
+        if ed.bottom_kind == result_grid::BottomKind::Terminal && ed.bottom_content_rect().is_some_and(|r| r.contains(row, col)) {
+            let lines = match delta {
+                winit::event::MouseScrollDelta::LineDelta(_, y) => (y * WHEEL_LINES as f32).round() as isize,
+                winit::event::MouseScrollDelta::PixelDelta(p) => (p.y / f.cell().h as f64).round() as isize,
+            };
+            ed.terminal_scroll(lines);
+            self.draw();
+            return;
+        }
         let now = Instant::now();
         match delta {
             // マウスのホイール: 目盛りごとに 3 行を、短い時間で滑らかに動かす

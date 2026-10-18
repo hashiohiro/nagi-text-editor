@@ -482,6 +482,8 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     ed.refresh_md_preview();
     // プロジェクトの木を開いているファイルに合わせる
     ed.sync_tree();
+    // ターミナルを欄の大きさに合わせる
+    ed.sync_terminal();
     let bar = (cell.w / 6.0).round().max(2.0);
     let underline = (cell.h / 16.0).round().max(1.0);
     let mut p = Painter { out: Vec::with_capacity(cols * rows + 64), fonts, r, cols, bar, underline, caret_at: None };
@@ -807,7 +809,12 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             }
         }
         Mode::Terminal => {
-            p.text(if ed.message.is_empty() { "-- ターミナル --" } else { &ed.message }, 0, y, FG);
+            let end = p.text(if ed.message.is_empty() { "-- ターミナル --" } else { &ed.message }, 0, y, FG);
+            let help = "Ctrl-\\ n 本文へ  Alt+F12 隠す  ホイールでさかのぼる ";
+            let pc = cols.saturating_sub(p.width(help));
+            if end + 2 <= pc {
+                p.text(help, pc, y, STATUS_FG);
+            }
         }
         Mode::List if ed.list_side == crate::editor::Side::Bottom && ed.bottom_kind == crate::result_grid::BottomKind::Result => {
             let end = p.text(if ed.message.is_empty() { "-- クエリの結果 --" } else { &ed.message }, 0, y, FG);
@@ -2784,8 +2791,93 @@ fn prompt_line(p: &mut Painter, lead: &str, text: &str, cursor: usize, preedit: 
     }
 }
 
-/// ターミナル（段階 2 で中身を作る）
-fn draw_terminal(p: &mut Painter, _ed: &Editor, r: Rect, _focused: bool) {
+/// ターミナルの色（16 色は Windows Terminal の Campbell、16〜255 は xterm の 256 色）
+fn term_color(c: vt100::Color, default: [f32; 4]) -> [f32; 4] {
+    const BASE: [u32; 16] = [0x0c0c0c, 0xc50f1f, 0x13a10e, 0xc19c00, 0x0037da, 0x881798, 0x3a96dd, 0xcccccc, 0x767676, 0xe74856, 0x16c60c, 0xf9f1a5, 0x3b78ff, 0xb4009e, 0x61d6d6, 0xf2f2f2];
+    match c {
+        vt100::Color::Default => default,
+        vt100::Color::Idx(i) if i < 16 => rgb(BASE[i as usize]),
+        vt100::Color::Idx(i) if i < 232 => {
+            let i = i - 16;
+            let v = |x: u8| if x == 0 { 0 } else { 55 + x as u32 * 40 };
+            rgb(v(i / 36) << 16 | v((i / 6) % 6) << 8 | v(i % 6))
+        }
+        vt100::Color::Idx(i) => {
+            let g = 8 + (i - 232) as u32 * 10;
+            rgb(g << 16 | g << 8 | g)
+        }
+        vt100::Color::Rgb(r, g, b) => rgb((r as u32) << 16 | (g as u32) << 8 | b as u32),
+    }
+}
+
+/// ターミナル（下の欄）。シェルの画面をそのまま描き、移っていればカーソル（四角）と IME の位置
+fn draw_terminal(p: &mut Painter, ed: &Editor, r: Rect, focused: bool) {
     let cell = p.fonts.cell();
-    p.text(" ターミナルは準備中です", r.x, r.y as f32 * cell.h, STATUS_FG);
+    let Some(t) = &ed.terminal else {
+        p.text(" シェルを起動していません（Enter で起動）", r.x, r.y as f32 * cell.h, STATUS_FG);
+        return;
+    };
+    let saved = p.cols;
+    p.cols = r.x + r.w;
+    let x0 = r.x + 1;
+    t.term.with_screen(|s| {
+        let (rows, cols) = s.size();
+        let scrolled = s.scrollback() > 0;
+        for row in 0..rows.min(r.h as u16) {
+            let y = (r.y + row as usize) as f32 * cell.h;
+            let mut items: Vec<Item> = Vec::with_capacity(cols as usize);
+            for col in 0..cols {
+                let Some(c) = s.cell(row, col) else { continue };
+                if c.is_wide_continuation() {
+                    continue;
+                }
+                let (mut fg, mut bg) = (term_color(c.fgcolor(), FG), term_color(c.bgcolor(), BG));
+                if c.inverse() {
+                    std::mem::swap(&mut fg, &mut bg);
+                }
+                if c.dim() {
+                    fg = [fg[0] * 0.6, fg[1] * 0.6, fg[2] * 0.6, fg[3]];
+                }
+                let text = if c.has_contents() { c.contents().to_string() } else { " ".to_string() };
+                let width = if c.is_wide() { 2 } else { 1 };
+                let bg = (bg != BG).then_some(bg);
+                items.push(Item { g: Cow::Owned(text), width, fg, bg, underline: c.underline() });
+            }
+            p.draw(&items, x0, y);
+        }
+        // カーソル（遡っている間と、シェルが隠しているときは出さない）
+        let (cr, cc) = s.cursor_position();
+        if focused && !scrolled && !s.hide_cursor() && (cr as usize) < r.h {
+            let y = (r.y + cr as usize) as f32 * cell.h;
+            let col = x0 + cc as usize;
+            p.out.push(Instance::fill(col as f32 * cell.w, y, cell.w, cell.h, CURSOR));
+            let ch = s.cell(cr, cc).map(|c| c.contents().to_string()).filter(|c| !c.is_empty()).unwrap_or_default();
+            if !ch.is_empty() {
+                p.text(&ch, col, y, BG);
+            }
+            // IME の候補の窓はカーソルの位置へ（変換中の文字は下線で重ねる）
+            if !ed.preedit.is_empty() {
+                let mut pre = p.items(&ed.preedit, FG);
+                pre.iter_mut().for_each(|i| {
+                    i.underline = true;
+                    i.bg = Some(BG);
+                });
+                p.draw(&pre, col, y);
+            }
+            p.caret_at = Some((col, y));
+        }
+        if scrolled {
+            let tag = format!(" ↑ {} 行さかのぼっています（打つと戻る） ", s.scrollback());
+            let w = p.width(&tag);
+            let x = (r.x + r.w).saturating_sub(w + 1);
+            p.out.push(Instance::fill(x as f32 * cell.w, r.y as f32 * cell.h, w as f32 * cell.w, cell.h, MATCH_BG));
+            p.text(&tag, x, r.y as f32 * cell.h, FG);
+        }
+    });
+    if t.exited {
+        let y = (r.y + r.h.saturating_sub(1)) as f32 * cell.h;
+        p.out.push(Instance::fill(r.x as f32 * cell.w, y, r.w as f32 * cell.w, cell.h, MATCH_BG));
+        p.text(" シェルが終わりました。Enter で起動し直す ", r.x, y, FG);
+    }
+    p.cols = saved;
 }
