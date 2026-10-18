@@ -259,6 +259,15 @@ impl Editor {
         self.diags.iter().filter(|d| d.path == here && d.line == self.cursor.line).min_by_key(|d| !d.error)
     }
 
+    /// `path` のファイルの診断の位置（行, 列（文字）, エラーか）。本文に波線を引く
+    pub fn diag_spans(&self, path: Option<&Path>) -> Vec<(usize, usize, bool)> {
+        if self.diags.is_empty() {
+            return Vec::new();
+        }
+        let Some(p) = path.and_then(|p| std::path::absolute(p).ok()) else { return Vec::new() };
+        self.diags.iter().filter(|d| d.path == p).map(|d| (d.line, d.col, d.error)).collect()
+    }
+
     /// `path` のファイルの診断のある行（行 → エラーか）
     pub fn diag_lines(&self, path: Option<&Path>) -> std::collections::HashMap<usize, bool> {
         let mut out = std::collections::HashMap::new();

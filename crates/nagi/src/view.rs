@@ -74,6 +74,8 @@ struct Painter<'a> {
     underline: f32,
     /// 最後に描いた縦棒カーソル（列, y）。IME の候補の窓をそこに出す
     caret_at: Option<(usize, f32)>,
+    /// 描いたタブのアイコン（行, 列の始め, 終わり, 名前）。マウスを載せたら名前を出す
+    tab_hits: Vec<(usize, usize, usize, &'static str)>,
 }
 
 impl Painter<'_> {
@@ -248,6 +250,8 @@ struct Pane<'a> {
     buf: &'a nagi_core::Buffer,
     /// 診断のある行（行 → エラーか）。行番号の色に使う
     diags: std::collections::HashMap<usize, bool>,
+    /// 波線を引く診断（行, 列（文字）, エラーか）
+    squiggles: Vec<(usize, usize, bool)>,
     /// git の行頭の変更マーカー
     marks: std::collections::HashMap<usize, crate::git_ui::Marker>,
     folds: &'a crate::folds::Folds,
@@ -381,6 +385,15 @@ fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
         }
         let (line, abs, cut) = &heads[row];
         let (line, abs, cut) = (line.as_str(), *abs, *cut);
+        // 診断の波線（エラーは赤、警告は黄色。IntelliJ と同じく語の下に）
+        for &(_, col, error) in pane.squiggles.iter().filter(|s| s.0 == ln) {
+            let (a, b) = squiggle_range(line, col);
+            if b > a {
+                let x0 = (rect.x + gutter + nagi_core::display_col(line, a, false)) as f32 * cell.w;
+                let x1 = (rect.x + gutter + nagi_core::display_col(line, b, false)) as f32 * cell.w;
+                draw_squiggle(p, x0, x1, y + cell.h, if error { DIAG_ERROR } else { DIAG_WARN });
+            }
+        }
         // byte ごとの文字色。外側のキャプチャの後に内側が来るので、後から塗ったものが勝つ
         let mut colors = vec![FG; line.len()];
         for (rg, hl) in spans.iter().filter(|(rg, _)| rg.end > abs && rg.start < abs + line.len()) {
@@ -519,7 +532,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     ed.sync_terminal();
     let bar = (cell.w / 6.0).round().max(2.0);
     let underline = (cell.h / 16.0).round().max(1.0);
-    let mut p = Painter { out: Vec::with_capacity(cols * rows + 64), fonts, r, cols, bar, underline, caret_at: None };
+    let mut p = Painter { out: Vec::with_capacity(cols * rows + 64), fonts, r, cols, bar, underline, caret_at: None, tab_hits: Vec::new() };
     if let (Some(r), Some(t)) = (ed.tree_rect(), &mut ed.tree) {
         let h = r.h.saturating_sub(1).max(1);
         if t.selected < t.scroll {
@@ -621,7 +634,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         let last = buf.line_count().saturating_sub(1);
         let mut cursor = st.cursor;
         cursor.line = cursor.line.min(last);
-        let pane = Pane { buf, marks: ed.git_markers(buf.path.as_deref()), diags: ed.diag_lines(buf.path.as_deref()), folds, syntax, cursor, top: st.top.min(last), frac: if active { ed.frac } else { 0.0 }, active };
+        let pane = Pane { buf, marks: ed.git_markers(buf.path.as_deref()), diags: ed.diag_lines(buf.path.as_deref()), squiggles: ed.diag_spans(buf.path.as_deref()), folds, syntax, cursor, top: st.top.min(last), frac: if active { ed.frac } else { 0.0 }, active };
         draw_pane(&mut p, ed, &pane, Rect { h: ed.text_rows(rect), ..rect });
     }
     // 窓ごとの状態行（分割中だけ。Vim の laststatus=1 と同じ）と、左右の窓の間の 1px の区切り線
@@ -943,6 +956,21 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     if let Some(l) = &ed.launcher {
         draw_launcher(&mut p, l, cols, rows + ed.status_rows(), &ed.preedit);
     }
+    // タブのアイコンにマウスを載せていれば、その下に名前
+    if let Some((row, col, label)) = ed.hover_tab.as_ref().filter(|_| ed.run_dialog.is_none() && ed.launcher.is_none()) {
+        let cell = p.fonts.cell();
+        let text = format!(" {label} ");
+        let w = p.width(&text);
+        let x = (*col).min(cols.saturating_sub(w + 1));
+        let y = (row + 1) as f32 * cell.h + 2.0;
+        p.out.push(Instance::fill(x as f32 * cell.w - 1.0, y - 1.0, w as f32 * cell.w + 2.0, cell.h + 2.0, STATUS_FG));
+        p.out.push(Instance::fill(x as f32 * cell.w, y, w as f32 * cell.w, cell.h, rgb(0x141414)));
+        let saved = p.cols;
+        p.cols = cols;
+        p.text(&text, x, y, FG);
+        p.cols = saved;
+    }
+    *ed.tab_hits.borrow_mut() = std::mem::take(&mut p.tab_hits);
     // 入力欄の縦棒の位置（IME の候補の窓をそこに出す）
     ed.prompt_caret.set(p.caret_at);
     p.out
@@ -1064,7 +1092,7 @@ fn draw_double_chevron(p: &mut Painter, x: f32, y: f32, up: bool, c: [f32; 4]) {
 /// 左の欄の 1 行目: タブ（プロジェクト・コミット）。出しているタブは明るい字と下線
 fn draw_left_tabs(p: &mut Painter, r: Rect, active: crate::tree_panel::LeftTab, focused: bool, extra: &str) {
     use crate::tree_panel::LeftTab;
-    let tabs: Vec<(TabIcon, &str, bool)> = crate::tree_panel::TABS
+    let tabs: Vec<(TabIcon, &'static str, bool)> = crate::tree_panel::TABS
         .iter()
         .map(|(l, t)| (if *t == LeftTab::Project { TabIcon::Project } else { TabIcon::Commit }, *l, *t == active))
         .collect();
@@ -1088,12 +1116,11 @@ enum TabIcon {
 }
 
 /// 左右の欄の 1 行目: タブをアイコンで並べ（出しているタブは明るく下線）、その横に出しているタブの名前
-fn draw_icon_tabs(p: &mut Painter, r: Rect, tabs: &[(TabIcon, &str, bool)], focused: bool, extra: &str) {
+fn draw_icon_tabs(p: &mut Painter, r: Rect, tabs: &[(TabIcon, &'static str, bool)], focused: bool, extra: &str) {
     let cell = p.fonts.cell();
     let y = r.y as f32 * cell.h;
     let tw = crate::tree_panel::TAB_W;
     let mut x = r.x;
-    let mut name = "";
     for &(icon, label, on) in tabs {
         if x + tw + 3 > r.x + r.w {
             break;
@@ -1102,15 +1129,15 @@ fn draw_icon_tabs(p: &mut Painter, r: Rect, tabs: &[(TabIcon, &str, bool)], focu
         draw_tab_icon(p, icon, (x as f32 + tw as f32 / 2.0) * cell.w, y, color);
         if on {
             p.out.push(Instance::fill(x as f32 * cell.w + cell.w * 0.5, y + cell.h - 2.0, (tw - 1) as f32 * cell.w, 2.0, if focused { GIT_MOD } else { STATUS_FG }));
-            name = label;
         }
+        // 名前は出さず、マウスを載せたときに出す
+        p.tab_hits.push((r.y, x, x + tw, label));
         x += tw;
     }
     let saved = p.cols;
     p.cols = (r.x + r.w).saturating_sub(3);
-    let end = p.text(&format!(" {name}"), x, y, STATUS_FG);
     if !extra.is_empty() {
-        p.text(&format!(" {extra}"), end, y, LINE_NO);
+        p.text(&format!(" {extra}"), x, y, LINE_NO);
     }
     p.cols = saved;
     p.out.push(Instance::fill(r.x as f32 * cell.w, y + cell.h - 1.0, r.w as f32 * cell.w, 1.0, LINE_NO));
@@ -1234,7 +1261,7 @@ fn draw_bottom_panel(p: &mut Painter, ed: &Editor, r: Rect) {
     p.out.push(Instance::fill(x0, y0, wpx, 1.0, LINE_NO));
     let focused = ed.bottom_focused();
     // 左右の欄と同じく、タブはアイコンで並べ、出しているタブの名前を横に
-    let tabs: Vec<(TabIcon, &str, bool)> = ed
+    let tabs: Vec<(TabIcon, &'static str, bool)> = ed
         .bottom_tabs()
         .into_iter()
         .map(|(l, k)| {
@@ -1324,7 +1351,7 @@ fn draw_right_panel(p: &mut Painter, ed: &Editor, r: Rect) {
     let focused = ed.right_focused();
     let tab = ed.right_visible().unwrap_or_default();
     // 左の欄と同じく、タブはいつも全部をアイコンで並べる
-    let tabs: Vec<(TabIcon, &str, bool)> = crate::right_panel::RTABS
+    let tabs: Vec<(TabIcon, &'static str, bool)> = crate::right_panel::RTABS
         .iter()
         .map(|(l, t)| {
             let icon = match t {
@@ -2683,6 +2710,59 @@ fn draw_read_view(p: &mut Painter, g: &crate::grep_panel::GrepPanel, v: &crate::
     }
 }
 
+/// 診断の波線を引く範囲（行の中の byte）。列の文字が語の一部ならその語、記号ならその字から空白の手前まで。
+/// 行頭の空白（列の情報の無い診断は列 0）なら、行の字のある部分全体
+fn squiggle_range(line: &str, col: usize) -> (usize, usize) {
+    let word = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+    let at = line.char_indices().nth(col).map_or(line.len(), |x| x.0);
+    let ch = line[at..].chars().next();
+    let whole = || {
+        let start = line.len() - line.trim_start().len();
+        (start, line.trim_end().len().max(start))
+    };
+    match ch {
+        // 行末（; が足りないなど）: 最後の字に
+        None if col > 0 => {
+            let end = line.trim_end().len();
+            (line.trim_end().char_indices().last().map_or(0, |x| x.0), end)
+        }
+        None => whole(),
+        Some(' ' | '\t') if col == 0 => whole(),
+        Some(c) if word(c) => {
+            let s = line[..at].char_indices().rev().take_while(|(_, c)| word(*c)).last().map_or(at, |x| x.0);
+            let e = line[at..].char_indices().find(|(_, c)| !word(*c)).map_or(line.len(), |x| at + x.0);
+            (s, e)
+        }
+        // 文字列: 閉じる引用符まで
+        Some(q @ ('"' | '\'' | '`')) => {
+            let e = line[at + 1..].find(q).map_or(line.len(), |i| at + 1 + i + 1);
+            (at, e)
+        }
+        Some(_) => {
+            let e = line[at..].char_indices().skip(1).find(|(_, c)| c.is_whitespace()).map_or(line.len(), |x| at + x.0);
+            (at, e)
+        }
+    }
+}
+
+/// 波線（x0〜x1、y はセルの下端）。小さな四角を三角波の形に並べる
+fn draw_squiggle(p: &mut Painter, x0: f32, x1: f32, bottom: f32, color: [f32; 4]) {
+    let cell = p.fonts.cell();
+    let px = (cell.h / 16.0).max(1.0).round();
+    let amp = px * 2.0;
+    let top = bottom - amp - px * 1.5;
+    let mut x = x0;
+    let mut k = 0usize;
+    while x < x1 {
+        // 0, 1, 2, 1, 0, … の高さ
+        let phase = k % 4;
+        let dy = [0.0, 1.0, 2.0, 1.0][phase] * px;
+        p.out.push(Instance::fill(x, top + dy, px.min(x1 - x), px, color));
+        x += px;
+        k += 1;
+    }
+}
+
 /// 実行の構成の画面（画面の中央に重ねる）。左に一覧（上に ＋ ⧉ −）、右に欄、下にコマンドの見本とボタン
 fn draw_run_dialog(p: &mut Painter, ed: &Editor, d: &crate::run_dialog::RunDialog, cols: usize, rows: usize) {
     use crate::run_dialog::{DialogButton, Focus};
@@ -3386,4 +3466,21 @@ fn draw_terminal(p: &mut Painter, ed: &Editor, r: Rect, focused: bool) {
         p.text(&format!(" {} が終わりました。Enter で起動し直す（{back}Ctrl-\\ x で閉じる） ", t.name), r.x, y, FG);
     }
     p.cols = saved;
+}
+
+#[cfg(test)]
+mod squiggle_tests {
+    use super::*;
+
+    #[test]
+    fn squiggle_ranges() {
+        let l = "    String name = foo.bar(1);";
+        assert_eq!(&l[squiggle_range(l, 11).0..squiggle_range(l, 11).1], "name", "語の途中でも語全体");
+        assert_eq!(&l[squiggle_range(l, 0).0..squiggle_range(l, 0).1], "String name = foo.bar(1);", "列 0 で空白なら行全体");
+        assert_eq!(&l[squiggle_range(l, 25).0..squiggle_range(l, 25).1], "(1);", "記号から空白の手前まで");
+        let s = r#"    let name: u32 = "text";"#;
+        assert_eq!(&s[squiggle_range(s, 20).0..squiggle_range(s, 20).1], r#""text""#, "文字列は閉じる引用符まで");
+        let j = "  名前 = 1";
+        assert_eq!(&j[squiggle_range(j, 2).0..squiggle_range(j, 2).1], "名前");
+    }
 }

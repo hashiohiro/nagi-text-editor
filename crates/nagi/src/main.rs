@@ -796,7 +796,11 @@ impl App {
         } else if hover.is_some() {
             want = None;
         }
-        if want != ed.stripe || hover != ed.hover_button || bar_changed {
+        // タブのアイコンの上なら名前を出す
+        let tab = ed.tab_hits.borrow().iter().find(|(r, c0, c1, _)| *r == row && (col as usize) >= *c0 && (col as usize) < *c1).map(|t| (t.0, t.1, t.3));
+        let tab_changed = tab != ed.hover_tab;
+        ed.hover_tab = tab;
+        if want != ed.stripe || hover != ed.hover_button || bar_changed || tab_changed {
             ed.stripe = want;
             ed.hover_button = hover;
             self.draw();

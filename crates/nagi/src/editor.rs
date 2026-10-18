@@ -321,6 +321,9 @@ pub struct Editor {
     pub hover_bar: Option<crate::db_panel::BarItem>,
     /// マウスを載せているボタン
     pub hover_button: Option<crate::toggles::Button>,
+    /// マウスを載せているタブのアイコン（行, 列, 名前）と、描いたアイコンの位置
+    pub hover_tab: Option<(usize, usize, &'static str)>,
+    pub tab_hits: std::cell::RefCell<Vec<(usize, usize, usize, &'static str)>>,
     /// 左の欄で出しているタブ（ツリーとコミットのパネルが両方開いているとき）
     pub left_tab: crate::tree_panel::LeftTab,
     /// ブランチのポップアップ（開いている間だけ）
@@ -439,6 +442,8 @@ impl Editor {
             left_hidden: false,
             bottom_hidden: false,
             hover_button: None,
+            hover_tab: None,
+            tab_hits: Default::default(),
             hover_bar: None,
             prompt_caret: Default::default(),
             left_w: None,
