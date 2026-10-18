@@ -1005,6 +1005,12 @@ enum TabIcon {
     Database,
     Maven,
     Preview,
+    Git,
+    Search,
+    Problems,
+    Output,
+    Terminal,
+    Result,
 }
 
 /// 左右の欄の 1 行目: タブをアイコンで並べ（出しているタブは明るく下線）、その横に出しているタブの名前
@@ -1079,6 +1085,60 @@ fn draw_tab_icon(p: &mut Painter, icon: TabIcon, cx: f32, y: f32, c: [f32; 4]) {
             // Maven: m の文字
             p.small_text("m", x + (s - cell.w * 1.1) / 2.0, y + (s - cell.h * 1.1) / 2.0, 1.1, c);
         }
+        TabIcon::Git => {
+            // Git: 幹の縦線と、枝の先の輪（右上）、輪から幹へ戻る線
+            let lx = x + (s * 0.28).round();
+            f(lx, y, px, s);
+            let r = (s * 0.34).round();
+            let (rx, ry) = (x + s - r - px, y + (s * 0.12).round());
+            frame(&mut f, rx, ry, r, r);
+            let bx = rx + (r / 2.0).floor();
+            let by = y + (s * 0.66).round();
+            f(bx, ry + r, px, by - ry - r);
+            f(lx, by, bx - lx + px, px);
+        }
+        TabIcon::Search => {
+            // 検索: 虫めがね（輪と、右下への柄）
+            let r = (s * 0.62).round();
+            frame(&mut f, x, y, r, r);
+            let mut k = 0.0;
+            while x + r - px + k < x + s {
+                f(x + r - px + k, y + r - px + k, px * 2.0, px * 2.0);
+                k += px;
+            }
+        }
+        TabIcon::Problems => {
+            // 問題: 枠の中に「!」
+            frame(&mut f, x + px, y, s - px * 2.0, s);
+            let cx = x + (s / 2.0).floor();
+            f(cx - px / 2.0, y + px * 3.0, px * 1.5, s * 0.45);
+            f(cx - px / 2.0, y + s - px * 4.0, px * 1.5, px * 1.5);
+        }
+        TabIcon::Output => {
+            // ログ: 長さの違う行
+            for (k, w) in [1.0, 0.7, 0.9, 0.5].iter().enumerate() {
+                f(x, y + px + k as f32 * (s / 4.0).floor(), (s * w).round(), px);
+            }
+        }
+        TabIcon::Terminal => {
+            // ターミナル: 枠の中に › と _
+            frame(&mut f, x, y + px, s, s - px * 2.0);
+            let (cx, cy) = (x + px * 3.0, y + (s / 2.0).round());
+            let h = (s * 0.18).round();
+            let mut k = 0.0;
+            while k <= h {
+                f(cx + k, cy - h + k, px, px);
+                f(cx + k, cy + h - k, px, px);
+                k += px;
+            }
+            f(cx + h + px * 2.0, cy + h, (s * 0.25).round(), px);
+        }
+        TabIcon::Result => {
+            // クエリの結果: 表（枠と、見出しの行と列の区切り）
+            frame(&mut f, x, y + px, s, s - px * 2.0);
+            f(x, y + px + (s * 0.3).round(), s, px);
+            f(x + (s * 0.4).round(), y + px, px, s - px * 2.0);
+        }
         TabIcon::Preview => {
             // プレビュー: 紙と行
             let w = s * 0.8;
@@ -1091,31 +1151,6 @@ fn draw_tab_icon(p: &mut Painter, icon: TabIcon, cx: f32, y: f32, c: [f32; 4]) {
     }
 }
 
-/// 欄の 1 行目のタブ（見出し, 出しているか）。右端の隠すボタンの手前で切る
-fn draw_tabs(p: &mut Painter, r: Rect, tabs: &[(&str, bool)], focused: bool, extra: &str) {
-    let cell = p.fonts.cell();
-    let y = r.y as f32 * cell.h;
-    let mut x = r.x;
-    // 右端の隠すボタンの手前で切る（細くしたとき）
-    let saved_cols = p.cols;
-    p.cols = (r.x + r.w).saturating_sub(3);
-    for &(label, on) in tabs {
-        let end = p.text(label, x, y, if on && focused { FG } else if on { rgb(0xc8c8c8) } else { STATUS_FG });
-        if on {
-            p.out.push(Instance::fill(x as f32 * cell.w, y + cell.h - 2.0, (end - x) as f32 * cell.w, 2.0, if focused { GIT_MOD } else { STATUS_FG }));
-        }
-        x = end;
-    }
-    p.cols = saved_cols;
-    if !extra.is_empty() {
-        let saved = p.cols;
-        p.cols = (r.x + r.w).saturating_sub(3);
-        p.text(&format!(" {extra}"), x, y, LINE_NO);
-        p.cols = saved;
-    }
-    p.out.push(Instance::fill(r.x as f32 * cell.w, y + cell.h - 1.0, r.w as f32 * cell.w, 1.0, LINE_NO));
-}
-
 /// 下の欄: 1 行目にタブ（Git・検索・問題・ログ・ターミナル・クエリの結果）、2 行目から選んでいるタブの中身
 fn draw_bottom_panel(p: &mut Painter, ed: &Editor, r: Rect) {
     use crate::result_grid::BottomKind;
@@ -1124,8 +1159,23 @@ fn draw_bottom_panel(p: &mut Painter, ed: &Editor, r: Rect) {
     p.out.push(Instance::fill(x0, y0, wpx, r.h as f32 * cell.h, BG));
     p.out.push(Instance::fill(x0, y0, wpx, 1.0, LINE_NO));
     let focused = ed.bottom_focused();
-    let tabs: Vec<(&str, bool)> = ed.bottom_tabs().into_iter().map(|(l, k)| (l, k == ed.bottom_kind)).collect();
-    draw_tabs(p, Rect { x: r.x, y: r.y, w: r.w, h: 1 }, &tabs, focused, "");
+    // 左右の欄と同じく、タブはアイコンで並べ、出しているタブの名前を横に
+    let tabs: Vec<(TabIcon, &str, bool)> = ed
+        .bottom_tabs()
+        .into_iter()
+        .map(|(l, k)| {
+            let icon = match k {
+                BottomKind::Git => TabIcon::Git,
+                BottomKind::Grep => TabIcon::Search,
+                BottomKind::Problems => TabIcon::Problems,
+                BottomKind::Output => TabIcon::Output,
+                BottomKind::Terminal => TabIcon::Terminal,
+                BottomKind::Result => TabIcon::Result,
+            };
+            (icon, l, k == ed.bottom_kind)
+        })
+        .collect();
+    draw_icon_tabs(p, Rect { x: r.x, y: r.y, w: r.w, h: 1 }, &tabs, focused, "");
     let c = Rect { x: r.x, y: r.y + 1, w: r.w, h: r.h.saturating_sub(1) };
     let empty = |p: &mut Painter, s: &str| {
         p.text(s, c.x + 1, (c.y + 1) as f32 * cell.h, STATUS_FG);

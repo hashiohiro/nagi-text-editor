@@ -752,13 +752,9 @@ impl App {
         let cols = ed.screen.0 as f64;
         // 左右のストライプは出さない（欄の 1 行目にタブがあり、隠した欄は端の » « のボタンで出すため）
         let _ = (edge, cols);
-        let want = if row >= rows && ed.status_rows() == 1 {
-            Some(editor::Side::Bottom)
-        } else if ed.stripe == Some(editor::Side::Bottom) && row + 1 == rows && col < 60.0 {
-            Some(editor::Side::Bottom)
-        } else {
-            None
-        };
+        // 下のストライプも出さない（下の欄の 1 行目にタブがあり、隠した欄は ▴ のボタンで出す）
+        let _ = (rows, row >= rows);
+        let want: Option<editor::Side> = None;
         // 区切りの上ではカーソルを ↔ / ↕ に
         let icon = match ed.sep_at(row, col as usize) {
             Some(s) if s.horizontal_drag() => winit::window::CursorIcon::ColResize,

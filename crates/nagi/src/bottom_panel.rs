@@ -18,14 +18,14 @@ use crate::editor::{Editor, Effect, Mode, Side};
 use crate::panes::Rect;
 use crate::result_grid::BottomKind;
 
-/// タブ（見出し, 種類）。クエリの結果は結果があるときだけ出す
+/// タブ（名前, 種類）。左右の欄と同じくアイコンで並べ、出しているタブの名前を横に出す。クエリの結果は結果があるときだけ
 pub const BTABS: [(&str, BottomKind); 6] = [
-    (" Git ", BottomKind::Git),
-    (" 検索 ", BottomKind::Grep),
-    (" 問題 ", BottomKind::Problems),
-    (" ログ ", BottomKind::Output),
-    (" ターミナル ", BottomKind::Terminal),
-    (" クエリの結果 ", BottomKind::Result),
+    ("Git", BottomKind::Git),
+    ("検索", BottomKind::Grep),
+    ("問題", BottomKind::Problems),
+    ("ログ", BottomKind::Output),
+    ("ターミナル", BottomKind::Terminal),
+    ("クエリの結果", BottomKind::Result),
 ];
 
 /// 問題の一覧の 1 行
@@ -59,15 +59,7 @@ impl Editor {
 
     /// 1 行目の `col` にあるタブ
     pub fn btab_at(&self, col: usize) -> Option<BottomKind> {
-        let mut x = 0;
-        for (label, k) in self.bottom_tabs() {
-            let w = nagi_core::display_col(label, label.len(), false);
-            if col >= x && col < x + w {
-                return Some(k);
-            }
-            x += w;
-        }
-        None
+        self.bottom_tabs().get(col / crate::tree_panel::TAB_W).map(|t| t.1)
     }
 
     /// ログ（コマンドの出力）の入れ物（出していなくても）
@@ -326,6 +318,6 @@ mod tests {
         assert_eq!(m.problem_rows().len(), 3, "問題のタブにも出る");
         // タブの位置
         assert_eq!(e.btab_at(1), Some(BottomKind::Git));
-        assert_eq!(e.btab_at(6), Some(BottomKind::Grep));
+        assert_eq!(e.btab_at(5), Some(BottomKind::Grep));
     }
 }
