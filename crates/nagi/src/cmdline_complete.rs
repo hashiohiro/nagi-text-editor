@@ -154,7 +154,7 @@ pub struct CmdComplete {
     /// 選ぶ前の語（候補の端の先で戻す）
     pub original: String,
     /// 描いた位置（マウス用）: (画面の行, 列の始め, 終わり, 候補の番号)
-    pub rows: std::cell::RefCell<Vec<(usize, usize, usize, usize)>>,
+    pub rows: crate::ui::Hits<usize>,
 }
 
 impl Editor {
@@ -274,7 +274,7 @@ impl Editor {
 
     /// マウス: 画面の (行, 列) が候補の上ならそれを入れる。当たれば true
     pub(crate) fn cmd_complete_click(&mut self, row: usize, col: usize) -> bool {
-        let hit = self.cmd_complete.as_ref().and_then(|c| c.rows.borrow().iter().find(|(r, c0, c1, _)| *r == row && col >= *c0 && col < *c1).map(|x| x.3));
+        let hit = self.cmd_complete.as_ref().and_then(|c| c.rows.at(row, col));
         match hit {
             Some(i) => {
                 self.cmd_complete_pick(i);
@@ -411,7 +411,7 @@ mod tests {
         let c = e.cmd_complete.as_ref().unwrap();
         let last = c.items.len() - 1;
         let want = c.items[last].0.clone();
-        *c.rows.borrow_mut() = vec![(30, 1, 40, last)];
+        c.rows.set(vec![(30, 1, 40, last)]);
         assert!(e.cmd_complete_click(30, 5));
         assert_eq!(e.cmdline.text, want);
         assert!(!e.cmd_complete_click(29, 5));

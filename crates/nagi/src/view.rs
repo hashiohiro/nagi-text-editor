@@ -84,6 +84,8 @@ const DIAG_ERROR: [f32; 4] = rgb(0xd75f5f);
 const DIAG_WARN: [f32; 4] = rgb(0xd7af5f);
 /// 検索の一致（今いるもの以外）の背景
 const MATCH_BG: [f32; 4] = rgb(0x3a3a3a);
+/// 強調の色（選んでいる欄・決めるボタン。配色の設定で描いた後に置き換わる）
+const ACCENT_FG: [f32; 4] = rgb(DEFAULT_ACCENT);
 
 /// ハイライトの色（ターミナルの 256 色に近い、控えめな数色）
 fn hl_color(h: nagi_syntax::Hl) -> [f32; 4] {
@@ -2466,7 +2468,7 @@ fn draw_cmd_complete(p: &mut Painter, ed: &Editor, c: &crate::cmdline_complete::
             p.text(desc, end.max(col + name_w + 1) + 2, y, dim);
         }
     }
-    *c.rows.borrow_mut() = hits;
+    c.rows.set(hits);
     // 件数が多いときは、残りの数を一覧の右上に
     if c.items.len() > n {
         let more = format!(" {}/{} ", c.sel.map_or(0, |s| s + 1), c.items.len());
@@ -2870,14 +2872,11 @@ fn draw_squiggle(p: &mut Painter, x0: f32, x1: f32, bottom: f32, color: [f32; 4]
 fn draw_settings_dialog(p: &mut Painter, ed: &Editor, d: &crate::settings_dialog::SettingsDialog, cols: usize, rows: usize) {
     use crate::settings::{CATEGORIES, SKind};
     use crate::settings_dialog::{SButton, SFocus};
-    const ACCENT: [f32; 4] = rgb(0x87afd7);
     let cell = p.fonts.cell();
     let w = cols.saturating_sub(6).clamp(40, 130).min(cols);
     let h = rows.saturating_sub(2).clamp(12, 34).min(rows);
-    let (x0, y0) = ((cols - w) / 2, (rows - h) / 2);
+    let (x0, y0) = dialog_frame(p, cols, rows, w, h);
     let y = |r: usize| (y0 + r) as f32 * cell.h;
-    p.out.push(Instance::fill((x0 as f32 - 0.5) * cell.w, y(0) - cell.h * 0.5, (w as f32 + 1.0) * cell.w, (h as f32 + 1.0) * cell.h, STATUS_FG));
-    p.out.push(Instance::fill((x0 as f32 - 0.5) * cell.w + 1.0, y(0) - cell.h * 0.5 + 1.0, (w as f32 + 1.0) * cell.w - 2.0, (h as f32 + 1.0) * cell.h - 2.0, rgb(0x141414)));
     let saved = p.cols;
     p.cols = x0 + w;
     let mut buttons = Vec::new();
@@ -2908,7 +2907,7 @@ fn draw_settings_dialog(p: &mut Painter, ed: &Editor, d: &crate::settings_dialog
             p.out.push(Instance::fill(x0 as f32 * cell.w, y(r), lw as f32 * cell.w, cell.h, if d.focus == SFocus::Cats { FG } else { MATCH_BG }));
         }
         p.text(&format!(" {c}"), x0, y(r), if sel && d.focus == SFocus::Cats { BG } else if filtering { STATUS_FG } else { FG });
-        cat_rows.push((y0 + r, i, x0, x0 + lw));
+        cat_rows.push((y0 + r, x0, x0 + lw, i));
     }
     p.out.push(Instance::fill((x0 + lw) as f32 * cell.w + cell.w * 0.5, y(1), 1.0, (h - 3) as f32 * cell.h, LINE_NO));
     // 右: 項目
@@ -2925,7 +2924,7 @@ fn draw_settings_dialog(p: &mut Painter, ed: &Editor, d: &crate::settings_dialog
         let sel = k == d.selected;
         let focused = sel && matches!(d.focus, SFocus::Items | SFocus::Edit);
         if focused {
-            p.out.push(Instance::fill(rx as f32 * cell.w - cell.w * 0.5, y(r), 2.0, cell.h, ACCENT));
+            p.out.push(Instance::fill(rx as f32 * cell.w - cell.w * 0.5, y(r), 2.0, cell.h, ACCENT_FG));
         }
         if sel {
             p.out.push(Instance::fill(rx as f32 * cell.w, y(r), (x0 + w - rx - 1) as f32 * cell.w, cell.h, MATCH_BG));
@@ -2954,7 +2953,7 @@ fn draw_settings_dialog(p: &mut Painter, ed: &Editor, d: &crate::settings_dialog
             };
             let end = p.text(&shown, vx, y(r), color);
             if overridden {
-                p.text("  P", end, y(r), ACCENT);
+                p.text("  P", end, y(r), ACCENT_FG);
             }
         }
         item_rows.push((y0 + r, k, vx));
@@ -3004,19 +3003,7 @@ fn draw_settings_dialog(p: &mut Painter, ed: &Editor, d: &crate::settings_dialog
         SFocus::Combo => "打って絞り込み  ↑↓ 選ぶ  Enter・クリック 決める  Esc やめる",
     };
     let by = h - 1;
-    let mut bx = x0 + w;
-    let mut bs = Vec::new();
-    for (label, b) in [(" 取り消し ", SButton::Cancel), (" 適用 ", SButton::Apply), (" OK ", SButton::Ok)] {
-        let bw = p.width(label);
-        bx = bx.saturating_sub(bw + 1);
-        bs.push((bx, bw, label, b));
-    }
-    for (bx, bw, label, b) in bs {
-        let primary = b == SButton::Ok;
-        p.out.push(Instance::fill(bx as f32 * cell.w, y(by), bw as f32 * cell.w, cell.h, if primary { ACCENT } else { MATCH_BG }));
-        p.text(label, bx, y(by), if primary { BG } else { FG });
-        buttons.push((y0 + by, bx, bx + bw, b));
-    }
+    buttons.extend(dialog_buttons(p, x0 + w, y0 + by, &[(" 取り消し ", SButton::Cancel), (" 適用 ", SButton::Apply), (" OK ", SButton::Ok)], SButton::Ok));
     p.cols = x0 + w.saturating_sub(30);
     p.text(help, x0 + 1, y(by), STATUS_FG);
     // コンボボックス（フォントの一覧）: 選んでいる項目の下（入らなければ上）に重ねる
@@ -3029,7 +3016,7 @@ fn draw_settings_dialog(p: &mut Painter, ed: &Editor, d: &crate::settings_dialog
         let below = irow + 1 + total <= y0 + h - 2;
         let top_row = if below { irow + 1 } else { irow.saturating_sub(total) };
         let cy = |r: usize| (top_row + r) as f32 * cell.h;
-        p.out.push(Instance::fill(ivx as f32 * cell.w - 1.0, cy(0) - 1.0, cw as f32 * cell.w + 2.0, total as f32 * cell.h + 2.0, ACCENT));
+        p.out.push(Instance::fill(ivx as f32 * cell.w - 1.0, cy(0) - 1.0, cw as f32 * cell.w + 2.0, total as f32 * cell.h + 2.0, ACCENT_FG));
         p.out.push(Instance::fill(ivx as f32 * cell.w, cy(0), cw as f32 * cell.w, total as f32 * cell.h, rgb(0x1c1c1c)));
         p.cols = ivx + cw;
         let e = p.text("🔍 ", ivx, cy(0), FG);
@@ -3045,7 +3032,7 @@ fn draw_settings_dialog(p: &mut Painter, ed: &Editor, d: &crate::settings_dialog
             let r = 1 + k - start;
             let on = k == sel;
             if on {
-                p.out.push(Instance::fill(ivx as f32 * cell.w, cy(r), cw as f32 * cell.w, cell.h, ACCENT));
+                p.out.push(Instance::fill(ivx as f32 * cell.w, cy(r), cw as f32 * cell.w, cell.h, ACCENT_FG));
             }
             let item = &c.items[i];
             let end = p.text(&format!(" {}", item.label), ivx, cy(r), if on { BG } else { FG });
@@ -3063,27 +3050,23 @@ fn draw_settings_dialog(p: &mut Painter, ed: &Editor, d: &crate::settings_dialog
             p.text(" 合うフォントがありません", ivx, cy(1), STATUS_FG);
         }
     }
-    *d.combo_rows.borrow_mut() = combo_rows;
+    d.combo_rows.set(combo_rows);
     p.cols = saved;
-    *d.cat_rows.borrow_mut() = cat_rows;
+    d.cat_rows.set(cat_rows);
     *d.item_rows.borrow_mut() = item_rows;
-    *d.buttons.borrow_mut() = buttons;
+    d.buttons.set(buttons);
 }
 
 /// 実行の構成の画面（画面の中央に重ねる）。左に一覧（上に ＋ ⧉ −）、右に欄、下にコマンドの見本とボタン
 fn draw_run_dialog(p: &mut Painter, ed: &Editor, d: &crate::run_dialog::RunDialog, cols: usize, rows: usize) {
     use crate::run_dialog::{DialogButton, Focus};
-    const ACCENT: [f32; 4] = rgb(0x87afd7);
     let cell = p.fonts.cell();
     let w = cols.saturating_sub(6).clamp(40, 120).min(cols);
     // 高さは中身に合わせる（一覧の数・欄の数とコマンドの見本の分）
     let need = (d.configs.len() + 6).max(d.fields.len() + 13).max(16);
     let h = need.min(30).min(rows.saturating_sub(2)).max(12.min(rows));
-    let (x0, y0) = ((cols - w) / 2, (rows - h) / 2);
+    let (x0, y0) = dialog_frame(p, cols, rows, w, h);
     let y = |r: usize| (y0 + r) as f32 * cell.h;
-    // 地と枠
-    p.out.push(Instance::fill((x0 as f32 - 0.5) * cell.w, y(0) - cell.h * 0.5, (w as f32 + 1.0) * cell.w, (h as f32 + 1.0) * cell.h, STATUS_FG));
-    p.out.push(Instance::fill((x0 as f32 - 0.5) * cell.w + 1.0, y(0) - cell.h * 0.5 + 1.0, (w as f32 + 1.0) * cell.w - 2.0, (h as f32 + 1.0) * cell.h - 2.0, rgb(0x141414)));
     let saved = p.cols;
     p.cols = x0 + w;
     p.text(" 実行の構成", x0, y(0), FG);
@@ -3120,7 +3103,7 @@ fn draw_run_dialog(p: &mut Painter, ed: &Editor, d: &crate::run_dialog::RunDialo
         if tx > end {
             p.text(&tag, tx, y(r), dim);
         }
-        list_rows.push((y0 + r, k, x0, x0 + lw));
+        list_rows.push((y0 + r, x0, x0 + lw, k));
     }
     // 右: 欄
     p.cols = x0 + w;
@@ -3131,7 +3114,7 @@ fn draw_run_dialog(p: &mut Painter, ed: &Editor, d: &crate::run_dialog::RunDialo
         let mut r = 1;
         let row = |p: &mut Painter, r: usize, label: &str, focused: bool| {
             if focused {
-                p.out.push(Instance::fill(rx as f32 * cell.w - cell.w * 0.5, y(r), 2.0, cell.h, ACCENT));
+                p.out.push(Instance::fill(rx as f32 * cell.w - cell.w * 0.5, y(r), 2.0, cell.h, ACCENT_FG));
             }
             p.text(label, rx, y(r), if focused { FG } else { STATUS_FG });
         };
@@ -3207,25 +3190,41 @@ fn draw_run_dialog(p: &mut Painter, ed: &Editor, d: &crate::run_dialog::RunDialo
         _ => "Tab・Enter 次の欄  ↑↓ 前後  Esc ノーマル→一覧  Ctrl+Enter 保存",
     };
     let by = h - 1;
-    let mut bx = x0 + w;
-    let mut bs = Vec::new();
-    for (label, b) in [(" 取り消し ", DialogButton::Cancel), (" 保存 ", DialogButton::Save), (" 実行 ", DialogButton::Run)] {
-        let bw = p.width(label);
-        bx = bx.saturating_sub(bw + 1);
-        bs.push((bx, bw, label, b));
-    }
-    for (bx, bw, label, b) in bs {
-        let primary = b == DialogButton::Save;
-        p.out.push(Instance::fill(bx as f32 * cell.w, y(by), bw as f32 * cell.w, cell.h, if primary { ACCENT } else { MATCH_BG }));
-        p.text(label, bx, y(by), if primary { BG } else { FG });
-        buttons.push((y0 + by, bx, bx + bw, b));
-    }
+    buttons.extend(dialog_buttons(p, x0 + w, y0 + by, &[(" 取り消し ", DialogButton::Cancel), (" 保存 ", DialogButton::Save), (" 実行 ", DialogButton::Run)], DialogButton::Save));
     p.cols = x0 + w.saturating_sub(30);
     p.text(help, x0 + 1, y(by), STATUS_FG);
     p.cols = saved;
-    *d.list_rows.borrow_mut() = list_rows;
+    d.list_rows.set(list_rows);
     *d.field_rows.borrow_mut() = field_rows;
-    *d.buttons.borrow_mut() = buttons;
+    d.buttons.set(buttons);
+}
+
+/// ダイアログの地と枠（画面の真ん中に幅 `w`・高さ `h`）。左上の (列, 行)
+fn dialog_frame(p: &mut Painter, cols: usize, rows: usize, w: usize, h: usize) -> (usize, usize) {
+    let cell = p.fonts.cell();
+    let (x0, y0) = ((cols - w) / 2, (rows - h) / 2);
+    let (x, y) = ((x0 as f32 - 0.5) * cell.w, (y0 as f32 - 0.5) * cell.h);
+    let (fw, fh) = ((w as f32 + 1.0) * cell.w, (h as f32 + 1.0) * cell.h);
+    p.out.push(Instance::fill(x, y, fw, fh, STATUS_FG));
+    p.out.push(Instance::fill(x + 1.0, y + 1.0, fw - 2.0, fh - 2.0, rgb(0x141414)));
+    (x0, y0)
+}
+
+/// ダイアログの下のボタンを右から並べる（`right` 列の左まで、画面の `row` 行目）。`primary` は強調する。当たり判定を返す
+fn dialog_buttons<T: Copy + PartialEq>(p: &mut Painter, right: usize, row: usize, buttons: &[(&str, T)], primary: T) -> Vec<(usize, usize, usize, T)> {
+    let cell = p.fonts.cell();
+    let y = row as f32 * cell.h;
+    let mut bx = right;
+    let mut hits = Vec::new();
+    for &(label, b) in buttons {
+        let bw = p.width(label);
+        bx = bx.saturating_sub(bw + 1);
+        let main = b == primary;
+        p.out.push(Instance::fill(bx as f32 * cell.w, y, bw as f32 * cell.w, cell.h, if main { ACCENT_FG } else { MATCH_BG }));
+        p.text(label, bx, y, if main { BG } else { FG });
+        hits.push((row, bx, bx + bw, b));
+    }
+    hits
 }
 
 /// ファインダーの候補を出す高さ（画面の 4 割、少なくとも 8 行）
@@ -3235,7 +3234,6 @@ fn finder_height(rows: usize) -> usize {
 
 /// ランチャー: 左に操作、中央に検索の欄と一覧（ピン留め → 最近）、右に選んだプロジェクトのプレビュー。画面全体を覆う
 fn draw_launcher(p: &mut Painter, l: &crate::launcher::Launcher, cols: usize, rows: usize, preedit: &str) {
-    const ACCENT: [f32; 4] = rgb(0x87afd7);
     const ORANGE: [f32; 4] = rgb(0xd7af87);
     const GREEN: [f32; 4] = rgb(0x87af87);
     let cell = p.fonts.cell();
@@ -3292,7 +3290,7 @@ fn draw_launcher(p: &mut Painter, l: &crate::launcher::Launcher, cols: usize, ro
                 None => line(p, "読んでいます…", STATUS_FG, &mut r),
                 Some(pv) => {
                     r += 1;
-                    line(p, &pv.kind, ACCENT, &mut r);
+                    line(p, &pv.kind, ACCENT_FG, &mut r);
                     if !e.kind.is_empty() {
                         let m = if pv.modules.is_empty() { String::new() } else { format!("  {}", pv.modules.join(" · ")) };
                         line(p, &format!("{}{m}", e.kind), FG, &mut r);
@@ -3403,7 +3401,7 @@ fn draw_launcher(p: &mut Painter, l: &crate::launcher::Launcher, cols: usize, ro
         let name = clip_width(p, &e.name, rx.saturating_sub(cx + 4));
         p.text(&format!("{}{name}", if e.pinned { "★ " } else { "  " }), cx, y(r), col(if e.missing { DIAG_ERROR } else { FG }));
         let from_c = match from.as_str() {
-            "IntelliJ" => ACCENT,
+            "IntelliJ" => ACCENT_FG,
             "WebStorm" => ORANGE,
             "Eclipse" => GREEN,
             _ => STATUS_FG,
@@ -3524,7 +3522,7 @@ fn clip_width(p: &Painter, s: &str, w: usize) -> String {
 }
 
 /// 当たった文字の色（ハイライトのキーワードと同じ控えめな青）
-const FINDER_MATCH: [f32; 4] = rgb(0x87afd7);
+const FINDER_MATCH: [f32; 4] = ACCENT_FG;
 
 /// ファインダーの候補。最下行のすぐ上が一番良い候補で、上へ行くほど点数が下がる（fzf と同じ並び）
 fn draw_finder(p: &mut Painter, f: &crate::finder::Finder, rows: usize, cols: usize) {

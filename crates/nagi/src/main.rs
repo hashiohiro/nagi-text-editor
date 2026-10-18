@@ -69,6 +69,7 @@ mod normal;
 mod stats;
 mod view;
 mod list;
+mod ui;
 mod grammars;
 mod vim_field;
 mod panes;

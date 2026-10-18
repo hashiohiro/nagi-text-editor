@@ -49,10 +49,10 @@ pub struct RunDialog {
     pub confirm_close: bool,
     /// 描いた位置（マウス用）: 一覧の (画面の行, 番号)、欄の (画面の行, Focus)、ボタンの (行, 列の始め, 終わり, ボタン)
     /// 一覧の (画面の行, 構成の番号, 列の始め, 終わり)
-    pub list_rows: RefCell<Vec<(usize, usize, usize, usize)>>,
+    pub list_rows: crate::ui::Hits<usize>,
     /// 欄の (画面の行, Focus, 値の始まりの列)
     pub field_rows: RefCell<Vec<(usize, Focus, usize)>>,
-    pub buttons: RefCell<Vec<(usize, usize, usize, DialogButton)>>,
+    pub buttons: crate::ui::Hits<DialogButton>,
 }
 
 impl RunDialog {
@@ -65,9 +65,9 @@ impl RunDialog {
             fields: Vec::new(),
             dirty: false,
             confirm_close: false,
-            list_rows: RefCell::new(Vec::new()),
+            list_rows: Default::default(),
             field_rows: RefCell::new(Vec::new()),
-            buttons: RefCell::new(Vec::new()),
+            buttons: Default::default(),
         };
         d.load_fields();
         d
@@ -408,12 +408,12 @@ impl Editor {
     /// マウス: 画面の (行, 列) を押した
     pub(crate) fn run_dialog_click(&mut self, row: usize, col: usize) {
         let Some(d) = &mut self.run_dialog else { return };
-        let button = d.buttons.borrow().iter().find(|(r, c0, c1, _)| *r == row && col >= *c0 && col < *c1).map(|b| b.3);
+        let button = d.buttons.at(row, col);
         if let Some(b) = button {
             self.run_dialog_button(b);
             return;
         }
-        let item = d.list_rows.borrow().iter().find(|(r, _, c0, c1)| *r == row && col >= *c0 && col < *c1).map(|x| x.1);
+        let item = d.list_rows.at(row, col);
         if let Some(i) = item {
             d.select(i);
             d.focus = Focus::List;
@@ -533,7 +533,7 @@ mod tests {
         // 描いた位置の代わりに入れる（行 10: 名前、行 11: 種類、行 12: コマンド。値は 50 列から）
         let d = e.run_dialog.as_ref().unwrap();
         *d.field_rows.borrow_mut() = vec![(10, Focus::Name, 50), (11, Focus::Kind, 50), (12, Focus::Field(0), 50)];
-        *d.list_rows.borrow_mut() = vec![(5, 0, 0, 30), (6, 1, 0, 30), (12, 0, 0, 30)];
+        d.list_rows.set(vec![(5, 0, 30, 0), (6, 0, 30, 1), (12, 0, 30, 0)]);
         // コマンドの「abc」の b の前を押して打つ
         e.run_dialog_click(12, 56);
         assert_eq!(e.run_dialog.as_ref().unwrap().focus, Focus::Field(0));

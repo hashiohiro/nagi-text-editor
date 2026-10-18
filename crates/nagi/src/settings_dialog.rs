@@ -73,15 +73,15 @@ pub struct SettingsDialog {
     /// フォントの一覧（初めて開いたときに読む）
     fonts: Option<Vec<(String, bool)>>,
     /// コンボボックスの描いた行（行, 列の始め, 終わり, 一覧の番号）
-    pub combo_rows: RefCell<Vec<(usize, usize, usize, usize)>>,
+    pub combo_rows: crate::ui::Hits<usize>,
     /// 保存先をプロジェクトにしているか
     pub project_scope: bool,
     pub dirty: bool,
     pub confirm_close: bool,
     /// 描いた位置（マウス用）: 分類の (行, 番号, 列の始め, 終わり)、項目の (行, 番号, 値の列)、ボタン
-    pub cat_rows: RefCell<Vec<(usize, usize, usize, usize)>>,
+    pub cat_rows: crate::ui::Hits<usize>,
     pub item_rows: RefCell<Vec<(usize, usize, usize)>>,
-    pub buttons: RefCell<Vec<(usize, usize, usize, SButton)>>,
+    pub buttons: crate::ui::Hits<SButton>,
     /// 言語のツールの見つかったもの（種類 → 説明の行。開いたときに裏で調べる。WSL のプロジェクトなら WSL の中も）
     pub tool_info: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
     /// ダウンロードできる版（種類 → 一覧。コンボボックスを初めて開いたときに裏で調べる）
@@ -479,13 +479,13 @@ impl Editor {
             field: None,
             combo: None,
             fonts: None,
-            combo_rows: RefCell::new(Vec::new()),
+            combo_rows: Default::default(),
             project_scope: false,
             dirty: false,
             confirm_close: false,
-            cat_rows: RefCell::new(Vec::new()),
+            cat_rows: Default::default(),
             item_rows: RefCell::new(Vec::new()),
-            buttons: RefCell::new(Vec::new()),
+            buttons: Default::default(),
             tool_info: Default::default(),
             releases: Default::default(),
             waker: self.waker.clone().unwrap_or_else(|| std::sync::Arc::new(|| {})),
@@ -716,7 +716,7 @@ impl Editor {
         let Some(d) = &mut self.settings_dialog else { return };
         // コンボボックスを開いていれば、その行を押すと決める（外を押すと閉じる）
         if d.combo.is_some() {
-            let hit = d.combo_rows.borrow().iter().find(|(r, c0, c1, _)| *r == row && col >= *c0 && col < *c1).map(|x| x.3);
+            let hit = d.combo_rows.at(row, col);
             match hit {
                 Some(i) => {
                     if let Some(v) = d.choose_combo(Some(i)) {
@@ -730,12 +730,12 @@ impl Editor {
             }
             return;
         }
-        let button = d.buttons.borrow().iter().find(|(r, c0, c1, _)| *r == row && col >= *c0 && col < *c1).map(|b| b.3);
+        let button = d.buttons.at(row, col);
         if let Some(b) = button {
             self.settings_button(b);
             return;
         }
-        let cat = d.cat_rows.borrow().iter().find(|(r, _, c0, c1)| *r == row && col >= *c0 && col < *c1).map(|x| x.1);
+        let cat = d.cat_rows.at(row, col);
         if let Some(i) = cat {
             d.cat = i;
             d.selected = 0;
