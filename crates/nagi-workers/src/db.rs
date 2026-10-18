@@ -785,4 +785,97 @@ mod tests {
         c.query("select * from nothing", 10);
         assert!(matches!(wait(), Reply::Error(m) if m.contains("nothing")));
     }
+
+    /// 本物の Oracle で往復する（手で流す。NAGI_TEST_ORACLE に「URL 利用者 パスワード」、NAGI_DRIVERS_DIR を一時の場所へ。
+    /// Instant Client が無ければ nagi と同じ関数でダウンロードする）
+    #[test]
+    #[ignore]
+    fn oracle_real() {
+        let conf = std::env::var("NAGI_TEST_ORACLE").expect("NAGI_TEST_ORACLE に「URL 利用者 パスワード」");
+        let mut it = conf.split_whitespace();
+        let (url, user, pass) = (it.next().unwrap(), it.next().unwrap(), it.next().unwrap());
+        if !crate::drivers::oracle_ready() {
+            let d = crate::drivers::download_oracle(nagi_core::task::no_waker());
+            loop {
+                match d.rx.recv().expect("ダウンロードが止まった") {
+                    crate::drivers::DlMsg::Done(r) => {
+                        eprintln!("Instant Client: {r:?}");
+                        r.unwrap();
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let c = Client::connect(url, user, pass, std::sync::Arc::new(|| {})).unwrap();
+        let wait = || c.rx.recv_timeout(std::time::Duration::from_secs(60)).expect("応答が無い");
+        let schema = match wait() {
+            Reply::Connected { product, schema } => {
+                eprintln!("つないだ: {product} / {schema}");
+                schema
+            }
+            r => panic!("{r:?}"),
+        };
+        for t in ["item", "customer"] {
+            c.query(&format!("drop table if exists {t} purge"), 10);
+            wait();
+        }
+        c.query("create table customer(id number primary key, name varchar2(50) not null)", 10);
+        assert!(matches!(wait(), Reply::Updated { .. }));
+        c.query("create table item(id number primary key, name varchar2(50), cust number references customer(id))", 10);
+        wait();
+        c.query("create index item_name on item(name)", 10);
+        wait();
+        c.query("insert into item values (1, 'a', null), (2, 'りんご', null), (3, 'c', null)", 10);
+        match wait() {
+            Reply::Updated { count, .. } => assert_eq!(count, 3),
+            r => panic!("{r:?}"),
+        }
+        c.send(Req::Query { sql: "select id, name, cust from item order by id;".into(), max: 1, offset: 1 });
+        match wait() {
+            Reply::Rows { cols, types, rows, more, .. } => {
+                eprintln!("列 {cols:?} 型 {types:?}");
+                assert_eq!(cols, vec!["ID", "NAME", "CUST"]);
+                assert_eq!(rows, vec![vec![Some("2".to_string()), Some("りんご".into()), None]], "1 行飛ばして 1 行");
+                assert!(more);
+            }
+            r => panic!("{r:?}"),
+        }
+        c.send(Req::Objects(schema.clone()));
+        match wait() {
+            Reply::Objects(o) => assert!(["CUSTOMER", "ITEM"].iter().all(|n| o.tables.iter().any(|t| t.0 == *n)), "{:?}", o.tables),
+            r => panic!("{r:?}"),
+        }
+        c.send(Req::Columns(schema.clone(), "ITEM".into()));
+        match wait() {
+            Reply::Columns(cols) => assert!(cols[0].pk && cols[2].fk == "CUSTOMER", "{cols:?}"),
+            r => panic!("{r:?}"),
+        }
+        c.send(Req::Indexes(schema.clone(), "ITEM".into()));
+        match wait() {
+            Reply::Indexes(i, k) => assert!(i.iter().any(|x| x.name == "ITEM_NAME") && k.iter().any(|x| x.refs == "CUSTOMER"), "{i:?} {k:?}"),
+            r => panic!("{r:?}"),
+        }
+        c.send(Req::Count("select count(*) from item".into()));
+        assert!(matches!(wait(), Reply::Count(3)));
+        c.send(Req::Batch(vec!["update item set name = 'x' where id = 1".into(), "update item set name = 'y' where id = 99".into()]));
+        assert!(matches!(wait(), Reply::Error(m) if m.contains("2 文目")));
+        c.send(Req::Batch(vec!["update item set name = 'x' where id = 1".into(), "delete from item where id = 3".into()]));
+        assert!(matches!(wait(), Reply::Updated { count: 2, .. }));
+        c.send(Req::AutoCommit(false));
+        wait();
+        c.query("delete from item", 10);
+        wait();
+        c.send(Req::Rollback);
+        wait();
+        c.send(Req::Count("select count(*) from item".into()));
+        assert!(matches!(wait(), Reply::Count(2)));
+        c.send(Req::Ddl(schema.clone(), "ITEM".into(), "TABLE".into()));
+        match wait() {
+            Reply::Ddl(d) => assert!(d.contains("CREATE TABLE"), "{d}"),
+            r => panic!("{r:?}"),
+        }
+        c.query("select * from nothing", 10);
+        assert!(matches!(wait(), Reply::Error(m) if m.contains("ORA-00942")));
+    }
 }

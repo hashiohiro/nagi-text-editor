@@ -74,10 +74,36 @@ fn first_version(s: &str) -> Option<String> {
     re.find(s).map(|m| m.as_str().to_string())
 }
 
-/// 実行ファイルの版（`--version` などの出力の最初の版。3 秒で諦める）
+/// 実行ファイルの版（`--version` などの出力の最初の版。3 秒で諦める）。分かった版は exe の場所と更新時刻で覚えておく
+/// （設定の画面は一覧を作るたびに呼ぶため）
 pub fn version_of(exe: &Path, args: &[&str]) -> String {
+    version_within(exe, args, std::time::Duration::from_secs(3))
+}
+
+/// 版を覚えておく表（exe の場所 → (更新時刻, 版)）
+fn versions() -> &'static std::sync::Mutex<std::collections::HashMap<PathBuf, (std::time::SystemTime, String)>> {
+    static V: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, (std::time::SystemTime, String)>>> = std::sync::OnceLock::new();
+    V.get_or_init(Default::default)
+}
+
+/// `version_of` の上限を指定する形（ダウンロードの直後は、展開したばかりの exe の初回の起動が検査などで遅いので長めに。裏の糸から）
+fn version_within(exe: &Path, args: &[&str], limit: std::time::Duration) -> String {
+    let mtime = std::fs::metadata(exe).and_then(|m| m.modified()).ok();
+    if let (Some(t), Ok(v)) = (mtime, versions().lock()) {
+        if let Some((_, ver)) = v.get(exe).filter(|(at, _)| *at == t) {
+            return ver.clone();
+        }
+    }
+    let ver = run_version(exe, args, limit);
+    if let (Some(t), false, Ok(mut v)) = (mtime, ver.is_empty(), versions().lock()) {
+        v.insert(exe.to_path_buf(), (t, ver.clone()));
+    }
+    ver
+}
+
+fn run_version(exe: &Path, args: &[&str], limit: std::time::Duration) -> String {
     let Ok(mut child) = hidden(Command::new(exe).args(args)).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() else { return String::new() };
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    let deadline = std::time::Instant::now() + limit;
     loop {
         match child.try_wait() {
             Ok(Some(_)) => break,
@@ -342,9 +368,18 @@ pub fn download(id: &str, release: Option<Release>, waker: Waker) -> Download {
         let send = |m: DlMsg| {
             ctx.send(m);
         };
+        let Some(t) = def(&id) else { return };
+        // 入れた直後の初回の起動は遅い（ウイルス対策の検査など。LLVM-MinGW の clang で 3 秒を超えた）ので、ここで一度版を調べて覚えておく
+        let warm = |r: &nagi_core::Result<PathBuf>| {
+            if let Ok(bin) = r {
+                version_within(&bin.join(t.exe), t.version_args, std::time::Duration::from_secs(30));
+            }
+        };
         if id == "rust" {
             let ch = release.map_or("stable".to_string(), |r| r.version);
-            send(DlMsg::Done(install_rustup(&ch, &send)));
+            let r = install_rustup(&ch, &send);
+            warm(&r);
+            send(DlMsg::Done(r));
             return;
         }
         let (url, version) = match release {
@@ -357,7 +392,6 @@ pub fn download(id: &str, release: Option<Release>, waker: Waker) -> Download {
                 }
             },
         };
-        let Some(t) = def(&id) else { return };
         let dest = tools_dir().join(format!("{id}-{version}"));
         if let Some(bin) = find_exe(&dest, t.exe, 3) {
             send(DlMsg::Done(Ok(bin)));
@@ -367,11 +401,12 @@ pub fn download(id: &str, release: Option<Release>, waker: Waker) -> Download {
         let inner = download_and_extract(&url, 0, &dest, Box::new(move |d: &Path| find_exe(d, exe, 3)), exe, nagi_core::task::no_waker());
         // 進み具合をそのまま渡す
         while let Ok(m) = inner.rx.recv() {
-            let done = matches!(m, DlMsg::Done(_));
-            send(m);
-            if done {
+            if let DlMsg::Done(r) = &m {
+                warm(r);
+                send(m);
                 break;
             }
+            send(m);
         }
     });
     Download { rx }
@@ -461,5 +496,49 @@ mod tests {
             eprintln!("{}: {r:?}", t.id);
             assert!(r.is_ok(), "{}: {r:?}", t.id);
         }
+    }
+
+    /// 実際にダウンロードして展開し、版を出せるか（手で流す。置き場所は NAGI_TOOLS_DIR、種類は NAGI_TEST_TOOLS（カンマ区切り）。
+    /// rust は NAGI_TEST_CARGO_HOME を一時の場所へ向けて流す（CARGO_HOME・RUSTUP_HOME をそこへ。普段使いの rustup を更新しないため））
+    #[test]
+    #[ignore]
+    fn download_real() {
+        assert!(std::env::var_os("NAGI_TOOLS_DIR").is_some(), "NAGI_TOOLS_DIR を一時の場所へ");
+        let ids = std::env::var("NAGI_TEST_TOOLS").unwrap_or_default();
+        if let Some(h) = std::env::var_os("NAGI_TEST_CARGO_HOME") {
+            let h = PathBuf::from(h);
+            // SAFETY: 手で 1 つだけ流す試験
+            unsafe {
+                std::env::set_var("CARGO_HOME", h.join("cargo"));
+                std::env::set_var("RUSTUP_HOME", h.join("rustup"));
+            }
+        }
+        let mut failed = Vec::new();
+        for id in ids.split(',').filter(|s| !s.is_empty()) {
+            let t = def(id).unwrap();
+            let started = std::time::Instant::now();
+            let d = download(id, None, nagi_core::task::no_waker());
+            let mut result = None;
+            while let Ok(m) = d.rx.recv() {
+                if let DlMsg::Done(r) = m {
+                    result = Some(r);
+                    break;
+                }
+            }
+            match result {
+                Some(Ok(bin)) => {
+                    let v = version_of(&bin.join(t.exe), t.version_args);
+                    eprintln!("{id}: {} 版 {v:?}（{:.0} 秒）", bin.display(), started.elapsed().as_secs_f32());
+                    if v.is_empty() {
+                        failed.push(format!("{id}: 版が出ない"));
+                    }
+                }
+                other => {
+                    eprintln!("{id}: 失敗 {other:?}");
+                    failed.push(format!("{id}: {other:?}"));
+                }
+            }
+        }
+        assert!(failed.is_empty(), "{failed:?}");
     }
 }
