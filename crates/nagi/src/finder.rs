@@ -35,6 +35,7 @@ pub enum Source {
 
 /// コマンドパレットの項目（説明, Ex コマンド）
 const COMMANDS: &[(&str, &str)] = &[
+    ("設定（Ctrl+Alt+S）", "Settings"),
     ("実行の構成を選んで実行（Alt+Shift+F10）", "RunConfigs"),
     ("実行の構成を追加・編集", "RunEdit"),
     ("ファイルを開く", "Files"),

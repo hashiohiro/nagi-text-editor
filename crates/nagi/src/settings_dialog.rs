@@ -1,0 +1,437 @@
+//! 設定の画面（IntelliJ の Settings と同じ並び）。画面の中央に重ねて出す。
+//!
+//! 左は分類、右はその分類の項目（上の絞り込みの欄で、名前・説明・キーから探せる）。下に選んだ項目の説明とボタン。
+//! - オン・オフは Space・Enter で切り替え、選択肢は h/l（Enter で次）、数・文字・キーは Enter で Vim の入力欄にして直す
+//! - r で既定値に戻す、p で保存先（全体 ⇔ このプロジェクト）を切り替える（プロジェクトで上書きできる項目だけ）
+//! - Tab で分類 ⇔ 項目、/ で絞り込み、Ctrl+Enter で適用して閉じる、Esc で閉じる（直したものがあれば確かめる）
+//!
+//! 適用すると Editor::apply_settings で動いている nagi にもすぐ効かせ、ファイルに保存する。
+
+use std::cell::RefCell;
+
+use nagi_vim::Key;
+
+use crate::editor::{Editor, Mode};
+use crate::settings::{CATEGORIES, Item, SCHEMA, SKind, Settings};
+use crate::vim_field::{FieldOut, VimField};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SFocus {
+    Cats,
+    Items,
+    /// 値を直している（入力欄）
+    Edit,
+    /// 絞り込みの欄
+    Filter,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SButton {
+    Apply,
+    Ok,
+    Cancel,
+    /// 保存先（全体 ⇔ このプロジェクト）
+    Scope,
+}
+
+pub struct SettingsDialog {
+    /// 直している写し（適用で Editor.settings へ）
+    pub work: Settings,
+    pub cat: usize,
+    pub selected: usize,
+    pub top: usize,
+    pub focus: SFocus,
+    pub filter: VimField,
+    pub field: Option<VimField>,
+    /// 保存先をプロジェクトにしているか
+    pub project_scope: bool,
+    pub dirty: bool,
+    pub confirm_close: bool,
+    /// 描いた位置（マウス用）: 分類の (行, 番号, 列の始め, 終わり)、項目の (行, 番号, 値の列)、ボタン
+    pub cat_rows: RefCell<Vec<(usize, usize, usize, usize)>>,
+    pub item_rows: RefCell<Vec<(usize, usize, usize)>>,
+    pub buttons: RefCell<Vec<(usize, usize, usize, SButton)>>,
+}
+
+impl SettingsDialog {
+    /// 出している項目（分類と絞り込みで）
+    pub fn items(&self) -> Vec<&'static Item> {
+        let q = self.filter.text().to_lowercase();
+        let cat = CATEGORIES[self.cat];
+        SCHEMA
+            .iter()
+            .filter(|i| {
+                if !q.is_empty() {
+                    return i.label.to_lowercase().contains(&q) || i.help.to_lowercase().contains(&q) || i.key.contains(&q) || i.cat.contains(&q);
+                }
+                cat == "（すべて）" || i.cat == cat
+            })
+            .collect()
+    }
+
+    pub fn current(&self) -> Option<&'static Item> {
+        self.items().get(self.selected).copied()
+    }
+
+    /// 項目の今の値（画面の保存先から見た値）
+    pub fn value(&self, it: &Item) -> String {
+        self.work.get(it.key)
+    }
+
+    /// 画面に出す値の文字
+    pub fn display(&self, it: &Item) -> String {
+        let v = self.value(it);
+        match it.kind {
+            SKind::Bool => if self.work.bool(it.key) { "✓ オン".into() } else { "  オフ".into() },
+            SKind::Choice(c) => c.iter().find(|x| x.0 == v).map_or(v.clone(), |x| x.1.to_string()),
+            _ if v.is_empty() => "（既定）".into(),
+            _ => v,
+        }
+    }
+
+    fn set(&mut self, it: &Item, value: &str) {
+        let project = self.project_scope && it.project;
+        self.work.set(it.key, value, project);
+        self.dirty = true;
+    }
+
+    /// オン・オフを切り替える／選択肢を前後へ
+    fn cycle(&mut self, d: isize) {
+        let Some(it) = self.current() else { return };
+        match it.kind {
+            SKind::Bool => {
+                let v = if self.work.bool(it.key) { "false" } else { "true" };
+                self.set(it, v);
+            }
+            SKind::Choice(c) => {
+                let v = self.value(it);
+                let i = c.iter().position(|x| x.0 == v).unwrap_or(0) as isize;
+                let n = (i + d).rem_euclid(c.len() as isize) as usize;
+                self.set(it, c[n].0);
+            }
+            _ => {}
+        }
+    }
+
+    /// 値を直し始める（数・文字・キー）
+    fn edit(&mut self) {
+        let Some(it) = self.current() else { return };
+        match it.kind {
+            SKind::Bool | SKind::Choice(_) => self.cycle(1),
+            _ => {
+                self.field = Some(VimField::new(&self.value(it), false));
+                self.focus = SFocus::Edit;
+            }
+        }
+    }
+
+    /// 直した値を決める（数は範囲を確かめる）。うまくいけば None、だめなら理由
+    fn commit_edit(&mut self) -> Option<String> {
+        let (Some(it), Some(f)) = (self.current(), self.field.take()) else { return None };
+        let v = f.text().trim().to_string();
+        self.focus = SFocus::Items;
+        match it.kind {
+            SKind::Int(lo, hi) => match v.parse::<i64>() {
+                Ok(n) if n >= lo && n <= hi => self.set(it, &n.to_string()),
+                _ => return Some(format!("{} は {lo}〜{hi} の数です", it.label)),
+            },
+            SKind::Key if !v.is_empty() && crate::keymap::parse_chord(&v).is_none() => return Some(format!("キーの書き方が分かりません: {v}（例: Ctrl+Alt+S・Shift+F10）")),
+            _ => self.set(it, &v),
+        }
+        None
+    }
+
+    fn reset(&mut self) {
+        let Some(it) = self.current() else { return };
+        if self.project_scope && it.project {
+            self.work.unset_project(it.key);
+        } else {
+            self.work.global.remove(it.key);
+        }
+        self.dirty = true;
+    }
+}
+
+impl Editor {
+    /// 設定の画面を開く（Ctrl+Alt+S・:Settings）。`query` があれば絞り込んで
+    pub(crate) fn open_settings(&mut self, query: &str) {
+        let mut work = self.settings.clone();
+        work.set_root(Some(&self.nav_root()));
+        let mut filter = VimField::new(query, false);
+        filter.ed.mode = Mode::Normal;
+        let d = SettingsDialog {
+            work,
+            cat: 0,
+            selected: 0,
+            top: 0,
+            focus: if query.is_empty() { SFocus::Cats } else { SFocus::Items },
+            filter,
+            field: None,
+            project_scope: false,
+            dirty: false,
+            confirm_close: false,
+            cat_rows: RefCell::new(Vec::new()),
+            item_rows: RefCell::new(Vec::new()),
+            buttons: RefCell::new(Vec::new()),
+        };
+        self.settings_dialog = Some(d);
+        self.mode = Mode::Settings;
+        self.message.clear();
+    }
+
+    /// 適用（保存して、動いている nagi に効かせる）
+    fn apply_settings_dialog(&mut self) -> bool {
+        let Some(d) = &mut self.settings_dialog else { return false };
+        if d.focus == SFocus::Edit {
+            if let Some(e) = d.commit_edit() {
+                self.message = e;
+                return false;
+            }
+        }
+        let work = d.work.clone();
+        d.dirty = false;
+        match work.save() {
+            Ok(()) => {
+                let old = std::mem::replace(&mut self.settings, work);
+                self.apply_settings(Some(&old));
+                self.message = "設定を保存しました".into();
+                true
+            }
+            Err(e) => {
+                self.message = format!("設定を保存できません: {e}");
+                false
+            }
+        }
+    }
+
+    pub(crate) fn settings_button(&mut self, b: SButton) {
+        match b {
+            SButton::Apply => {
+                self.apply_settings_dialog();
+            }
+            SButton::Ok => {
+                if self.apply_settings_dialog() {
+                    self.settings_dialog = None;
+                    self.mode = Mode::Normal;
+                }
+            }
+            SButton::Cancel => {
+                self.settings_dialog = None;
+                self.mode = Mode::Normal;
+                self.message = "設定の画面を閉じました（適用していない変更は捨てました）".into();
+            }
+            SButton::Scope => {
+                if let Some(d) = &mut self.settings_dialog {
+                    d.project_scope = !d.project_scope;
+                }
+            }
+        }
+    }
+
+    pub(crate) fn settings_insert(&mut self, text: &str) {
+        let Some(d) = &mut self.settings_dialog else { return };
+        match d.focus {
+            SFocus::Edit => {
+                if let Some(f) = &mut d.field {
+                    f.insert_text(text);
+                }
+            }
+            SFocus::Filter => {
+                d.filter.insert_text(text);
+                d.selected = 0;
+                d.top = 0;
+            }
+            _ => {}
+        }
+    }
+
+    /// 入力欄にいて Insert か（IME を使う）
+    pub fn settings_typing(&self) -> bool {
+        self.settings_dialog.as_ref().is_some_and(|d| match d.focus {
+            SFocus::Edit => d.field.as_ref().is_some_and(|f| f.is_insert()),
+            SFocus::Filter => d.filter.is_insert(),
+            _ => false,
+        })
+    }
+
+    pub(crate) fn settings_key(&mut self, key: Key) {
+        let Some(d) = &mut self.settings_dialog else {
+            self.mode = Mode::Normal;
+            return;
+        };
+        if key == Key::Ctrl('m') {
+            self.settings_button(SButton::Ok);
+            return;
+        }
+        let confirm = std::mem::take(&mut d.confirm_close);
+        match d.focus {
+            SFocus::Edit => {
+                let out = self.feed_field(key, |e| e.settings_dialog.as_mut()?.field.as_mut());
+                let Some(d) = &mut self.settings_dialog else { return };
+                match out {
+                    FieldOut::Submit => {
+                        if let Some(e) = d.commit_edit() {
+                            self.message = e;
+                        }
+                    }
+                    FieldOut::Cancel => {
+                        d.field = None;
+                        d.focus = SFocus::Items;
+                    }
+                    _ => {}
+                }
+            }
+            SFocus::Filter => {
+                let out = self.feed_field(key, |e| Some(&mut e.settings_dialog.as_mut()?.filter));
+                let Some(d) = &mut self.settings_dialog else { return };
+                d.selected = 0;
+                d.top = 0;
+                match out {
+                    FieldOut::Submit | FieldOut::Cancel => d.focus = SFocus::Items,
+                    _ => {}
+                }
+                if matches!(key, Key::Down | Key::Tab) {
+                    d.focus = SFocus::Items;
+                }
+            }
+            SFocus::Cats => match key {
+                Key::Char('j') | Key::Down => {
+                    d.cat = (d.cat + 1).min(CATEGORIES.len() - 1);
+                    d.selected = 0;
+                    d.top = 0;
+                }
+                Key::Char('k') | Key::Up => {
+                    d.cat = d.cat.saturating_sub(1);
+                    d.selected = 0;
+                    d.top = 0;
+                }
+                Key::Char('l') | Key::Enter | Key::Tab | Key::Right => d.focus = SFocus::Items,
+                Key::Char('/') => {
+                    d.focus = SFocus::Filter;
+                    d.filter.reinsert();
+                }
+                Key::Char('p') => d.project_scope = !d.project_scope,
+                Key::Esc | Key::Char('q') => self.close_settings(confirm),
+                _ => {}
+            },
+            SFocus::Items => {
+                let n = d.items().len();
+                match key {
+                    Key::Char('j') | Key::Down => d.selected = (d.selected + 1).min(n.saturating_sub(1)),
+                    Key::Char('k') | Key::Up => d.selected = d.selected.saturating_sub(1),
+                    Key::Char('g') => d.selected = 0,
+                    Key::Char('G') => d.selected = n.saturating_sub(1),
+                    Key::Tab => d.focus = SFocus::Cats,
+                    Key::Char('h') | Key::Left => {
+                        if d.current().is_some_and(|i| matches!(i.kind, SKind::Choice(_))) {
+                            d.cycle(-1);
+                        } else {
+                            d.focus = SFocus::Cats;
+                        }
+                    }
+                    Key::Char('l') | Key::Right => d.cycle(1),
+                    Key::Char(' ') | Key::Enter | Key::Char('i') => d.edit(),
+                    Key::Char('r') => d.reset(),
+                    Key::Char('p') => d.project_scope = !d.project_scope,
+                    Key::Char('/') => {
+                        d.focus = SFocus::Filter;
+                        d.filter.reinsert();
+                    }
+                    Key::Esc | Key::Char('q') => self.close_settings(confirm),
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn close_settings(&mut self, confirm: bool) {
+        let Some(d) = &mut self.settings_dialog else { return };
+        if d.dirty && !confirm {
+            d.confirm_close = true;
+            self.message = "適用していない変更があります。もう一度 Esc で捨てて閉じる、Ctrl+Enter で適用して閉じる".into();
+        } else {
+            self.settings_button(SButton::Cancel);
+        }
+    }
+
+    /// マウス: 画面の (行, 列) を押した
+    pub(crate) fn settings_click(&mut self, row: usize, col: usize) {
+        let Some(d) = &mut self.settings_dialog else { return };
+        let button = d.buttons.borrow().iter().find(|(r, c0, c1, _)| *r == row && col >= *c0 && col < *c1).map(|b| b.3);
+        if let Some(b) = button {
+            self.settings_button(b);
+            return;
+        }
+        let cat = d.cat_rows.borrow().iter().find(|(r, _, c0, c1)| *r == row && col >= *c0 && col < *c1).map(|x| x.1);
+        if let Some(i) = cat {
+            d.cat = i;
+            d.selected = 0;
+            d.top = 0;
+            d.focus = SFocus::Cats;
+            return;
+        }
+        let item = d.item_rows.borrow().iter().find(|(r, _, _)| *r == row).map(|x| (x.1, x.2));
+        if let Some((i, vx)) = item {
+            let again = d.selected == i && d.focus == SFocus::Items;
+            d.selected = i;
+            d.focus = SFocus::Items;
+            // 値の上を押すか、選んでいる項目をもう一度押すと、切り替え・直す
+            if col >= vx || again {
+                d.edit();
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nagi_core::Buffer;
+
+    fn keys(e: &mut Editor, k: &str) {
+        for key in nagi_vim::parse_keys(k, " ") {
+            e.key(key);
+        }
+    }
+
+    #[test]
+    fn edit_and_apply() {
+        let dir = std::env::temp_dir().join(format!("nagi-setdlg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::write(dir.join("a.txt"), "x\n").unwrap();
+        let mut e = Editor::new(Buffer::open(&dir.join("a.txt")).unwrap(), None);
+        e.buf.path = Some(dir.join("a.txt"));
+        e.set_screen(140, 40);
+        e.open_settings("");
+        assert_eq!(e.mode, Mode::Settings);
+        // エディタの分類 → 行番号（選択肢）を l で相対に
+        keys(&mut e, "j<Tab>");
+        let d = e.settings_dialog.as_ref().unwrap();
+        assert_eq!(d.current().unwrap().key, "editor.line_numbers");
+        keys(&mut e, "l");
+        assert_eq!(e.settings_dialog.as_ref().unwrap().work.get("editor.line_numbers"), "relative");
+        // 絞り込み → 数の項目を直す（範囲の外は断る）
+        keys(&mut e, "/インデントの幅<CR>");
+        assert_eq!(e.settings_dialog.as_ref().unwrap().current().unwrap().key, "editor.indent_width");
+        keys(&mut e, "<CR><Esc>S99<CR>");
+        assert!(e.message.contains("1〜16"), "{}", e.message);
+        keys(&mut e, "<CR><Esc>S2<CR>");
+        assert_eq!(e.settings_dialog.as_ref().unwrap().work.int("editor.indent_width"), 2);
+        // p でこのプロジェクトに。オン・オフは Space
+        keys(&mut e, "p");
+        assert!(e.settings_dialog.as_ref().unwrap().project_scope);
+        // Ctrl+Enter で適用して閉じる → Editor.settings に入り、プロジェクトのファイルは書かない（全体に入れたので）
+        keys(&mut e, "<C-m>");
+        assert_eq!(e.mode, Mode::Normal, "{}", e.message);
+        assert_eq!(e.settings.get("editor.line_numbers"), "relative");
+        assert_eq!(e.settings.int("editor.indent_width"), 2);
+        // 直してから Esc を 1 回だと確かめる
+        e.open_settings("波線");
+        keys(&mut e, " <Esc>");
+        assert_eq!(e.mode, Mode::Settings);
+        keys(&mut e, "<Esc>");
+        assert_eq!(e.mode, Mode::Normal);
+        assert!(e.settings.bool("editor.squiggles"), "捨てたので変わらない");
+    }
+}

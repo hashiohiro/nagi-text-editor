@@ -48,6 +48,8 @@ pub enum Mode {
     Launcher,
     /// 実行の構成の画面（run_dialog.rs）
     RunDialog,
+    /// 設定の画面（settings_dialog.rs）
+    Settings,
 }
 
 /// リストモードでいるパネル
@@ -308,6 +310,9 @@ pub struct Editor {
     pub run_last: Option<String>,
     pub run_list: Vec<nagi_workers::runconfig::RunConfig>,
     pub run_dialog: Option<crate::run_dialog::RunDialog>,
+    /// 設定（settings.rs）
+    pub settings: crate::settings::Settings,
+    pub settings_dialog: Option<crate::settings_dialog::SettingsDialog>,
     pub right_tab: crate::right_panel::RightTab,
     pub right_hidden: bool,
     pub right_w: Option<usize>,
@@ -459,6 +464,8 @@ impl Editor {
             run_last: None,
             run_list: Vec::new(),
             run_dialog: None,
+            settings: crate::settings::Settings::load(None),
+            settings_dialog: None,
             right_tab: Default::default(),
             right_hidden: false,
             right_w: None,
@@ -632,6 +639,7 @@ impl Editor {
             || (self.mode == Mode::Finder && self.finder.as_ref().is_some_and(|f| f.field.is_insert()))
             || self.mode == Mode::Terminal
             || (self.mode == Mode::RunDialog && self.run_dialog.as_ref().is_some_and(|d| d.typing()))
+            || (self.mode == Mode::Settings && self.settings_typing())
             || (self.mode == Mode::Launcher && self.launcher.as_ref().is_some_and(|l| l.ask.as_ref().map_or(l.field.is_insert(), |a| a.1.is_insert())))
             || (self.mode == Mode::CommitMsg && self.commit.as_ref().is_some_and(|c| c.msg.is_insert()))
             || (self.mode == Mode::Log && self.log.as_ref().is_some_and(|l| l.filter.as_ref().is_some_and(|f| f.is_insert())))
@@ -751,6 +759,14 @@ impl Editor {
             self.db_run_at_cursor();
             return Effect::None;
         }
+        // 設定（Ctrl+Alt+S。IntelliJ と同じ）
+        if key == Key::F(45) && !self.has_prompt() && !matches!(self.mode, Mode::Finder | Mode::Settings | Mode::RunDialog | Mode::Launcher) {
+            if self.mode == Mode::Insert {
+                self.key(Key::Esc);
+            }
+            self.open_settings("");
+            return Effect::None;
+        }
         // 実行の構成（IntelliJ と同じ。入力欄にいるとき以外はどのモードからでも）
         if matches!(key, Key::F(40..=43)) && !self.has_prompt() && self.mode != Mode::Finder {
             if self.mode == Mode::Insert {
@@ -835,6 +851,10 @@ impl Editor {
             }
             Mode::RunDialog => {
                 self.run_dialog_key(key);
+                Effect::None
+            }
+            Mode::Settings => {
+                self.settings_key(key);
                 Effect::None
             }
             Mode::GrepPrompt => {
@@ -1457,6 +1477,7 @@ impl Editor {
             "MarkdownPreview" | "MdPreview" => self.toggle_md_preview(),
             "Terminal" | "term" => self.terminal_command(arg),
             "Run" => self.run_command(arg),
+            "Settings" | "Preferences" => self.open_settings(arg),
             "RunConfigs" => self.open_run_chooser(),
             "RunStop" => self.run_stop(),
             // :RunEdit は画面、:RunEdit! はファイル（.nagi/run.conf）をそのまま開く
@@ -1714,6 +1735,7 @@ impl Editor {
             Mode::Finder => self.finder_insert(text),
             Mode::Launcher => self.launcher_insert(text),
             Mode::RunDialog => self.run_dialog_insert(text),
+            Mode::Settings => self.settings_insert(text),
             Mode::Terminal => self.terminal_input(text),
             Mode::GrepPrompt => self.grep_insert(text),
             Mode::CommitMsg => self.commit_msg_insert(text),

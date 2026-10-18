@@ -953,6 +953,9 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     if let Some(d) = &ed.run_dialog {
         draw_run_dialog(&mut p, ed, d, cols, rows);
     }
+    if let Some(d) = &ed.settings_dialog {
+        draw_settings_dialog(&mut p, ed, d, cols, rows);
+    }
     if let Some(l) = &ed.launcher {
         draw_launcher(&mut p, l, cols, rows + ed.status_rows(), &ed.preedit);
     }
@@ -2763,6 +2766,144 @@ fn draw_squiggle(p: &mut Painter, x0: f32, x1: f32, bottom: f32, color: [f32; 4]
         x += px;
         k += 1;
     }
+}
+
+/// 設定の画面（画面の中央に重ねる）。上に絞り込み、左に分類、右に項目（名前と値）、下に説明とボタン
+fn draw_settings_dialog(p: &mut Painter, ed: &Editor, d: &crate::settings_dialog::SettingsDialog, cols: usize, rows: usize) {
+    use crate::settings::{CATEGORIES, SKind};
+    use crate::settings_dialog::{SButton, SFocus};
+    const ACCENT: [f32; 4] = rgb(0x87afd7);
+    let cell = p.fonts.cell();
+    let w = cols.saturating_sub(6).clamp(40, 130).min(cols);
+    let h = rows.saturating_sub(2).clamp(12, 34).min(rows);
+    let (x0, y0) = ((cols - w) / 2, (rows - h) / 2);
+    let y = |r: usize| (y0 + r) as f32 * cell.h;
+    p.out.push(Instance::fill((x0 as f32 - 0.5) * cell.w, y(0) - cell.h * 0.5, (w as f32 + 1.0) * cell.w, (h as f32 + 1.0) * cell.h, STATUS_FG));
+    p.out.push(Instance::fill((x0 as f32 - 0.5) * cell.w + 1.0, y(0) - cell.h * 0.5 + 1.0, (w as f32 + 1.0) * cell.w - 2.0, (h as f32 + 1.0) * cell.h - 2.0, rgb(0x141414)));
+    let saved = p.cols;
+    p.cols = x0 + w;
+    let mut buttons = Vec::new();
+    // 1 行目: 題と絞り込みの欄、保存先
+    let end = p.text(" 設定   ", x0, y(0), FG);
+    let fend = if d.focus == SFocus::Filter {
+        let e = p.text("🔍 ", end, y(0), FG);
+        draw_vim_field(p, &d.filter, e, y(0), &ed.preedit)
+    } else {
+        let t = d.filter.text();
+        p.text(&format!("🔍 {}", if t.is_empty() { "/ で絞り込み".to_string() } else { t }), end, y(0), STATUS_FG)
+    };
+    let scope = if d.project_scope { " 保存先: このプロジェクト（p で切り替え） " } else { " 保存先: 全体（p で切り替え） " };
+    let sw = p.width(scope);
+    let sx = (x0 + w).saturating_sub(sw + 1).max(fend + 2);
+    p.out.push(Instance::fill(sx as f32 * cell.w, y(0), sw as f32 * cell.w, cell.h, if d.project_scope { rgb(0x2c4a70) } else { MATCH_BG }));
+    p.text(scope, sx, y(0), FG);
+    buttons.push((y0, sx, sx + sw, SButton::Scope));
+    // 左: 分類
+    let lw = 16;
+    let mut cat_rows = Vec::new();
+    p.cols = x0 + lw;
+    let filtering = !d.filter.text().is_empty();
+    for (i, c) in CATEGORIES.iter().enumerate() {
+        let r = 2 + i;
+        let sel = i == d.cat && !filtering;
+        if sel {
+            p.out.push(Instance::fill(x0 as f32 * cell.w, y(r), lw as f32 * cell.w, cell.h, if d.focus == SFocus::Cats { FG } else { MATCH_BG }));
+        }
+        p.text(&format!(" {c}"), x0, y(r), if sel && d.focus == SFocus::Cats { BG } else if filtering { STATUS_FG } else { FG });
+        cat_rows.push((y0 + r, i, x0, x0 + lw));
+    }
+    p.out.push(Instance::fill((x0 + lw) as f32 * cell.w + cell.w * 0.5, y(1), 1.0, (h - 3) as f32 * cell.h, LINE_NO));
+    // 右: 項目
+    let rx = x0 + lw + 2;
+    let items = d.items();
+    let body = h.saturating_sub(6);
+    let top = d.selected.saturating_sub(body.saturating_sub(1));
+    let label_w = items.iter().map(|i| p.width(i.label)).max().unwrap_or(10).min(34) + 2;
+    let vx = rx + label_w;
+    let mut item_rows = Vec::new();
+    p.cols = x0 + w;
+    for (k, it) in items.iter().enumerate().skip(top).take(body) {
+        let r = 2 + k - top;
+        let sel = k == d.selected;
+        let focused = sel && matches!(d.focus, SFocus::Items | SFocus::Edit);
+        if focused {
+            p.out.push(Instance::fill(rx as f32 * cell.w - cell.w * 0.5, y(r), 2.0, cell.h, ACCENT));
+        }
+        if sel {
+            p.out.push(Instance::fill(rx as f32 * cell.w, y(r), (x0 + w - rx - 1) as f32 * cell.w, cell.h, MATCH_BG));
+        }
+        let saved2 = p.cols;
+        p.cols = vx.saturating_sub(1);
+        p.text(it.label, rx, y(r), if focused { FG } else { rgb(0xb0b0b0) });
+        p.cols = saved2;
+        // 値（直している項目は入力欄）
+        let overridden = d.work.project.contains_key(it.key) && it.project;
+        let changed = d.work.global.contains_key(it.key) || overridden;
+        if sel && d.focus == SFocus::Edit {
+            if let Some(f) = &d.field {
+                draw_vim_field(p, f, vx, y(r), &ed.preedit);
+            }
+        } else {
+            let v = d.display(it);
+            let color = match it.kind {
+                SKind::Bool if d.work.bool(it.key) => GIT_ADD,
+                _ if changed => FG,
+                _ => STATUS_FG,
+            };
+            let shown = match it.kind {
+                SKind::Choice(_) if focused => format!("◀ {v} ▶"),
+                _ => v,
+            };
+            let end = p.text(&shown, vx, y(r), color);
+            if overridden {
+                p.text("  P", end, y(r), ACCENT);
+            }
+        }
+        item_rows.push((y0 + r, k, vx));
+    }
+    if items.is_empty() {
+        p.text("合う項目がありません", rx, y(2), STATUS_FG);
+    }
+    // 説明（選んだ項目）
+    if let Some(it) = d.current() {
+        let mut desc = it.help.to_string();
+        if it.project {
+            desc = format!("{desc}{}プロジェクトごとに変えられる（p）", if desc.is_empty() { "" } else { "。" });
+        }
+        let def = match it.kind {
+            SKind::Choice(c) => c.iter().find(|x| x.0 == it.default).map_or(it.default, |x| x.1),
+            _ if it.default.is_empty() => "空",
+            _ => it.default,
+        };
+        p.text(&format!("{desc}{}既定: {def}   r で既定に戻す", if desc.is_empty() { "" } else { "   " }), rx, y(h - 3), STATUS_FG);
+    }
+    // 下: 案内とボタン
+    let help = match d.focus {
+        SFocus::Cats => "j/k 分類  Tab 項目へ  / 絞り込み  Ctrl+Enter 適用して閉じる  Esc 閉じる",
+        SFocus::Items => "j/k 選ぶ  Space・Enter 切り替え・直す  h/l 選択肢  Tab 分類へ  Ctrl+Enter OK",
+        SFocus::Edit => "Enter 決める  Esc ノーマル→やめる",
+        SFocus::Filter => "打って絞り込み  Enter・↓ 項目へ",
+    };
+    let by = h - 1;
+    let mut bx = x0 + w;
+    let mut bs = Vec::new();
+    for (label, b) in [(" 取り消し ", SButton::Cancel), (" 適用 ", SButton::Apply), (" OK ", SButton::Ok)] {
+        let bw = p.width(label);
+        bx = bx.saturating_sub(bw + 1);
+        bs.push((bx, bw, label, b));
+    }
+    for (bx, bw, label, b) in bs {
+        let primary = b == SButton::Ok;
+        p.out.push(Instance::fill(bx as f32 * cell.w, y(by), bw as f32 * cell.w, cell.h, if primary { ACCENT } else { MATCH_BG }));
+        p.text(label, bx, y(by), if primary { BG } else { FG });
+        buttons.push((y0 + by, bx, bx + bw, b));
+    }
+    p.cols = x0 + w.saturating_sub(30);
+    p.text(help, x0 + 1, y(by), STATUS_FG);
+    p.cols = saved;
+    *d.cat_rows.borrow_mut() = cat_rows;
+    *d.item_rows.borrow_mut() = item_rows;
+    *d.buttons.borrow_mut() = buttons;
 }
 
 /// 実行の構成の画面（画面の中央に重ねる）。左に一覧（上に ＋ ⧉ −）、右に欄、下にコマンドの見本とボタン

@@ -78,6 +78,7 @@ const EX_COMMANDS: &[(&str, &str)] = &[
     ("Gpull", "pull"),
     ("Gfetch", "フェッチ"),
     ("Maven", "Maven（右の欄）。後にゴールを書けば実行"),
+    ("Settings", "設定（Ctrl+Alt+S）。後に語を書けばその項目を探す"),
     ("Run", "実行の構成を動かす（Shift+F10）。後に名前を書けばその構成（IntelliJ の構成と .nagi/run.conf）"),
     ("RunConfigs", "実行の構成を選んで動かす（Alt+Shift+F10）"),
     ("RunStop", "動いている構成を止める（Ctrl+F2）"),

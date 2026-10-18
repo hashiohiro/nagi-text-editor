@@ -21,6 +21,9 @@ mod jumplist;
 mod read_view;
 mod run_configs;
 mod run_dialog;
+mod keymap;
+mod settings;
+mod settings_dialog;
 mod smart_complete;
 mod autoread;
 mod bottom_panel;
@@ -503,6 +506,8 @@ impl App {
         let ctrl = self.modifiers.control_key();
         let alt = self.modifiers.alt_key();
         let keys: Vec<VKey> = match &ev.logical_key {
+            // Ctrl+Alt+S: 設定（IntelliJ と同じ）
+            Key::Character(c) if alt && ctrl && c.eq_ignore_ascii_case("s") => vec![VKey::F(45)],
             Key::Character(c) if alt && !ctrl => c.chars().next().map(|ch| VKey::Alt(ch.to_ascii_lowercase())).into_iter().collect(),
             Key::Character(c) if ctrl => c.chars().next().map(|ch| VKey::Ctrl(ch.to_ascii_lowercase())).into_iter().collect(),
             Key::Character(_) => ev.text.as_deref().unwrap_or("").chars().map(VKey::Char).collect(),
@@ -689,7 +694,7 @@ impl App {
             w.set_ime_allowed(want);
             self.ime_allowed = want;
         }
-        if want && matches!(ed.mode, Mode::CommitMsg | Mode::Launcher | Mode::Terminal | Mode::RunDialog) {
+        if want && matches!(ed.mode, Mode::CommitMsg | Mode::Launcher | Mode::Terminal | Mode::RunDialog | Mode::Settings) {
             // コミットメッセージの欄は、描いた縦棒の位置を draw で IME に知らせる
         } else if want {
             let cell = f.cell();
@@ -861,6 +866,15 @@ impl App {
                     self.draw();
                     return;
                 }
+            }
+            // 設定の画面
+            if ed.mode == Mode::Settings {
+                let cell = f.cell();
+                let (row, col) = ((self.mouse.1 as f32 / cell.h) as usize, (self.mouse.0.max(0.0) as f32 / cell.w) as usize);
+                ed.settings_click(row, col);
+                self.sync_ime();
+                self.draw();
+                return;
             }
             // 実行の構成の画面: 一覧・欄・ボタンを押す
             if ed.mode == Mode::RunDialog {
