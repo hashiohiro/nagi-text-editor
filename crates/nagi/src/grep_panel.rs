@@ -33,6 +33,10 @@ pub struct GrepPanel {
     pending_g: bool,
     /// リストモードで `Ctrl-w` を押した（窓の操作の途中）
     pending_w: bool,
+    /// 行の範囲を選んでいる（`V` かドラッグ）。範囲はここから `selected` まで
+    pub anchor: Option<usize>,
+    /// ログ（コマンドの出力）の、読み取り専用の Vim の画面
+    pub view: Option<crate::read_view::ReadView>,
 }
 
 /// 最下行の入力欄の前の印
@@ -59,6 +63,35 @@ impl GrepPanel {
     fn select(&mut self, i: usize) {
         self.selected = i.min(self.hits.len().saturating_sub(1));
         self.moved = true;
+    }
+
+    /// 選んでいる行の範囲（範囲を選んでいなければ今の行だけ）
+    pub fn sel_range(&self) -> (usize, usize) {
+        let a = self.anchor.unwrap_or(self.selected);
+        (a.min(self.selected), a.max(self.selected))
+    }
+
+    /// 行 `i` を選んでいるか
+    pub fn in_selection(&self, i: usize) -> bool {
+        let (a, b) = self.sel_range();
+        i >= a && i <= b
+    }
+
+    /// 1 行の文字（ログの行は本文、検索の結果・診断は `パス:行: 本文`）
+    pub fn line_text(h: &Hit) -> String {
+        if h.path.is_empty() { h.text.clone() } else { format!("{}:{}: {}", h.path, h.line, h.text) }
+    }
+
+    /// コピーする文字（ログの行は本文、検索の結果は `パス:行: 本文`）
+    pub fn copy_text(&self) -> String {
+        let (a, b) = self.sel_range();
+        self.hits
+            .get(a..=b.min(self.hits.len().saturating_sub(1)))
+            .unwrap_or_default()
+            .iter()
+            .map(|h| if h.path.is_empty() { h.text.clone() } else { format!("{}:{}: {}", h.path, h.line, h.text) })
+            .collect::<Vec<_>>()
+            .join("\r\n")
     }
 }
 
@@ -127,6 +160,8 @@ impl Editor {
             moved: false,
             pending_g: false,
             pending_w: false,
+            anchor: None,
+            view: None,
         });
         self.bottom_hidden = false;
         self.bottom_kind = crate::result_grid::BottomKind::Grep;
@@ -245,7 +280,61 @@ impl Editor {
     }
 
     /// パネルにいる間（リストモード）のキー
+    /// ログの読み取り専用の画面を、今の行と欄の大きさに合わせる（ログを出していなければ何もしない）
+    pub(crate) fn sync_output_view(&mut self) {
+        let size = self.bottom_content_rect().map(|r| (r.w, r.h.saturating_sub(1).max(1)));
+        let Some(g) = &mut self.grep else { return };
+        if g.title.is_none() {
+            return;
+        }
+        let lines: Vec<String> = g.hits.iter().map(GrepPanel::line_text).collect();
+        match &mut g.view {
+            Some(v) => v.set_lines(&lines),
+            None => g.view = Some(crate::read_view::ReadView::new(&lines)),
+        }
+        if let (Some(v), Some((w, h))) = (&mut g.view, size) {
+            v.resize(w, h);
+        }
+    }
+
+    /// ログの欄のキー（読み取り専用の Vim の画面へ流す）
+    fn output_view_key(&mut self, key: Key) -> crate::editor::Effect {
+        use crate::read_view::ViewOut;
+        self.sync_output_view();
+        let clip = self.clipboard;
+        let mut regs = std::mem::take(&mut self.registers);
+        let out = match self.grep.as_mut().and_then(|g| g.view.as_mut()) {
+            Some(v) => v.key(key, &mut regs, clip),
+            None => ViewOut::None,
+        };
+        self.registers = regs;
+        match out {
+            ViewOut::Leave => self.mode = Mode::Normal,
+            ViewOut::Quit => self.close_grep(),
+            ViewOut::Open => {
+                if let Some(g) = &mut self.grep {
+                    let line = g.view.as_ref().map_or(0, |v| v.ed.cursor.line);
+                    g.select(line);
+                }
+                if self.grep.as_ref().is_some_and(|g| g.hits.get(g.selected).is_some_and(|h| !h.path.is_empty())) {
+                    self.mode = Mode::Normal;
+                    self.open_hit(false);
+                }
+            }
+            ViewOut::Command => self.enter_command(""),
+            ViewOut::ReadOnly => self.message = "ログは読み取り専用です（移動・選ぶ・ヤンクはできる）".into(),
+            ViewOut::Yanked(n) => self.message = format!("{n} 行をコピーしました"),
+            ViewOut::None => {}
+        }
+        crate::editor::Effect::None
+    }
+
     pub(crate) fn list_key(&mut self, key: Key) -> crate::editor::Effect {
+        // ログ（コマンドの出力）は読み取り専用の Vim の画面で（Ctrl-w の窓の操作は一覧と同じ）
+        let output = self.bottom_kind == crate::result_grid::BottomKind::Output && self.grep.as_ref().is_some_and(|g| g.title.is_some());
+        if output && key != Key::Ctrl('w') && !self.grep.as_ref().is_some_and(|g| g.pending_w) {
+            return self.output_view_key(key);
+        }
         let half = (self.panel_rect().map_or(10, |r| r.h) / 2).max(1);
         let Some(g) = &mut self.grep else {
             self.mode = Mode::Normal;
@@ -264,6 +353,12 @@ impl Editor {
         }
         match key {
             Key::Ctrl('w') => g.pending_w = true,
+            // 行の範囲を選ぶ（V）、y・Ctrl+C でコピー（範囲が無ければ今の行）
+            Key::Char('V') | Key::Char('v') => g.anchor = if g.anchor.is_some() { None } else { Some(g.selected) },
+            Key::Char('y') | Key::Char('Y') | Key::Ctrl('c') => {
+                self.panel_copy();
+            }
+            Key::Esc if g.anchor.is_some() => g.anchor = None,
             Key::Char('j') | Key::Down => {
                 let i = g.selected + 1;
                 g.select(i);
@@ -368,9 +463,70 @@ impl Editor {
         self.message = format!("({} / {}) {}:{}", g.selected + 1, g.hits.len(), g.hits[g.selected].path, g.hits[g.selected].line);
     }
 
+    /// 選んでいる行をクリップボードへ（範囲を選んでいれば範囲、無ければ今の行）。範囲の選びは消す
+    pub(crate) fn panel_copy(&mut self) {
+        // ログ: 読み取り専用の画面の選び（無ければ今の行）
+        if self.grep.as_ref().is_some_and(|g| g.view.is_some() && g.title.is_some()) {
+            let clip = self.clipboard;
+            let mut regs = std::mem::take(&mut self.registers);
+            let n = self.grep.as_mut().and_then(|g| g.view.as_mut()).map_or(0, |v| v.copy(&mut regs, clip));
+            self.registers = regs;
+            if n > 0 {
+                self.message = format!("{n} 行をコピーしました");
+            }
+            return;
+        }
+        let Some(g) = &mut self.grep else { return };
+        if g.hits.is_empty() {
+            return;
+        }
+        let (a, b) = g.sel_range();
+        let text = g.copy_text();
+        g.anchor = None;
+        match &self.clipboard {
+            Some(cb) => (cb.set)(&text),
+            None => crate::clipboard::set(&text),
+        }
+        self.message = format!("{} 行をコピーしました", b - a + 1);
+    }
+
+    /// パネルの上のドラッグ（`row` はパネルの中の行。0 は見出し）。押した行から範囲を選ぶ
+    pub(crate) fn panel_drag(&mut self, row: usize, col: usize) {
+        // ログ: 押した所からビジュアルで選ぶ
+        if let Some(v) = self.grep.as_mut().filter(|g| g.title.is_some()).and_then(|g| g.view.as_mut()) {
+            v.drag(row.saturating_sub(1), col);
+            return;
+        }
+        let Some(g) = &mut self.grep else { return };
+        if g.hits.is_empty() {
+            return;
+        }
+        let i = (g.scroll + row.max(1) - 1).min(g.hits.len() - 1);
+        if i != g.selected && g.anchor.is_none() {
+            g.anchor = Some(g.selected);
+        }
+        g.selected = i;
+        g.moved = true;
+    }
+
     /// パネルの中のクリック。`row` はパネルの中の行（0 は見出し）
-    pub fn panel_click(&mut self, row: usize, clicks: u32) {
+    /// パネルの中のクリック（列も）。ログは読み取り専用の画面のその位置へカーソルを置き、ダブルクリックで開く
+    pub fn panel_click_at(&mut self, row: usize, col: usize, clicks: u32) {
         self.list_side = crate::editor::Side::Bottom;
+        if self.bottom_kind == crate::result_grid::BottomKind::Output && self.grep.as_ref().is_some_and(|g| g.title.is_some()) {
+            self.sync_output_view();
+            self.focus_panel();
+            if row == 0 {
+                return;
+            }
+            if let Some(v) = self.grep.as_mut().and_then(|g| g.view.as_mut()) {
+                v.click(row - 1, col);
+            }
+            if clicks >= 2 {
+                self.output_view_key(Key::Enter);
+            }
+            return;
+        }
         if self.bottom_kind == crate::result_grid::BottomKind::Result {
             return;
         }
@@ -383,6 +539,7 @@ impl Editor {
         if i < g.hits.len() {
             g.select(i);
         }
+        g.anchor = None;
         if clicks >= 2 {
             self.mode = Mode::Normal;
             self.open_hit(false);
@@ -464,9 +621,85 @@ mod tests {
             assert_eq!(e.mode, Mode::Normal, "{k}");
             keys(&mut e, "<Esc>u");
         }
+        // V で行の範囲を選び、y でコピー（検索の結果は パス:行: 本文）。範囲が無ければ今の行
+        thread_local! { static CLIP: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) }; }
+        fn set(t: &str) { CLIP.with(|c| *c.borrow_mut() = t.to_string()); }
+        fn get() -> Option<String> { CLIP.with(|c| Some(c.borrow().clone())) }
+        e.clipboard = Some(crate::editor::Clipboard { set, get });
+        keys(&mut e, "<C-w>jggVjy");
+        assert_eq!(get().unwrap(), "src/a.rs:2: let needle = 1;\r\nsrc/b.rs:1: // Needle here");
+        assert!(e.grep.as_ref().unwrap().anchor.is_none());
+        keys(&mut e, "<C-c>");
+        assert_eq!(get().unwrap(), "src/b.rs:1: // Needle here");
+        // ドラッグ（欄の中の行。0 は見出し）でも範囲を選べる
+        e.bottom_click(2, 5, 1);
+        e.panel_drag(4, 0);
+        assert_eq!(e.grep.as_ref().unwrap().sel_range(), (0, 2));
+        e.panel_copy();
+        assert_eq!(get().unwrap().lines().count(), 3);
+        keys(&mut e, "<Esc>");
         // パネルで q を押すと閉じ、窓が元の大きさに戻る
         keys(&mut e, "<C-w>jq");
         assert!(e.grep.is_none());
         assert_eq!(e.windows_rows(), 40);
+    }
+
+    /// ログは読み取り専用の Vim の画面: 移動・ビジュアル・ヤンクができ、変える操作は効かない
+    #[test]
+    fn output_is_read_only_vim() {
+        thread_local! { static CLIP: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) }; }
+        fn set(t: &str) { CLIP.with(|c| *c.borrow_mut() = t.to_string()); }
+        fn get() -> Option<String> { CLIP.with(|c| Some(c.borrow().clone())) }
+        let mut e = Editor::new(Buffer::from_str(""), None);
+        e.set_screen(100, 40);
+        e.clipboard = Some(crate::editor::Clipboard { set, get });
+        e.open_result_panel("Maven: install");
+        for t in ["[INFO] Scanning for projects...", "[INFO] Building shop 1.0", "[ERROR] 失敗しました: OrderTest"] {
+            e.grep.as_mut().unwrap().hits.push(Hit { path: String::new(), line: 0, range: (0, 0), text: t.into() });
+        }
+        e.sync_output_view();
+        e.focus_panel();
+        assert_eq!(e.mode, Mode::List);
+        // 末尾を追いかけている。gg で先頭、W で次の語、yiw でヤンク（クリップボードにも）
+        assert_eq!(e.grep.as_ref().unwrap().view.as_ref().unwrap().ed.cursor.line, 2);
+        keys(&mut e, "ggWyiw");
+        assert_eq!(get().unwrap(), "Scanning");
+        // V j y で 2 行
+        keys(&mut e, "Vjy");
+        assert_eq!(get().unwrap(), "[INFO] Scanning for projects...\r\n[INFO] Building shop 1.0");
+        // 変える操作は効かない（dd・x・i で打つ）
+        keys(&mut e, "ddxiabc<Esc>");
+        let v = e.grep.as_ref().unwrap().view.as_ref().unwrap();
+        assert_eq!(v.ed.buf.line(0), "[INFO] Scanning for projects...");
+        assert_eq!(v.ed.buf.line_count(), 3);
+        assert_eq!(e.mode, Mode::List, "{}", e.message);
+        // 日本語の語もヤンクできる。/ で検索して移る
+        keys(&mut e, "/失敗<CR>yiw");
+        assert_eq!(get().unwrap(), "失敗しました");
+        // ログが増えたら（最後の行にいなければ）カーソルはそのまま
+        e.grep.as_mut().unwrap().hits.push(Hit { path: String::new(), line: 0, range: (0, 0), text: "[INFO] BUILD FAILURE".into() });
+        keys(&mut e, "gg");
+        e.sync_output_view();
+        assert_eq!(e.grep.as_ref().unwrap().view.as_ref().unwrap().ed.cursor.line, 0);
+        // Esc で本文へ、q で閉じる
+        keys(&mut e, "<Esc>");
+        assert_eq!(e.mode, Mode::Normal);
+    }
+
+    /// ログが少しずつ届く間も、ノーマルのまま最後の行を追いかける
+    #[test]
+    fn output_follows_while_running() {
+        let mut e = Editor::new(Buffer::from_str(""), None);
+        e.set_screen(100, 40);
+        e.open_result_panel("Maven: install");
+        for k in 0..200 {
+            e.grep.as_mut().unwrap().hits.push(Hit { path: String::new(), line: 0, range: (0, 0), text: format!("[INFO] line {k}") });
+            if k % 7 == 0 {
+                e.sync_output_view();
+            }
+        }
+        e.sync_output_view();
+        let v = e.grep.as_ref().unwrap().view.as_ref().unwrap();
+        assert_eq!((v.ed.mode, v.ed.cursor.line, v.ed.buf.line_count()), (Mode::Normal, 199, 200));
     }
 }

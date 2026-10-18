@@ -257,7 +257,7 @@ impl Editor {
                 self.log_click(row, col, w, clicks);
             }
             BottomKind::Terminal => self.terminal_click(row, col),
-            BottomKind::Grep | BottomKind::Output => self.panel_click(row, clicks),
+            BottomKind::Grep | BottomKind::Output => self.panel_click_at(row, col, clicks),
         }
     }
 }

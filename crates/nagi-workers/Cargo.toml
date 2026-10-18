@@ -21,7 +21,7 @@ oracle = "0.6.3"
 rusqlite = { version = "0.40.2", features = ["bundled", "column_decltype"] }
 # Salesforce: REST API の JSON（項目の順を保つ）と、トークンの暗号化（DPAPI）・PKCE の乱数と SHA-256（Windows の API）
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
-windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_Globalization"] }
 
 [dev-dependencies]
 nagi-core.workspace = true

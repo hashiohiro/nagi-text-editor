@@ -32,7 +32,28 @@ impl Drop for Job {
     }
 }
 
-/// 出力を読んで 1 行ずつ送る（文字コードは UTF-8 として読み、だめなら置き換え）
+/// 出力の 1 行を文字にする。UTF-8 として正しければそのまま、そうでなければ Windows の既定の文字コード
+/// （日本語の Windows では CP932。Maven・javac などの Java はこれで書き出す）として読む
+pub fn decode_line(bytes: &[u8]) -> String {
+    if let Ok(s) = std::str::from_utf8(bytes) {
+        return s.to_string();
+    }
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Globalization::{CP_ACP, MultiByteToWideChar};
+        unsafe {
+            let n = MultiByteToWideChar(CP_ACP, 0, bytes.as_ptr(), bytes.len() as i32, std::ptr::null_mut(), 0);
+            if n > 0 {
+                let mut w = vec![0u16; n as usize];
+                MultiByteToWideChar(CP_ACP, 0, bytes.as_ptr(), bytes.len() as i32, w.as_mut_ptr(), n);
+                return String::from_utf16_lossy(&w);
+            }
+        }
+    }
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+/// 出力を読んで 1 行ずつ送る（文字コードは decode_line）
 fn pump(r: impl Read + Send + 'static, tx: Sender<JobMsg>, waker: Waker) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let mut r = BufReader::new(r);
@@ -42,7 +63,7 @@ fn pump(r: impl Read + Send + 'static, tx: Sender<JobMsg>, waker: Waker) -> std:
             match r.read_until(b'\n', &mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(_) => {
-                    let line = String::from_utf8_lossy(&buf).trim_end_matches(['\r', '\n']).to_string();
+                    let line = decode_line(&buf).trim_end_matches(['\r', '\n']).to_string();
                     if tx.send(JobMsg::Line(line)).is_err() {
                         break;
                     }
@@ -148,5 +169,14 @@ mod tests {
         lines.sort();
         assert_eq!(lines, vec!["one", "two "]);
         assert_eq!(code, Some(3));
+    }
+
+    #[test]
+    fn decode_utf8_and_cp932() {
+        assert_eq!(decode_line("[INFO] 日本語".as_bytes()), "[INFO] 日本語");
+        // CP932 の「日本語」（日本語の Windows のとき）
+        if unsafe { windows_sys::Win32::Globalization::GetACP() } == 932 {
+            assert_eq!(decode_line(b"[ERROR] \x93\xfa\x96\x7b\x8c\xea"), "[ERROR] 日本語");
+        }
     }
 }

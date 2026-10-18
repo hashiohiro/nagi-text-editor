@@ -18,6 +18,7 @@
 mod angular;
 mod dialogs;
 mod jumplist;
+mod read_view;
 mod autoread;
 mod bottom_panel;
 mod terminal;
@@ -234,6 +235,8 @@ struct App {
     sep_drag: Option<resize::Sep>,
     /// ターミナルの中で範囲を選んでいる（左ボタンを押したまま）
     term_select: bool,
+    /// 検索・ログの欄の中で行の範囲を選んでいる（左ボタンを押したまま）
+    list_select: bool,
     /// 今のマウスのカーソルの形（区切りの上では ↔ / ↕）
     cursor_icon: winit::window::CursorIcon,
     stats: stats::Stats,
@@ -921,6 +924,8 @@ impl App {
                 // 1 行目はタブ、2 行目から中身
                 let col = (self.mouse.0.max(0.0) as f32 / cell.w) as usize;
                 ed.bottom_click(row - r.y, col.saturating_sub(r.x), clicks);
+                // 検索・ログの行を押したら、そのままドラッグで範囲を選べる
+                self.list_select = clicks == 1 && row > r.y + 1 && matches!(ed.bottom_kind, result_grid::BottomKind::Grep | result_grid::BottomKind::Output);
                 self.sync_ime();
                 self.draw();
                 return;
@@ -1332,7 +1337,16 @@ impl ApplicationHandler for App {
                     eprintln!("[{:.1}] move {:.0},{:.0}", clock::since_process_start_ms(), position.x, position.y);
                 }
                 self.mouse = (position.x, position.y);
-                if self.term_select {
+                if self.list_select {
+                    if let (Some(f), Some(ed)) = (&self.fonts, &mut self.ed) {
+                        let row = (position.y.max(0.0) as f32 / f.cell().h) as usize;
+                        if let Some(r) = ed.bottom_content_rect() {
+                            let col = (position.x.max(0.0) as f32 / f.cell().w) as usize;
+                            ed.panel_drag(row.clamp(r.y, r.y + r.h.saturating_sub(1)) - r.y, col.saturating_sub(r.x));
+                        }
+                    }
+                    self.draw();
+                } else if self.term_select {
                     if let (Some(f), Some(ed)) = (&self.fonts, &mut self.ed) {
                         let cell = f.cell();
                         ed.terminal_drag((position.y as f32 / cell.h) as usize, (position.x.max(0.0) as f32 / cell.w) as usize);
@@ -1353,6 +1367,7 @@ impl ApplicationHandler for App {
                 } => {}
                 ElementState::Pressed => self.on_press(),
                 ElementState::Released => {
+                    self.list_select = false;
                     if std::mem::take(&mut self.term_select) {
                         if let Some(ed) = &mut self.ed {
                             ed.terminal_release();
@@ -1371,6 +1386,10 @@ impl ApplicationHandler for App {
                     if ed.bottom_kind == result_grid::BottomKind::Terminal && ed.terminal_rect().is_some_and(|r| r.contains(row, col)) {
                         ed.terminal_right_click();
                         self.sync_ime();
+                        self.draw();
+                    } else if matches!(ed.bottom_kind, result_grid::BottomKind::Grep | result_grid::BottomKind::Output) && ed.bottom_content_rect().is_some_and(|r| r.contains(row, col)) {
+                        // 検索・ログ: 選んでいる行（無ければ今の行）をコピー
+                        ed.panel_copy();
                         self.draw();
                     }
                 }
@@ -1496,6 +1515,7 @@ fn main() {
         last_click: None,
         sep_drag: None,
         term_select: false,
+        list_select: false,
         cursor_icon: winit::window::CursorIcon::Default,
         autoscroll_deadline: None,
         held: None,

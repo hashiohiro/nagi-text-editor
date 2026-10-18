@@ -1007,7 +1007,14 @@ fn draw_toggle_buttons(p: &mut Painter, ed: &Editor, cols: usize) {
         let (x, y) = (col as f32 * cell.w, row as f32 * cell.h);
         // 本文の長い行と重なっても見えるように地を塗る
         p.out.push(Instance::fill(x, y, cell.w, cell.h, if hover { MATCH_BG } else { BG }));
-        p.text(b.glyph(), col, y, if hover { FG } else { STATUS_FG });
+        let color = if hover { FG } else { STATUS_FG };
+        match b {
+            // 下の欄は、左右の « » に合わせて縦の二重の山形を線で描く（フォントに揃った字が無いため）
+            crate::toggles::Button::ShowBottom | crate::toggles::Button::HideBottom => draw_double_chevron(p, x, y, b == crate::toggles::Button::ShowBottom, color),
+            _ => {
+                p.text(b.glyph(), col, y, color);
+            }
+        }
         if hover {
             let label = format!(" {} ", b.label(ed));
             let w = p.width(&label);
@@ -1016,6 +1023,27 @@ fn draw_toggle_buttons(p: &mut Painter, ed: &Editor, cols: usize) {
             p.out.push(Instance::fill(fx - 1.0, y - 1.0, fw + 2.0, cell.h + 2.0, STATUS_FG));
             p.out.push(Instance::fill(fx, y, fw, cell.h, rgb(0x141414)));
             p.text(&label, lx, y, FG);
+        }
+    }
+}
+
+/// 縦の二重の山形（︽ ︾）をセル (x, y) に描く。`up` なら上向き
+fn draw_double_chevron(p: &mut Painter, x: f32, y: f32, up: bool, c: [f32; 4]) {
+    let cell = p.fonts.cell();
+    let px = (cell.h / 22.0).max(1.0).round();
+    // 山の半幅（ドット数）と、2 つの山の間
+    let half = ((cell.w * 0.32) / px).round().max(2.0) as i32;
+    let gap = px * (half as f32 * 0.8).round().max(2.0);
+    let total = half as f32 * px + gap + px * 2.0;
+    let cx = x + (cell.w / 2.0).floor();
+    let top = y + ((cell.h - total) / 2.0).round();
+    for k in 0..2 {
+        let base = top + k as f32 * gap;
+        for i in 0..=half {
+            // 上向きは頂点が上、下向きは頂点が下
+            let dy = if up { i } else { half - i } as f32 * px;
+            p.out.push(Instance::fill(cx - i as f32 * px - px, base + dy, px * 2.0, px * 2.0, c));
+            p.out.push(Instance::fill(cx + i as f32 * px - px, base + dy, px * 2.0, px * 2.0, c));
         }
     }
 }
@@ -2511,6 +2539,10 @@ fn draw_tree_icon(p: &mut Painter, icon: &TreeIcon, col: usize, y: f32) {
 
 /// 全文検索のパネル。1 行目は見出し（検索語と件数）、2 行目から `path:行: 本文`（ripgrep の vimgrep と同じ形）
 fn draw_grep_panel(p: &mut Painter, g: &crate::grep_panel::GrepPanel, r: Rect, focused: bool) {
+    if let (Some(v), Some(_)) = (&g.view, &g.title) {
+        draw_read_view(p, g, v, r, focused);
+        return;
+    }
     let cell = p.fonts.cell();
     let (x, y0, w) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
     p.out.push(Instance::fill(x, y0, w, r.h as f32 * cell.h, BG));
@@ -2535,7 +2567,7 @@ fn draw_grep_panel(p: &mut Painter, g: &crate::grep_panel::GrepPanel, r: Rect, f
     for k in 0..r.h.saturating_sub(1) {
         let Some(h) = g.hits.get(g.scroll + k) else { break };
         let y = (r.y + 1 + k) as f32 * cell.h;
-        let selected = g.scroll + k == g.selected;
+        let selected = g.in_selection(g.scroll + k);
         // 選んだ行は、パネルにいる（か検索語を打っている）ときは反転、そうでなければ控えめな地の色
         let reversed = selected && focused;
         if reversed {
@@ -2557,6 +2589,81 @@ fn draw_grep_panel(p: &mut Painter, g: &crate::grep_panel::GrepPanel, r: Rect, f
             items.push(Item { g: Cow::Borrowed(gr), width, fg: if m { accent } else { fg }, bg: None, underline: m && reversed });
         }
         p.draw(&items, r.x, y);
+    }
+}
+
+/// ログ: 読み取り専用の Vim の画面。1 行目は見出し（検索の入力中は検索語）、2 行目から本文。
+/// カーソルは四角、ビジュアルで選んだ所は反転（本文と同じ）。[ERROR]・error: の行は赤、[WARNING]・warning: の行は黄色
+fn draw_read_view(p: &mut Painter, g: &crate::grep_panel::GrepPanel, v: &crate::read_view::ReadView, r: Rect, focused: bool) {
+    let cell = p.fonts.cell();
+    let (x, y0, w) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
+    p.out.push(Instance::fill(x, y0, w, r.h as f32 * cell.h, BG));
+    p.out.push(Instance::fill(x, y0, w, 1.0, LINE_NO));
+    let ed = &v.ed;
+    let saved = p.cols;
+    p.cols = (r.x + r.w).saturating_sub(3);
+    match v.prompt() {
+        Some((lead, q)) => {
+            let end = p.text(&format!("{lead}{q}"), r.x, y0, FG);
+            p.caret(end, y0);
+        }
+        None => {
+            let mode = match ed.mode {
+                Mode::Visual { block: true, .. } => "   -- VISUAL BLOCK --",
+                Mode::Visual { line: true, .. } => "   -- VISUAL LINE --",
+                Mode::Visual { .. } => "   -- VISUAL --",
+                _ => "",
+            };
+            let head = format!(
+                "{}   {} 行{}   {}/{}{mode}",
+                g.title.as_deref().unwrap_or(""),
+                g.hits.len(),
+                if g.searching() { " …" } else { "" },
+                ed.cursor.line + 1,
+                ed.buf.line_count()
+            );
+            p.text(&head, r.x, y0, STATUS_FG);
+        }
+    }
+    p.cols = saved;
+    let n = g.hits.len();
+    for k in 0..r.h.saturating_sub(1) {
+        let line = ed.top + k;
+        if line >= n.max(1) || line >= ed.buf.line_count() {
+            break;
+        }
+        let y = (r.y + 1 + k) as f32 * cell.h;
+        let text = ed.buf.line(line);
+        let t = text.trim_start();
+        let base = if t.starts_with("[ERROR]") || t.starts_with("error") {
+            DIAG_ERROR
+        } else if t.starts_with("[WARNING]") || t.starts_with("[WARN]") || t.starts_with("warning") {
+            DIAG_WARN
+        } else {
+            FG
+        };
+        let vis = v.visual_in(line);
+        let cur = (focused && line == ed.cursor.line).then_some(ed.cursor.byte);
+        let mut items = Vec::new();
+        for (b, gr) in text.grapheme_indices(true) {
+            let width = p.cell_width(gr);
+            let sel = vis.is_some_and(|(s, e)| b >= s && b < e);
+            let (fg, bg) = if cur == Some(b) {
+                (BG, Some(if sel { CURSOR_IN_SELECTION } else { CURSOR }))
+            } else if sel {
+                (BG, Some(FG))
+            } else {
+                (base, None)
+            };
+            items.push(Item { g: Cow::Borrowed(gr), width, fg, bg, underline: false });
+        }
+        let end = p.draw(&items, r.x, y);
+        // 空の行・行末のカーソル
+        if cur.is_some_and(|c| c >= text.len()) {
+            p.out.push(Instance::fill(end as f32 * cell.w, y, cell.w, cell.h, if vis.is_some() { CURSOR_IN_SELECTION } else { CURSOR }));
+        } else if vis.is_some() && text.is_empty() {
+            p.out.push(Instance::fill(end as f32 * cell.w, y, cell.w, cell.h, FG));
+        }
     }
 }
 

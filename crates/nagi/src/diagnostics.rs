@@ -196,6 +196,9 @@ impl Editor {
                 None => {}
             }
         }
+        if changed {
+            self.sync_output_view();
+        }
         if let Some(code) = done {
             let (cmd, status) = self.make.take().map(|m| (m.cmd, m.status)).unwrap_or_default();
             let (e, w) = (self.diags.iter().filter(|d| d.error).count(), self.diags.iter().filter(|d| !d.error).count());
@@ -291,6 +294,7 @@ impl Editor {
             g.title = Some(title.to_string());
             g.running = true;
             g.hits.clear();
+            g.view = None;
             g.query.set("");
         }
         self.bottom_kind = crate::result_grid::BottomKind::Output;
