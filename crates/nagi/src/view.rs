@@ -612,7 +612,8 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         }
     }
     if let (Some(r), Some(t)) = (ed.tree_rect(), &ed.tree) {
-        draw_tree(&mut p, t, r, ed.mode == Mode::List && ed.list_side == crate::editor::Side::Left, ed.buf.path.as_deref());
+        let git = ed.tree_git_states();
+        draw_tree(&mut p, t, r, ed.mode == Mode::List && ed.list_side == crate::editor::Side::Left, &git);
     }
     if let (Some(r), Some(c)) = (ed.commit_rect(), &ed.commit) {
         draw_commit_panel(&mut p, ed, c, r);
@@ -2066,7 +2067,16 @@ fn draw_completion(p: &mut Painter, ed: &Editor, c: &crate::complete::Completion
 }
 
 /// ファイルツリー。1 行目はタブと根の名前、2 行目から字下げした木（フォルダは青で `▸` `▾`）。右端に 1px の区切り線
-fn draw_tree(p: &mut Painter, t: &crate::tree_panel::TreePanel, r: Rect, focused: bool, current: Option<&std::path::Path>) {
+/// プロジェクトの木。字は白（フォルダもファイルも同じ）、git の状態で色分け: 追加は緑、変更は青、管理対象外は赤、
+/// 競合は黄。フォルダは管理されていなければ赤、管理されている変更を含めば青（IntelliJ と同じ）
+fn draw_tree(
+    p: &mut Painter,
+    t: &crate::tree_panel::TreePanel,
+    r: Rect,
+    focused: bool,
+    git: &std::collections::HashMap<std::path::PathBuf, nagi_workers::git::FileState>,
+) {
+    use nagi_workers::git::FileState;
     let cell = p.fonts.cell();
     let (x, y0, w) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
     p.out.push(Instance::fill(x, y0, w, r.h as f32 * cell.h, BG));
@@ -2075,7 +2085,6 @@ fn draw_tree(p: &mut Painter, t: &crate::tree_panel::TreePanel, r: Rect, focused
     p.cols = r.x + r.w;
     let name = t.root.file_name().map_or(t.root.display().to_string(), |n| n.to_string_lossy().into_owned());
     draw_left_tabs(p, r, crate::tree_panel::LeftTab::Project, focused, &format!("{name}/{}", if t.loading() { " …" } else { "" }));
-    let current = current.and_then(|c| std::path::absolute(c).ok());
     for k in 0..r.h.saturating_sub(1) {
         let Some(row) = t.rows.get(t.scroll + k) else { break };
         let y = (r.y + 1 + k) as f32 * cell.h;
@@ -2087,8 +2096,16 @@ fn draw_tree(p: &mut Painter, t: &crate::tree_panel::TreePanel, r: Rect, focused
             p.out.push(Instance::fill(x, y, w, cell.h, MATCH_BG));
         }
         let mark = if row.dir { if t.is_expanded(&row.path) { "▾ " } else { "▸ " } } else { "  " };
-        let is_current = current.as_deref() == Some(row.path.as_path());
-        let fg = if reversed { BG } else if row.dir { FINDER_MATCH } else if is_current { FG } else { STATUS_FG };
+        let state = git.get(&row.path).copied();
+        let fg = match state {
+            _ if reversed => BG,
+            Some(FileState::Added) => GIT_ADD,
+            Some(FileState::Modified | FileState::Renamed) => GIT_MOD,
+            Some(FileState::Untracked) => GIT_DEL,
+            Some(FileState::Conflicted) => DIAG_WARN,
+            Some(FileState::Deleted) => STATUS_FG,
+            None => FG,
+        };
         let label = format!("{}{mark}{}{}", "  ".repeat(row.depth), row.name, if row.dir { "/" } else { "" });
         p.text(&label, r.x, y, fg);
     }

@@ -21,6 +21,9 @@ pub struct GitState {
     pub root: Option<PathBuf>,
     pub status: Option<Status>,
     status_rx: Option<Receiver<Result<Status, String>>>,
+    /// 管理されているファイルのあるフォルダ（根からの相対パス、/ 区切り）。木で管理対象外のフォルダを赤にする
+    pub tracked_dirs: Option<HashSet<String>>,
+    tracked_rx: Option<Receiver<HashSet<String>>>,
     /// HEAD の版の中身（絶対パス → 中身。HEAD に無ければ None）
     heads: HashMap<PathBuf, Option<Arc<String>>>,
     head_chan: Option<(Sender<(PathBuf, Option<String>)>, Receiver<(PathBuf, Option<String>)>)>,
@@ -76,12 +79,30 @@ impl Editor {
         let Some(root) = self.git.root.clone() else { return };
         let (tx, rx) = channel();
         let waker = self.git_waker();
+        let (ttx, trx) = channel();
         let _ = std::thread::Builder::new().name("git-status".into()).spawn(move || {
             if tx.send(nagi_workers::git::status(&root)).is_ok() {
                 waker();
             }
+            // 管理されているファイルのフォルダ（木の色分け用）
+            if let Ok(out) = nagi_workers::git::git(&root, &["ls-files", "-z"]) {
+                let mut dirs = HashSet::new();
+                for f in String::from_utf8_lossy(&out).split('\0') {
+                    let mut p = f;
+                    while let Some(i) = p.rfind('/') {
+                        p = &p[..i];
+                        if !dirs.insert(p.to_string()) {
+                            break;
+                        }
+                    }
+                }
+                if ttx.send(dirs).is_ok() {
+                    waker();
+                }
+            }
         });
         self.git.status_rx = Some(rx);
+        self.git.tracked_rx = Some(trx);
     }
 
     fn request_head(&mut self, path: &Path) {
@@ -118,6 +139,13 @@ impl Editor {
                 changed = true;
             }
         }
+        if let Some(rx) = &self.git.tracked_rx {
+            if let Ok(d) = rx.try_recv() {
+                self.git.tracked_dirs = Some(d);
+                self.git.tracked_rx = None;
+                changed = true;
+            }
+        }
         if let Some((_, rx)) = &self.git.head_chan {
             while let Ok((p, blob)) = rx.try_recv() {
                 self.git.pending.remove(&p);
@@ -127,6 +155,30 @@ impl Editor {
             }
         }
         changed
+    }
+
+    /// プロジェクトの木の色分け用: パスの絶対パス → 状態。フォルダは、管理されていなければ Untracked（赤）、
+    /// 管理されている変更を含めば Modified（青）
+    pub(crate) fn tree_git_states(&self) -> HashMap<PathBuf, FileState> {
+        let mut out = HashMap::new();
+        let (Some(root), Some(st)) = (self.git.root.as_ref(), self.git.status.as_ref()) else { return out };
+        let sep = std::path::MAIN_SEPARATOR_STR;
+        for c in &st.changes {
+            let p = root.join(c.path.replace('/', sep));
+            // 親のフォルダ（根の手前まで）
+            let rel_dirs: Vec<&str> = c.path.match_indices('/').map(|(i, _)| &c.path[..i]).collect();
+            for d in rel_dirs {
+                let dp = root.join(d.replace('/', sep));
+                let untracked_dir = self.git.tracked_dirs.as_ref().is_some_and(|t| !t.contains(d));
+                if untracked_dir {
+                    out.insert(dp, FileState::Untracked);
+                } else if c.state != FileState::Untracked {
+                    out.entry(dp).or_insert(FileState::Modified);
+                }
+            }
+            out.insert(p, c.state);
+        }
+        out
     }
 
     fn file_state(&self, path: &Path) -> Option<FileState> {
@@ -429,5 +481,27 @@ mod tests {
         assert_eq!(e.buf.text(), "1\nTWO\n3\n4\n5\n");
         keys(&mut e, "u");
         assert_eq!(e.buf.text(), "1\nTWO\n3\n4\nnew\n5\n", "u で取り消せる");
+    }
+
+    /// 木の色分け: ファイルの状態と、管理されている変更を含むフォルダ（管理対象外だけのフォルダは含めない）
+    #[test]
+    fn tree_states() {
+        use nagi_workers::git::{Change, Status};
+        let mut e = Editor::new(nagi_core::Buffer::from_str(""), None);
+        let root = std::env::temp_dir().join("nagi-tree-git");
+        e.git.root = Some(root.clone());
+        let ch = |p: &str, state| Change { path: p.into(), state, staged: false, unstaged: true, orig: None };
+        e.git.status = Some(Status { changes: vec![ch("src/a/x.rs", FileState::Modified), ch("src/new.rs", FileState::Added), ch("tmp/junk.txt", FileState::Untracked)], ..Default::default() });
+        e.git.tracked_dirs = Some(["src".to_string(), "src/a".to_string(), "docs".to_string()].into());
+        let s = e.tree_git_states();
+        let j = |p: &str| root.join(p.replace('/', std::path::MAIN_SEPARATOR_STR));
+        assert_eq!(s.get(&j("src/a/x.rs")), Some(&FileState::Modified));
+        assert_eq!(s.get(&j("src/new.rs")), Some(&FileState::Added));
+        assert_eq!(s.get(&j("tmp/junk.txt")), Some(&FileState::Untracked));
+        assert_eq!(s.get(&j("src/a")), Some(&FileState::Modified), "変更を含むフォルダは青");
+        assert_eq!(s.get(&j("src")), Some(&FileState::Modified));
+        assert_eq!(s.get(&j("tmp")), Some(&FileState::Untracked), "管理されていないフォルダは赤");
+        assert_eq!(s.get(&j("docs")), None);
+        assert_eq!(s.get(&root), None);
     }
 }
