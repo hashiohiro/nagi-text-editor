@@ -112,14 +112,24 @@ pub trait Context<T> {
     fn with_context(self, f: impl FnOnce() -> String) -> Result<T>;
 }
 
-/// 表示できるエラーなら何にでも（ほかのクレートのエラー・String・Error）。原因の文は保たれる
-impl<T, E: fmt::Display> Context<T> for std::result::Result<T, E> {
+/// 表示できるエラーなら何にでも（ほかのクレートのエラー・String・Error）。
+/// 元が Error なら原因の連なりをそのまま包み（root でたどれる）、ほかは文にして原因にする
+impl<T, E: fmt::Display + 'static> Context<T> for std::result::Result<T, E> {
     fn context(self, msg: impl Into<String>) -> Result<T> {
-        self.map_err(|e| Error::of(e).wrap(msg))
+        self.map_err(|e| cause_of(e).wrap(msg))
     }
 
     fn with_context(self, f: impl FnOnce() -> String) -> Result<T> {
-        self.map_err(|e| Error::of(e).wrap(f()))
+        self.map_err(|e| cause_of(e).wrap(f()))
+    }
+}
+
+/// 原因にする Error（Error ならそのもの）
+fn cause_of<E: fmt::Display + 'static>(e: E) -> Error {
+    let any: &dyn std::any::Any = &e;
+    match any.downcast_ref::<Error>() {
+        Some(err) => err.clone(),
+        None => Error::of(e),
     }
 }
 
@@ -151,6 +161,10 @@ mod tests {
         assert_eq!(e.last_line(), "最後の行");
         let n: Option<u8> = None;
         assert_eq!(n.context("ありません").unwrap_err().to_string(), "ありません");
+        // Error に文脈を足しても、奥の原因までたどれる
+        let inner: Result<()> = Err(Error::new("奥").wrap("中"));
+        let e = inner.context("外").unwrap_err();
+        assert_eq!((e.to_string().as_str(), e.root().msg()), ("外: 中: 奥", "奥"));
         let f = || -> Result<()> { Err(format!("{} 件", 3))? };
         assert_eq!(f().unwrap_err().to_string(), "3 件", "String から ? で変換できる");
     }

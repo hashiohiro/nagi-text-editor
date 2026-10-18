@@ -332,7 +332,7 @@ impl Editor {
                             d.load_fields();
                             d.dirty = true;
                         }
-                        Some(_) => self.notify.info("IntelliJ の構成は nagi からは消せません（IntelliJ で消してください）"),
+                        Some(_) => self.notify.warn("IntelliJ の構成は nagi からは消せません（IntelliJ で消してください）"),
                         None => {}
                     },
                     Key::Char('r') => self.run_dialog_button(DialogButton::Run),

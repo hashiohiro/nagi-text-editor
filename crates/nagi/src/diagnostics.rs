@@ -239,7 +239,7 @@ impl Editor {
             match detect_command(&root, file.as_deref()) {
                 Some(c) => c,
                 None => {
-                    self.notify.info("コマンドが決められません（:Make の後にコマンドを書いてください）");
+                    self.notify.warn("コマンドが決められません（:Make の後にコマンドを書いてください）");
                     return;
                 }
             }

@@ -504,7 +504,7 @@ impl Editor {
         let Some(d) = &mut self.settings_dialog else { return false };
         if d.focus == SFocus::Edit {
             if let Some(e) = d.commit_edit() {
-                self.notify.info(e);
+                self.notify.error(e);
                 return false;
             }
         }
@@ -629,7 +629,7 @@ impl Editor {
                 match out {
                     FieldOut::Submit => {
                         if let Some(e) = d.commit_edit() {
-                            self.notify.info(e);
+                            self.notify.error(e);
                         }
                     }
                     FieldOut::Cancel => {

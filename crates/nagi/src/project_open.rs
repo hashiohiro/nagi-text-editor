@@ -243,7 +243,7 @@ impl Editor {
 
     fn switch_project(&mut self, p: project::Project) {
         if let Err(e) = std::env::set_current_dir(&p.root) {
-            self.notify.info(format!("{}: {e}", p.root.display()));
+            self.notify.error(format!("{}: {e}", p.root.display()));
             return;
         }
         remember_project(&p.root);

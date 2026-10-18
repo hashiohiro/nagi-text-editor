@@ -177,7 +177,7 @@ impl Editor {
     fn diff_apply(&mut self, stage: bool) {
         let Some(d) = &self.diff else { return };
         let Some((root, rel, path)) = d.work.clone() else {
-            self.notify.info("この差分では戻せません（作業中のファイルとの差分だけ）");
+            self.notify.warn("この差分では戻せません（作業中のファイルとの差分だけ）");
             return;
         };
         let Some(k) = d.rows[d.cursor].hunk.or_else(|| d.hunk_rows.iter().rposition(|&r| r <= d.cursor)) else {

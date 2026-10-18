@@ -711,7 +711,7 @@ impl Editor {
                     }
                     Err(e) => {
                         p.conns[i].error = Some(e.to_string());
-                        self.notify.info(e);
+                        self.notify.error(e);
                     }
                 }
             }
@@ -769,7 +769,7 @@ impl Editor {
             (Some(Expect::Connect), Reply::Error(e)) => {
                 c.client = None;
                 c.error = Some(e.clone());
-                self.notify.info(format!("{name} につなげません: {e}"));
+                self.notify.error(format!("{name} につなげません: {e}"));
                 self.db_log_line(&format!("{name} につなげません: {e}"), true);
             }
             (Some(Expect::Schemas), Reply::Schemas(s)) => c.schemas = Some(s),
@@ -800,7 +800,7 @@ impl Editor {
                 };
                 self.db_log(&name, &sql, &outcome, !ok);
                 if let Reply::Error(e) = &reply {
-                    self.notify.info(format!("SQL の誤り: {}", e.lines().next().unwrap_or("")));
+                    self.notify.error(format!("SQL の誤り: {}", e.lines().next().unwrap_or("")));
                 }
                 // テーブルを作ったり消したりしたかもしれないので、木を読み直す
                 if ok && changes {
@@ -1134,7 +1134,7 @@ impl Editor {
         let path = dir.join(format!("{base}_query_{n}.sql"));
         let body = format!("-- {}  クエリ {n}\n\n{}", s.name, initial.map(|q| format!("{q}\n")).unwrap_or_default());
         if let Err(e) = std::fs::write(&path, body) {
-            self.notify.info(format!("クエリのファイルを作れません: {e}"));
+            self.notify.error(format!("クエリのファイルを作れません: {e}"));
             return;
         }
         let abs = std::path::absolute(&path).unwrap_or(path.clone());

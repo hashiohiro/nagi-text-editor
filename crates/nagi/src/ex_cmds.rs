@@ -116,7 +116,7 @@ impl Editor {
         let (range, rest) = match self.parse_range(cmd) {
             Ok(v) => v,
             Err(e) => {
-                self.notify.info(e);
+                self.notify.error(e);
                 return Some(Effect::None);
             }
         };
@@ -179,7 +179,7 @@ impl Editor {
                 let (to, _) = match self.parse_addr(arg) {
                     Ok(v) => v,
                     Err(e) => {
-                        self.notify.info(e);
+                        self.notify.error(e);
                         return Some(Effect::None);
                     }
                 };

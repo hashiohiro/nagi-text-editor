@@ -35,7 +35,7 @@ impl Editor {
         let _ = std::fs::create_dir_all(&dir);
         if std::fs::read_to_string(&path).ok().as_deref() != Some(text.as_str()) {
             if let Err(e) = std::fs::write(&path, &text) {
-                self.notify.info(format!("{}: {e}", path.display()));
+                self.notify.error(format!("{}: {e}", path.display()));
                 return;
             }
         }

@@ -437,7 +437,7 @@ impl Editor {
             (_, Key::Char('G')) => te.row = last_row,
             (_, Key::Char('i') | Key::Enter) if !te.cols.is_empty() && te.len() > 0 => {
                 if te.at(te.row).0 == RowState::Deleted {
-                    self.notify.info("消す行は直せません（dd で取り消し）");
+                    self.notify.warn("消す行は直せません（dd で取り消し）");
                 } else {
                     te.editing = Some(VimField::new(&te.value(te.row, te.col).unwrap_or_default(), false));
                 }
@@ -445,7 +445,7 @@ impl Editor {
             // c: 空にしてから直す（値を入れ替える）
             (_, Key::Char('c')) if !te.cols.is_empty() && te.len() > 0 => {
                 if te.at(te.row).0 == RowState::Deleted {
-                    self.notify.info("消す行は直せません（dd で取り消し）");
+                    self.notify.warn("消す行は直せません（dd で取り消し）");
                 } else {
                     te.editing = Some(VimField::new("", false));
                 }

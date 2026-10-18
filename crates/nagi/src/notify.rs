@@ -122,4 +122,21 @@ mod tests {
         assert_eq!(g.hits.len(), 2, "進み具合は履歴に残さない");
         assert!(g.hits[1].text.ends_with("E ふたつめはできません"), "{}", g.hits[1].text);
     }
+
+    /// 失敗（Err の腕・エラーの値）を info で出していない（重さの誤りを見つける。ADR 0016）
+    #[test]
+    fn errors_are_not_info() {
+        let re = regex::Regex::new(r"Err\([a-z_]*\) => [^\n]*notify\.info\(|notify\.info\((e|err)\)").unwrap();
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut bad = Vec::new();
+        for f in std::fs::read_dir(&dir).unwrap().flatten() {
+            let text = std::fs::read_to_string(f.path()).unwrap_or_default();
+            for (i, l) in text.lines().enumerate() {
+                if re.is_match(l) {
+                    bad.push(format!("{}:{}", f.file_name().to_string_lossy(), i + 1));
+                }
+            }
+        }
+        assert!(bad.is_empty(), "失敗を info で出している: {bad:?}");
+    }
 }

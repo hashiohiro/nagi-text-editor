@@ -278,7 +278,7 @@ impl Editor {
         let Some(it) = p.items.get(i) else { return };
         let c = it.change.clone();
         if c.state == FileState::Untracked {
-            self.notify.info("未追跡のファイルは戻せません（消すならファイルツリーなどから）");
+            self.notify.warn("未追跡のファイルは戻せません（消すならファイルツリーなどから）");
             return;
         }
         let rx = run_git(self.waker.clone(), move || {
@@ -402,7 +402,7 @@ impl Editor {
             Key::Enter | Key::Char('o') => {
                 let (Some(root), Some(it)) = (self.git.root.clone(), p.items.get(p.selected)) else { return Effect::None };
                 if it.change.state == FileState::Deleted {
-                    self.notify.info("消したファイルは開けません");
+                    self.notify.warn("消したファイルは開けません");
                     return Effect::None;
                 }
                 let path: PathBuf = root.join(&it.change.path);

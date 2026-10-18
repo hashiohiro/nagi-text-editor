@@ -140,7 +140,7 @@ impl Editor {
                 b
             }
             Err(e) => {
-                self.notify.info(format!("{}: {e}", path.display()));
+                self.notify.error(format!("{}: {e}", path.display()));
                 return;
             }
         };
