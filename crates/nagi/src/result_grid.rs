@@ -15,9 +15,19 @@ use crate::vim_field::{FieldOut, VimField};
 /// 下のパネルに出しているもの
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum BottomKind {
+    /// 全文検索の結果
     #[default]
     Grep,
+    /// クエリの結果
     Result,
+    /// 履歴（グラフ付きのログ）
+    Git,
+    /// 診断の一覧
+    Problems,
+    /// 実行したコマンドの出力
+    Output,
+    /// シェル
+    Terminal,
 }
 
 /// 表に出す 1 つの値（改行とタブは記号に）

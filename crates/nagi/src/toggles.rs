@@ -38,7 +38,7 @@ impl Button {
                 LeftTab::Commit => "コミット（Alt-0）".into(),
             },
             Button::HideBottom => "隠す".into(),
-            Button::ShowBottom => if ed.bottom_kind == crate::result_grid::BottomKind::Result { "クエリの結果".into() } else { "検索の結果".into() },
+            Button::ShowBottom => crate::bottom_panel::BTABS.iter().find(|(_, k)| *k == ed.bottom_kind).map_or("下の欄".into(), |(l, _)| format!("下の欄:{l}")),
             Button::HideRight => "隠す".into(),
             Button::ShowRight => match (ed.db.is_some() || ed.maven.is_some() || ed.md_preview.is_some(), ed.right_last()) {
                 (false, _) => "データベース・Maven".into(),
@@ -60,11 +60,14 @@ impl Editor {
         }
     }
 
-    /// 下のパネル（全文検索の結果かクエリの結果）があるか
+    /// 下の欄に出すものがあるか（検索・ログ・クエリの結果は中身があるとき、ほかのタブはいつも）
     pub fn bottom_exists(&self) -> bool {
+        use crate::result_grid::BottomKind::*;
         match self.bottom_kind {
-            crate::result_grid::BottomKind::Grep => self.grep.is_some(),
-            crate::result_grid::BottomKind::Result => !self.db_results.is_empty(),
+            Grep | Output => self.grep.is_some(),
+            Result => !self.db_results.is_empty(),
+            Git => self.log.as_ref().is_some_and(|l| l.docked),
+            Problems | Terminal => true,
         }
     }
 
@@ -78,12 +81,13 @@ impl Editor {
         let mut v = Vec::new();
         match self.left_rect() {
             Some(r) => v.push((Button::HideLeft, r.y, r.x + r.w - 2)),
-            None if self.diff.is_none() && self.log.is_none() && self.db_table.is_none() => v.push((Button::ShowLeft, 0, 0)),
+            None if self.diff.is_none() && !self.log_fullscreen() && self.db_table.is_none() => v.push((Button::ShowLeft, 0, 0)),
             None => {}
         }
         match self.panel_rect() {
             Some(r) => v.push((Button::HideBottom, r.y, r.x + r.w - 2)),
-            None if self.bottom_exists() && self.diff.is_none() && self.log.is_none() && self.db_table.is_none() => {
+            // 下の欄はまだ開いていなくても出す（押すと最後に使ったタブ）
+            None if self.diff.is_none() && !self.log_fullscreen() && self.db_table.is_none() => {
                 v.push((Button::ShowBottom, self.windows_rows().saturating_sub(1), self.windows_x().0))
             }
             None => {}
@@ -92,7 +96,7 @@ impl Editor {
         match self.right_rect() {
             Some(r) => v.push((Button::HideRight, r.y, r.x + r.w - 2)),
             // 右の欄はまだ開いていなくても出す（押すと最後に使ったタブ。初めてならデータベース）
-            None if self.diff.is_none() && self.log.is_none() && self.db_table.is_none() => v.push((Button::ShowRight, 0, self.screen.0.saturating_sub(1))),
+            None if self.diff.is_none() && !self.log_fullscreen() && self.db_table.is_none() => v.push((Button::ShowRight, 0, self.screen.0.saturating_sub(1))),
             None => {}
         }
         v
@@ -132,9 +136,9 @@ impl Editor {
     }
 
     pub(crate) fn show_bottom(&mut self) {
-        self.bottom_hidden = false;
-        self.focus_panel();
-        self.rows = self.text_rows(self.active_rect());
+        // 中身の無いタブなら問題のタブを出す
+        let kind = if self.bottom_exists() { self.bottom_kind } else { crate::result_grid::BottomKind::Problems };
+        self.select_bottom_tab(kind);
     }
 
     /// Alt-1 / Alt-0: そのタブを出して移る。もう出ていて移っていれば隠す（IntelliJ と同じ）

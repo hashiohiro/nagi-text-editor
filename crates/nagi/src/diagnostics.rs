@@ -166,7 +166,7 @@ impl Editor {
         for l in lines {
             match parse_line(&l, &root) {
                 Some(d) => {
-                    if let Some(g) = &mut self.grep {
+                    if let Some(g) = self.output_panel_mut() {
                         let head = if d.error { "error" } else { "warning" };
                         let text = format!("{head}: {}", d.msg);
                         g.hits.push(Hit { path: rel(&d.path, &root), line: d.line + 1, range: (0, head.len()), text });
@@ -180,7 +180,7 @@ impl Editor {
                         }
                     }
                     // 診断の形でない行は、ファイルを持たない行として出す
-                    if let Some(g) = &mut self.grep {
+                    if let Some(g) = self.output_panel_mut() {
                         g.hits.push(Hit { path: String::new(), line: 0, range: (0, 0), text: l });
                     }
                 }
@@ -190,7 +190,7 @@ impl Editor {
         if let Some(code) = done {
             let (cmd, status) = self.make.take().map(|m| (m.cmd, m.status)).unwrap_or_default();
             let (e, w) = (self.diags.iter().filter(|d| d.error).count(), self.diags.iter().filter(|d| !d.error).count());
-            if let Some(g) = &mut self.grep {
+            if let Some(g) = self.output_panel_mut() {
                 g.running = false;
             }
             self.message = match (e + w, code) {
@@ -275,13 +275,16 @@ impl Editor {
 
     /// 結果のパネルを空にして開く（見出し付き。フォーカスは編集画面のまま）
     pub(crate) fn open_result_panel(&mut self, title: &str) {
-        self.open_grep("");
+        // 検索の結果は脇に残して、ログのタブに出す
+        self.stash_grep_unless(true);
+        self.open_grep_raw("");
         if let Some(g) = &mut self.grep {
             g.title = Some(title.to_string());
             g.running = true;
             g.hits.clear();
             g.query.set("");
         }
+        self.bottom_kind = crate::result_grid::BottomKind::Output;
         self.mode = Mode::Normal;
     }
 }

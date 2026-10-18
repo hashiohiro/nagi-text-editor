@@ -42,6 +42,8 @@ pub enum Mode {
     Branches,
     /// テーブルのデータの編集
     DbTable,
+    /// 下の欄のターミナルにキーを送っている
+    Terminal,
     /// ランチャー（起動時のプロジェクトの選択）
     Launcher,
 }
@@ -293,6 +295,10 @@ pub struct Editor {
     /// テーブルのデータの編集（開いている間だけ）
     pub db_table: Option<crate::db_table::TableEditor>,
     pub bottom_kind: crate::result_grid::BottomKind,
+    /// 検索とログのうち、出していない方（下の欄のタブで入れ替える）
+    pub grep_other: Option<crate::grep_panel::GrepPanel>,
+    /// 下の欄の「問題」
+    pub problems: crate::bottom_panel::ProblemsView,
     pub right_tab: crate::right_panel::RightTab,
     pub right_hidden: bool,
     pub right_w: Option<usize>,
@@ -432,6 +438,8 @@ impl Editor {
             db_results: Default::default(),
             db_table: None,
             bottom_kind: Default::default(),
+            grep_other: None,
+            problems: Default::default(),
             right_tab: Default::default(),
             right_hidden: false,
             right_w: None,
@@ -723,6 +731,22 @@ impl Editor {
             return Effect::None;
         }
         // Alt-1 プロジェクト、Alt-0 コミット（IntelliJ と同じ。どのモードからでも）
+        // 下の欄（IntelliJ と同じ）: Alt+9 Git、Alt+3 検索、Alt+6 問題、Alt+4 ログ、Alt+F12 ターミナル
+        let bottom = match key {
+            Key::Alt('9') => Some(crate::result_grid::BottomKind::Git),
+            Key::Alt('3') => Some(crate::result_grid::BottomKind::Grep),
+            Key::Alt('6') => Some(crate::result_grid::BottomKind::Problems),
+            Key::Alt('4') => Some(crate::result_grid::BottomKind::Output),
+            Key::F(24) => Some(crate::result_grid::BottomKind::Terminal),
+            _ => None,
+        };
+        if let Some(k) = bottom.filter(|_| matches!(self.mode, Mode::Normal | Mode::Insert | Mode::List | Mode::CommitMsg | Mode::Log | Mode::Terminal)) {
+            if self.mode == Mode::Insert {
+                self.key(Key::Esc);
+            }
+            self.toggle_bottom_tab(k);
+            return Effect::None;
+        }
         if matches!(key, Key::Alt('1') | Key::Alt('0')) && matches!(self.mode, Mode::Normal | Mode::Insert | Mode::List | Mode::CommitMsg) {
             if self.mode == Mode::Insert {
                 self.key(Key::Esc);
@@ -782,6 +806,7 @@ impl Editor {
             Mode::List => match self.list_side {
                 Side::Left => self.tree_key(key),
                 Side::Bottom if self.bottom_kind == crate::result_grid::BottomKind::Result => self.result_key(key),
+                Side::Bottom if self.bottom_kind == crate::result_grid::BottomKind::Problems => self.problems_key(key),
                 Side::Bottom => self.list_key(key),
                 Side::Commit => self.commit_list_key(key),
                 Side::Right => self.right_key(key),
@@ -796,6 +821,10 @@ impl Editor {
             }
             Mode::Log => {
                 self.log_key(key);
+                Effect::None
+            }
+            Mode::Terminal => {
+                self.terminal_key(key);
                 Effect::None
             }
             Mode::Branches => {

@@ -86,7 +86,7 @@ impl Editor {
 
     /// 画面の (行, 列) にある区切り
     pub fn sep_at(&self, row: usize, col: usize) -> Option<Sep> {
-        if self.diff.is_some() || self.log.is_some() {
+        if self.diff.is_some() || self.log_fullscreen() {
             return None;
         }
         if let Some(r) = self.left_rect() {

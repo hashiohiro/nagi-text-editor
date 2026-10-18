@@ -46,6 +46,8 @@ pub enum Confirm {
 type Rx<T> = Option<Receiver<Result<T, String>>>;
 
 pub struct LogView {
+    /// 下の欄の「Git」タブに収めている（全画面でない）
+    pub docked: bool,
     pub rows: Vec<LogRow>,
     /// 見せている行（rows の番号。絞り込み中はコミットの行だけ）
     pub visible: Vec<usize>,
@@ -222,6 +224,7 @@ impl Editor {
             Ok(v)
         });
         self.log = Some(LogView {
+            docked: false,
             rows: Vec::new(),
             visible: Vec::new(),
             selected: 0,
@@ -294,7 +297,22 @@ impl Editor {
 
     /// 履歴の画面のキー
     pub(crate) fn log_key(&mut self, key: Key) {
-        let rows = self.windows_rows().saturating_sub(3).max(1);
+        let docked = self.log.as_ref().is_some_and(|l| l.docked);
+        let rows = if docked { self.bottom_content_rect().map_or(5, |r| r.h).saturating_sub(2).max(1) } else { self.windows_rows().saturating_sub(3).max(1) };
+        // 下の欄に収めているとき: Esc は本文へ戻るだけ、q は欄を隠す（どちらも履歴は残す）。Ctrl-w k も本文へ
+        if docked && self.log.as_ref().is_some_and(|l| l.filter.is_none() && l.confirm.is_none() && !l.focus_files) {
+            match key {
+                Key::Esc => {
+                    self.mode = Mode::Normal;
+                    return;
+                }
+                Key::Char('q') => {
+                    self.hide_bottom();
+                    return;
+                }
+                _ => {}
+            }
+        }
         let Some(l) = &mut self.log else {
             self.mode = Mode::Normal;
             return;

@@ -11,6 +11,8 @@
 
 mod angular;
 mod autoread;
+mod bottom_panel;
+mod terminal;
 mod launcher;
 mod md_preview;
 mod project_open;
@@ -468,6 +470,8 @@ impl App {
                 NamedKey::PageUp => vec![VKey::PageUp],
                 NamedKey::PageDown => vec![VKey::PageDown],
                 // F12: 定義へ（IntelliJ・VS Code と同じ）
+                // Alt+F12: ターミナル（IntelliJ と同じ。F24 として渡す）
+                NamedKey::F12 if alt => vec![VKey::F(24)],
                 NamedKey::F12 => vec![VKey::F(12)],
                 _ => return,
             },
@@ -671,7 +675,7 @@ impl App {
             Some(editor::Side::Right)
         } else if row >= rows && ed.status_rows() == 1 {
             Some(editor::Side::Bottom)
-        } else if ed.stripe == Some(editor::Side::Bottom) && row + 1 == rows && col < 10.0 {
+        } else if ed.stripe == Some(editor::Side::Bottom) && row + 1 == rows && col < 60.0 {
             Some(editor::Side::Bottom)
         } else {
             None
@@ -729,15 +733,11 @@ impl App {
                 Some(tab) => ed.toggle_right_tab(tab),
                 None => return false,
             },
-            Some(editor::Side::Bottom) if row + 1 == ed.screen.1 && col < 8 => {
-                if ed.bottom_visible() {
-                    ed.hide_bottom();
-                } else if ed.grep.is_some() {
-                    ed.show_bottom();
-                } else {
-                    ed.open_grep("");
-                }
-            }
+            // 下のストライプ: タブの名前を押すと、そのタブを出す・隠す
+            Some(editor::Side::Bottom) if row + 1 == ed.screen.1 => match ed.btab_at(col) {
+                Some(k) => ed.toggle_bottom_tab(k),
+                None => return false,
+            },
             _ => return false,
         }
         ed.stripe = None;
@@ -830,12 +830,9 @@ impl App {
                     _ => 1,
                 };
                 self.last_click = Some((now, (row, usize::MAX), clicks));
-                if ed.bottom_kind == result_grid::BottomKind::Result {
-                    let col = (self.mouse.0.max(0.0) as f32 / cell.w) as usize;
-                    ed.result_click(row - r.y, col.saturating_sub(r.x + 1));
-                } else {
-                    ed.panel_click(row - r.y, clicks);
-                }
+                // 1 行目はタブ、2 行目から中身
+                let col = (self.mouse.0.max(0.0) as f32 / cell.w) as usize;
+                ed.bottom_click(row - r.y, col.saturating_sub(r.x), clicks);
                 self.sync_ime();
                 self.draw();
                 return;

@@ -95,6 +95,15 @@ impl Editor {
 
     /// `:Grep [語]` / FindInPath。最下行で検索語を打つ（前の検索語を残しておく）
     pub(crate) fn open_grep(&mut self, initial: &str) {
+        // ログ（コマンドの出力）を出していれば脇に残して、検索のタブに出す
+        self.stash_grep_unless(false);
+        if self.grep.is_none() {
+            self.swap_grep_for(crate::result_grid::BottomKind::Grep);
+        }
+        self.open_grep_raw(initial);
+    }
+
+    pub(crate) fn open_grep_raw(&mut self, initial: &str) {
         let root = self
             .buf
             .path
@@ -305,7 +314,7 @@ impl Editor {
 
     pub(crate) fn close_grep(&mut self) {
         self.grep = None;
-        self.bottom_hidden = false;
+        self.bottom_hidden = true;
         if self.mode == Mode::GrepPrompt || (self.mode == Mode::List && self.list_side == crate::editor::Side::Bottom) {
             self.mode = Mode::Normal;
         }

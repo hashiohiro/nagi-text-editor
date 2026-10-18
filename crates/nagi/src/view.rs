@@ -634,7 +634,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     if let (Some(r), Some(c)) = (ed.commit_rect(), &ed.commit) {
         draw_commit_panel(&mut p, ed, c, r);
     }
-    if let (Some(l), None) = (&ed.log, &ed.diff) {
+    if let (Some(l), None) = (ed.log.as_ref().filter(|l| !l.docked), &ed.diff) {
         let (x, w) = ed.windows_x();
         draw_log_view(&mut p, l, Rect { x, y: 0, w, h: ed.windows_rows() }, &ed.preedit);
     }
@@ -652,12 +652,8 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     if ed.windows_top() > 0 {
         draw_console_bar(&mut p, ed);
     }
-    if ed.bottom_kind == crate::result_grid::BottomKind::Result {
-        if let Some(r) = ed.panel_rect() {
-            draw_db_results(&mut p, ed, r);
-        }
-    } else if let (Some(r), Some(g)) = (ed.panel_rect(), &ed.grep) {
-        draw_grep_panel(&mut p, g, r, matches!(ed.mode, Mode::List | Mode::GrepPrompt));
+    if let Some(r) = ed.panel_rect() {
+        draw_bottom_panel(&mut p, ed, r);
     }
     if let Some(f) = &ed.finder {
         draw_finder(&mut p, f, rows, cols);
@@ -679,7 +675,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     draw_toggle_buttons(&mut p, ed, cols);
     match ed.stripe {
         Some(crate::editor::Side::Left) => draw_stripe_left(&mut p, ed.windows_rows(), ed.left_visible()),
-        Some(crate::editor::Side::Bottom) => draw_stripe_bottom(&mut p, rows, cols, ed.bottom_visible()),
+        Some(crate::editor::Side::Bottom) => draw_stripe_bottom(&mut p, rows, cols, ed),
         Some(crate::editor::Side::Right) => draw_stripe_right(&mut p, ed.windows_rows(), cols, ed.right_visible()),
         Some(crate::editor::Side::Commit) | None => {}
     }
@@ -801,6 +797,17 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             if end + 2 <= pc {
                 p.text(help, pc, y, STATUS_FG);
             }
+        }
+        Mode::List if ed.list_side == crate::editor::Side::Bottom && ed.bottom_kind == crate::result_grid::BottomKind::Problems => {
+            let end = p.text(if ed.message.is_empty() { "-- 問題 --" } else { &ed.message }, 0, y, FG);
+            let help = "j/k 移動  Enter 開く  o 欄に残って開く  ]e [e 次・前  q 隠す  Ctrl-w k 窓へ ";
+            let pc = cols.saturating_sub(p.width(help));
+            if end + 2 <= pc {
+                p.text(help, pc, y, STATUS_FG);
+            }
+        }
+        Mode::Terminal => {
+            p.text(if ed.message.is_empty() { "-- ターミナル --" } else { &ed.message }, 0, y, FG);
         }
         Mode::List if ed.list_side == crate::editor::Side::Bottom && ed.bottom_kind == crate::result_grid::BottomKind::Result => {
             let end = p.text(if ed.message.is_empty() { "-- クエリの結果 --" } else { &ed.message }, 0, y, FG);
@@ -935,17 +942,21 @@ fn draw_stripe_right(p: &mut Painter, rows: usize, cols: usize, shown: Option<cr
 }
 
 /// 下のストライプ（マウスを最下行に寄せている間だけ）。最下行のすぐ上に「検索」を出す
-fn draw_stripe_bottom(p: &mut Painter, rows: usize, cols: usize, open: bool) {
+fn draw_stripe_bottom(p: &mut Painter, rows: usize, cols: usize, ed: &Editor) {
     let cell = p.fonts.cell();
     let y = (rows - 1) as f32 * cell.h;
     p.out.push(Instance::fill(0.0, y, cols as f32 * cell.w, cell.h, BG));
     p.out.push(Instance::fill(0.0, y, cols as f32 * cell.w, 1.0, LINE_NO));
-    let label = " 検索 ";
-    let w = p.width(label);
-    if open {
-        p.out.push(Instance::fill(0.0, y, w as f32 * cell.w, cell.h, FG));
+    // 下の欄のタブの名前（出しているタブは反転）。押すとそのタブを出す・隠す
+    let mut x = 0;
+    for (label, k) in ed.bottom_tabs() {
+        let open = ed.bottom_visible() && ed.bottom_kind == k;
+        let w = p.width(label);
+        if open {
+            p.out.push(Instance::fill(x as f32 * cell.w, y, w as f32 * cell.w, cell.h, FG));
+        }
+        x = p.text(label, x, y, if open { BG } else { STATUS_FG });
     }
-    p.text(label, 0, y, if open { BG } else { STATUS_FG });
 }
 
 /// 出す・隠すのボタン。ふだんは薄い 1 文字、マウスを載せると明るくして名前を横に出す
@@ -998,6 +1009,77 @@ fn draw_tabs(p: &mut Painter, r: Rect, tabs: &[(&str, bool)], focused: bool, ext
         p.cols = saved;
     }
     p.out.push(Instance::fill(r.x as f32 * cell.w, y + cell.h - 1.0, r.w as f32 * cell.w, 1.0, LINE_NO));
+}
+
+/// 下の欄: 1 行目にタブ（Git・検索・問題・ログ・ターミナル・クエリの結果）、2 行目から選んでいるタブの中身
+fn draw_bottom_panel(p: &mut Painter, ed: &Editor, r: Rect) {
+    use crate::result_grid::BottomKind;
+    let cell = p.fonts.cell();
+    let (x0, y0, wpx) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
+    p.out.push(Instance::fill(x0, y0, wpx, r.h as f32 * cell.h, BG));
+    p.out.push(Instance::fill(x0, y0, wpx, 1.0, LINE_NO));
+    let focused = ed.bottom_focused();
+    let tabs: Vec<(&str, bool)> = ed.bottom_tabs().into_iter().map(|(l, k)| (l, k == ed.bottom_kind)).collect();
+    draw_tabs(p, Rect { x: r.x, y: r.y, w: r.w, h: 1 }, &tabs, focused, "");
+    let c = Rect { x: r.x, y: r.y + 1, w: r.w, h: r.h.saturating_sub(1) };
+    let empty = |p: &mut Painter, s: &str| {
+        p.text(s, c.x + 1, (c.y + 1) as f32 * cell.h, STATUS_FG);
+    };
+    match ed.bottom_kind {
+        BottomKind::Result => draw_db_results(p, ed, c),
+        BottomKind::Grep | BottomKind::Output => match &ed.grep {
+            Some(g) => draw_grep_panel(p, g, c, matches!(ed.mode, Mode::List | Mode::GrepPrompt)),
+            None if ed.bottom_kind == BottomKind::Grep => empty(p, "検索していません（:Grep 語、Ctrl+Shift+F）"),
+            None => empty(p, "コマンドの出力はありません（:Make、Maven のタブのゴール）"),
+        },
+        BottomKind::Problems => draw_problems(p, ed, c, focused),
+        BottomKind::Git => match &ed.log {
+            Some(l) if l.docked => draw_log_view(p, l, c, &ed.preedit),
+            _ => empty(p, "git のリポジトリではありません"),
+        },
+        BottomKind::Terminal => draw_terminal(p, ed, c, focused),
+    }
+}
+
+/// 問題（診断）の一覧。ファイルごとにまとめ、エラーは赤、警告は黄
+fn draw_problems(p: &mut Painter, ed: &Editor, r: Rect, focused: bool) {
+    use crate::bottom_panel::ProblemRow;
+    let cell = p.fonts.cell();
+    let rows = ed.problem_rows();
+    if rows.is_empty() {
+        p.text(" 問題はありません（:Make で集める）", r.x, r.y as f32 * cell.h, STATUS_FG);
+        return;
+    }
+    let root = ed.nav_root();
+    let saved = p.cols;
+    p.cols = r.x + r.w;
+    for (k, row) in rows.iter().enumerate().skip(ed.problems.scroll).take(r.h) {
+        let y = (r.y + k - ed.problems.scroll) as f32 * cell.h;
+        let sel = k == ed.problems.selected;
+        if sel {
+            p.out.push(Instance::fill(r.x as f32 * cell.w, y, r.w as f32 * cell.w, cell.h, if focused { FG } else { MATCH_BG }));
+        }
+        let rev = sel && focused;
+        match row {
+            ProblemRow::File(path, e, w) => {
+                let rel = path.strip_prefix(&root).map_or(path.display().to_string(), |x| x.display().to_string());
+                let c = p.text(&format!(" ▾ {rel}"), r.x, y, if rev { BG } else { FG });
+                let n = match (e, w) {
+                    (0, w) => format!("  警告 {w}"),
+                    (e, 0) => format!("  エラー {e}"),
+                    (e, w) => format!("  エラー {e}・警告 {w}"),
+                };
+                p.text(&n, c, y, if rev { BG } else { STATUS_FG });
+            }
+            ProblemRow::Item(i) => {
+                let d = &ed.diags[*i];
+                let c = p.text("     ● ", r.x, y, if rev { BG } else if d.error { DIAG_ERROR } else { DIAG_WARN });
+                let c = p.text(&d.msg, c, y, if rev { BG } else { FG });
+                p.text(&format!("  {}:{}", d.line + 1, d.col + 1), c, y, if rev { BG } else { LINE_NO });
+            }
+        }
+    }
+    p.cols = saved;
 }
 
 /// 右の欄（データベース・Maven）。1 行目はタブ、2 行目から木
@@ -2700,4 +2782,10 @@ fn prompt_line(p: &mut Painter, lead: &str, text: &str, cursor: usize, preedit: 
     if active {
         p.caret(caret + pre_w, y);
     }
+}
+
+/// ターミナル（段階 2 で中身を作る）
+fn draw_terminal(p: &mut Painter, _ed: &Editor, r: Rect, _focused: bool) {
+    let cell = p.fonts.cell();
+    p.text(" ターミナルは準備中です", r.x, r.y as f32 * cell.h, STATUS_FG);
 }

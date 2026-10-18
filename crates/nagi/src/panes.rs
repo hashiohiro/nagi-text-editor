@@ -156,7 +156,7 @@ impl Editor {
 
     /// 窓の領域の上に取る行（SQL コンソールの帯）
     pub fn windows_top(&self) -> usize {
-        usize::from(self.console_source().is_some() && self.diff.is_none() && self.log.is_none() && self.db_table.is_none())
+        usize::from(self.console_source().is_some() && self.diff.is_none() && !self.log_fullscreen() && self.db_table.is_none())
     }
 
     pub fn active_rect(&self) -> Rect {
