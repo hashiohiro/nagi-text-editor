@@ -23,6 +23,25 @@ pub enum SFocus {
     Edit,
     /// 絞り込みの欄
     Filter,
+    /// 一覧から選んでいる（フォント）
+    Combo,
+}
+
+/// コンボボックス（フォントの一覧）。打つと絞り込み、↑↓ で選び、Enter で決める
+pub struct Combo {
+    /// (名前, 等幅か)
+    pub items: Vec<(String, bool)>,
+    pub filter: VimField,
+    pub sel: usize,
+    pub top: usize,
+}
+
+impl Combo {
+    /// 絞り込んだ一覧（元の番号）
+    pub fn shown(&self) -> Vec<usize> {
+        let q = self.filter.text().to_lowercase();
+        (0..self.items.len()).filter(|&i| q.is_empty() || self.items[i].0.to_lowercase().contains(&q)).collect()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -43,6 +62,11 @@ pub struct SettingsDialog {
     pub focus: SFocus,
     pub filter: VimField,
     pub field: Option<VimField>,
+    pub combo: Option<Combo>,
+    /// フォントの一覧（初めて開いたときに読む）
+    fonts: Option<Vec<(String, bool)>>,
+    /// コンボボックスの描いた行（行, 列の始め, 終わり, 一覧の番号）
+    pub combo_rows: RefCell<Vec<(usize, usize, usize, usize)>>,
     /// 保存先をプロジェクトにしているか
     pub project_scope: bool,
     pub dirty: bool,
@@ -118,10 +142,28 @@ impl SettingsDialog {
         let Some(it) = self.current() else { return };
         match it.kind {
             SKind::Bool | SKind::Choice(_) => self.cycle(1),
+            SKind::Font => {
+                let items = self.fonts.get_or_insert_with(nagi_text::font_families).clone();
+                let cur = self.value(it);
+                let sel = items.iter().position(|f| f.0.eq_ignore_ascii_case(&cur)).unwrap_or(0);
+                self.combo = Some(Combo { items, filter: VimField::new("", false), sel, top: sel.saturating_sub(5) });
+                self.focus = SFocus::Combo;
+            }
             _ => {
                 self.field = Some(VimField::new(&self.value(it), false));
                 self.focus = SFocus::Edit;
             }
+        }
+    }
+
+    /// コンボボックスで選んだものに決める
+    fn choose_combo(&mut self, index: Option<usize>) {
+        let (Some(it), Some(c)) = (self.current(), self.combo.take()) else { return };
+        self.focus = SFocus::Items;
+        let shown = c.shown();
+        let pick = index.or_else(|| shown.get(c.sel).copied());
+        if let Some(name) = pick.and_then(|i| c.items.get(i)).map(|f| f.0.clone()) {
+            self.set(it, &name);
         }
     }
 
@@ -171,6 +213,9 @@ impl Editor {
             focus: if query.is_empty() { SFocus::Cats } else { SFocus::Items },
             filter,
             field: None,
+            combo: None,
+            fonts: None,
+            combo_rows: RefCell::new(Vec::new()),
             project_scope: false,
             dirty: false,
             confirm_close: false,
@@ -245,6 +290,13 @@ impl Editor {
                 d.selected = 0;
                 d.top = 0;
             }
+            SFocus::Combo => {
+                if let Some(c) = &mut d.combo {
+                    c.filter.insert_text(text);
+                    c.sel = 0;
+                    c.top = 0;
+                }
+            }
             _ => {}
         }
     }
@@ -253,6 +305,7 @@ impl Editor {
     pub fn settings_typing(&self) -> bool {
         self.settings_dialog.as_ref().is_some_and(|d| match d.focus {
             SFocus::Edit => d.field.as_ref().is_some_and(|f| f.is_insert()),
+            SFocus::Combo => d.combo.as_ref().is_some_and(|c| c.filter.is_insert()),
             SFocus::Filter => d.filter.is_insert(),
             _ => false,
         })
@@ -269,6 +322,44 @@ impl Editor {
         }
         let confirm = std::mem::take(&mut d.confirm_close);
         match d.focus {
+            SFocus::Combo => {
+                let n = d.combo.as_ref().map_or(0, |c| c.shown().len());
+                let normal = d.combo.as_ref().is_some_and(|c| !c.filter.is_insert());
+                match key {
+                    Key::Down | Key::Tab | Key::Ctrl('n') | Key::Ctrl('j') => {
+                        if let Some(c) = &mut d.combo {
+                            c.sel = (c.sel + 1).min(n.saturating_sub(1));
+                        }
+                    }
+                    Key::Char('j') if normal => {
+                        if let Some(c) = &mut d.combo {
+                            c.sel = (c.sel + 1).min(n.saturating_sub(1));
+                        }
+                    }
+                    Key::Up | Key::Ctrl('p') | Key::Ctrl('k') => {
+                        if let Some(c) = &mut d.combo {
+                            c.sel = c.sel.saturating_sub(1);
+                        }
+                    }
+                    Key::Char('k') if normal => {
+                        if let Some(c) = &mut d.combo {
+                            c.sel = c.sel.saturating_sub(1);
+                        }
+                    }
+                    Key::Enter => d.choose_combo(None),
+                    Key::Esc if normal || d.combo.as_ref().is_some_and(|c| c.filter.text().is_empty()) => {
+                        d.combo = None;
+                        d.focus = SFocus::Items;
+                    }
+                    _ => {
+                        self.feed_field(key, |e| Some(&mut e.settings_dialog.as_mut()?.combo.as_mut()?.filter));
+                        if let Some(c) = self.settings_dialog.as_mut().and_then(|d| d.combo.as_mut()) {
+                            c.sel = 0;
+                            c.top = 0;
+                        }
+                    }
+                }
+            }
             SFocus::Edit => {
                 let out = self.feed_field(key, |e| e.settings_dialog.as_mut()?.field.as_mut());
                 let Some(d) = &mut self.settings_dialog else { return };
@@ -361,6 +452,18 @@ impl Editor {
     /// マウス: 画面の (行, 列) を押した
     pub(crate) fn settings_click(&mut self, row: usize, col: usize) {
         let Some(d) = &mut self.settings_dialog else { return };
+        // コンボボックスを開いていれば、その行を押すと決める（外を押すと閉じる）
+        if d.combo.is_some() {
+            let hit = d.combo_rows.borrow().iter().find(|(r, c0, c1, _)| *r == row && col >= *c0 && col < *c1).map(|x| x.3);
+            match hit {
+                Some(i) => d.choose_combo(Some(i)),
+                None => {
+                    d.combo = None;
+                    d.focus = SFocus::Items;
+                }
+            }
+            return;
+        }
         let button = d.buttons.borrow().iter().find(|(r, c0, c1, _)| *r == row && col >= *c0 && col < *c1).map(|b| b.3);
         if let Some(b) = button {
             self.settings_button(b);
@@ -437,5 +540,26 @@ mod tests {
         keys(&mut e, "<Esc>");
         assert_eq!(e.mode, Mode::Normal);
         assert!(e.settings.bool("editor.squiggles"), "捨てたので変わらない");
+    }
+
+    /// フォントはコンボボックス: 開いて絞り込み、選んで決める（一覧は Windows に入っているもの）
+    #[test]
+    fn font_combo() {
+        let mut e = Editor::new(Buffer::from_str(""), None);
+        e.set_screen(140, 40);
+        e.open_settings("フォント（英数字）");
+        keys(&mut e, "<CR>");
+        let d = e.settings_dialog.as_ref().unwrap();
+        assert_eq!(d.focus, SFocus::Combo);
+        let c = d.combo.as_ref().unwrap();
+        assert!(c.items.iter().any(|f| f.0 == "Consolas" && f.1), "Consolas は等幅として一覧にある");
+        // 打って絞り込み、Enter で決める
+        keys(&mut e, "consol<CR>");
+        let d = e.settings_dialog.as_ref().unwrap();
+        assert_eq!(d.focus, SFocus::Items);
+        assert_eq!(d.work.get("appearance.font"), "Consolas");
+        // Esc でやめると変わらない
+        keys(&mut e, "<CR>cour<Esc><Esc>");
+        assert_eq!(e.settings_dialog.as_ref().unwrap().work.get("appearance.font"), "Consolas");
     }
 }

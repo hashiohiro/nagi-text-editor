@@ -160,6 +160,11 @@ impl Editor {
                 if self.buf.dirty {
                     return false;
                 }
+                // 中身が同じなら（自分の保存の後に遅れて届いた知らせなど）差し替えも知らせもしない
+                if self.buf.text() == b.text() {
+                    self.buf.disk = b.disk;
+                    return false;
+                }
                 let path = self.buf.path.clone();
                 self.buf = b;
                 self.buf.path = path;
@@ -175,6 +180,10 @@ impl Editor {
             }
             Some(Slot::Parked(d)) => {
                 if d.buf.dirty {
+                    return false;
+                }
+                if d.buf.text() == b.text() {
+                    d.buf.disk = b.disk;
                     return false;
                 }
                 let path = d.buf.path.clone();

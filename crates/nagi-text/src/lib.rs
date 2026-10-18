@@ -27,6 +27,22 @@ pub struct FontData {
     pub index: u32,
 }
 
+/// Windows に入っているフォントのファミリー名と、等幅か（設定の画面のフォントの一覧。等幅を先に、名前の順）
+pub fn font_families() -> Vec<(String, bool)> {
+    let collection = FontCollection::system();
+    let mut out: Vec<(String, bool)> = collection
+        .families_iter()
+        .filter_map(|f| {
+            let name = f.family_name().ok()?;
+            let mono = f.first_matching_font(FontWeight::Regular, FontStretch::Normal, FontStyle::Normal).ok().and_then(|font| font.is_monospace()).unwrap_or(false);
+            Some((name, mono))
+        })
+        .collect();
+    out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.to_lowercase().cmp(&b.0.to_lowercase())));
+    out.dedup_by(|a, b| a.0 == b.0);
+    out
+}
+
 /// 名前でフォントを解決し、ファイルを読む。見つからなければ None。
 pub fn load_by_name(name: &str) -> Option<FontData> {
     let collection = FontCollection::system();

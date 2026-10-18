@@ -3012,6 +3012,7 @@ fn draw_settings_dialog(p: &mut Painter, ed: &Editor, d: &crate::settings_dialog
         SFocus::Items => "j/k 選ぶ  Space・Enter 切り替え・直す  h/l 選択肢  Tab 分類へ  Ctrl+Enter OK",
         SFocus::Edit => "Enter 決める  Esc ノーマル→やめる",
         SFocus::Filter => "打って絞り込み  Enter・↓ 項目へ",
+        SFocus::Combo => "打って絞り込み  ↑↓ 選ぶ  Enter・クリック 決める  Esc やめる",
     };
     let by = h - 1;
     let mut bx = x0 + w;
@@ -3029,6 +3030,50 @@ fn draw_settings_dialog(p: &mut Painter, ed: &Editor, d: &crate::settings_dialog
     }
     p.cols = x0 + w.saturating_sub(30);
     p.text(help, x0 + 1, y(by), STATUS_FG);
+    // コンボボックス（フォントの一覧）: 選んでいる項目の下（入らなければ上）に重ねる
+    let mut combo_rows = Vec::new();
+    if let (Some(c), Some(&(irow, _, ivx))) = (&d.combo, item_rows.iter().find(|r| r.1 == d.selected)) {
+        let shown = c.shown();
+        let cw = 46.min((x0 + w).saturating_sub(ivx + 1)).max(20);
+        let list_h = shown.len().clamp(1, 12);
+        let total = list_h + 1;
+        let below = irow + 1 + total <= y0 + h - 2;
+        let top_row = if below { irow + 1 } else { irow.saturating_sub(total) };
+        let cy = |r: usize| (top_row + r) as f32 * cell.h;
+        p.out.push(Instance::fill(ivx as f32 * cell.w - 1.0, cy(0) - 1.0, cw as f32 * cell.w + 2.0, total as f32 * cell.h + 2.0, ACCENT));
+        p.out.push(Instance::fill(ivx as f32 * cell.w, cy(0), cw as f32 * cell.w, total as f32 * cell.h, rgb(0x1c1c1c)));
+        p.cols = ivx + cw;
+        let e = p.text("🔍 ", ivx, cy(0), FG);
+        if c.filter.text().is_empty() && c.filter.is_insert() {
+            p.caret(e, cy(0));
+            p.text(&format!("打って絞り込み（{} 件）", shown.len()), e + 1, cy(0), LINE_NO);
+        } else {
+            draw_vim_field(p, &c.filter, e, cy(0), &ed.preedit);
+        }
+        let sel = c.sel.min(shown.len().saturating_sub(1));
+        let start = sel.saturating_sub(list_h.saturating_sub(1)).max(c.top.min(sel));
+        for (k, &i) in shown.iter().enumerate().skip(start).take(list_h) {
+            let r = 1 + k - start;
+            let on = k == sel;
+            if on {
+                p.out.push(Instance::fill(ivx as f32 * cell.w, cy(r), cw as f32 * cell.w, cell.h, ACCENT));
+            }
+            let (name, mono) = &c.items[i];
+            let end = p.text(&format!(" {name}"), ivx, cy(r), if on { BG } else { FG });
+            if *mono {
+                let tag = "等幅 ";
+                let tx = (ivx + cw).saturating_sub(p.width(tag));
+                if tx > end {
+                    p.text(tag, tx, cy(r), if on { BG } else { STATUS_FG });
+                }
+            }
+            combo_rows.push((top_row + r, ivx, ivx + cw, i));
+        }
+        if shown.is_empty() {
+            p.text(" 合うフォントがありません", ivx, cy(1), STATUS_FG);
+        }
+    }
+    *d.combo_rows.borrow_mut() = combo_rows;
     p.cols = saved;
     *d.cat_rows.borrow_mut() = cat_rows;
     *d.item_rows.borrow_mut() = item_rows;

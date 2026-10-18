@@ -19,6 +19,8 @@ pub enum SKind {
     Choice(&'static [(&'static str, &'static str)]),
     /// キーの組み合わせ（Ctrl+Alt+S など）
     Key,
+    /// フォントの名前（Windows に入っているフォントから選ぶ）
+    Font,
 }
 
 /// 項目 1 つ
@@ -51,8 +53,8 @@ pub const CATEGORIES: [&str; 9] = ["外観", "エディタ", "Vim", "入力補�
 
 pub static SCHEMA: &[Item] = &[
     // 外観
-    item("appearance.font", "外観", "フォント（英数字）", T, "Cascadia Mono", "Windows に入っているフォントの名前"),
-    item("appearance.font_ja", "外観", "フォント（日本語）", T, "BIZ UDGothic", "英数字のフォントに無い字に使う"),
+    item("appearance.font", "外観", "フォント（英数字）", SKind::Font, "Cascadia Mono", "Enter で一覧から選ぶ（等幅のものを先に）"),
+    item("appearance.font_ja", "外観", "フォント（日本語）", SKind::Font, "BIZ UDGothic", "英数字のフォントに無い字に使う。Enter で一覧から選ぶ"),
     item("appearance.font_size", "外観", "文字の大きさ（pt）", SKind::Int(0, 48), "0", "0 なら既定"),
     item("appearance.line_height", "外観", "行の高さ（%）", SKind::Int(80, 200), "100", "文字の高さに対する行の高さ"),
     item("appearance.theme", "外観", "配色", SKind::Choice(&[("dark", "ダーク（既定）"), ("black", "ブラック"), ("dim", "ダークグレー"), ("light", "ライト")]), "dark", ""),
