@@ -9,6 +9,7 @@
 //! 起動は並列（architecture.md §6.4）: GPU・フォント・ファイル読込を別スレッドで進め、
 //! メインスレッドはその間にイベントループと非表示のウィンドウを作る。最初のフレームを描いてから表示する。
 
+mod angular;
 mod autoread;
 mod launcher;
 mod md_preview;

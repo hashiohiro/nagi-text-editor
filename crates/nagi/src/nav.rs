@@ -121,6 +121,11 @@ impl Editor {
 
     /// (パス, 行, 列) へ跳ぶ（ジャンプリストに残す）
     pub(crate) fn jump_to(&mut self, path: &Path, line: usize, col: usize) {
+        // 索引の相対パスは / 区切りなので、Windows の区切りにそろえる（題名や同じファイルの判定がずれないように）
+        #[cfg(windows)]
+        let fixed = PathBuf::from(path.to_string_lossy().replace('/', "\\"));
+        #[cfg(windows)]
+        let path = fixed.as_path();
         let same = self.buf.path.as_deref().is_some_and(|p| std::path::absolute(p).ok().as_deref() == Some(path));
         if same {
             self.push_jump();
@@ -143,6 +148,13 @@ impl Editor {
             self.message = "E348: カーソルの下に識別子がありません".into();
             return;
         };
+        // Angular のテンプレート: 式の名前は部品の .ts（と親クラス）、タグは部品、属性は部品の @Input / @Output
+        if self.buf.path.as_deref().is_some_and(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("html"))) {
+            self.ensure_syntax();
+            if self.angular_goto(&name, word_at) {
+                return;
+            }
+        }
         // メソッド・型の定義そのものの上なら、それを実装・継承しているもの（インタフェースの宣言から実装へ）
         if self.on_definition(&name, word_at) {
             if let Ok((locs, root)) = self.find_implementations() {

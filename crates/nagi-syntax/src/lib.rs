@@ -402,6 +402,69 @@ impl Syntax {
             if n.end_byte() <= range.start || n.start_byte() >= range.end {
                 continue;
             }
+            // Angular: 文字の中の {{ 式 }} と @if (…) など、属性の [x] (x) *ngX の値は TypeScript として
+            if n.kind() == "text" {
+                let t = buf.slice_string(n.start_byte(), n.end_byte());
+                for (a, b) in angular_text_exprs(&t) {
+                    self.inject(Lang::TypeScript, n.start_byte() + a, &t[a..b], range, &mut seen, out);
+                }
+                for (a, b) in angular_blocks(&t) {
+                    out.push((n.start_byte() + a.0..n.start_byte() + a.1, Hl::Keyword));
+                    if let Some((c, d)) = b {
+                        self.inject(Lang::TypeScript, n.start_byte() + c, &t[c..d], range, &mut seen, out);
+                    }
+                }
+                continue;
+            }
+            if n.kind() == "attribute" {
+                let mut c = n.walk();
+                let kids: Vec<Node> = n.children(&mut c).collect();
+                let name = kids.iter().find(|k| k.kind() == "attribute_name").map(|k| buf.slice_string(k.start_byte(), k.end_byte())).unwrap_or_default();
+                let val = kids.iter().find_map(|k| match k.kind() {
+                    "quoted_attribute_value" => {
+                        let mut c2 = k.walk();
+                        k.children(&mut c2).find(|x| x.kind() == "attribute_value")
+                    }
+                    "attribute_value" => Some(*k),
+                    _ => None,
+                });
+                // ふつうの属性の値の中の {{ 式 }}: 式の外は文字列の色のまま、式は TypeScript
+                if !name.starts_with(['[', '(', '*']) {
+                    if let Some(v) = val {
+                        let t = buf.slice_string(v.start_byte(), v.end_byte());
+                        let exprs = angular_text_exprs(&t);
+                        if !exprs.is_empty() {
+                            let (vs, ve) = (v.start_byte(), v.end_byte());
+                            out.retain(|(r, h)| !(*h == Hl::String && r.start <= vs && ve <= r.end));
+                            let mut last = 0;
+                            for &(a, b) in &exprs {
+                                out.push((vs + last..vs + a, Hl::String));
+                                self.inject(Lang::TypeScript, vs + a, &t[a..b], range, &mut seen, out);
+                                last = b;
+                            }
+                            out.push((vs + last..ve, Hl::String));
+                            if let Some(q) = v.parent().filter(|p| p.kind() == "quoted_attribute_value") {
+                                out.push((q.start_byte()..vs, Hl::String));
+                                out.push((ve..q.end_byte(), Hl::String));
+                            }
+                        }
+                    }
+                }
+                if name.starts_with(['[', '(', '*']) {
+                    if let Some(v) = val {
+                        let t = buf.slice_string(v.start_byte(), v.end_byte());
+                        // 値は文字列ではなく式なので、外側の文字列の色を外す（引用符だけ残す）
+                        let (vs, ve) = (v.start_byte(), v.end_byte());
+                        out.retain(|(r, h)| !(*h == Hl::String && r.start <= vs && ve <= r.end));
+                        if let Some(q) = v.parent().filter(|p| p.kind() == "quoted_attribute_value") {
+                            out.push((q.start_byte()..vs, Hl::String));
+                            out.push((ve..q.end_byte(), Hl::String));
+                        }
+                        self.inject(Lang::TypeScript, v.start_byte(), &t, range, &mut seen, out);
+                    }
+                }
+                continue;
+            }
             let lang = match n.kind() {
                 "script_element" => {
                     // type が JavaScript 以外（テンプレート・JSON など）は JSON だけ色を付ける
@@ -426,35 +489,131 @@ impl Syntax {
             let Some(raw) = n.children(&mut c).find(|x| x.kind() == "raw_text") else { continue };
             let (s, e) = (raw.start_byte(), raw.end_byte());
             let text = buf.slice_string(s, e);
-            let mut cache = self.injected.lock().unwrap_or_else(|p| p.into_inner());
-            let spans = match cache.iter().find(|(l, t, _)| *l == lang && *t == text) {
-                Some((_, _, sp)) => sp.clone(),
-                None => {
-                    let sp = Syntax::new(lang)
-                        .map(|mut syn| {
-                            let mut b = Buffer::from_str(&text);
-                            syn.parse(&mut b);
-                            syn.highlight(&b, 0..text.len())
-                        })
-                        .unwrap_or_default();
-                    cache.push((lang, text.clone(), sp.clone()));
-                    sp
-                }
-            };
-            seen.push(text);
-            out.extend(spans.into_iter().map(|(r, h)| (r.start + s..r.end + s, h)).filter(|(r, _)| r.end > range.start && r.start < range.end));
+            self.inject(lang, s, &text, range, &mut seen, out);
         }
         // 今の文書に無くなった中身の覚えは捨てる（見えていないものは残す。数は抑える）
         let mut cache = self.injected.lock().unwrap_or_else(|p| p.into_inner());
-        if cache.len() > 32 {
+        if cache.len() > 512 {
             cache.retain(|(_, t, _)| seen.contains(t));
         }
+    }
+
+    /// `text`（文書の `s` から）を `lang` でハイライトして足す（中身ごとに覚える）
+    fn inject(&self, lang: Lang, s: usize, text: &str, range: &Range<usize>, seen: &mut Vec<String>, out: &mut Vec<(Range<usize>, Hl)>) {
+        if s + text.len() <= range.start || s >= range.end || text.trim().is_empty() {
+            return;
+        }
+        let mut cache = self.injected.lock().unwrap_or_else(|p| p.into_inner());
+        let spans = match cache.iter().find(|(l, t, _)| *l == lang && t == text) {
+            Some((_, _, sp)) => sp.clone(),
+            None => {
+                let sp = Syntax::new(lang)
+                    .map(|mut syn| {
+                        let mut b = Buffer::from_str(text);
+                        syn.parse(&mut b);
+                        syn.highlight(&b, 0..text.len())
+                    })
+                    .unwrap_or_default();
+                cache.push((lang, text.to_string(), sp.clone()));
+                sp
+            }
+        };
+        drop(cache);
+        seen.push(text.to_string());
+        out.extend(spans.into_iter().map(|(r, h)| (r.start + s..r.end + s, h)).filter(|(r, _)| r.end > range.start && r.start < range.end));
     }
 
     /// ERROR ノードの数（構文エラーの有無の目安。[e ]e で使う）
     pub fn has_error(&self) -> bool {
         self.tree.as_ref().is_some_and(|t| t.root_node().has_error())
     }
+}
+
+/// HTML の中のカーソルの場所（Angular のテンプレートから定義へ跳ぶため）
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HtmlCtx {
+    /// 要素の名前（<app-button>）
+    Tag(String),
+    /// 属性の名前（[width] (click) *ngIf の [ ] ( ) * を除いたもの）と、その要素の名前
+    Attr { tag: String, name: String },
+    /// それ以外（{{ 式 }}・属性の値・@if (式) の中など）
+    Other,
+}
+
+/// `at` の場所の種類
+pub fn html_context(tree: &Tree, at: usize, text: &dyn Fn(Range<usize>) -> String) -> Option<HtmlCtx> {
+    let n = tree.root_node().descendant_for_byte_range(at, at)?;
+    let tag_of = |mut x: Node| -> String {
+        while let Some(p) = x.parent() {
+            if matches!(p.kind(), "start_tag" | "self_closing_tag" | "end_tag") {
+                let mut c = p.walk();
+                return p.children(&mut c).find(|k| k.kind() == "tag_name").map(|k| text(k.byte_range())).unwrap_or_default();
+            }
+            x = p;
+        }
+        String::new()
+    };
+    Some(match n.kind() {
+        "tag_name" => HtmlCtx::Tag(text(n.byte_range())),
+        "attribute_name" => {
+            let raw = text(n.byte_range());
+            let name = raw.trim_start_matches(['[', '(', '*']).trim_end_matches([']', ')']).split('.').next().unwrap_or("").to_string();
+            HtmlCtx::Attr { tag: tag_of(n), name }
+        }
+        _ => HtmlCtx::Other,
+    })
+}
+
+/// Angular: 文字の中の {{ 式 }} の式の範囲
+pub fn angular_text_exprs(t: &str) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(i) = t[from..].find("{{").map(|i| i + from) {
+        let Some(j) = t[i + 2..].find("}}").map(|j| j + i + 2) else { break };
+        out.push((i + 2, j));
+        from = j + 2;
+    }
+    out
+}
+
+/// Angular 17 の制御フロー（@if (式) {、@for、@switch、@case、@else、@defer など）: (@語 の範囲, ( ) の中の範囲)
+pub fn angular_blocks(t: &str) -> Vec<((usize, usize), Option<(usize, usize)>)> {
+    const KW: [&str; 11] = ["@if", "@else if", "@else", "@for", "@switch", "@case", "@default", "@defer", "@placeholder", "@loading", "@empty"];
+    let mut out = Vec::new();
+    let b = t.as_bytes();
+    let mut i = 0;
+    while let Some(k) = t[i..].find('@').map(|k| k + i) {
+        let kw = KW.iter().find(|w| t[k..].starts_with(**w) && !t[k + w.len()..].starts_with(|c: char| c.is_alphanumeric()));
+        let Some(kw) = kw else {
+            i = k + 1;
+            continue;
+        };
+        let e = k + kw.len();
+        let mut j = e;
+        while j < b.len() && b[j] == b' ' {
+            j += 1;
+        }
+        let mut paren = None;
+        if j < b.len() && b[j] == b'(' {
+            let mut depth = 0;
+            for (q, c) in t[j..].char_indices() {
+                match c {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            paren = Some((j + 1, j + q));
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        out.push(((k, e), paren));
+        i = paren.map_or(e, |p| p.1);
+    }
+    out
 }
 
 fn input_edit(e: EditLog) -> InputEdit {
@@ -702,6 +861,14 @@ impl Syntax {
         defs::collect_defs(tree, &|r: Range<usize>| buf.slice_string(r.start, r.end))
     }
 
+    /// HTML の中のカーソルの場所の種類
+    pub fn html_context(&self, buf: &Buffer, at: usize) -> Option<HtmlCtx> {
+        if self.lang != Lang::Html {
+            return None;
+        }
+        html_context(self.tree.as_ref()?, at, &|r: Range<usize>| buf.slice_string(r.start, r.end))
+    }
+
     /// `at`（呼び出しの名前）の引数の数
     pub fn arg_count(&self, at: usize) -> Option<usize> {
         defs::call_arg_count(self.tree.as_ref()?, at)
@@ -865,6 +1032,19 @@ mod tests {
         assert!(k.contains(&("const".into(), Hl::Keyword)), "{k:?}");
         assert!(k.contains(&("1".into(), Hl::Number)), "{k:?}");
         assert_eq!(Lang::detect(Path::new("app/page.component.html")), Some(Lang::Html));
+        // Angular: {{ 式 }}、[x] (x) *ngIf の値、@if (式) は TypeScript
+        let ng = "<p>{{ title | uppercase }}</p>\n<app-button [width]=\"300\" (click)=\"onGo(1)\" *ngIf=\"isShown && count > 0\"></app-button>\n@if (user.admin) {\n  <b>admin</b>\n} @else {\n}\n";
+        let k = kinds(Lang::Html, ng);
+        assert!(k.contains(&("300".into(), Hl::Number)), "{k:?}");
+        assert!(k.contains(&("onGo".into(), Hl::Function)) || k.iter().any(|(t, h)| t == "onGo" && *h != Hl::String), "{k:?}");
+        assert!(k.contains(&("1".into(), Hl::Number)), "{k:?}");
+        assert!(k.iter().any(|(t, h)| t == "@if" && *h == Hl::Keyword), "{k:?}");
+        assert!(k.iter().any(|(t, h)| t == "@else" && *h == Hl::Keyword), "{k:?}");
+        assert!(!k.iter().any(|(t, h)| t.contains("onGo(1)") && *h == Hl::String), "値は文字列の色のままにしない: {k:?}");
+        assert_eq!(angular_text_exprs("a {{ x }} b {{y}}"), vec![(4, 7), (14, 15)]);
+        let k = kinds(Lang::Html, "<a title=\"no {{ n + 1 }}\"></a>\n");
+        assert!(k.contains(&("1".into(), Hl::Number)), "{k:?}");
+        assert!(!k.iter().any(|(t, h)| t.contains("n + 1") && *h == Hl::String), "{k:?}");
     }
 
     #[test]
