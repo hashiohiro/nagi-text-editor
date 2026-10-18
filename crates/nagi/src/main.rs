@@ -1024,24 +1024,19 @@ impl App {
             let cell = f.cell();
             let (row, col) = ((self.mouse.1 as f32 / cell.h) as usize, (self.mouse.0.max(0.0) as f32 / cell.w) as usize);
             let screen = layout::Screen { rows: ed.screen.1, cols: ed.screen.0 };
-            if let Some((i, v, r)) = layout::hit(ed, screen, row, col) {
-                let now = Instant::now();
-                let key = (row, usize::MAX - 16 - i);
-                let clicks = match self.last_click {
-                    Some((t, c, n)) if now - t <= double_click_time() && c == key => n % 3 + 1,
-                    _ => 1,
-                };
-                match v.click(ed, r, row, col, clicks) {
-                    layout::Click::Pass => {}
-                    done => {
-                        self.last_click = Some((now, key, clicks));
-                        self.list_select = done == layout::Click::SelectList;
-                        self.term_select = done == layout::Click::SelectTerminal;
-                        self.sync_ime();
-                        self.draw();
-                        return;
-                    }
-                }
+            let now = Instant::now();
+            let last = self.last_click;
+            let clicks = |i: usize| match last {
+                Some((t, c, n)) if now - t <= double_click_time() && c == (row, usize::MAX - 16 - i) => n % 3 + 1,
+                _ => 1,
+            };
+            if let Some((i, done)) = layout::press(ed, screen, row, col, clicks) {
+                self.last_click = Some((now, (row, usize::MAX - 16 - i), clicks(i)));
+                self.list_select = done == layout::Click::SelectList;
+                self.term_select = done == layout::Click::SelectTerminal;
+                self.sync_ime();
+                self.draw();
+                return;
             }
         }
         let on_text = self.focus_under_mouse();

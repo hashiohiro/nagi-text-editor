@@ -48,6 +48,12 @@ pub trait View: Sync {
         let _ = (ed, r, row, col, clicks);
         Click::Pass
     }
+
+    /// 型の名前（試験で部品を見分ける。大きさ 0 の型は番地では見分けられない）
+    #[cfg(test)]
+    fn name(&self) -> &'static str {
+        std::any::type_name::<Self>()
+    }
 }
 
 /// 状態の行より下に描く層（欄・小窓）と、上に描く層（画面を覆うダイアログ）
@@ -59,8 +65,9 @@ pub enum Layer {
 /// 下から順（描く順。押したときは上から当てる）
 pub static PANELS: &[&dyn View] = &[
     &crate::tree_panel::TreeView,
-    &crate::tree_panel::LeftTabsView,
     &crate::commit_panel::CommitView,
+    // 左の欄の 1 行目は木・コミットの欄の矩形にも入るので、それより上に置いて先に当てる
+    &crate::tree_panel::LeftTabsView,
     &crate::log_view::LogScreenView,
     &crate::diff_view::DiffScreenView,
     &crate::right_panel::RightView,
@@ -93,7 +100,52 @@ pub fn draw(l: Layer, ed: &Editor, p: &mut Painter, s: Screen) {
     }
 }
 
-/// 押した位置の部品（欄の層の上から）と、その番号（連続の回数を部品ごとに数える）
-pub fn hit(ed: &Editor, s: Screen, row: usize, col: usize) -> Option<(usize, &'static dyn View, Rect)> {
-    PANELS.iter().enumerate().rev().find_map(|(i, v)| v.rect(ed, s).filter(|r| r.contains(row, col)).map(|r| (i, *v, r)))
+/// 押した位置の部品へ、欄の層の上から渡す。受け取らなければ（小窓は画面全体を持つが押されても受け取らない）その下へ。
+/// 受け取った部品の番号（連続して押した回数を部品ごとに数える）と結果。どれも受け取らなければ None（エディタへ）。
+/// `clicks` は部品の番号から連続の回数を出す関数
+pub fn press(ed: &mut Editor, s: Screen, row: usize, col: usize, clicks: impl Fn(usize) -> u32) -> Option<(usize, Click)> {
+    for (i, v) in PANELS.iter().enumerate().rev() {
+        let Some(r) = v.rect(ed, s).filter(|r| r.contains(row, col)) else { continue };
+        match v.click(ed, r, row, col, clicks(i)) {
+            Click::Pass => {}
+            done => return Some((i, done)),
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::editor::State;
+    use nagi_core::Buffer;
+
+    #[test]
+    fn press_goes_to_the_panel_under_popups() {
+        let dir = std::env::temp_dir().join(format!("nagi-layout-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        std::fs::write(dir.join("b.txt"), "two\n").unwrap();
+        let mut buf = Buffer::open(&dir.join("a.txt")).unwrap();
+        buf.path = Some(dir.join("a.txt"));
+        let mut e = Editor::new(buf, None);
+        e.set_screen(120, 40);
+        e.open_tree();
+        e.set_state(State::Normal);
+        // 差分の小窓（画面全体を持つが受け取らない）が出ていても、木の行は木が受け取る
+        e.git.popup = Some(0);
+        let s = Screen { rows: 40, cols: 120 };
+        let at = |name: &str| PANELS.iter().position(|v| v.name().ends_with(name)).unwrap();
+        let tree = at("::TreeView");
+        assert_eq!(press(&mut e, s, 2, 3, |_| 1).map(|p| p.0), Some(tree));
+        assert_eq!(e.state(), State::List);
+        // 1 行目はタブ（木の矩形にも入るが、タブが先に受け取る）
+        let tabs = at("::LeftTabsView");
+        assert_eq!(press(&mut e, s, 0, 1, |_| 1).map(|p| p.0), Some(tabs));
+        // 本文はどれも受け取らない
+        e.set_state(State::Normal);
+        assert_eq!(press(&mut e, s, 5, 100, |_| 1), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
