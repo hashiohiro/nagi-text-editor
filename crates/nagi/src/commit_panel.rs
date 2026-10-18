@@ -456,6 +456,31 @@ impl Editor {
 }
 
 
+
+/// この部品の入口（component.rs）
+pub struct CommitListComponent;
+
+impl crate::component::Component for CommitListComponent {
+    fn key(&self, ed: &mut crate::editor::Editor, key: nagi_vim::Key) -> crate::editor::Effect {
+        ed.commit_list_key(key)
+    }
+}
+
+
+/// この部品の入口（component.rs）
+pub struct CommitMsgComponent;
+
+impl crate::component::Component for CommitMsgComponent {
+    fn key(&self, ed: &mut crate::editor::Editor, key: nagi_vim::Key) -> crate::editor::Effect {
+        ed.commit_msg_key(key);
+        crate::editor::Effect::None
+    }
+
+    fn text(&self, ed: &mut crate::editor::Editor, text: &str) {
+        ed.commit_msg_insert(text);
+    }
+}
+
 /// 描き方（view.rs の Painter で描く）
 pub(crate) mod draw {
     #![allow(unused_imports)]

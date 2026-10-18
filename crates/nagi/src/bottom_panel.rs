@@ -256,6 +256,20 @@ impl Editor {
 }
 
 
+
+/// この部品の入口（component.rs）
+pub struct ProblemsComponent;
+
+impl crate::component::Component for ProblemsComponent {
+    fn key(&self, ed: &mut crate::editor::Editor, key: nagi_vim::Key) -> crate::editor::Effect {
+        ed.problems_key(key)
+    }
+
+    fn text(&self, ed: &mut crate::editor::Editor, text: &str) {
+        ed.bottom_text(text);
+    }
+}
+
 /// 描き方（view.rs の Painter で描く）
 pub(crate) mod draw {
     #![allow(unused_imports)]

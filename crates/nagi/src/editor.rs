@@ -885,70 +885,24 @@ impl Editor {
             self.scroll_into_view();
             return Effect::None;
         }
-        let effect = match self.mode {
-            Mode::Normal | Mode::Visual { .. } => self.normal_key(key),
-            Mode::Insert => {
-                self.insert(key);
-                Effect::None
-            }
-            Mode::Command => self.command(key),
-            Mode::Search => {
-                self.search_key(key);
-                Effect::None
-            }
-            Mode::Replace => {
-                self.replace_key(key);
-                Effect::None
-            }
-            Mode::Finder => self.finder_key(key),
-            Mode::Launcher => {
-                self.launcher_key(key);
-                Effect::None
-            }
-            Mode::RunDialog => {
-                self.run_dialog_key(key);
-                Effect::None
-            }
-            Mode::Settings => {
-                self.settings_key(key);
-                Effect::None
-            }
-            Mode::GrepPrompt => {
-                self.grep_prompt_key(key);
-                Effect::None
-            }
-            Mode::List => match self.list_side {
-                Side::Left => self.tree_key(key),
-                Side::Bottom if self.bottom_kind == crate::result_grid::BottomKind::Result => self.result_key(key),
-                Side::Bottom if self.bottom_kind == crate::result_grid::BottomKind::Problems => self.problems_key(key),
-                Side::Bottom => self.list_key(key),
-                Side::Commit => self.commit_list_key(key),
-                Side::Right => self.right_key(key),
+        // パネル・ダイアログなどの部品はそれぞれの Component へ（component.rs）。Vim の編集の状態はここで
+        let effect = match crate::component::focused(self) {
+            Some(c) => c.key(self, key),
+            None => match self.mode {
+                Mode::Insert => {
+                    self.insert(key);
+                    Effect::None
+                }
+                Mode::Search => {
+                    self.search_key(key);
+                    Effect::None
+                }
+                Mode::Replace => {
+                    self.replace_key(key);
+                    Effect::None
+                }
+                _ => self.normal_key(key),
             },
-            Mode::CommitMsg => {
-                self.commit_msg_key(key);
-                Effect::None
-            }
-            Mode::Diff => {
-                self.diff_key(key);
-                Effect::None
-            }
-            Mode::Log => {
-                self.log_key(key);
-                Effect::None
-            }
-            Mode::Terminal => {
-                self.terminal_key(key);
-                Effect::None
-            }
-            Mode::Branches => {
-                self.branches_key(key);
-                Effect::None
-            }
-            Mode::DbTable => {
-                self.db_table_key(key);
-                Effect::None
-            }
         };
         // 検索や :{行} で閉じた折りたたみの途中へ跳んだら開く
         if !self.folds.is_empty() && self.mode == Mode::Normal {
@@ -1006,7 +960,7 @@ impl Editor {
         }
     }
 
-    fn command(&mut self, key: Key) -> Effect {
+    pub(crate) fn command(&mut self, key: Key) -> Effect {
         // Ctrl+Space: 候補を出し直す（打った名前と同じでも出す）
         if key == Key::Ctrl(' ') {
             let text = self.cmdline.text[..self.cmdline.cursor].to_string();
@@ -1625,6 +1579,10 @@ impl Editor {
                 ks.extend(text.chars().map(Key::Char));
             }
         }
+        if let Some(c) = crate::component::focused(self) {
+            c.text(self, text);
+            return;
+        }
         match self.mode {
             Mode::Insert => {
                 // IME で確定した文字は補完の語ではないので、一覧は閉じる
@@ -1645,37 +1603,15 @@ impl Editor {
                     self.repl.insert(text);
                 }
             }
-            Mode::Command => {
-                self.cmdline.insert(text);
-                self.update_cmd_complete();
-            }
-            Mode::Finder => self.finder_insert(text),
-            Mode::Launcher => self.launcher_insert(text),
-            Mode::RunDialog => self.run_dialog_insert(text),
-            Mode::Settings => self.settings_insert(text),
-            Mode::Terminal => self.terminal_input(text),
-            Mode::GrepPrompt => self.grep_insert(text),
-            Mode::CommitMsg => self.commit_msg_insert(text),
-            Mode::Branches => self.branches_insert(text),
-            Mode::DbTable => self.db_table_insert(text),
-            Mode::List if self.list_side == Side::Right => {
-                self.db_insert(text);
-            }
-            Mode::List if self.list_side == Side::Bottom => {
-                if let Some((_, f)) = &mut self.db_results.editing {
-                    f.insert_text(text);
-                }
-            }
-            Mode::Log => {
-                if let Some(l) = &mut self.log {
-                    if let Some(f) = &mut l.filter {
-                        f.insert_text(text);
-                        l.filter_text = f.text();
-                        l.refilter_pub();
-                    }
-                }
-            }
+
             _ => {}
+        }
+    }
+
+    /// 下の欄の結果の表で、WHERE・ORDER BY の欄を直している間の文字
+    pub(crate) fn bottom_text(&mut self, text: &str) {
+        if let Some((_, f)) = &mut self.db_results.editing {
+            f.insert_text(text);
         }
     }
 

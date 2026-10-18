@@ -440,6 +440,16 @@ impl Editor {
 }
 
 
+
+/// この部品の入口（component.rs）
+pub struct TreeComponent;
+
+impl crate::component::Component for TreeComponent {
+    fn key(&self, ed: &mut crate::editor::Editor, key: nagi_vim::Key) -> crate::editor::Effect {
+        ed.tree_key(key)
+    }
+}
+
 /// 描き方（view.rs の Painter で描く）
 pub(crate) mod draw {
     #![allow(unused_imports)]

@@ -69,6 +69,7 @@ mod normal;
 mod stats;
 mod view;
 mod list;
+mod component;
 mod commands;
 mod notify;
 mod ui;
@@ -934,54 +935,22 @@ impl App {
     }
 
     fn on_press(&mut self) {
-        // ランチャー: 一覧の行を押すと選び、2 回で開く
+        // 今向いている部品（ダイアログ・ランチャー・コマンドの候補）が受け取るなら、そこへ（component.rs）
         if let (Some(ed), Some(f)) = (&mut self.ed, &self.fonts) {
-            // `:` の候補を押すと、その候補を入力欄へ
-            if ed.mode == Mode::Command {
+            if let Some(c) = component::focused(ed) {
                 let cell = f.cell();
-                let (row, col) = ((self.mouse.1 as f32 / cell.h) as usize, (self.mouse.0.max(0.0) as f32 / cell.w) as usize);
-                if ed.cmd_complete_click(row, col) {
+                let (row, col) = ((self.mouse.1 as f32 / cell.h).floor().max(0.0) as usize, (self.mouse.0.max(0.0) as f32 / cell.w) as usize);
+                let now = Instant::now();
+                let clicks = match self.last_click {
+                    Some((t, k, n)) if now - t <= double_click_time() && k == (row, usize::MAX - 2) => n % 3 + 1,
+                    _ => 1,
+                };
+                if c.click(ed, row, col, clicks) {
+                    self.last_click = Some((now, (row, usize::MAX - 2), clicks));
                     self.sync_ime();
                     self.draw();
                     return;
                 }
-            }
-            // 設定の画面
-            if ed.mode == Mode::Settings {
-                let cell = f.cell();
-                let (row, col) = ((self.mouse.1 as f32 / cell.h) as usize, (self.mouse.0.max(0.0) as f32 / cell.w) as usize);
-                ed.settings_click(row, col);
-                self.sync_ime();
-                self.draw();
-                return;
-            }
-            // 実行の構成の画面: 一覧・欄・ボタンを押す
-            if ed.mode == Mode::RunDialog {
-                let cell = f.cell();
-                let (row, col) = ((self.mouse.1 as f32 / cell.h) as usize, (self.mouse.0.max(0.0) as f32 / cell.w) as usize);
-                ed.run_dialog_click(row, col);
-                self.sync_ime();
-                self.draw();
-                return;
-            }
-            if ed.mode == Mode::Launcher {
-                let row = (self.mouse.1 as f32 / f.cell().h).floor().max(0.0) as usize;
-                let now = Instant::now();
-                let clicks = match self.last_click {
-                    Some((t, c, n)) if now - t <= double_click_time() && c == (row, usize::MAX - 2) => n % 3 + 1,
-                    _ => 1,
-                };
-                self.last_click = Some((now, (row, usize::MAX - 2), clicks));
-                let col = (self.mouse.0.max(0.0) as f32 / f.cell().w) as usize;
-                if !ed.launcher_left_click(row, col) {
-                    let hit = ed.launcher.as_ref().and_then(|l| l.row_map.borrow().iter().find(|(r, _)| *r == row).map(|x| x.1));
-                    if let Some(i) = hit {
-                        ed.launcher_click(i, clicks);
-                    }
-                }
-                self.sync_ime();
-                self.draw();
-                return;
             }
         }
         self.sync_screen();

@@ -222,6 +222,26 @@ impl Editor {
 }
 
 
+
+/// この部品の入口（component.rs）
+pub struct CommandLineComponent;
+
+impl crate::component::Component for CommandLineComponent {
+    fn key(&self, ed: &mut crate::editor::Editor, key: nagi_vim::Key) -> crate::editor::Effect {
+        ed.command(key)
+    }
+
+    fn text(&self, ed: &mut crate::editor::Editor, text: &str) {
+        ed.cmdline.insert(text);
+        ed.update_cmd_complete();
+    }
+
+    fn click(&self, ed: &mut crate::editor::Editor, row: usize, col: usize, clicks: u32) -> bool {
+        let _ = clicks;
+        ed.cmd_complete_click(row, col)
+    }
+}
+
 /// 描き方（view.rs の Painter で描く）
 pub(crate) mod draw {
     #![allow(unused_imports)]

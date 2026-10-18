@@ -491,6 +491,32 @@ impl Editor {
 }
 
 
+
+/// この部品の入口（component.rs）
+pub struct LauncherComponent;
+
+impl crate::component::Component for LauncherComponent {
+    fn key(&self, ed: &mut crate::editor::Editor, key: nagi_vim::Key) -> crate::editor::Effect {
+        ed.launcher_key(key);
+        crate::editor::Effect::None
+    }
+
+    fn text(&self, ed: &mut crate::editor::Editor, text: &str) {
+        ed.launcher_insert(text);
+    }
+
+    fn click(&self, ed: &mut crate::editor::Editor, row: usize, col: usize, clicks: u32) -> bool {
+        let _ = clicks;
+        if !ed.launcher_left_click(row, col) {
+            let hit = ed.launcher.as_ref().and_then(|l| l.row_map.borrow().iter().find(|(r, _)| *r == row).map(|x| x.1));
+            if let Some(i) = hit {
+                ed.launcher_click(i, clicks);
+            }
+        }
+        true
+    }
+}
+
 /// 描き方（view.rs の Painter で描く）
 pub(crate) mod draw {
     #![allow(unused_imports)]

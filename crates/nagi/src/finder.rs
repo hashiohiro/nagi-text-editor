@@ -409,6 +409,20 @@ fn display_path(p: &Path, root: &Path) -> String {
 }
 
 
+
+/// この部品の入口（component.rs）
+pub struct FinderComponent;
+
+impl crate::component::Component for FinderComponent {
+    fn key(&self, ed: &mut crate::editor::Editor, key: nagi_vim::Key) -> crate::editor::Effect {
+        ed.finder_key(key)
+    }
+
+    fn text(&self, ed: &mut crate::editor::Editor, text: &str) {
+        ed.finder_insert(text);
+    }
+}
+
 /// 描き方（view.rs の Painter で描く）
 pub(crate) mod draw {
     #![allow(unused_imports)]

@@ -535,6 +535,35 @@ impl Editor {
 }
 
 
+
+/// この部品の入口（component.rs）
+pub struct GrepPromptComponent;
+
+impl crate::component::Component for GrepPromptComponent {
+    fn key(&self, ed: &mut crate::editor::Editor, key: nagi_vim::Key) -> crate::editor::Effect {
+        ed.grep_prompt_key(key);
+        crate::editor::Effect::None
+    }
+
+    fn text(&self, ed: &mut crate::editor::Editor, text: &str) {
+        ed.grep_insert(text);
+    }
+}
+
+
+/// この部品の入口（component.rs）
+pub struct ListComponent;
+
+impl crate::component::Component for ListComponent {
+    fn key(&self, ed: &mut crate::editor::Editor, key: nagi_vim::Key) -> crate::editor::Effect {
+        ed.list_key(key)
+    }
+
+    fn text(&self, ed: &mut crate::editor::Editor, text: &str) {
+        ed.bottom_text(text);
+    }
+}
+
 /// 描き方（view.rs の Painter で描く）
 pub(crate) mod draw {
     #![allow(unused_imports)]

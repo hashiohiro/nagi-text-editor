@@ -527,6 +527,28 @@ impl Editor {
 }
 
 
+
+/// この部品の入口（component.rs）
+pub struct LogComponent;
+
+impl crate::component::Component for LogComponent {
+    fn key(&self, ed: &mut crate::editor::Editor, key: nagi_vim::Key) -> crate::editor::Effect {
+        ed.log_key(key);
+        crate::editor::Effect::None
+    }
+
+    /// 絞り込みの欄に打っている間の文字
+    fn text(&self, ed: &mut crate::editor::Editor, text: &str) {
+        if let Some(l) = &mut ed.log {
+            if let Some(f) = &mut l.filter {
+                f.insert_text(text);
+                l.filter_text = f.text();
+                l.refilter_pub();
+            }
+        }
+    }
+}
+
 /// 描き方（view.rs の Painter で描く）
 pub(crate) mod draw {
     #![allow(unused_imports)]
