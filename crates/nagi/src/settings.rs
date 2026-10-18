@@ -27,7 +27,7 @@ pub enum SKind {
     Tool(&'static str),
 }
 
-const TOOL_HELP: &str = "Enter で入っているものから選ぶかダウンロード。空なら PATH のもの。WSL のプロジェクトでは WSL の中のものを使う";
+const TOOL_HELP: &str = "Enter で入っているものから選ぶか、版を選んでダウンロード。空なら PATH のもの。WSL のプロジェクトでは WSL の中のものを使う";
 
 /// 項目 1 つ
 pub struct Item {
@@ -125,16 +125,16 @@ pub static SCHEMA: &[Item] = &[
     pitem("maven.path", "ビルド・実行", "Maven: mvn の場所", T, "", "空なら PATH の mvn"),
     pitem("maven.use_wrapper", "ビルド・実行", "Maven: Wrapper（mvnw）を使う", B, "true", "設定ファイルもそろっているときだけ"),
     pitem("maven.options", "ビルド・実行", "Maven: 追加のオプション", T, "", "いつも付ける（-o・-T 4 など）"),
-    item("toolchain.python", "ビルド・実行", "Python", SKind::Tool("python"), "", TOOL_HELP),
-    item("toolchain.node", "ビルド・実行", "Node.js", SKind::Tool("node"), "", TOOL_HELP),
-    item("toolchain.go", "ビルド・実行", "Go", SKind::Tool("go"), "", TOOL_HELP),
-    item("toolchain.rust", "ビルド・実行", "Rust（cargo）", SKind::Tool("rust"), "", TOOL_HELP),
-    item("toolchain.dotnet", "ビルド・実行", ".NET SDK", SKind::Tool("dotnet"), "", TOOL_HELP),
-    item("toolchain.clang", "ビルド・実行", "C/C++（clang）", SKind::Tool("clang"), "", TOOL_HELP),
-    item("toolchain.cmake", "ビルド・実行", "CMake", SKind::Tool("cmake"), "", TOOL_HELP),
-    item("toolchain.zig", "ビルド・実行", "Zig", SKind::Tool("zig"), "", TOOL_HELP),
-    item("toolchain.dart", "ビルド・実行", "Dart", SKind::Tool("dart"), "", TOOL_HELP),
-    item("toolchain.php", "ビルド・実行", "PHP", SKind::Tool("php"), "", TOOL_HELP),
+    pitem("toolchain.python", "ビルド・実行", "Python", SKind::Tool("python"), "", TOOL_HELP),
+    pitem("toolchain.node", "ビルド・実行", "Node.js", SKind::Tool("node"), "", TOOL_HELP),
+    pitem("toolchain.go", "ビルド・実行", "Go", SKind::Tool("go"), "", TOOL_HELP),
+    pitem("toolchain.rust", "ビルド・実行", "Rust（cargo）", SKind::Tool("rust"), "", TOOL_HELP),
+    pitem("toolchain.dotnet", "ビルド・実行", ".NET SDK", SKind::Tool("dotnet"), "", TOOL_HELP),
+    pitem("toolchain.clang", "ビルド・実行", "C/C++（clang）", SKind::Tool("clang"), "", TOOL_HELP),
+    pitem("toolchain.cmake", "ビルド・実行", "CMake", SKind::Tool("cmake"), "", TOOL_HELP),
+    pitem("toolchain.zig", "ビルド・実行", "Zig", SKind::Tool("zig"), "", TOOL_HELP),
+    pitem("toolchain.dart", "ビルド・実行", "Dart", SKind::Tool("dart"), "", TOOL_HELP),
+    pitem("toolchain.php", "ビルド・実行", "PHP", SKind::Tool("php"), "", TOOL_HELP),
 
     item("tools.extra_path", "ツール", "追加の PATH", T, "", "gradle・npm・cargo などの場所（; で区切る）"),
     item("git.path", "ツール", "Git: git の場所", T, "", "空なら PATH の git"),

@@ -84,7 +84,15 @@ pub struct SettingsDialog {
     pub buttons: RefCell<Vec<(usize, usize, usize, SButton)>>,
     /// 言語のツールの見つかったもの（種類 → 説明の行。開いたときに裏で調べる。WSL のプロジェクトなら WSL の中も）
     pub tool_info: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
+    /// ダウンロードできる版（種類 → 一覧。コンボボックスを初めて開いたときに裏で調べる）
+    pub releases: Releases,
+    waker: nagi_workers::Waker,
 }
+
+pub type Releases = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, Result<Vec<nagi_workers::toolchains::Release>, String>>>>;
+
+/// 版を調べている間の一覧の行の値
+const RELEASES_WAIT: &str = "download:wait";
 
 impl SettingsDialog {
     /// 出している項目（分類と絞り込みで）
@@ -154,7 +162,8 @@ impl SettingsDialog {
             SKind::Bool | SKind::Choice(_) => self.cycle(1),
             SKind::Font | SKind::Jdk | SKind::Tool(_) => {
                 let items: Vec<ComboItem> = if let SKind::Tool(id) = it.kind {
-                    tool_items(id)
+                    self.fetch_releases(id);
+                    tool_items(id, &self.releases)
                 } else if it.kind == SKind::Font {
                     self.fonts
                         .get_or_insert_with(nagi_text::font_families)
@@ -183,6 +192,11 @@ impl SettingsDialog {
         let shown = c.shown();
         let pick = index.or_else(|| shown.get(c.sel).copied());
         let value = pick.and_then(|i| c.items.get(i)).map(|f| f.value.clone())?;
+        if value == RELEASES_WAIT {
+            self.focus = SFocus::Combo;
+            self.combo = Some(c);
+            return None;
+        }
         if let Some(v) = value.strip_prefix("download:") {
             return Some(v.to_string());
         }
@@ -234,8 +248,62 @@ fn jdk_items() -> Vec<ComboItem> {
     v
 }
 
-/// 言語のツールのコンボボックスの一覧: 自動・入っているもの・ダウンロード
-fn tool_items(id: &str) -> Vec<ComboItem> {
+impl SettingsDialog {
+    /// ダウンロードできる版をまだ調べていなければ、裏で調べ始める
+    fn fetch_releases(&self, id: &str) {
+        let Ok(mut m) = self.releases.lock() else { return };
+        if m.contains_key(id) || cfg!(test) {
+            return;
+        }
+        m.insert(id.to_string(), Err(String::new()));
+        let (rs, id) = (self.releases.clone(), id.to_string());
+        let waker = self.waker.clone();
+        let _ = std::thread::Builder::new().name("releases".into()).spawn(move || {
+            let r = nagi_workers::toolchains::releases(&id);
+            if let Ok(mut m) = rs.lock() {
+                m.insert(id, r.map_err(|e| if e.is_empty() { "調べられません".into() } else { e }));
+            }
+            waker();
+        });
+    }
+
+    /// 版を調べ終えたら、開いているコンボボックスの一覧を作り直す（選んでいる行は保つ）。変えたら true
+    pub fn refresh_tool_combo(&mut self) -> bool {
+        let Some(SKind::Tool(id)) = self.current().map(|i| i.kind) else { return false };
+        let Some(c) = &mut self.combo else { return false };
+        if !c.items.iter().any(|i| i.value == RELEASES_WAIT) {
+            return false;
+        }
+        let ready = self.releases.lock().ok().is_some_and(|m| matches!(m.get(id), Some(r) if !matches!(r, Err(e) if e.is_empty())));
+        if !ready {
+            return false;
+        }
+        // 調べる前の一覧（入っているもの）はそのまま、末尾の「調べています」だけ差し替える
+        c.items.retain(|i| i.value != RELEASES_WAIT);
+        c.items.extend(release_items(id, &self.releases));
+        true
+    }
+}
+
+/// ダウンロードの行（調べている間は 1 行の「調べています」）
+fn release_items(id: &str, releases: &Releases) -> Vec<ComboItem> {
+    let Some(t) = nagi_workers::toolchains::def(id) else { return Vec::new() };
+    if t.download.is_none() {
+        return Vec::new();
+    }
+    match releases.lock().ok().and_then(|m| m.get(id).cloned()) {
+        Some(Ok(v)) => v
+            .iter()
+            .enumerate()
+            .map(|(i, r)| ComboItem { label: format!("＋ ダウンロード: {} {}", t.label, r.version), value: format!("download:tool:{id}:{i}"), tag: if i == 0 && r.note.is_empty() { "最新".into() } else { r.note.clone() } })
+            .collect(),
+        Some(Err(e)) if !e.is_empty() => vec![ComboItem { label: format!("＋ ダウンロード: {}（いちばん新しい版。一覧は {e}）", t.label), value: format!("download:tool:{id}"), tag: String::new() }],
+        _ => vec![ComboItem { label: format!("＋ ダウンロード: {}（版を調べています…）", t.label), value: RELEASES_WAIT.into(), tag: String::new() }],
+    }
+}
+
+/// 言語のツールのコンボボックスの一覧: 自動・入っているもの・ダウンロード（版ごと）
+fn tool_items(id: &str, releases: &Releases) -> Vec<ComboItem> {
     use nagi_workers::toolchains;
     let mut v = vec![ComboItem { label: "自動（PATH から探す）".into(), value: String::new(), tag: String::new() }];
     let Some(t) = toolchains::def(id) else { return v };
@@ -244,8 +312,8 @@ fn tool_items(id: &str) -> Vec<ComboItem> {
             v.push(ComboItem { label: format!("{}  {}", if f.version.is_empty() { "?" } else { &f.version }, f.bin.display()), value: f.bin.display().to_string(), tag: f.source.into() });
         }
     }
-    if let Some(d) = t.download {
-        v.push(ComboItem { label: format!("＋ ダウンロード: {d}"), value: format!("download:tool:{id}"), tag: "最新".into() });
+    if t.download.is_some() {
+        v.extend(release_items(id, releases));
     }
     v
 }
@@ -283,7 +351,15 @@ impl Editor {
     /// コンボボックスで選んだダウンロードを始める（数なら JDK の版、tool:種類 なら言語のツール）
     pub(crate) fn start_download(&mut self, what: &str) {
         match what.strip_prefix("tool:") {
-            Some(id) => self.start_tool_download(id),
+            Some(rest) => {
+                // tool:種類:一覧の番号（番号が無ければいちばん新しい版）
+                let (id, idx) = match rest.split_once(':') {
+                    Some((id, i)) => (id, i.parse::<usize>().ok()),
+                    None => (rest, None),
+                };
+                let release = idx.and_then(|i| self.settings_dialog.as_ref()?.releases.lock().ok()?.get(id)?.as_ref().ok()?.get(i).cloned());
+                self.start_tool_download(id, release);
+            }
             None => {
                 if let Ok(v) = what.parse::<u32>() {
                     self.start_jdk_download(v);
@@ -293,19 +369,20 @@ impl Editor {
     }
 
     /// 言語のツールをダウンロードし始める。進み具合は状態の行に、終わったら設定に入れる
-    pub(crate) fn start_tool_download(&mut self, id: &str) {
+    pub(crate) fn start_tool_download(&mut self, id: &str, release: Option<nagi_workers::toolchains::Release>) {
         let label = nagi_workers::toolchains::def(id).map_or(id, |t| t.label);
         if self.tool_download.is_some() {
             self.message = "ほかのツールをダウンロードしています".into();
             return;
         }
+        let what = release.as_ref().map_or("最新版".to_string(), |r| r.version.clone());
         if cfg!(test) {
-            self.message = format!("（試験）{label} のダウンロード");
+            self.message = format!("（試験）{label} {what} のダウンロード");
             return;
         }
         let waker = self.waker.clone().unwrap_or_else(|| std::sync::Arc::new(|| {}));
-        self.tool_download = Some((id.to_string(), nagi_workers::toolchains::download(id, waker)));
-        self.message = format!("{label} の最新版を調べてダウンロードします…");
+        self.tool_download = Some((id.to_string(), nagi_workers::toolchains::download(id, release, waker)));
+        self.message = format!("{label} {what} をダウンロードします…");
     }
 
     /// JDK（Eclipse Temurin の `version`）をダウンロードし始める。進み具合は状態の行に、終わったら設定に入れる
@@ -325,7 +402,8 @@ impl Editor {
 
     /// ダウンロードの進み具合を受け取る。変わったら true
     pub fn poll_jdk_download(&mut self) -> bool {
-        self.poll_tool_download() | self.poll_jdk_only()
+        let combo = self.settings_dialog.as_mut().is_some_and(|d| d.refresh_tool_combo());
+        combo | self.poll_tool_download() | self.poll_jdk_only()
     }
 
     fn poll_tool_download(&mut self) -> bool {
@@ -349,14 +427,17 @@ impl Editor {
             match r {
                 Ok(path) => {
                     let p = path.display().to_string();
+                    // 設定の画面でプロジェクトを保存先にしていれば、そのプロジェクトの版に
+                    let project = self.settings_dialog.as_ref().is_some_and(|d| d.project_scope);
                     let old = self.settings.clone();
-                    self.settings.set(&key, &p, false);
+                    self.settings.set(&key, &p, project);
                     let _ = self.settings.save();
                     self.apply_settings(Some(&old));
                     if let Some(d) = &mut self.settings_dialog {
-                        d.work.set(&key, &p, false);
+                        d.work.set(&key, &p, project);
                     }
-                    self.message = format!("{label} を入れました: {p}（設定にしました。ターミナル・実行の構成・:Make で使う）");
+                    let scope = if project { "このプロジェクトの設定" } else { "設定" };
+                    self.message = format!("{label} を入れました: {p}（{scope}にしました。ターミナル・実行の構成・:Make で使う）");
                 }
                 Err(e) => self.message = format!("{label} をダウンロードできません: {e}"),
             }
@@ -422,6 +503,8 @@ impl Editor {
             item_rows: RefCell::new(Vec::new()),
             buttons: RefCell::new(Vec::new()),
             tool_info: Default::default(),
+            releases: Default::default(),
+            waker: self.waker.clone().unwrap_or_else(|| std::sync::Arc::new(|| {})),
         };
         if !cfg!(test) {
             let waker = self.waker.clone().unwrap_or_else(|| std::sync::Arc::new(|| {}));
@@ -788,5 +871,26 @@ mod tests {
         keys(&mut e, "temurin 21<CR>");
         assert!(e.message.contains("JDK 21"), "{}", e.message);
         assert_eq!(e.settings_dialog.as_ref().unwrap().work.get("maven.jdk"), "", "ダウンロードが終わるまでは変えない");
+    }
+
+    /// 言語のツール: 版を調べている間は 1 行、届いたら版ごとの行に。選ぶとその版をダウンロード
+    #[test]
+    fn tool_versions() {
+        use nagi_workers::toolchains::Release;
+        let mut e = Editor::new(Buffer::from_str(""), None);
+        e.set_screen(140, 40);
+        e.open_settings("Node.js");
+        keys(&mut e, "<CR>");
+        let d = e.settings_dialog.as_ref().unwrap();
+        assert!(d.combo.as_ref().unwrap().items.iter().any(|i| i.value == RELEASES_WAIT), "調べている行");
+        // 調べ終えた（試験ではネットワークを使わないので、ここで入れる）
+        let rs = vec![Release { version: "24.22.0".into(), url: "u1".into(), note: "LTS".into() }, Release { version: "22.30.0".into(), url: "u2".into(), note: "LTS".into() }];
+        d.releases.lock().unwrap().insert("node".into(), Ok(rs));
+        assert!(e.poll_jdk_download(), "一覧を作り直す");
+        let c = e.settings_dialog.as_ref().unwrap().combo.as_ref().unwrap();
+        let labels: Vec<&str> = c.items.iter().map(|i| i.label.as_str()).collect();
+        assert!(labels.contains(&"＋ ダウンロード: Node.js 22.30.0") && !c.items.iter().any(|i| i.value == RELEASES_WAIT), "{labels:?}");
+        keys(&mut e, "22.30<CR>");
+        assert!(e.message.contains("Node.js 22.30.0"), "{}", e.message);
     }
 }
