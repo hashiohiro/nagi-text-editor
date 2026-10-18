@@ -119,8 +119,13 @@ pub fn find_root(from: &Path) -> Option<PathBuf> {
 
 /// ゴールを動かすコマンド（根に mvnw があればそれを使う）
 pub fn command(root: &Path, pom_dir: &Path, goals: &str) -> String {
-    let mvn = if root.join("mvnw.cmd").is_file() { "mvnw.cmd" } else { "mvn" };
     let pom = pom_dir.join("pom.xml");
+    // WSL のプロジェクトは WSL の中で動かすので、Linux のパスと ./mvnw
+    if crate::wsl::split_unc(root).is_some() {
+        let mvn = if root.join("mvnw").is_file() { "./mvnw" } else { "mvn" };
+        return format!("{mvn} -B -f \"{}\" {goals}", crate::wsl::shell_path(&pom));
+    }
+    let mvn = if root.join("mvnw.cmd").is_file() { "mvnw.cmd" } else { "mvn" };
     format!("{mvn} -B -f \"{}\" {goals}", pom.display())
 }
 

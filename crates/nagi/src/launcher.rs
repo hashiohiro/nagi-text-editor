@@ -34,10 +34,9 @@ pub struct Preview {
     pub readme: Vec<String>,
 }
 
-/// 下の行で打っているもの（フォルダの場所・git の URL）
+/// 下の行で打っているもの（git の URL）。フォルダはダイアログで選ぶ（打つなら :Project パス）
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Ask {
-    Folder,
     Clone,
 }
 
@@ -60,7 +59,20 @@ pub struct Launcher {
     pub message: String,
     /// 描いた一覧の (画面の行, hits の添字)。クリックで使う
     pub row_map: std::cell::RefCell<Vec<(usize, usize)>>,
+    /// 描いた左の操作の (画面の行, 操作の文字) と左の欄の幅。クリックで使う
+    pub act_map: std::cell::RefCell<(Vec<(usize, char)>, usize)>,
+    /// フォルダを選ぶダイアログを出している
+    pub picking: Option<Receiver<Option<PathBuf>>>,
 }
+
+/// 左の操作（文字, 名前, 入力中のキー）
+pub const ACTIONS: [(char, &str, &str); 5] = [
+    ('o', "フォルダを開く…", "^O"),
+    ('w', "WSL のフォルダ…", "^L"),
+    ('g', "git から取得…", "^G"),
+    ('r', "最近のファイル", "^R"),
+    ('n', "空で始める", "^E"),
+];
 
 impl Launcher {
     pub fn selected_entry(&self) -> Option<&Entry> {
@@ -170,6 +182,8 @@ impl Editor {
             pending_d: false,
             message: String::new(),
             row_map: Default::default(),
+            act_map: Default::default(),
+            picking: None,
         });
         self.finder = None;
         self.mode = Mode::Launcher;
@@ -194,6 +208,24 @@ impl Editor {
                 changed = true;
             }
         }
+        // フォルダを選ぶダイアログの結果
+        let mut picked = None;
+        if let Some(rx) = &l.picking {
+            if let Ok(r) = rx.try_recv() {
+                picked = Some(r);
+            }
+        }
+        if let Some(r) = picked {
+            l.picking = None;
+            match r {
+                Some(dir) => {
+                    self.close_launcher_to(dir);
+                    return true;
+                }
+                None => changed = true,
+            }
+        }
+        let Some(l) = &mut self.launcher else { return changed };
         let mut cloned = None;
         if let Some((_, rx)) = &l.cloning {
             if let Ok(r) = rx.try_recv() {
@@ -277,14 +309,6 @@ impl Editor {
                     let (ask, f) = l.ask.take().unwrap();
                     let text = f.text().trim().trim_matches('"').to_string();
                     match ask {
-                        Ask::Folder if !text.is_empty() => {
-                            let dir = PathBuf::from(&text);
-                            if dir.is_dir() {
-                                self.close_launcher_to(dir);
-                            } else {
-                                l.message = format!("フォルダがありません: {text}");
-                            }
-                        }
                         Ask::Clone if !text.is_empty() => self.start_clone(text),
                         _ => {}
                     }
@@ -311,22 +335,17 @@ impl Editor {
             }
             Key::Down | Key::Ctrl('n') | Key::Ctrl('j') | Key::Tab => l.selected = (l.selected + 1).min(last),
             Key::Up | Key::Ctrl('p') | Key::Ctrl('k') => l.selected = l.selected.saturating_sub(1),
-            Key::Ctrl('o') => l.ask = Some((Ask::Folder, VimField::new("", false))),
-            Key::Ctrl('g') => l.ask = Some((Ask::Clone, VimField::new("", false))),
+            // 左の操作（入力中でも使える Ctrl のキー）
+            Key::Ctrl('o') => return self.launcher_action('o'),
+            Key::Ctrl('l') => return self.launcher_action('w'),
+            Key::Ctrl('g') => return self.launcher_action('g'),
+            Key::Ctrl('r') => return self.launcher_action('r'),
+            Key::Ctrl('e') => return self.launcher_action('n'),
             Key::Char('j') if normal => l.selected = (l.selected + 1).min(last),
             Key::Char('k') if normal => l.selected = l.selected.saturating_sub(1),
-            Key::Char('g') if normal => l.ask = Some((Ask::Clone, VimField::new("", false))),
+            Key::Char(c @ ('g' | 'o' | 'w' | 'r' | 'n')) if normal => return self.launcher_action(c),
             Key::Char('G') if normal => l.selected = last,
-            Key::Char('o') if normal => l.ask = Some((Ask::Folder, VimField::new("", false))),
-            Key::Char('n') if normal => {
-                self.close_launcher();
-                return;
-            }
-            Key::Char('r') if normal => {
-                self.close_launcher();
-                self.open_finder(crate::finder::Source::Recent);
-                return;
-            }
+
             Key::Char('p') if normal => {
                 if let Some(e) = l.selected_entry().cloned() {
                     let on = crate::project_open::toggle_pin(&e.path);
@@ -396,6 +415,50 @@ impl Editor {
         l.cloning = Some((url, rx));
     }
 
+    /// 左の操作: o フォルダ（ダイアログ）、w WSL のフォルダ（ダイアログ）、g git から取得、r 最近のファイル、n 空で始める
+    pub(crate) fn launcher_action(&mut self, a: char) {
+        let waker = self.waker.clone();
+        let Some(l) = &mut self.launcher else { return };
+        match a {
+            'o' => {
+                l.message = "フォルダを選んでください（ダイアログ）".into();
+                let start = std::env::var_os("USERPROFILE").map(|h| PathBuf::from(h).join("IdeaProjects")).filter(|p| p.is_dir());
+                l.picking = Some(crate::dialogs::pick_folder("開くプロジェクトのフォルダ", start, waker));
+            }
+            'w' => match nagi_workers::wsl::distros().first() {
+                Some(d) => {
+                    l.message = format!("WSL のフォルダを選んでください（{d}。ほかのディストリビューションは \\\\wsl.localhost から）");
+                    let start = nagi_workers::wsl::to_unc(d, "/home");
+                    l.picking = Some(crate::dialogs::pick_folder("開く WSL のプロジェクトのフォルダ", Some(start), waker));
+                }
+                None => l.message = "WSL のディストリビューションがありません（wsl --install で入れられます）".into(),
+            },
+            'g' => l.ask = Some((Ask::Clone, VimField::new("", false))),
+            'r' => {
+                self.close_launcher();
+                self.open_finder(crate::finder::Source::Recent);
+            }
+            'n' => self.close_launcher(),
+            _ => {}
+        }
+    }
+
+    /// 左の操作のクリック（画面の行・列）。当たれば true
+    pub(crate) fn launcher_left_click(&mut self, row: usize, col: usize) -> bool {
+        let Some(l) = &self.launcher else { return false };
+        let (acts, w) = l.act_map.borrow().clone();
+        if col >= w {
+            return false;
+        }
+        match acts.iter().find(|(r, _)| *r == row) {
+            Some(&(_, a)) => {
+                self.launcher_action(a);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// 一覧の行のクリック（2 回で開く）
     pub(crate) fn launcher_click(&mut self, i: usize, clicks: u32) {
         let Some(l) = &mut self.launcher else { return };
@@ -452,8 +515,8 @@ mod tests {
         e.launcher_key(Key::Enter);
         assert_eq!(e.mode, Mode::Launcher);
         assert!(e.launcher.as_ref().unwrap().message.contains("ありません"), "{}", e.launcher.as_ref().unwrap().message);
-        // o でフォルダの入力、Esc Esc でやめる
-        for k in nagi_vim::parse_keys("o", " ") {
+        // g で git の URL の入力、Esc Esc でやめる（o はダイアログを出すので試験では押さない）
+        for k in nagi_vim::parse_keys("g", " ") {
             e.launcher_key(k);
         }
         assert!(e.launcher.as_ref().unwrap().ask.is_some());

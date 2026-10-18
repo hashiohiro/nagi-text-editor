@@ -11,6 +11,7 @@ pub mod maven;
 pub mod project;
 pub mod salesforce;
 pub mod term;
+pub mod wsl;
 pub mod watch;
 
 /// UI のイベントループを起こす関数

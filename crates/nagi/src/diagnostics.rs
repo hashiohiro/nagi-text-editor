@@ -71,7 +71,13 @@ pub fn parse_line(line: &str, root: &Path) -> Option<Diag> {
         if !SOURCE_EXT.contains(&ext.as_str()) {
             continue;
         }
-        let path = if p.is_absolute() { p } else { root.join(p) };
+        // WSL の中で動かしたコマンドの /home/... は、そのディストリビューションの UNC のパスに
+        let wsl = nagi_workers::wsl::split_unc(root).map(|(d, _)| d);
+        let path = match &wsl {
+            Some(d) if f.starts_with('/') => nagi_workers::wsl::to_unc(d, f),
+            _ if p.is_absolute() => p,
+            _ => root.join(p),
+        };
         let l: usize = c.name("l")?.as_str().parse().ok()?;
         let col: usize = c.name("c").and_then(|m| m.as_str().parse().ok()).unwrap_or(1);
         let msg = c.name("m").map_or("", |m| m.as_str()).trim().to_string();
@@ -90,6 +96,9 @@ fn detect_command(root: &Path) -> Option<String> {
     let has = |f: &str| root.join(f).exists();
     Some(if has("tsconfig.json") {
         "npx tsc --noEmit --pretty false".into()
+    } else if has("gradlew") && nagi_workers::wsl::split_unc(root).is_some() {
+        // WSL のプロジェクトは WSL の中で動かす
+        "./gradlew compileJava compileTestJava -q --console=plain".into()
     } else if has("gradlew.bat") {
         "gradlew.bat compileJava compileTestJava -q --console=plain".into()
     } else if has("build.gradle") || has("build.gradle.kts") {

@@ -16,6 +16,7 @@
 #![cfg_attr(not(test), windows_subsystem = "windows")]
 
 mod angular;
+mod dialogs;
 mod autoread;
 mod bottom_panel;
 mod terminal;
@@ -221,6 +222,8 @@ struct App {
     autoscroll_deadline: Option<Instant>,
     /// ドラッグしている区切り
     sep_drag: Option<resize::Sep>,
+    /// ターミナルの中で範囲を選んでいる（左ボタンを押したまま）
+    term_select: bool,
     /// 今のマウスのカーソルの形（区切りの上では ↔ / ↕）
     cursor_icon: winit::window::CursorIcon,
     stats: stats::Stats,
@@ -248,6 +251,8 @@ impl App {
             let RawWindowHandle::Win32(h) = window.window_handle().unwrap().as_raw() else { unreachable!() };
             windows::Win32::Foundation::HWND(h.hwnd.get() as *mut _)
         };
+        // ダイアログ（フォルダの選択）の持ち主にする
+        let _ = dialogs::MAIN_HWND.set(hwnd.0 as isize);
 
         // GPU の準備（最も遅い）を待つ間に、フォントとファイルを受け取って最初の画面のグリフをラスタライズしておく
         let p = self.pending.take().unwrap();
@@ -790,9 +795,12 @@ impl App {
                     _ => 1,
                 };
                 self.last_click = Some((now, (row, usize::MAX - 2), clicks));
-                let hit = ed.launcher.as_ref().and_then(|l| l.row_map.borrow().iter().find(|(r, _)| *r == row).map(|x| x.1));
-                if let Some(i) = hit {
-                    ed.launcher_click(i, clicks);
+                let col = (self.mouse.0.max(0.0) as f32 / f.cell().w) as usize;
+                if !ed.launcher_left_click(row, col) {
+                    let hit = ed.launcher.as_ref().and_then(|l| l.row_map.borrow().iter().find(|(r, _)| *r == row).map(|x| x.1));
+                    if let Some(i) = hit {
+                        ed.launcher_click(i, clicks);
+                    }
                 }
                 self.sync_ime();
                 self.draw();
@@ -843,6 +851,16 @@ impl App {
         if let (Some(f), Some(ed)) = (&self.fonts, &mut self.ed) {
             let cell = f.cell();
             let row = (self.mouse.1 as f32 / cell.h) as usize;
+            // ターミナルの画面: 押して選び始める（ドラッグで範囲）
+            if ed.bottom_kind == result_grid::BottomKind::Terminal && ed.terminals.chooser.is_none() && ed.terminal_rect().is_some_and(|r| r.contains(row, (self.mouse.0.max(0.0) as f32 / cell.w) as usize)) {
+                let col = (self.mouse.0.max(0.0) as f32 / cell.w) as usize;
+                if ed.terminal_press(row, col) {
+                    self.term_select = true;
+                    self.sync_ime();
+                    self.draw();
+                    return;
+                }
+            }
             if let Some(r) = ed.panel_rect().filter(|r| row >= r.y && row < r.y + r.h) {
                 let now = Instant::now();
                 let clicks = match self.last_click {
@@ -1248,7 +1266,13 @@ impl ApplicationHandler for App {
                     eprintln!("[{:.1}] move {:.0},{:.0}", clock::since_process_start_ms(), position.x, position.y);
                 }
                 self.mouse = (position.x, position.y);
-                if self.sep_drag.is_some() {
+                if self.term_select {
+                    if let (Some(f), Some(ed)) = (&self.fonts, &mut self.ed) {
+                        let cell = f.cell();
+                        ed.terminal_drag((position.y as f32 / cell.h) as usize, (position.x.max(0.0) as f32 / cell.w) as usize);
+                    }
+                    self.draw();
+                } else if self.sep_drag.is_some() {
                     self.on_sep_drag();
                 } else if self.press.is_some() {
                     self.on_drag();
@@ -1263,11 +1287,28 @@ impl ApplicationHandler for App {
                 } => {}
                 ElementState::Pressed => self.on_press(),
                 ElementState::Released => {
+                    if std::mem::take(&mut self.term_select) {
+                        if let Some(ed) = &mut self.ed {
+                            ed.terminal_release();
+                        }
+                    }
                     self.press = None;
                     self.sep_drag = None;
                     self.autoscroll_deadline = None;
                 }
             },
+            // 右クリック: ターミナルの上なら、選んでいればコピー、いなければ貼り付け
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: winit::event::MouseButton::Right, .. } => {
+                if let (Some(f), Some(ed)) = (&self.fonts, &mut self.ed) {
+                    let cell = f.cell();
+                    let (row, col) = ((self.mouse.1 as f32 / cell.h) as usize, (self.mouse.0.max(0.0) as f32 / cell.w) as usize);
+                    if ed.bottom_kind == result_grid::BottomKind::Terminal && ed.terminal_rect().is_some_and(|r| r.contains(row, col)) {
+                        ed.terminal_right_click();
+                        self.sync_ime();
+                        self.draw();
+                    }
+                }
+            }
             WindowEvent::MouseWheel { delta, .. } => self.on_wheel(delta),
             WindowEvent::RedrawRequested => {
                 self.draw();
@@ -1386,6 +1427,7 @@ fn main() {
         press: None,
         last_click: None,
         sep_drag: None,
+        term_select: false,
         cursor_icon: winit::window::CursorIcon::Default,
         autoscroll_deadline: None,
         stats: stats::Stats::default(),

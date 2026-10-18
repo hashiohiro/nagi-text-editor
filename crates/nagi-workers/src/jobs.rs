@@ -79,20 +79,28 @@ pub fn run(command: &str, cwd: &Path, waker: Waker) -> std::io::Result<Job> {
 
 /// 環境変数を足して動かす
 pub fn run_env(command: &str, cwd: &Path, env: &[(String, String)], waker: Waker) -> std::io::Result<Job> {
-    let mut cmd = Command::new("cmd");
-    cmd.arg("/C");
-    // cmd は引数の " をそのまま読むので、Rust の引用（" → \"）をかけずに渡す（pom.xml のパスの引用符が壊れた）
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.raw_arg(command);
-    }
-    #[cfg(not(windows))]
-    cmd.arg(command);
-    cmd.current_dir(cwd).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    for (k, v) in env {
-        cmd.env(k, v);
-    }
+    // WSL のプロジェクトは WSL の中のシェルで動かす（ログインシェルにして PATH を読む）
+    let mut cmd = match crate::wsl::command_in(cwd, "sh", &["-lc", command]) {
+        Some(c) => c,
+        None => {
+            let mut cmd = Command::new("cmd");
+            cmd.arg("/C");
+            // cmd は引数の " をそのまま読むので、Rust の引用（" → \"）をかけずに渡す（pom.xml のパスの引用符が壊れた）
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.raw_arg(command);
+            }
+            #[cfg(not(windows))]
+            cmd.arg(command);
+            cmd.current_dir(cwd);
+            for (k, v) in env {
+                cmd.env(k, v);
+            }
+            cmd
+        }
+    };
+    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;

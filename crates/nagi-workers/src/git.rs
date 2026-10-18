@@ -12,10 +12,18 @@ pub fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
 
 /// 標準入力を渡して git を動かす（パッチの適用・コミットのメッセージ）
 pub fn git_input(root: &Path, args: &[&str], input: Option<&[u8]>) -> Result<Vec<u8>, String> {
-    let mut cmd = Command::new("git");
     // 出力を英語と UTF-8 の決まった形にする（読み取りがずれないように）
-    cmd.args(["-c", "core.quotepath=false", "-c", "color.ui=false"]).args(args).current_dir(root);
-    cmd.env("LANG", "C").env("LC_ALL", "C").env("GIT_TERMINAL_PROMPT", "0");
+    let base = ["-c", "core.quotepath=false", "-c", "color.ui=false"];
+    // WSL のプロジェクトは WSL の中の git で（Windows の git だと遅く、safe.directory で断られる）
+    let mut cmd = match crate::wsl::command_in(root, "env", &[["LANG=C", "LC_ALL=C", "GIT_TERMINAL_PROMPT=0", "git"].as_slice(), base.as_slice(), args].concat()) {
+        Some(c) => c,
+        None => {
+            let mut c = Command::new("git");
+            c.args(base).args(args).current_dir(root);
+            c.env("LANG", "C").env("LC_ALL", "C").env("GIT_TERMINAL_PROMPT", "0");
+            c
+        }
+    };
     cmd.stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
     #[cfg(windows)]
     {

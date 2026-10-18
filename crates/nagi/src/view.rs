@@ -2400,13 +2400,20 @@ fn draw_launcher(p: &mut Painter, l: &crate::launcher::Launcher, cols: usize, ro
     p.cols = lw;
     p.text("nagi", 3, y(1), FG);
     p.text(env!("CARGO_PKG_VERSION"), 3, y(2), STATUS_FG);
-    let acts = [("o", "フォルダを開く…"), ("g", "git から取得…"), ("r", "最近のファイル"), ("n", "空で始める")];
-    for (i, (k, label)) in acts.iter().enumerate() {
+    // 左の操作（押せる。入力中は Ctrl のキー、ノーマルでは文字のキー）
+    let acts = crate::launcher::ACTIONS;
+    let insert = l.field.is_insert() && l.ask.is_none();
+    let mut map = Vec::new();
+    for (i, (k, label, ctrl)) in acts.iter().enumerate() {
         let r = 4 + i * 2;
-        p.out.push(Instance::fill(3.0 * cell.w, y(r), 3.0 * cell.w, cell.h, STATUS_FG));
-        p.text(k, 4, y(r), BG);
-        p.text(label, 7, y(r), FG);
+        let key = if insert { ctrl.to_string() } else { k.to_string() };
+        let kw = p.width(&key);
+        p.out.push(Instance::fill(3.0 * cell.w, y(r), (kw + 2) as f32 * cell.w, cell.h, STATUS_FG));
+        p.text(&key, 4, y(r), BG);
+        p.text(label, 6 + kw, y(r), FG);
+        map.push((r, *k));
     }
+    *l.act_map.borrow_mut() = (map, lw);
     let mut r = 4 + acts.len() * 2 + 1;
     p.text("読み込み元", 3, y(r), STATUS_FG);
     r += 1;
@@ -2591,7 +2598,6 @@ fn draw_launcher(p: &mut Painter, l: &crate::launcher::Launcher, cols: usize, ro
     p.out.push(Instance::fill(0.0, by - 1.0, cols as f32 * cell.w, 1.0, LINE_NO));
     if let Some((ask, f)) = &l.ask {
         let lead = match ask {
-            crate::launcher::Ask::Folder => "開くフォルダ: ",
             crate::launcher::Ask::Clone => "git の URL: ",
         };
         let c = p.text(lead, 1, by, FG);
@@ -2601,7 +2607,7 @@ fn draw_launcher(p: &mut Painter, l: &crate::launcher::Launcher, cols: usize, ro
     } else {
         let mode = if l.field.is_insert() { "-- INSERT --" } else { "-- NORMAL --" };
         let c = p.text(mode, 1, by, FG);
-        let help = if l.field.is_insert() { "Enter 開く   ↑↓ 選ぶ   Ctrl+o フォルダ   Ctrl+g git から取得   Esc → j/k・p ピン留め・dd 外す" } else { "Enter 開く   j/k 選ぶ   p ピン留め   dd 外す   o フォルダ   g clone   r 最近のファイル   n 空で始める   Esc 閉じる" };
+        let help = if l.field.is_insert() { "Enter 開く   ↑↓ 選ぶ   左の操作は ^（Ctrl）のキーかクリック   Esc → j/k・p ピン留め・dd 外す" } else { "Enter 開く   j/k 選ぶ   p ピン留め   dd 外す   o フォルダ   w WSL   g clone   r 最近   n 空で   Esc 閉じる" };
         p.text(help, c + 3, by, STATUS_FG);
     }
     p.cols = saved;
@@ -2868,6 +2874,11 @@ fn draw_terminal(p: &mut Painter, ed: &Editor, r: Rect, focused: bool) {
                 let (mut fg, mut bg) = (term_color(c.fgcolor(), FG), term_color(c.bgcolor(), BG));
                 if c.inverse() {
                     std::mem::swap(&mut fg, &mut bg);
+                }
+                // マウスで選んでいる範囲は反転
+                if ts.selected(row, col) {
+                    fg = BG;
+                    bg = FG;
                 }
                 if c.dim() {
                     fg = [fg[0] * 0.6, fg[1] * 0.6, fg[2] * 0.6, fg[3]];

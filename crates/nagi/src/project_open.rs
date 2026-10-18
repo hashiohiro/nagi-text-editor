@@ -202,6 +202,11 @@ impl Editor {
 
     /// フォルダをプロジェクトとして開く
     pub(crate) fn open_project(&mut self, dir: PathBuf) {
+        // /home/... ~/... は WSL のパスとして開く
+        // （UNC の \\wsl.localhost\... や //server はそのまま）
+        let s = dir.to_string_lossy().into_owned();
+        let linux = (s.starts_with('/') && !s.starts_with("//")) || s.starts_with("~/");
+        let dir = if linux { nagi_workers::wsl::resolve_typed(&s) } else { dir };
         let dir = std::path::absolute(&dir).unwrap_or(dir);
         if !dir.is_dir() {
             self.message = format!("フォルダではありません: {}", dir.display());
@@ -291,6 +296,13 @@ impl Editor {
 mod tests {
     use super::*;
     use nagi_core::Buffer;
+
+    #[test]
+    fn unc_is_not_linux_path() {
+        let mut e = Editor::new(Buffer::from_str(""), None);
+        e.open_project(PathBuf::from(r"\\wsl.localhost\no-such-distro\home\x"));
+        assert!(e.message.contains(r"\\wsl.localhost\no-such-distro\home\x"), "UNC は変換しない: {}", e.message);
+    }
 
     #[test]
     fn opens_intellij_project_and_restores_files() {

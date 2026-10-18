@@ -31,6 +31,23 @@ pub struct Terminals {
     pending: bool,
     /// シェルを選んでいる（選んでいる行）
     pub chooser: Option<usize>,
+    /// マウスで選んでいる範囲（画面の (行, 列) の 2 点。始点, 終点）
+    pub sel: Option<((u16, u16), (u16, u16))>,
+    /// ドラッグの始点
+    anchor: Option<(u16, u16)>,
+}
+
+impl Terminals {
+    /// 選んでいる範囲（前から後ろの順）
+    pub fn sel_ordered(&self) -> Option<((u16, u16), (u16, u16))> {
+        let (a, b) = self.sel?;
+        Some(if a <= b { (a, b) } else { (b, a) })
+    }
+
+    /// (行, 列) が選んでいる範囲に入るか
+    pub fn selected(&self, row: u16, col: u16) -> bool {
+        self.sel_ordered().is_some_and(|(a, b)| (row, col) >= a && (row, col) <= b)
+    }
 }
 
 impl Terminals {
@@ -57,8 +74,15 @@ pub fn available_shells() -> Vec<(String, String)> {
     if git_bash.is_file() {
         v.push(("Git Bash".into(), format!("\"{}\" --login -i", git_bash.display())));
     }
+    // WSL はディストリビューションごと（一覧が取れなければ既定のもの）
     if in_path("wsl.exe").is_some() {
-        v.push(("WSL".into(), "wsl.exe".into()));
+        let ds = nagi_workers::wsl::distros();
+        if ds.is_empty() {
+            v.push(("WSL".into(), "wsl.exe".into()));
+        }
+        for d in ds {
+            v.push((format!("WSL: {d}"), format!("wsl.exe -d {d}")));
+        }
     }
     v
 }
@@ -170,7 +194,11 @@ impl Editor {
         self.pending_keys.clear();
         self.rows = self.text_rows(self.active_rect());
         if self.terminals.list.is_empty() {
-            let (name, cmd) = default_shell();
+            // WSL のプロジェクトなら、そのディストリビューションのシェルをプロジェクトのフォルダから
+            let (name, cmd) = match nagi_workers::wsl::split_unc(&self.nav_root()) {
+                Some((d, linux)) if std::env::var_os("NAGI_SHELL").is_none() => (format!("WSL: {d}"), format!("wsl.exe -d {d} --cd {linux}")),
+                _ => default_shell(),
+            };
             self.new_terminal(&name, &cmd);
         }
     }
@@ -187,7 +215,7 @@ impl Editor {
                 self.bottom_kind = BottomKind::Terminal;
                 self.mode = Mode::Terminal;
                 self.rows = self.text_rows(self.active_rect());
-                self.new_terminal(&name, &cmd);
+                self.new_terminal_chosen(&name, &cmd);
             }
             None => {
                 let names: Vec<String> = available_shells().into_iter().map(|s| s.0).collect();
@@ -196,8 +224,15 @@ impl Editor {
         }
     }
 
-    /// 新しい窓を開いて移る
-    pub(crate) fn new_terminal(&mut self, name: &str, cmd: &str) {
+    /// 新しい窓を開いて移る（人が選んだシェルなら `chosen`。次からの既定として覚える）
+    pub(crate) fn new_terminal_chosen(&mut self, name: &str, cmd: &str) {
+        if self.new_terminal(name, cmd) {
+            remember_shell(name);
+        }
+    }
+
+    /// 新しい窓を開いて移る（開けたら true）
+    pub(crate) fn new_terminal(&mut self, name: &str, cmd: &str) -> bool {
         let (rows, cols) = self.terminal_rect().map_or((10, 80), |r| (r.h as u16, r.w.saturating_sub(1) as u16));
         let cwd = self.nav_root();
         let waker = self.waker.clone().unwrap_or_else(|| std::sync::Arc::new(|| {}));
@@ -206,10 +241,11 @@ impl Editor {
                 self.terminals.list.push(TermView { term, name: name.to_string(), cmd: cmd.to_string(), exited: false });
                 self.terminals.active = self.terminals.list.len() - 1;
                 self.terminals.chooser = None;
-                remember_shell(name);
+                true
             }
             Err(e) => {
                 self.message = format!("{name} を起動できません（{cmd}）: {e}");
+                false
             }
         }
     }
@@ -237,11 +273,11 @@ impl Editor {
                 Key::Char('k') | Key::Up => self.terminals.chooser = Some(sel.saturating_sub(1)),
                 Key::Char(c @ '1'..='9') if (c as usize - '1' as usize) <= last => {
                     let (n, c) = shells[c as usize - '1' as usize].clone();
-                    self.new_terminal(&n, &c);
+                    self.new_terminal_chosen(&n, &c);
                 }
                 Key::Enter => {
                     let (n, c) = shells[sel.min(last)].clone();
-                    self.new_terminal(&n, &c);
+                    self.new_terminal_chosen(&n, &c);
                 }
                 Key::Esc | Key::Char('q') | Key::Ctrl('c') => {
                     self.terminals.chooser = None;
@@ -295,6 +331,16 @@ impl Editor {
             self.terminals.pending = true;
             return;
         }
+        // Ctrl+C: 選んでいればコピー（シェルには送らない）、選んでいなければシェルへ（止める）。Windows Terminal と同じ
+        if key == Key::Ctrl('c') && self.terminals.sel.is_some() {
+            self.terminal_copy();
+            return;
+        }
+        // Ctrl+V・Shift+Insert: 貼り付け
+        let key = if key == Key::Ctrl('v') { Key::Paste } else { key };
+        if key != Key::Paste {
+            self.terminals.sel = None;
+        }
         let clip = self.clipboard;
         let Some(t) = self.terminals.current_mut() else { return };
         if t.exited {
@@ -329,6 +375,63 @@ impl Editor {
         let app = t.term.with_screen(|s| s.application_cursor());
         if let Some(b) = key_bytes(key, app) {
             t.term.write(&b);
+        }
+    }
+
+    /// 選んでいる範囲をクリップボードへ（各行の行末の空白は落とす）。コピーしたら選びを消す
+    pub(crate) fn terminal_copy(&mut self) -> bool {
+        let Some(((r0, c0), (r1, c1))) = self.terminals.sel_ordered() else { return false };
+        let Some(t) = self.terminals.current() else { return false };
+        let text = t.term.with_screen(|s| s.contents_between(r0, c0, r1, c1 + 1));
+        let text: String = text.lines().map(str::trim_end).collect::<Vec<_>>().join("\r\n");
+        match &self.clipboard {
+            Some(cb) => (cb.set)(&text),
+            None => crate::clipboard::set(&text),
+        }
+        self.terminals.sel = None;
+        self.message = format!("コピーしました（{} 文字）", text.chars().count());
+        true
+    }
+
+    /// 画面の (行, 列) → シェルの画面のセル
+    fn terminal_cell(&self, row: usize, col: usize) -> Option<(u16, u16)> {
+        let r = self.terminal_rect()?;
+        if row < r.y || row >= r.y + r.h {
+            return None;
+        }
+        Some(((row - r.y) as u16, col.saturating_sub(r.x + 1) as u16))
+    }
+
+    /// マウスを押した（シェルの画面の上なら選び始める）。当たれば true
+    pub(crate) fn terminal_press(&mut self, row: usize, col: usize) -> bool {
+        let Some(cell) = self.terminal_cell(row, col) else { return false };
+        self.terminals.sel = None;
+        self.terminals.anchor = Some(cell);
+        self.mode = Mode::Terminal;
+        true
+    }
+
+    /// ドラッグ（範囲を伸ばす。画面の外は端で止める）
+    pub(crate) fn terminal_drag(&mut self, row: usize, col: usize) {
+        let Some(a) = self.terminals.anchor else { return };
+        let Some(r) = self.terminal_rect() else { return };
+        let row = row.clamp(r.y, r.y + r.h.saturating_sub(1));
+        if let Some(cell) = self.terminal_cell(row, col) {
+            if cell != a || self.terminals.sel.is_some() {
+                self.terminals.sel = Some((a, cell));
+            }
+        }
+    }
+
+    pub(crate) fn terminal_release(&mut self) {
+        self.terminals.anchor = None;
+    }
+
+    /// 右クリック: 選んでいればコピー、選んでいなければ貼り付け（Windows Terminal と同じ）
+    pub(crate) fn terminal_right_click(&mut self) {
+        self.mode = Mode::Terminal;
+        if !self.terminal_copy() {
+            self.terminal_key(Key::Paste);
         }
     }
 
@@ -478,6 +581,27 @@ mod tests {
         e.key(Key::Char('x'));
         assert_eq!(e.terminals.list.len(), 1);
         assert_eq!(e.terminals.current().unwrap().name, "cmd");
+        // 範囲を選んでコピー（Ctrl+C はシェルに送らない）、選びは消える
+        let r = e.terminal_rect().unwrap();
+        let row = e.terminals.current().unwrap().term.with_screen(|s| (0..s.size().0).find(|&i| s.contents_between(i, 0, i, 40).contains("echo nagi-tab-ok")).unwrap());
+        assert!(e.terminal_press(r.y + row as usize, r.x + 1));
+        e.terminal_drag(r.y + row as usize, r.x + 60);
+        e.terminal_release();
+        let copied = std::rc::Rc::new(std::cell::RefCell::new(String::new()));
+        thread_local! { static CLIP: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) }; }
+        fn set(t: &str) { CLIP.with(|c| *c.borrow_mut() = t.to_string()); }
+        fn get() -> Option<String> { CLIP.with(|c| Some(c.borrow().clone())) }
+        e.clipboard = Some(crate::editor::Clipboard { set, get });
+        e.key(Key::Ctrl('c'));
+        let got = get().unwrap();
+        assert!(got.contains("echo nagi-tab-ok"), "{got:?}");
+        assert!(e.terminals.sel.is_none());
+        let _ = copied;
+        // 貼り付け（Ctrl+V）。貼り付けの中の改行では実行しない（括弧付きの貼り付け）ので、Enter は別に押す
+        set("echo pasted-ok");
+        e.key(Key::Ctrl('v'));
+        e.key(Key::Enter);
+        wait_text(&mut e, "pasted-ok");
         // 本文へ
         e.key(Key::Ctrl('\\'));
         e.key(Key::Char('n'));
