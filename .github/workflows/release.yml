@@ -1,0 +1,87 @@
+# Release nagi.
+#
+#   Release:  write the notes as an annotated tag and push it
+#               git tag -a v0.3.0 -m "nagi v0.3.0" -m "- change 1" -m "- change 2"   (or -F notes.md)
+#               git push origin v0.3.0
+#             The first line of the tag message is the release title, the rest is the release notes.
+#   Dry run:  Actions > Release > Run workflow (builds, tests and uploads the zip as an artifact; no release)
+#
+# Grammars are not built here: nagi embeds the SHA-256 of each grammar DLL (crates/nagi-syntax/grammars.lock),
+# so they are built locally with grammars/build.sh and released as grammars-vN (see that script).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Version
+        id: version
+        run: |
+          $v = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          "version=$v" >> $env:GITHUB_OUTPUT
+          if ($env:GITHUB_REF_TYPE -eq 'tag' -and $env:GITHUB_REF_NAME -ne "v$v") {
+            throw "The tag $env:GITHUB_REF_NAME does not match the version in Cargo.toml ($v)"
+          }
+
+      - name: Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+
+      - uses: Swatinem/rust-cache@v2
+
+      # Tests load the grammar DLLs from target/grammars/dist (.cargo/config.toml). Use the released ones,
+      # which also checks that they still match grammars.lock.
+      - name: Grammars
+        run: |
+          $release = (Select-String -Path crates/nagi-syntax/src/grammar.rs -Pattern 'pub const RELEASE: &str = "(.+)"').Matches[0].Groups[1].Value
+          New-Item -ItemType Directory -Force target/grammars/zips, target/grammars/dist | Out-Null
+          gh release download $release --repo $env:GITHUB_REPOSITORY --pattern 'grammar-*.zip' --dir target/grammars/zips
+          Get-ChildItem target/grammars/zips/*.zip | ForEach-Object { Expand-Archive $_.FullName -DestinationPath target/grammars/dist -Force }
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Package
+        id: package
+        run: |
+          $name = "nagi-v${{ steps.version.outputs.version }}-windows-x64.zip"
+          New-Item -ItemType Directory -Force dist/pkg | Out-Null
+          Copy-Item target/release/nagi.exe, LICENSE, README.md, THIRD_PARTY_LICENSES.txt dist/pkg/
+          Compress-Archive -Path dist/pkg/* -DestinationPath "dist/$name" -CompressionLevel Optimal
+          "name=$name" >> $env:GITHUB_OUTPUT
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: dist/${{ steps.package.outputs.name }}
+
+      - name: Release
+        if: github.ref_type == 'tag'
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          # checkout may leave the tag lightweight; fetch the annotated tag object to read its message
+          git fetch --force --depth=1 origin "refs/tags/${tag}:refs/tags/${tag}"
+          if ((git cat-file -t $tag) -ne 'tag') { throw "$tag is not an annotated tag (git tag -a)" }
+          $title = git for-each-ref "refs/tags/$tag" --format='%(contents:subject)'
+          git for-each-ref "refs/tags/$tag" --format='%(contents:body)' | Out-File -Encoding utf8 dist/notes.md
+          gh release create $tag "dist/${{ steps.package.outputs.name }}" --repo $env:GITHUB_REPOSITORY --title $title --notes-file dist/notes.md --verify-tag
