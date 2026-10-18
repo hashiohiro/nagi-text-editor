@@ -48,7 +48,9 @@ fn hl_color(h: nagi_syntax::Hl) -> [f32; 4] {
         Hl::Comment => rgb(0x6c6c6c),
         Hl::Type | Hl::Attribute => rgb(0xd7af87),
         Hl::Number | Hl::Escape => rgb(0xd7875f),
-        Hl::Function => FG,
+        Hl::Function => rgb(0xdcdcaa),
+        Hl::Variable => rgb(0x9fcfe0),
+        Hl::Property => rgb(0xb294bb),
     }
 }
 

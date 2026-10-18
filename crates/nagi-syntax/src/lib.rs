@@ -205,6 +205,10 @@ pub enum Hl {
     Function,
     Attribute,
     Escape,
+    /// 変数・引数
+    Variable,
+    /// プロパティ・フィールド・定数
+    Property,
 }
 
 fn classify(capture: &str, lang: Lang) -> Option<Hl> {
@@ -222,6 +226,11 @@ fn classify(capture: &str, lang: Lang) -> Option<Hl> {
         // JSON はキーを string.special.key として取り出す
         _ if lang.is_data() && capture.split('.').any(|p| p == "key") => Hl::Keyword,
         "variable" if lang.is_shell() && !capture.contains("builtin") => Hl::Type,
+        // this・super・self は予約語の色、ほかの変数・引数は変数の色
+        "variable" if capture.contains("builtin") => Hl::Keyword,
+        "variable" | "parameter" => Hl::Variable,
+        "property" | "field" => Hl::Property,
+        "constant" if !capture.contains("builtin") => Hl::Property,
         "keyword" | "conditional" | "repeat" | "include" | "exception" => Hl::Keyword,
         "string" | "character" => {
             if capture.contains("escape") {
@@ -380,7 +389,9 @@ impl Syntax {
             let r = c.node.start_byte()..c.node.end_byte();
             // 同じノードに複数のキャプチャがあるとき、どちらを残すかは grammar のクエリの書き方による
             if let Some(last) = out.last_mut().filter(|(lr, _)| *lr == r) {
-                if self.lang.last_wins() {
+                // 変数・プロパティは汎用の規則の色なので、関数・型などの具体的な色が当たればそちらを使う
+                let weak = |h: Hl| matches!(h, Hl::Variable | Hl::Property);
+                if self.lang.last_wins() || (weak(last.1) && !weak(hl)) {
                     last.1 = hl;
                 }
                 continue;
@@ -1063,6 +1074,19 @@ mod tests {
         assert!(k.contains(&("border-radius".into(), Hl::Attribute)), "{k:?}");
         assert_eq!(Lang::detect(Path::new("a/site.scss")), Some(Lang::Scss));
         assert_eq!(Lang::detect(Path::new("a/site.css")), Some(Lang::Css));
+    }
+
+    /// this・return は予約語、関数は関数の色、変数・引数は変数の色、プロパティは紫（全部大文字の名前は TS の規則どおり型の色）
+    #[test]
+    fn ts_identifiers() {
+        let k = kinds(Lang::TypeScript, "class A {\n  private x = 1;\n  go(n: number) {\n    const y = this.x + n;\n    return foo(y, MAX);\n  }\n}\n");
+        assert!(k.contains(&("this".into(), Hl::Keyword)), "{k:?}");
+        assert!(k.contains(&("return".into(), Hl::Keyword)), "{k:?}");
+        assert!(k.contains(&("go".into(), Hl::Function)), "{k:?}");
+        assert!(k.contains(&("foo".into(), Hl::Function)), "{k:?}");
+        assert!(k.contains(&("y".into(), Hl::Variable)), "{k:?}");
+        assert!(k.contains(&("n".into(), Hl::Variable)), "{k:?}");
+        assert!(k.contains(&("x".into(), Hl::Property)), "{k:?}");
     }
 
     #[test]
