@@ -5,7 +5,7 @@
 
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
@@ -97,38 +97,8 @@ pub fn java_home_fix() -> Option<std::path::PathBuf> {
     })
 }
 
-/// `command` を `cwd` で動かす
-pub fn run(command: &str, cwd: &Path, waker: Waker) -> std::io::Result<Job> {
-    run_env(command, cwd, &[], waker)
-}
-
-/// 環境変数を足して動かす
-pub fn run_env(command: &str, cwd: &Path, env: &[(String, String)], waker: Waker) -> std::io::Result<Job> {
-    // WSL のプロジェクトは WSL の中のシェルで動かす（ログインシェルにして PATH を読む）
-    // 対話のシェルでだけ見えるツール（nvm の node など）も使えるように、その場所を PATH に足す
-    let wsl_line = crate::wsl::split_unc(cwd).map(|(d, _)| format!("{}{command}", crate::wsl::path_prefix(&d)));
-    let mut cmd = match crate::wsl::command_in(cwd, "sh", &["-lc", wsl_line.as_deref().unwrap_or(command)]) {
-        Some(c) => c,
-        None => {
-            let mut cmd = Command::new("cmd");
-            cmd.arg("/C");
-            // cmd は引数の " をそのまま読むので、Rust の引用（" → \"）をかけずに渡す（pom.xml のパスの引用符が壊れた）
-            #[cfg(windows)]
-            {
-                use std::os::windows::process::CommandExt;
-                cmd.raw_arg(command);
-            }
-            #[cfg(not(windows))]
-            cmd.arg(command);
-            cmd.current_dir(cwd);
-            for (k, v) in env {
-                cmd.env(k, v);
-            }
-            cmd
-        }
-    };
-    cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    crate::sys::no_window(&mut cmd);
+/// 組み立てた Command（exec::Exec が作る）を動かし、出力を 1 行ずつ流す
+pub fn spawn(mut cmd: Command, waker: Waker) -> std::io::Result<Job> {
     let mut child = cmd.spawn()?;
     let out = child.stdout.take();
     let err = child.stderr.take();
@@ -158,7 +128,7 @@ mod tests {
 
     #[test]
     fn runs_and_streams() {
-        let job = run("echo one&& echo two 1>&2&& exit /b 3", &std::env::temp_dir(), Arc::new(|| {})).unwrap();
+        let job = crate::exec::Exec::in_dir(&std::env::temp_dir()).stream("echo one&& echo two 1>&2&& exit /b 3", Arc::new(|| {})).unwrap();
         let mut lines = Vec::new();
         let code = loop {
             match job.rx.recv().unwrap() {

@@ -7,7 +7,6 @@
 //! キーは IntelliJ と同じ: Shift+F10 選んでいる構成を実行、Alt+Shift+F10 選んで実行、Ctrl+F2 止める、Ctrl+F5 もう一度。
 //! コマンドは `:Run [名前]`・`:RunConfigs`・`:RunStop`・`:RunEdit`（.nagi/run.conf を開く）。
 
-use std::path::Path;
 
 use nagi_workers::runconfig::{self, Kind, Launch, RunConfig};
 
@@ -142,17 +141,16 @@ impl Editor {
                 open_url(&url);
                 self.notify.info(format!("ブラウザで開きました: {url}"));
             }
-            Ok(Launch::Command { cmd, cwd, mut env }) => {
-                // Maven・Gradle で JAVA_HOME が使えなければ、見つけた JDK を使う（:Make と同じ）
-                if matches!(cfg.kind, Kind::Maven { .. } | Kind::SpringBoot { .. } | Kind::Application { .. } | Kind::Gradle { .. }) && !env.iter().any(|(k, _)| k == "JAVA_HOME") {
-                    if let Some(j) = nagi_workers::jobs::java_home_fix() {
-                        env.push(("JAVA_HOME".into(), j.display().to_string()));
-                    }
+            Ok(Launch::Command { cmd, cwd, env }) => {
+                // Maven・Gradle で JAVA_HOME が使えなければ、見つけた JDK を使う（:Make と同じ。WSL では渡さない）
+                let mut ex = nagi_workers::exec::Exec::in_dir(&cwd).envs(&env);
+                if matches!(cfg.kind, Kind::Maven { .. } | Kind::SpringBoot { .. } | Kind::Application { .. } | Kind::Gradle { .. }) {
+                    ex.fix_jdk();
                 }
-                let shell = match shell_line(&cfg.name, &cmd, &cwd, &env) {
+                let shell = match ex.terminal_line(&cfg.name, &cmd) {
                     Ok(s) => s,
                     Err(e) => {
-                        self.notify.info(e);
+                        self.notify.error(e);
                         return;
                     }
                 };
@@ -215,39 +213,6 @@ impl Editor {
     }
 }
 
-/// ターミナルの窓で動かすコマンドの行。Windows は作業フォルダと環境変数も書いた .cmd を作って `cmd.exe /C` で、
-/// WSL は `wsl.exe -d <名前> --cd <フォルダ> sh -lc "…"` で
-fn shell_line(name: &str, cmd: &str, cwd: &Path, env: &[(String, String)]) -> nagi_core::Result<String> {
-    if let Some((distro, linux)) = nagi_workers::wsl::split_unc(cwd) {
-        let q = |v: &str| format!("'{}'", v.replace('\'', "'\\''"));
-        let exports: String = env.iter().filter(|(k, _)| k != "JAVA_HOME").map(|(k, v)| format!("export {k}={}; ", q(v))).collect();
-        // 対話のシェルでだけ見えるツール（nvm の node など）の場所も PATH に（試験では WSL を呼ばない）
-        let path = if cfg!(test) { String::new() } else { nagi_workers::wsl::path_prefix(&distro) };
-        let line = format!("{path}{exports}{cmd}");
-        // --exec: 既定のシェルを通さない（$ や && を外側のシェルが先に読まないように）
-        return Ok(format!("wsl.exe -d {distro} --cd {} --exec sh -lc \"{}\"", linux, line.replace('"', "\\\"")));
-    }
-    let dir = std::env::temp_dir().join("nagi-run");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("一時フォルダを作れません: {e}"))?;
-    let file = dir.join(format!("run-{:016x}.cmd", hash(name)));
-    // ファイルは UTF-8 で書き、コードページも UTF-8 に（ターミナルの窓と同じ。UTF-8 で書き出すプログラムが化けない）
-    let mut text = String::from("@echo off\r\nchcp 65001 >nul\r\n");
-    text.push_str(&format!("cd /d \"{}\"\r\n", cwd.display()));
-    for (k, v) in env {
-        text.push_str(&format!("set \"{k}={v}\"\r\n"));
-    }
-    text.push_str(cmd);
-    text.push_str("\r\n");
-    std::fs::write(&file, text).map_err(|e| format!("{}: {e}", file.display()))?;
-    Ok(format!("cmd.exe /C \"{}\"", file.display()))
-}
-
-fn hash(s: &str) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    s.hash(&mut h);
-    h.finish()
-}
 
 /// URL を既定のブラウザで開く
 fn open_url(url: &str) {
@@ -262,17 +227,6 @@ fn open_url(url: &str) {
 mod tests {
     use super::*;
     use nagi_core::Buffer;
-
-    #[test]
-    fn shell_lines() {
-        let s = shell_line("サーバー", "npm run dev", Path::new(r"C:\work\shop"), &[("TZ".into(), "Asia/Tokyo".into())]).unwrap();
-        assert!(s.starts_with("cmd.exe /C \"") && s.ends_with(".cmd\""), "{s}");
-        let file = nagi_workers::term::split_args(&s)[2].clone();
-        let text = std::fs::read_to_string(file).unwrap();
-        assert_eq!(text, "@echo off\r\nchcp 65001 >nul\r\ncd /d \"C:\\work\\shop\"\r\nset \"TZ=Asia/Tokyo\"\r\nnpm run dev\r\n");
-        let w = shell_line("x", "echo \"a\"", Path::new(r"\\wsl.localhost\kali-linux\home\me\os"), &[("A".into(), "it's".into())]).unwrap();
-        assert_eq!(nagi_workers::term::split_args(&w), ["wsl.exe", "-d", "kali-linux", "--cd", "/home/me/os", "--exec", "sh", "-lc", "export A='it'\\''s'; echo \"a\""]);
-    }
 
     /// 構成を選んで動かすと、ターミナルの欄に「▶ 名前」の窓ができ、もう一度動かすと同じ窓を作り直す
     #[test]

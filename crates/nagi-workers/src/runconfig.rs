@@ -638,7 +638,7 @@ pub fn launch(cfg: &RunConfig, root: &Path) -> nagi_core::Result<Launch> {
             cmd(c, cwd, env.clone())
         }
         Kind::Gradle { tasks, args } => {
-            let wsl = crate::wsl::split_unc(root).is_some();
+            let wsl = crate::exec::Exec::in_dir(root).is_wsl();
             let gradle = if wsl && root.join("gradlew").is_file() {
                 "./gradlew"
             } else if !wsl && root.join("gradlew.bat").is_file() {
@@ -657,7 +657,7 @@ pub fn launch(cfg: &RunConfig, root: &Path) -> nagi_core::Result<Launch> {
         Kind::Url { url } => Ok(Launch::Open(url.clone())),
         Kind::Tool { tool, target, args, env, workdir } => {
             let cwd = workdir.as_deref().map_or(root.to_path_buf(), |w| expand(w, root));
-            let wsl = crate::wsl::split_unc(root).is_some();
+            let wsl = crate::exec::Exec::in_dir(root).is_wsl();
             cmd(tool_command(tool, target, args, &cwd, wsl)?, cwd, env.clone())
         }
         Kind::Unsupported { type_name } => Err(format!("この種類の構成はまだ動かせません（{type_name}）").into()),

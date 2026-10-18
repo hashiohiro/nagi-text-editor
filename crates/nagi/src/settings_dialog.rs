@@ -321,7 +321,7 @@ fn tool_items(id: &str, releases: &Releases) -> Vec<ComboItem> {
 /// 言語のツールの説明の行を裏で調べる（Windows で見つかったもの、WSL のプロジェクトなら WSL の中のもの）
 fn probe_tools(root: &std::path::Path, info: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>, waker: nagi_workers::Waker) {
     use nagi_workers::toolchains::{self, TOOLS};
-    let wsl = nagi_workers::wsl::split_unc(root).map(|(d, _)| d);
+    let wsl = nagi_workers::exec::Exec::in_dir(root).distro().map(String::from);
     nagi_core::task::detach("probe-tools", move || {
         if let Some(d) = &wsl {
             for (id, path, ver) in toolchains::wsl_report(d) {

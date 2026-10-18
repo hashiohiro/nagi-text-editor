@@ -158,35 +158,34 @@ pub fn parse_line(line: &str, root: &Path) -> Option<Diag> {
 fn detect_command(root: &Path, file: Option<&Path>) -> Option<String> {
     let has = |f: &str| root.join(f).exists();
     let has_ext = |e: &str| std::fs::read_dir(root).into_iter().flatten().flatten().any(|x| x.path().extension().is_some_and(|x| x.eq_ignore_ascii_case(e)));
-    let wsl = nagi_workers::wsl::split_unc(root).is_some();
-    if let Some(c) = project_command(root, &has, &has_ext, wsl) {
+    let ex = nagi_workers::exec::Exec::in_dir(root);
+    if let Some(c) = project_command(&has, &has_ext, ex.is_wsl()) {
         return Some(c);
     }
-    // 開いているファイルの検査（WSL なら Linux のパス）
+    // 開いているファイルの検査（WSL なら Linux のパスと Linux のコマンド）
     let f = file?;
-    let q = format!("\"{}\"", if wsl { nagi_workers::wsl::shell_path(f) } else { f.display().to_string() });
+    let q = format!("\"{}\"", ex.path(f));
     let ext = f.extension()?.to_str()?.to_ascii_lowercase();
     Some(match ext.as_str() {
-        "py" | "pyw" => format!("{} -m py_compile {q}", if wsl { "python3" } else { "python" }),
+        "py" | "pyw" => format!("{} -m py_compile {q}", ex.pick("python", "python3")),
         "php" => format!("php -l {q}"),
         "rb" => format!("ruby -wc {q}"),
         "lua" => format!("luac -p {q}"),
-        "c" => format!("{} -fsyntax-only -Wall {q}", if wsl { "gcc" } else { "clang" }),
-        "cpp" | "cc" | "cxx" => format!("{} -fsyntax-only -Wall {q}", if wsl { "g++" } else { "clang++" }),
+        "c" => format!("{} -fsyntax-only -Wall {q}", ex.pick("clang", "gcc")),
+        "cpp" | "cc" | "cxx" => format!("{} -fsyntax-only -Wall {q}", ex.pick("clang++", "g++")),
         "go" => format!("go vet {q}"),
-        "rs" => format!("rustc --edition 2021 --error-format short --emit metadata -o {} {q}", if wsl { "/dev/null" } else { "NUL" }),
+        "rs" => format!("rustc --edition 2021 --error-format short --emit metadata -o {} {q}", ex.pick("NUL", "/dev/null")),
         "swift" => format!("swiftc -parse {q}"),
         "dart" => format!("dart analyze --format machine {q}"),
         "zig" => format!("zig ast-check {q}"),
         "hs" => format!("ghc -fno-code {q}"),
-        "exs" | "ex" => format!("elixirc --ignore-module-conflict -o {} {q}", if wsl { "/tmp" } else { "%TEMP%" }),
+        "exs" | "ex" => format!("elixirc --ignore-module-conflict -o {} {q}", ex.pick("%TEMP%", "/tmp")),
         _ => return None,
     })
 }
 
 /// プロジェクトのファイルから決まるコマンド
-fn project_command(root: &Path, has: &dyn Fn(&str) -> bool, has_ext: &dyn Fn(&str) -> bool, wsl: bool) -> Option<String> {
-    let _ = root;
+fn project_command(has: &dyn Fn(&str) -> bool, has_ext: &dyn Fn(&str) -> bool, wsl: bool) -> Option<String> {
     Some(if has("go.mod") {
         "go vet ./...".into()
     } else if has_ext("sln") || has_ext("csproj") || has_ext("fsproj") {
@@ -206,12 +205,12 @@ fn project_command(root: &Path, has: &dyn Fn(&str) -> bool, has_ext: &dyn Fn(&st
     } else if has("build.sbt") {
         "sbt -batch compile".into()
     } else if has("CMakeLists.txt") {
-        if wsl { "cmake -S . -B build && cmake --build build".into() } else { "cmake -S . -B build && cmake --build build".into() }
+        "cmake -S . -B build && cmake --build build".into()
     } else if has("Makefile") || has("makefile") || has("GNUmakefile") {
         "make -k".into()
     } else if has("tsconfig.json") {
         "npx tsc --noEmit --pretty false".into()
-    } else if has("gradlew") && nagi_workers::wsl::split_unc(root).is_some() {
+    } else if has("gradlew") && wsl {
         // WSL のプロジェクトは WSL の中で動かす
         "./gradlew compileJava compileTestJava -q --console=plain".into()
     } else if has("gradlew.bat") {
@@ -254,10 +253,9 @@ impl Editor {
     pub(crate) fn run_job(&mut self, cmd: &str, root: &Path, title: &str, output: bool) {
         let waker = self.waker();
         // Maven・Gradle で JAVA_HOME が使えなければ（古い JRE を指したままなど）、見つけた JDK をこのコマンドのときだけ使う
-        let java = ["mvn", "gradle"].iter().any(|t| cmd.split_whitespace().next().is_some_and(|w| w.to_ascii_lowercase().starts_with(t)));
-        let fix = if java { nagi_workers::jobs::java_home_fix() } else { None };
-        let env: Vec<(String, String)> = fix.iter().map(|j| ("JAVA_HOME".to_string(), j.display().to_string())).collect();
-        match nagi_workers::jobs::run_env(cmd, root, &env, waker) {
+        let mut ex = nagi_workers::exec::Exec::in_dir(root);
+        let fix = if nagi_workers::exec::needs_jdk(cmd) { ex.fix_jdk() } else { None };
+        match ex.stream(cmd, waker) {
             Ok(job) => {
                 self.diags.clear();
                 self.open_result_panel(title);

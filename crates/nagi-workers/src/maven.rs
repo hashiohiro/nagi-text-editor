@@ -126,9 +126,10 @@ fn wrapper_ready(root: &Path, script: &str) -> bool {
 pub fn command(root: &Path, pom_dir: &Path, goals: &str) -> String {
     let pom = pom_dir.join("pom.xml");
     // WSL のプロジェクトは WSL の中で動かすので、Linux のパスと ./mvnw
-    if crate::wsl::split_unc(root).is_some() {
+    let ex = crate::exec::Exec::in_dir(root);
+    if ex.is_wsl() {
         let mvn = if wrapper_ready(root, "mvnw") { "./mvnw" } else { "mvn" };
-        return format!("{mvn} -B -f \"{}\" {goals}", crate::wsl::shell_path(&pom));
+        return format!("{mvn} -B -f \"{}\" {goals}", ex.path(&pom));
     }
     // 設定の「mvn の場所」「追加のオプション」
     let cfg = crate::config::get();

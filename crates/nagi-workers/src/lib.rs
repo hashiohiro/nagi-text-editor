@@ -3,6 +3,7 @@
 pub mod config;
 pub mod db;
 pub mod drivers;
+pub mod exec;
 pub mod files;
 pub mod git;
 pub mod grammars;

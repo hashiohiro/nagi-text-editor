@@ -3,7 +3,7 @@
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 /// git を `root` で動かし、標準出力を返す。失敗したら標準エラー（無ければ終了コード）
 pub fn git(root: &Path, args: &[&str]) -> nagi_core::Result<Vec<u8>> {
@@ -14,21 +14,16 @@ pub fn git(root: &Path, args: &[&str]) -> nagi_core::Result<Vec<u8>> {
 pub fn git_input(root: &Path, args: &[&str], input: Option<&[u8]>) -> nagi_core::Result<Vec<u8>> {
     // 出力を英語と UTF-8 の決まった形にする（読み取りがずれないように）
     let base = ["-c", "core.quotepath=false", "-c", "color.ui=false"];
-    // WSL のプロジェクトは WSL の中の git で（Windows の git だと遅く、safe.directory で断られる）
+    // WSL のプロジェクトは WSL の中の git で（Windows の git だと遅く、safe.directory で断られる）。設定で切り替えられる
     let cfg = crate::config::get();
-    let wsl = if cfg.git_wsl { crate::wsl::command_in(root, "env", &[["LANG=C", "LC_ALL=C", "GIT_TERMINAL_PROMPT=0", "git"].as_slice(), base.as_slice(), args].concat()) } else { None };
-    let mut cmd = match wsl {
-        Some(c) => c,
-        None => {
-            // 設定の「git の場所」
-            let mut c = Command::new(cfg.git.as_deref().unwrap_or("git"));
-            c.args(base).args(args).current_dir(root);
-            c.env("LANG", "C").env("LC_ALL", "C").env("GIT_TERMINAL_PROMPT", "0");
-            c
-        }
-    };
-    cmd.stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
-    crate::sys::no_window(&mut cmd);
+    let ex = if cfg.git_wsl { crate::exec::Exec::in_dir(root) } else { crate::exec::Exec::windows(root) };
+    let ex = ex.env("LANG", "C").env("LC_ALL", "C").env("GIT_TERMINAL_PROMPT", "0");
+    // 設定の「git の場所」（Windows のときだけ）
+    let git = if ex.is_wsl() { "git" } else { cfg.git.as_deref().unwrap_or("git") };
+    let mut cmd = ex.program(git, &[base.as_slice(), args].concat());
+    if input.is_some() {
+        cmd.stdin(Stdio::piped());
+    }
     let mut child = cmd.spawn().map_err(|e| format!("git を起動できません: {e}"))?;
     if let (Some(data), Some(mut si)) = (input, child.stdin.take()) {
         let _ = si.write_all(data);

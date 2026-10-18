@@ -199,8 +199,8 @@ impl Editor {
         self.rows = self.text_rows(self.active_rect());
         if self.terminals.list.is_empty() {
             // WSL のプロジェクトなら、そのディストリビューションのシェルをプロジェクトのフォルダから
-            let (name, cmd) = match nagi_workers::wsl::split_unc(&self.nav_root()) {
-                Some((d, linux)) if std::env::var_os("NAGI_SHELL").is_none() => (format!("WSL: {d}"), format!("wsl.exe -d {d} --cd {linux}")),
+            let (name, cmd) = match nagi_workers::exec::Exec::in_dir(&self.nav_root()).login_shell() {
+                Some(s) if std::env::var_os("NAGI_SHELL").is_none() => s,
                 _ => default_shell(self.settings.text("terminal.shell")),
             };
             self.new_terminal(&name, &cmd);

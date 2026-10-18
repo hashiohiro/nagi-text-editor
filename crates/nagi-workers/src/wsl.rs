@@ -66,16 +66,6 @@ pub fn resolve_typed(path: &str) -> PathBuf {
     PathBuf::from(p)
 }
 
-/// WSL のパスなら、そのディストリビューションの中で `program args` を `cwd` で動かすコマンド
-pub fn command_in(cwd: &Path, program: &str, args: &[&str]) -> Option<Command> {
-    let (distro, linux) = split_unc(cwd)?;
-    let mut cmd = Command::new("wsl.exe");
-    // --exec: 既定のシェルを通さない（-- だと $ や && を外側のシェルが先に読んでしまう）
-    cmd.args(["-d", &distro, "--cd", &linux, "--exec", program]).args(args);
-    crate::sys::no_window(&mut cmd);
-    Some(cmd)
-}
-
 /// 対話のシェル（~/.bashrc）でだけ PATH に入るツール（nvm の node・pyenv・sdkman など）のフォルダを、
 /// コマンドの頭で PATH に足す文（`export PATH='…':"$PATH"; `。足すものが無ければ空）。ディストリビューションごとに 1 度だけ調べる
 pub fn path_prefix(distro: &str) -> String {
