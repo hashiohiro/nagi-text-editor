@@ -76,7 +76,7 @@ pub fn parse_multi(p: &mut Pending, line: &str, root: &Path) -> Option<Diag> {
     None
 }
 
-/// 出力の中のパス（相対なら根から、WSL の /home/... は UNC に）
+/// 出力の中のパス（相対なら根から、WSL の中で動かしたコマンドの /home/... はそのディストリビューションの UNC に）
 fn diag_path(f: &str, root: &Path) -> PathBuf {
     let p = PathBuf::from(f.trim().replace('/', std::path::MAIN_SEPARATOR_STR));
     match nagi_workers::wsl::split_unc(root).map(|(d, _)| d) {
@@ -131,18 +131,11 @@ pub fn parse_line(line: &str, root: &Path) -> Option<Diag> {
     for re in patterns() {
         let Some(c) = re.captures(line) else { continue };
         let f = c.name("f")?.as_str().trim();
-        let p = PathBuf::from(f.replace('/', std::path::MAIN_SEPARATOR_STR));
-        let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
+        let ext = std::path::Path::new(f).extension().and_then(|e| e.to_str()).unwrap_or("").to_ascii_lowercase();
         if !SOURCE_EXT.contains(&ext.as_str()) {
             continue;
         }
-        // WSL の中で動かしたコマンドの /home/... は、そのディストリビューションの UNC のパスに
-        let wsl = nagi_workers::wsl::split_unc(root).map(|(d, _)| d);
-        let path = match &wsl {
-            Some(d) if f.starts_with('/') => nagi_workers::wsl::to_unc(d, f),
-            _ if p.is_absolute() => p,
-            _ => root.join(p),
-        };
+        let path = diag_path(f, root);
         let l: usize = c.name("l")?.as_str().parse().ok()?;
         let col: usize = c.name("c").and_then(|m| m.as_str().parse().ok()).unwrap_or(1);
         let msg = c.name("m").map_or("", |m| m.as_str()).trim().to_string();

@@ -13,6 +13,7 @@ const LT: LineType = LineType::LF_CR;
 pub const TAB_WIDTH: usize = 4;
 
 mod history;
+pub mod hash;
 pub mod fuzzy;
 pub mod linediff;
 pub mod textops;

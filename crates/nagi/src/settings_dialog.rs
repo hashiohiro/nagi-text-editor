@@ -407,35 +407,20 @@ impl Editor {
     }
 
     fn poll_tool_download(&mut self) -> bool {
-        use nagi_workers::drivers::DlMsg;
         let Some((id, d)) = &self.tool_download else { return false };
-        let id = id.clone();
+        let (id, polled) = (id.clone(), d.poll());
         let label = nagi_workers::toolchains::def(&id).map_or(id.clone(), |t| t.label.to_string());
-        let mut changed = false;
-        let mut done = None;
-        while let Ok(m) = d.rx.try_recv() {
-            changed = true;
-            match m {
-                DlMsg::Progress(got, _) => self.message = format!("{label} をダウンロードしています… {} MB", got / 1024 / 1024),
-                DlMsg::Extracting => self.message = format!("{label} を展開・インストールしています…"),
-                DlMsg::Done(r) => done = Some(r),
-            }
+        let changed = polled.status.is_some() || polled.done.is_some();
+        if let Some(st) = polled.status {
+            self.message = format!("{label}: {st}");
         }
-        if let Some(r) = done {
+        if let Some(r) = polled.done {
             self.tool_download = None;
-            let key = format!("toolchain.{id}");
             match r {
                 Ok(path) => {
-                    let p = path.display().to_string();
                     // 設定の画面でプロジェクトを保存先にしていれば、そのプロジェクトの版に
                     let project = self.settings_dialog.as_ref().is_some_and(|d| d.project_scope);
-                    let old = self.settings.clone();
-                    self.settings.set(&key, &p, project);
-                    let _ = self.settings.save();
-                    self.apply_settings(Some(&old));
-                    if let Some(d) = &mut self.settings_dialog {
-                        d.work.set(&key, &p, project);
-                    }
+                    let p = self.set_downloaded(&format!("toolchain.{id}"), &path, project);
                     let scope = if project { "このプロジェクトの設定" } else { "設定" };
                     self.message = format!("{label} を入れました: {p}（{scope}にしました。ターミナル・実行の構成・:Make で使う）");
                 }
@@ -446,37 +431,36 @@ impl Editor {
     }
 
     fn poll_jdk_only(&mut self) -> bool {
-        use nagi_workers::drivers::DlMsg;
         let Some((ver, d)) = &self.jdk_download else { return false };
-        let ver = *ver;
-        let mut changed = false;
-        let mut done = None;
-        while let Ok(m) = d.rx.try_recv() {
-            changed = true;
-            match m {
-                DlMsg::Progress(got, _) => self.message = format!("Eclipse Temurin {ver} をダウンロードしています… {} MB", got / 1024 / 1024),
-                DlMsg::Extracting => self.message = format!("Eclipse Temurin {ver} を展開しています…"),
-                DlMsg::Done(r) => done = Some(r),
-            }
+        let (ver, polled) = (*ver, d.poll());
+        let changed = polled.status.is_some() || polled.done.is_some();
+        if let Some(st) = polled.status {
+            self.message = format!("Eclipse Temurin {ver}: {st}");
         }
-        if let Some(r) = done {
+        if let Some(r) = polled.done {
             self.jdk_download = None;
             match r {
                 Ok(path) => {
-                    let p = path.display().to_string();
-                    let old = self.settings.clone();
-                    self.settings.set("maven.jdk", &p, false);
-                    let _ = self.settings.save();
-                    self.apply_settings(Some(&old));
-                    if let Some(d) = &mut self.settings_dialog {
-                        d.work.set("maven.jdk", &p, false);
-                    }
+                    let p = self.set_downloaded("maven.jdk", &path, false);
                     self.message = format!("JDK を入れました: {p}（設定の JDK にしました）");
                 }
                 Err(e) => self.message = format!("JDK をダウンロードできません: {e}"),
             }
         }
         changed
+    }
+
+    /// ダウンロードして入れたものの場所を設定に入れて保存し、すぐ使う（設定の画面を開いていればそちらにも）
+    fn set_downloaded(&mut self, key: &str, path: &std::path::Path, project: bool) -> String {
+        let p = path.display().to_string();
+        let old = self.settings.clone();
+        self.settings.set(key, &p, project);
+        let _ = self.settings.save();
+        self.apply_settings(Some(&old));
+        if let Some(d) = &mut self.settings_dialog {
+            d.work.set(key, &p, project);
+        }
+        p
     }
 
     /// 設定の画面を開く（Ctrl+Alt+S・:Settings）。`query` があれば絞り込んで

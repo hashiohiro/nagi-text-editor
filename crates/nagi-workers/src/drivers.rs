@@ -76,19 +76,36 @@ pub struct Download {
     pub rx: Receiver<DlMsg>,
 }
 
-pub(crate) fn system_tool(name: &str) -> PathBuf {
-    let root = std::env::var_os("SystemRoot").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
-    let p = root.join("System32").join(name);
-    if p.is_file() { p } else { PathBuf::from(name) }
+/// 届いた知らせをまとめたもの
+#[derive(Debug, Default)]
+pub struct Polled {
+    /// 最後の進み具合（「ダウンロードしています… 12 / 63 MB」「展開しています…」）
+    pub status: Option<String>,
+    /// 終わっていればその結果
+    pub done: Option<Result<PathBuf, String>>,
+}
+
+impl Download {
+    /// 届いている知らせを全部読む（UI が描く前に呼ぶ）
+    pub fn poll(&self) -> Polled {
+        let mut p = Polled::default();
+        while let Ok(m) = self.rx.try_recv() {
+            match m {
+                DlMsg::Progress(got, total) if total > 0 => p.status = Some(format!("ダウンロードしています… {} / {} MB", got >> 20, total >> 20)),
+                DlMsg::Progress(got, _) => p.status = Some(format!("ダウンロードしています… {} MB", got >> 20)),
+                DlMsg::Extracting => p.status = Some("展開しています…".into()),
+                DlMsg::Done(r) => {
+                    p.done = Some(r);
+                    break;
+                }
+            }
+        }
+        p
+    }
 }
 
 fn hidden(c: &mut Command) -> &mut Command {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        c.creation_flags(0x0800_0000);
-    }
-    c.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped())
+    crate::sys::no_window(c).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped())
 }
 
 /// Instant Client をダウンロードして展開する（裏のスレッド）
@@ -116,7 +133,7 @@ pub fn download_and_extract(url: &str, expect: u64, dest: &Path, find: Box<dyn F
             std::fs::create_dir_all(&dest).map_err(|e| format!("{} を作れません: {e}", dest.display()))?;
             let zip = dest.join("download.zip");
             let _ = std::fs::remove_file(&zip);
-            let mut child = hidden(Command::new(system_tool("curl.exe")).args(["-sSfL", "--retry", "2", "-o"]).arg(&zip).arg(&url)).spawn().map_err(|e| format!("curl.exe を起動できません: {e}"))?;
+            let mut child = hidden(Command::new(crate::sys::system_tool("curl.exe")).args(["-sSfL", "--retry", "2", "-o"]).arg(&zip).arg(&url)).spawn().map_err(|e| format!("curl.exe を起動できません: {e}"))?;
             let status = loop {
                 if let Some(s) = child.try_wait().map_err(|e| e.to_string())? {
                     break s;
@@ -133,7 +150,7 @@ pub fn download_and_extract(url: &str, expect: u64, dest: &Path, find: Box<dyn F
                 return Err(format!("ダウンロードできません: {}", err.trim()));
             }
             send(DlMsg::Extracting);
-            let out = hidden(Command::new(system_tool("tar.exe")).arg("-xf").arg(&zip).arg("-C").arg(&dest)).output().map_err(|e| format!("tar.exe を起動できません: {e}"))?;
+            let out = hidden(Command::new(crate::sys::system_tool("tar.exe")).arg("-xf").arg(&zip).arg("-C").arg(&dest)).output().map_err(|e| format!("tar.exe を起動できません: {e}"))?;
             let _ = std::fs::remove_file(&zip);
             if !out.status.success() {
                 return Err(format!("展開できません: {}", String::from_utf8_lossy(&out.stderr).trim()));

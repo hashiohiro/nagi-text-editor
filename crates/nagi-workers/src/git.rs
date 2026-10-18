@@ -28,11 +28,7 @@ pub fn git_input(root: &Path, args: &[&str], input: Option<&[u8]>) -> Result<Vec
         }
     };
     cmd.stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000);
-    }
+    crate::sys::no_window(&mut cmd);
     let mut child = cmd.spawn().map_err(|e| format!("git を起動できません: {e}"))?;
     if let (Some(data), Some(mut si)) = (input, child.stdin.take()) {
         let _ = si.write_all(data);

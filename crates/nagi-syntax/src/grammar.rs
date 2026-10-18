@@ -47,25 +47,7 @@ pub fn zip_url(id: &str) -> String {
     format!("{}/grammar-{id}.zip", base.trim_end_matches('/'))
 }
 
-/// 16 進の SHA-256
-pub fn sha256_hex(data: &[u8]) -> Option<String> {
-    let h = sha256(data)?;
-    Some(h.iter().map(|b| format!("{b:02x}")).collect())
-}
-
-#[cfg(windows)]
-fn sha256(data: &[u8]) -> Option<[u8; 32]> {
-    use windows_sys::Win32::Security::Cryptography::{BCRYPT_SHA256_ALG_HANDLE, BCryptHash};
-    let mut out = [0u8; 32];
-    // SAFETY: 入力と出力の長さをそのまま渡す
-    let st = unsafe { BCryptHash(BCRYPT_SHA256_ALG_HANDLE, std::ptr::null(), 0, data.as_ptr(), data.len() as u32, out.as_mut_ptr(), 32) };
-    (st == 0).then_some(out)
-}
-
-#[cfg(not(windows))]
-fn sha256(_: &[u8]) -> Option<[u8; 32]> {
-    None
-}
+pub use nagi_core::hash::sha256_hex;
 
 /// ファイルが表の SHA-256 と合うか
 pub fn verified(id: &str, path: &std::path::Path) -> bool {

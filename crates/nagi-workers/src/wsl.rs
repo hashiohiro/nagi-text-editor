@@ -10,7 +10,7 @@ use std::process::Command;
 pub fn distros() -> Vec<String> {
     let mut cmd = Command::new("wsl.exe");
     cmd.args(["-l", "-q"]);
-    hide(&mut cmd);
+    crate::sys::no_window(&mut cmd);
     let Ok(out) = cmd.output() else { return Vec::new() };
     // UTF-16LE で返る
     let u16s: Vec<u16> = out.stdout.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
@@ -54,7 +54,7 @@ pub fn resolve_typed(path: &str) -> PathBuf {
                 // ~ はそのディストリビューションの $HOME
                 let mut cmd = Command::new("wsl.exe");
                 cmd.args(["-d", d, "--", "sh", "-c", "printf %s \"$HOME\""]);
-                hide(&mut cmd);
+                crate::sys::no_window(&mut cmd);
                 let home = cmd.output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|h| h.starts_with('/')).unwrap_or_else(|| "/root".into());
                 format!("{home}/{rest}")
             } else {
@@ -72,7 +72,7 @@ pub fn command_in(cwd: &Path, program: &str, args: &[&str]) -> Option<Command> {
     let mut cmd = Command::new("wsl.exe");
     // --exec: 既定のシェルを通さない（-- だと $ や && を外側のシェルが先に読んでしまう）
     cmd.args(["-d", &distro, "--cd", &linux, "--exec", program]).args(args);
-    hide(&mut cmd);
+    crate::sys::no_window(&mut cmd);
     Some(cmd)
 }
 
@@ -90,7 +90,7 @@ pub fn path_prefix(distro: &str) -> String {
     let script = format!("for c in {CMDS}; do command -v \"$c\"; done");
     let mut cmd = Command::new("wsl.exe");
     cmd.args(["-d", distro, "--exec", "bash", "-ic", &script]).stdin(std::process::Stdio::null());
-    hide(&mut cmd);
+    crate::sys::no_window(&mut cmd);
     let out = cmd.output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
     let v = prefix_from(&out);
     if let Ok(mut m) = cache.lock() {
@@ -120,14 +120,6 @@ pub fn shell_path(p: &Path) -> String {
     }
 }
 
-fn hide(cmd: &mut Command) {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000);
-    }
-    let _ = cmd;
-}
 
 #[cfg(test)]
 mod tests {

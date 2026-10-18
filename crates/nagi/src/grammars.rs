@@ -95,14 +95,11 @@ impl Editor {
 
     /// ダウンロードの知らせを受け取る。届いたら色分けと索引をやり直す。変わったら true
     pub fn poll_grammars(&mut self) -> bool {
-        use nagi_workers::drivers::DlMsg;
         let mut changed = false;
         let mut finished = Vec::new();
         for (i, (id, d)) in self.grammar_downloads.iter().enumerate() {
-            while let Ok(m) = d.rx.try_recv() {
-                if let DlMsg::Done(r) = m {
-                    finished.push((i, id.clone(), r));
-                }
+            if let Some(r) = d.poll().done {
+                finished.push((i, id.clone(), r));
             }
         }
         for (i, id, r) in finished.into_iter().rev() {

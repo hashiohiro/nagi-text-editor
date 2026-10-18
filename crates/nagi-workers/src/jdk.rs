@@ -47,7 +47,7 @@ pub fn read(path: &Path) -> Option<Jdk> {
 
 /// 版の数の並び（並べ替え用。"21.0.4" → [21, 0, 4]、"1.8.0_402" → [8, 0, 402]）
 fn version_key(v: &str) -> Vec<u32> {
-    let mut parts: Vec<u32> = v.split(|c: char| !c.is_ascii_digit()).filter_map(|p| p.parse().ok()).collect();
+    let mut parts = crate::sys::version_key(v);
     if parts.first() == Some(&1) && parts.len() > 1 {
         parts.remove(0);
     }

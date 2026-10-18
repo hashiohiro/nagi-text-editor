@@ -13,6 +13,8 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use nagi_core::hash::sha256;
+
 use serde_json::Value;
 
 use crate::db::{Backend, Column, Index, Key, Objects};
@@ -30,24 +32,9 @@ pub fn login_url(url: &str) -> String {
     if rest.is_empty() { "https://login.salesforce.com".into() } else { rest.trim_end_matches('/').to_string() }
 }
 
-fn win(c: &mut Command) -> &mut Command {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        c.creation_flags(0x0800_0000);
-    }
-    c
-}
-
-fn curl_exe() -> PathBuf {
-    let root = std::env::var_os("SystemRoot").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
-    let p = root.join("System32").join("curl.exe");
-    if p.is_file() { p } else { PathBuf::from("curl.exe") }
-}
-
 /// curl.exe に設定（`-K -`）を標準入力で渡して流す。(HTTP の状態, 本文)
 fn curl(config: &str) -> R<(u16, String)> {
-    let mut child = win(Command::new(curl_exe()).args(["-sS", "-K", "-", "-w", "\n%{http_code}"]))
+    let mut child = crate::sys::no_window(Command::new(crate::sys::system_tool("curl.exe")).args(["-sS", "-K", "-", "-w", "\n%{http_code}"]))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -105,17 +92,6 @@ fn random(n: usize) -> R<Vec<u8>> {
     Ok(buf)
 }
 
-#[cfg(windows)]
-pub fn sha256(data: &[u8]) -> R<[u8; 32]> {
-    use windows_sys::Win32::Security::Cryptography::{BCRYPT_SHA256_ALG_HANDLE, BCryptHash};
-    let mut out = [0u8; 32];
-    let st = unsafe { BCryptHash(BCRYPT_SHA256_ALG_HANDLE, std::ptr::null(), 0, data.as_ptr(), data.len() as u32, out.as_mut_ptr(), 32) };
-    if st != 0 {
-        return Err(format!("SHA-256 を計算できません（{st:#x}）"));
-    }
-    Ok(out)
-}
-
 /// DPAPI で暗号化・復号する（このユーザーだけが読める）
 #[cfg(windows)]
 fn dpapi(data: &[u8], protect: bool) -> R<Vec<u8>> {
@@ -141,10 +117,6 @@ fn dpapi(data: &[u8], protect: bool) -> R<Vec<u8>> {
 #[cfg(not(windows))]
 fn random(n: usize) -> R<Vec<u8>> {
     Err(format!("この OS では使えません（{n}）"))
-}
-#[cfg(not(windows))]
-pub fn sha256(_: &[u8]) -> R<[u8; 32]> {
-    Err("この OS では使えません".into())
 }
 #[cfg(not(windows))]
 fn dpapi(_: &[u8], _: bool) -> R<Vec<u8>> {
@@ -181,7 +153,7 @@ fn load_refresh(url: &str, user: &str) -> Option<String> {
 fn open_browser(url: &str) -> R<()> {
     // 自動テスト: ブラウザの代わりに curl でログイン画面の転送をたどる（偽の Salesforce が戻り先へ転送する）
     if std::env::var("NAGI_SF_BROWSER").as_deref() == Ok("curl") {
-        return win(Command::new(curl_exe()).args(["-s", "-L", "-o", "NUL", url])).stdout(Stdio::null()).stderr(Stdio::null()).spawn().map(|_| ()).map_err(|e| e.to_string());
+        return crate::sys::no_window(Command::new(crate::sys::system_tool("curl.exe")).args(["-s", "-L", "-o", "NUL", url])).stdout(Stdio::null()).stderr(Stdio::null()).spawn().map(|_| ()).map_err(|e| e.to_string());
     }
     crate::config::open_url(url)
 }

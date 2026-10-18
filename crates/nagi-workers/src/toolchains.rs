@@ -65,12 +65,7 @@ pub struct Found {
 }
 
 fn hidden(c: &mut Command) -> &mut Command {
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        c.creation_flags(0x0800_0000);
-    }
-    c.stdin(Stdio::null())
+    crate::sys::no_window(c).stdin(Stdio::null())
 }
 
 /// 文字の中の最初の版（1.2.3 か 1.2）
@@ -171,7 +166,7 @@ pub fn installed(id: &str) -> Vec<Found> {
 
 /// URL の中身（Windows の curl.exe。GitHub の API のために User-Agent を付ける）
 fn fetch_text(url: &str) -> Result<String, String> {
-    let out = hidden(Command::new(crate::drivers::system_tool("curl.exe")).args(["-sSfL", "--retry", "2", "-A", "nagi", url])).output().map_err(|e| format!("curl.exe を起動できません: {e}"))?;
+    let out = hidden(Command::new(crate::sys::system_tool("curl.exe")).args(["-sSfL", "--retry", "2", "-A", "nagi", url])).output().map_err(|e| format!("curl.exe を起動できません: {e}"))?;
     if !out.status.success() {
         return Err(format!("{url} を読めません: {}", String::from_utf8_lossy(&out.stderr).trim()));
     }
@@ -182,10 +177,7 @@ fn json(url: &str) -> Result<serde_json::Value, String> {
     serde_json::from_str(&fetch_text(url)?).map_err(|e| format!("{url} の JSON を読めません: {e}"))
 }
 
-/// 版の数の並び（並べ替え用）
-fn version_key(v: &str) -> Vec<u32> {
-    v.split(|c: char| !c.is_ascii_digit()).filter_map(|p| p.parse().ok()).collect()
-}
+use crate::sys::version_key;
 
 /// GitHub のいちばん新しいリリースの中で `pick` が選ぶ添付ファイル（名前から版を返す）の URL と版
 fn github_asset(repo: &str, pick: impl Fn(&str) -> Option<String>) -> Result<(String, String), String> {
@@ -403,7 +395,7 @@ fn install_rustup(channel: &str, send: &dyn Fn(DlMsg)) -> Result<PathBuf, String
     let dir = tools_dir();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let exe = dir.join("rustup-init.exe");
-    let st = hidden(Command::new(crate::drivers::system_tool("curl.exe")).args(["-sSfL", "-o"]).arg(&exe).arg("https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe")).status().map_err(|e| e.to_string())?;
+    let st = hidden(Command::new(crate::sys::system_tool("curl.exe")).args(["-sSfL", "-o"]).arg(&exe).arg("https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe")).status().map_err(|e| e.to_string())?;
     if !st.success() {
         return Err("rustup-init.exe をダウンロードできません".into());
     }

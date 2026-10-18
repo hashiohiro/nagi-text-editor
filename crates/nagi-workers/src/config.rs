@@ -58,10 +58,6 @@ pub fn open_url(url: &str) -> Result<(), String> {
             c
         }
     };
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(0x0800_0000);
-    }
+    crate::sys::no_window(&mut cmd);
     cmd.spawn().map(|_| ()).map_err(|e| format!("ブラウザを開けません: {e}"))
 }

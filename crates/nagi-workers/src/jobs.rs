@@ -128,12 +128,7 @@ pub fn run_env(command: &str, cwd: &Path, env: &[(String, String)], waker: Waker
         }
     };
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        // CREATE_NO_WINDOW: コンソールの窓を出さない
-        cmd.creation_flags(0x0800_0000);
-    }
+    crate::sys::no_window(&mut cmd);
     let mut child = cmd.spawn()?;
     let (tx, rx) = channel();
     let out = child.stdout.take();

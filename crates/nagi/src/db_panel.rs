@@ -16,7 +16,7 @@ use std::path::PathBuf;
 
 use nagi_vim::Key;
 use nagi_workers::db::{Client, Column, DataSource, Index, Key as DbKey, Kind, Objects, Reply, Req};
-use nagi_workers::drivers::{self, DlMsg, Download};
+use nagi_workers::drivers::{self, Download};
 
 use crate::editor::{Editor, Effect, Mode, Prompt};
 use crate::right_panel::RightTab;
@@ -687,45 +687,24 @@ impl Editor {
     pub fn poll_db(&mut self) -> bool {
         let mut changed = false;
         // ダウンロード
-        let dl = self.db.as_mut().and_then(|p| {
-            let (i, d, _) = p.download.as_ref()?;
-            let mut last = None;
-            while let Ok(m) = d.rx.try_recv() {
-                let done = matches!(m, DlMsg::Done(_));
-                last = Some(m);
-                if done {
-                    break;
-                }
-            }
-            last.map(|m| (*i, m))
-        });
-        if let Some((i, m)) = dl {
+        let dl = self.db.as_ref().and_then(|p| p.download.as_ref().map(|(i, d, _)| (*i, d.poll())));
+        if let Some((i, polled)) = dl.filter(|(_, x)| x.status.is_some() || x.done.is_some()) {
             changed = true;
             let p = self.db.as_mut().unwrap();
-            match m {
-                DlMsg::Progress(got, total) => {
-                    let text = if total > 0 { format!("ダウンロードしています… {} / {} MB", got >> 20, total >> 20) } else { format!("ダウンロードしています… {} MB", got >> 20) };
-                    if let Some(d) = &mut p.download {
-                        d.2 = text;
+            if let (Some(text), Some(d)) = (polled.status, &mut p.download) {
+                d.2 = text;
+            }
+            if let Some(r) = polled.done {
+                p.download = None;
+                match r {
+                    Ok(dir) => {
+                        self.message = format!("Oracle のドライバーを {} に置きました", dir.display());
+                        self.db_log_line(&format!("ドライバー: Oracle Instant Client を {} に置きました", dir.display()), false);
+                        self.db_begin_connect(i);
                     }
-                }
-                DlMsg::Extracting => {
-                    if let Some(d) = &mut p.download {
-                        d.2 = "展開しています…".into();
-                    }
-                }
-                DlMsg::Done(r) => {
-                    p.download = None;
-                    match r {
-                        Ok(dir) => {
-                            self.message = format!("Oracle のドライバーを {} に置きました", dir.display());
-                            self.db_log_line(&format!("ドライバー: Oracle Instant Client を {} に置きました", dir.display()), false);
-                            self.db_begin_connect(i);
-                        }
-                        Err(e) => {
-                            p.conns[i].error = Some(e.clone());
-                            self.message = e;
-                        }
+                    Err(e) => {
+                        p.conns[i].error = Some(e.clone());
+                        self.message = e;
                     }
                 }
             }
