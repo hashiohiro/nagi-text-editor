@@ -206,12 +206,8 @@ fn shell_line(name: &str, cmd: &str, cwd: &Path, env: &[(String, String)]) -> Re
     let dir = std::env::temp_dir().join("nagi-run");
     std::fs::create_dir_all(&dir).map_err(|e| format!("一時フォルダを作れません: {e}"))?;
     let file = dir.join(format!("run-{:016x}.cmd", hash(name)));
-    let non_ascii = !cmd.is_ascii() || !cwd.to_string_lossy().is_ascii() || env.iter().any(|(k, v)| !k.is_ascii() || !v.is_ascii());
-    let mut text = String::from("@echo off\r\n");
-    // 日本語を含むときは UTF-8 で書いて、コードページも UTF-8 に
-    if non_ascii {
-        text.push_str("chcp 65001 >nul\r\n");
-    }
+    // ファイルは UTF-8 で書き、コードページも UTF-8 に（ターミナルの窓と同じ。UTF-8 で書き出すプログラムが化けない）
+    let mut text = String::from("@echo off\r\nchcp 65001 >nul\r\n");
     text.push_str(&format!("cd /d \"{}\"\r\n", cwd.display()));
     for (k, v) in env {
         text.push_str(&format!("set \"{k}={v}\"\r\n"));
@@ -250,7 +246,7 @@ mod tests {
         assert!(s.starts_with("cmd.exe /C \"") && s.ends_with(".cmd\""), "{s}");
         let file = nagi_workers::term::split_args(&s)[2].clone();
         let text = std::fs::read_to_string(file).unwrap();
-        assert_eq!(text, "@echo off\r\ncd /d \"C:\\work\\shop\"\r\nset \"TZ=Asia/Tokyo\"\r\nnpm run dev\r\n");
+        assert_eq!(text, "@echo off\r\nchcp 65001 >nul\r\ncd /d \"C:\\work\\shop\"\r\nset \"TZ=Asia/Tokyo\"\r\nnpm run dev\r\n");
         let w = shell_line("x", "echo \"a\"", Path::new(r"\\wsl.localhost\kali-linux\home\me\os"), &[("A".into(), "it's".into())]).unwrap();
         assert_eq!(nagi_workers::term::split_args(&w), ["wsl.exe", "-d", "kali-linux", "--cd", "/home/me/os", "sh", "-lc", "export A='it'\\''s'; echo \"a\""]);
     }

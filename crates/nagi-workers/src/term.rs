@@ -45,6 +45,25 @@ pub fn split_args(s: &str) -> Vec<String> {
     out
 }
 
+/// シェルを UTF-8 で始める引数（日本語の Windows の既定 CP932 のままだと、UTF-8 で書き出すプログラムの出力が化ける）。
+/// cmd は chcp 65001、PowerShell は入出力の文字コードと Get-Content の既定を UTF-8 に、Git Bash は起動の初めに chcp.com 65001。
+/// 引数を付けて呼んだもの（cmd /C … など）はそのまま
+fn utf8_args(prog: &str, args: Vec<String>) -> Vec<String> {
+    let base = Path::new(prog).file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+    match base.as_str() {
+        "cmd.exe" | "cmd" if args.is_empty() => s(&["/K", "chcp", "65001", ">nul"]),
+        "powershell.exe" | "powershell" | "pwsh.exe" | "pwsh" if args.is_empty() => s(&[
+            "-NoLogo",
+            "-NoExit",
+            "-Command",
+            "[Console]::OutputEncoding=[Text.Encoding]::UTF8;[Console]::InputEncoding=[Text.Encoding]::UTF8;$OutputEncoding=[Text.Encoding]::UTF8;$PSDefaultParameterValues['Get-Content:Encoding']='UTF8'",
+        ]),
+        "bash.exe" | "bash" if args.is_empty() || args == ["--login", "-i"] => s(&["-c", "chcp.com 65001 >/dev/null 2>&1; exec bash --login -i"]),
+        _ => args,
+    }
+}
+
 pub struct Term {
     parser: Arc<Mutex<vt100::Parser>>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
@@ -70,14 +89,11 @@ impl Term {
         let pair = native_pty_system().openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }).map_err(|e| e.to_string())?;
         // 空白で区切る。"C:\Program Files\..." のように引用符で囲めば 1 つ（中の \" は "）
         let shell = shell.trim();
-        let mut words = split_args(shell).into_iter();
-        let prog = words.next().unwrap_or_default();
-        let mut cmd = CommandBuilder::new(if prog.is_empty() { "powershell.exe" } else { prog.as_str() });
-        for a in words {
+        let mut words = split_args(shell);
+        let prog = if words.is_empty() { "powershell.exe".to_string() } else { words.remove(0) };
+        let mut cmd = CommandBuilder::new(prog.as_str());
+        for a in utf8_args(&prog, words) {
             cmd.arg(a);
-        }
-        if shell.to_ascii_lowercase().contains("powershell") || shell.to_ascii_lowercase().contains("pwsh") {
-            cmd.arg("-NoLogo");
         }
         cmd.cwd(cwd);
         let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
@@ -202,5 +218,41 @@ mod tests {
         assert_eq!(split_args(r#""C:\Program Files\Git\bin\bash.exe" --login -i"#), ["C:\\Program Files\\Git\\bin\\bash.exe", "--login", "-i"]);
         assert_eq!(split_args(r#"wsl.exe -d kali sh -lc "echo \"a b\" && ls""#), ["wsl.exe", "-d", "kali", "sh", "-lc", "echo \"a b\" && ls"]);
         assert_eq!(split_args(r#"cmd.exe /C """#), ["cmd.exe", "/C", ""]);
+    }
+}
+
+#[cfg(test)]
+mod utf8_tests {
+    use super::*;
+
+    /// UTF-8 のファイルを cmd の type と PowerShell の Get-Content で出しても化けない
+    #[test]
+    fn shells_show_utf8() {
+        let dir = std::env::temp_dir().join(format!("nagi-utf8-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        std::fs::write(dir.join("u.txt"), "UTF8の日本語ファイル\r\n").unwrap();
+        let mut shells = vec![("cmd.exe", "type u.txt\r"), ("powershell.exe", "Get-Content u.txt\r")];
+        // Git Bash（入っていれば）
+        if Path::new(r"C:\Program Files\Git\bin\bash.exe").is_file() {
+            shells.push((r#""C:\Program Files\Git\bin\bash.exe" --login -i"#, "cat u.txt\r"));
+        }
+        for (shell, input) in shells {
+            let mut t = Term::spawn(shell, &dir, 30, 120, std::sync::Arc::new(|| {})).unwrap();
+            let mut sent = false;
+            let mut ok = false;
+            for k in 0..400 {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+                let screen = t.with_screen(|s| s.contents());
+                if !sent && (screen.contains('>') || screen.contains('$') || k > 120) {
+                    t.write(input.as_bytes());
+                    sent = true;
+                }
+                if sent && screen.matches("UTF8の日本語ファイル").count() >= 1 {
+                    ok = true;
+                    break;
+                }
+            }
+            assert!(ok, "{shell}: {}", t.with_screen(|s| s.contents()));
+        }
     }
 }
