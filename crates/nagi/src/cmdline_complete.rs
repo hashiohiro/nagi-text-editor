@@ -80,7 +80,7 @@ const EX_COMMANDS: &[(&str, &str)] = &[
     ("Run", "実行の構成を動かす（Shift+F10）。後に名前を書けばその構成（IntelliJ の構成と .nagi/run.conf）"),
     ("RunConfigs", "実行の構成を選んで動かす（Alt+Shift+F10）"),
     ("RunStop", "動いている構成を止める（Ctrl+F2）"),
-    ("RunEdit", "nagi の実行の構成のファイル（.nagi/run.conf）を開く"),
+    ("RunEdit", "実行の構成の画面（追加・編集・削除。後に名前を書けばその構成を選んで）。:RunEdit! はファイルを開く"),
     ("RunAdd", "実行の構成を足す（:RunAdd 名前 = コマンド）"),
     ("Terminal", "ターミナル（下の欄。Alt+F12）。後に cmd・powershell・bash・wsl を書けばそのシェルで新しい窓"),
     ("Problems", "問題（下の欄。Alt+6）"),

@@ -18,7 +18,7 @@ use crate::result_grid::BottomKind;
 pub const RUN_PREFIX: &str = "▶ ";
 
 /// 一覧の最後の行（選ぶと .nagi/run.conf を開く）
-const ADD_ITEM: &str = "＋ 構成を追加・編集（.nagi/run.conf）";
+const ADD_ITEM: &str = "＋ 構成を追加・編集…";
 
 /// .nagi/run.conf を初めて作るときの中身
 const RUN_CONF_TEMPLATE: &str = "\
@@ -83,7 +83,7 @@ impl Editor {
     pub(crate) fn run_list_pick(&mut self, i: usize) {
         match self.run_list.get(i).cloned() {
             Some(c) => self.run_config(c),
-            None => self.run_edit(),
+            None => self.open_run_dialog(None),
         }
     }
 

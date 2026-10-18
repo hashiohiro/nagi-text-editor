@@ -5,7 +5,18 @@
 //! - `.idea/runConfigurations/*.xml`（古い共有の形）
 //! - 作業状態（`.idea/workspace.xml` か `%APPDATA%\JetBrains\<製品>\workspace\<ID>.xml`）の `RunManager`（自分だけのもの。選んでいるものも）
 //!
-//! nagi 独自の構成は `.nagi/run.conf` に `名前 = コマンド` の形で 1 行に 1 つ（`#` から行末は注釈）。
+//! nagi 独自の構成は `.nagi/run.conf`（`#` で始まる行は注釈）。GUI（実行の構成の画面）はこの形で書き出す:
+//!
+//! ```text
+//! [DemoApplication]
+//! type = spring-boot
+//! module = rest.demo
+//! main = com.example.DemoApplication
+//! env = TZ=Asia/Tokyo; LANG=ja_JP.UTF-8
+//! ```
+//!
+//! 見出しの前の `名前 = コマンド` の 1 行はシェルの構成（手で書く短い形）。nagi の構成は、同じ名前の IntelliJ の構成より先に出る
+//! （GUI で IntelliJ の構成を直すと、nagi の構成として保存し、IntelliJ のファイルは書き換えない）。
 //! 種類ごとのコマンドへの直し方は `launch`（Maven・Spring Boot・アプリケーション・npm・Gradle・シェル・URL）。
 
 use std::path::{Path, PathBuf};
@@ -61,7 +72,12 @@ pub enum Launch {
     Open(String),
 }
 
-/// プロジェクトの構成を全部読む（IntelliJ の共有 → 作業状態 → nagi の順。同じ名前は先のもの）。
+/// nagi の構成のファイル
+pub fn conf_path(root: &Path) -> PathBuf {
+    root.join(".nagi").join("run.conf")
+}
+
+/// プロジェクトの構成を全部読む（nagi → IntelliJ の共有 → 作業状態の順。同じ名前は先のもの）。
 /// 2 つ目は IntelliJ で選んでいた構成の名前
 pub fn load(root: &Path, workspace_xmls: &[String]) -> (Vec<RunConfig>, Option<String>) {
     let mut out: Vec<RunConfig> = Vec::new();
@@ -70,6 +86,9 @@ pub fn load(root: &Path, workspace_xmls: &[String]) -> (Vec<RunConfig>, Option<S
             out.push(c);
         }
     };
+    if let Ok(s) = std::fs::read_to_string(conf_path(root)) {
+        parse_conf(&s).into_iter().for_each(&mut push);
+    }
     for dir in [root.join(".run"), root.join(".idea").join("runConfigurations")] {
         let mut files: Vec<PathBuf> = std::fs::read_dir(&dir).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "xml")).collect();
         files.sort();
@@ -89,21 +108,183 @@ pub fn load(root: &Path, workspace_xmls: &[String]) -> (Vec<RunConfig>, Option<S
             parse_xml(rm).into_iter().for_each(&mut push);
         }
     }
-    if let Ok(s) = std::fs::read_to_string(root.join(".nagi").join("run.conf")) {
-        parse_conf(&s).into_iter().for_each(&mut push);
-    }
     (out, selected)
 }
 
-/// `.nagi/run.conf`: `名前 = コマンド`
+/// 種類（.nagi/run.conf の type の値, 画面に出す名前）
+pub const KINDS: [(&str, &str); 7] = [
+    ("shell", "シェル"),
+    ("maven", "Maven"),
+    ("spring-boot", "Spring Boot"),
+    ("application", "アプリケーション"),
+    ("npm", "npm"),
+    ("gradle", "Gradle"),
+    ("url", "ブラウザ"),
+];
+
+impl Kind {
+    /// 種類の値（KINDS の 1 つ目。未対応は None）
+    pub fn id(&self) -> Option<&'static str> {
+        Some(match self {
+            Kind::Shell { .. } => "shell",
+            Kind::Maven { .. } => "maven",
+            Kind::SpringBoot { .. } => "spring-boot",
+            Kind::Application { .. } => "application",
+            Kind::Npm { .. } => "npm",
+            Kind::Gradle { .. } => "gradle",
+            Kind::Url { .. } => "url",
+            Kind::Unsupported { .. } => return None,
+        })
+    }
+
+    /// 種類の空の構成
+    pub fn new(id: &str) -> Kind {
+        let mut k = match id {
+            "maven" => Kind::Maven { goals: Vec::new(), profiles: Vec::new(), options: String::new(), workdir: None, pom: None },
+            "spring-boot" => Kind::SpringBoot { module: None, main_class: String::new(), vm: String::new(), args: String::new(), profiles: String::new(), env: Vec::new() },
+            "application" => Kind::Application { module: None, main_class: String::new(), args: String::new(), env: Vec::new() },
+            "npm" => Kind::Npm { package_json: None, command: String::new(), scripts: Vec::new(), args: String::new(), env: Vec::new() },
+            "gradle" => Kind::Gradle { tasks: Vec::new(), args: String::new() },
+            "url" => Kind::Url { url: String::new() },
+            _ => Kind::Shell { command: String::new(), workdir: None },
+        };
+        if let Kind::Npm { command, .. } = &mut k {
+            *command = "run".into();
+        }
+        k
+    }
+
+    /// 画面の欄（キー, 名前, 値）。値はどれも 1 行の文字
+    pub fn fields(&self) -> Vec<(&'static str, &'static str, String)> {
+        let opt = |o: &Option<String>| o.clone().unwrap_or_default();
+        match self {
+            Kind::Shell { command, workdir } => vec![("command", "コマンド", command.clone()), ("dir", "作業フォルダ", opt(workdir))],
+            Kind::Maven { goals, profiles, options, workdir, pom } => vec![
+                ("goals", "ゴール", goals.join(" ")),
+                ("profiles", "プロファイル", profiles.iter().map(|(n, on)| if *on { n.clone() } else { format!("!{n}") }).collect::<Vec<_>>().join(", ")),
+                ("options", "オプション", options.clone()),
+                ("dir", "作業フォルダ", opt(workdir)),
+                ("pom", "pom のファイル", opt(pom)),
+            ],
+            Kind::SpringBoot { module, main_class, vm, args, profiles, env } => vec![
+                ("module", "モジュール", opt(module)),
+                ("main", "メインクラス", main_class.clone()),
+                ("vm", "VM オプション", vm.clone()),
+                ("args", "引数", args.clone()),
+                ("profiles", "プロファイル", profiles.clone()),
+                ("env", "環境変数", env_text(env)),
+            ],
+            Kind::Application { module, main_class, args, env } => {
+                vec![("module", "モジュール", opt(module)), ("main", "メインクラス", main_class.clone()), ("args", "引数", args.clone()), ("env", "環境変数", env_text(env))]
+            }
+            Kind::Npm { package_json, command, scripts, args, env } => vec![
+                ("package", "package.json", opt(package_json)),
+                ("command", "コマンド", command.clone()),
+                ("scripts", "スクリプト", scripts.join(" ")),
+                ("args", "引数", args.clone()),
+                ("env", "環境変数", env_text(env)),
+            ],
+            Kind::Gradle { tasks, args } => vec![("tasks", "タスク", tasks.join(" ")), ("args", "引数", args.clone())],
+            Kind::Url { url } => vec![("url", "URL", url.clone())],
+            Kind::Unsupported { .. } => Vec::new(),
+        }
+    }
+
+    /// 欄の値を入れる（知らないキーは無視）
+    pub fn set(&mut self, key: &str, value: &str) {
+        let v = value.trim().to_string();
+        let opt = || (!v.is_empty()).then(|| v.clone());
+        let words = || v.split_whitespace().map(String::from).collect::<Vec<_>>();
+        match (self, key) {
+            (Kind::Shell { command, .. }, "command") => *command = v,
+            (Kind::Shell { workdir, .. } | Kind::Maven { workdir, .. }, "dir") => *workdir = opt(),
+            (Kind::Maven { goals, .. }, "goals") => *goals = words(),
+            (Kind::Maven { profiles, .. }, "profiles") => {
+                *profiles = v.split([',', ' ']).map(str::trim).filter(|p| !p.is_empty()).map(|p| match p.strip_prefix('!') {
+                    Some(n) => (n.to_string(), false),
+                    None => (p.to_string(), true),
+                }).collect()
+            }
+            (Kind::Maven { options, .. }, "options") => *options = v,
+            (Kind::Maven { pom, .. }, "pom") => *pom = opt(),
+            (Kind::SpringBoot { module, .. } | Kind::Application { module, .. }, "module") => *module = opt(),
+            (Kind::SpringBoot { main_class, .. } | Kind::Application { main_class, .. }, "main") => *main_class = v,
+            (Kind::SpringBoot { vm, .. }, "vm") => *vm = v,
+            (Kind::SpringBoot { args, .. } | Kind::Application { args, .. } | Kind::Npm { args, .. } | Kind::Gradle { args, .. }, "args") => *args = v,
+            (Kind::SpringBoot { profiles, .. }, "profiles") => *profiles = v,
+            (Kind::SpringBoot { env, .. } | Kind::Application { env, .. } | Kind::Npm { env, .. }, "env") => *env = parse_env(&v),
+            (Kind::Npm { package_json, .. }, "package") => *package_json = opt(),
+            (Kind::Npm { command, .. }, "command") => *command = v,
+            (Kind::Npm { scripts, .. }, "scripts") => *scripts = words(),
+            (Kind::Gradle { tasks, .. }, "tasks") => *tasks = words(),
+            (Kind::Url { url }, "url") => *url = v,
+            _ => {}
+        }
+    }
+}
+
+/// 環境変数の欄の文字（`A=1; B=2`）
+fn env_text(env: &[(String, String)]) -> String {
+    env.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join("; ")
+}
+
+fn parse_env(s: &str) -> Vec<(String, String)> {
+    s.split(';').filter_map(|p| p.split_once('=')).map(|(k, v)| (k.trim().to_string(), v.trim().to_string())).filter(|(k, _)| !k.is_empty()).collect()
+}
+
+/// `.nagi/run.conf` を読む（`[名前]` の節と、節の前の `名前 = コマンド` の 1 行）
 pub fn parse_conf(s: &str) -> Vec<RunConfig> {
-    s.lines()
-        .map(|l| l.split_once('#').map_or(l, |x| x.0).trim())
-        .filter_map(|l| l.split_once('='))
-        .map(|(n, c)| (n.trim(), c.trim()))
-        .filter(|(n, c)| !n.is_empty() && !c.is_empty())
-        .map(|(n, c)| RunConfig { name: n.to_string(), kind: Kind::Shell { command: c.to_string(), workdir: None }, from: "nagi" })
-        .collect()
+    let mut out: Vec<RunConfig> = Vec::new();
+    let mut cur: Option<(String, Vec<(String, String)>)> = None;
+    let finish = |out: &mut Vec<RunConfig>, cur: Option<(String, Vec<(String, String)>)>| {
+        if let Some((name, kv)) = cur {
+            let ty = kv.iter().find(|(k, _)| k == "type").map_or("shell", |(_, v)| v.as_str());
+            let mut kind = Kind::new(ty);
+            for (k, v) in &kv {
+                kind.set(k, v);
+            }
+            out.push(RunConfig { name, kind, from: "nagi" });
+        }
+    };
+    for raw in s.lines() {
+        let l = raw.trim();
+        if l.is_empty() || l.starts_with('#') {
+            continue;
+        }
+        if let Some(name) = l.strip_prefix('[').and_then(|x| x.strip_suffix(']')) {
+            finish(&mut out, cur.take());
+            cur = Some((name.trim().to_string(), Vec::new()));
+            continue;
+        }
+        let Some((k, v)) = l.split_once('=') else { continue };
+        match &mut cur {
+            Some((_, kv)) => kv.push((k.trim().to_string(), v.trim().to_string())),
+            None => {
+                // 手で書く短い形: 名前 = コマンド（# から行末は注釈）
+                let c = v.split_once(" #").map_or(v, |x| x.0).trim();
+                if !k.trim().is_empty() && !c.is_empty() {
+                    out.push(RunConfig { name: k.trim().to_string(), kind: Kind::Shell { command: c.to_string(), workdir: None }, from: "nagi" });
+                }
+            }
+        }
+    }
+    finish(&mut out, cur);
+    out
+}
+
+/// nagi の構成を `.nagi/run.conf` の文字に（どれも節の形。空の欄は書かない）
+pub fn to_conf(configs: &[RunConfig]) -> String {
+    let mut s = String::from("# nagi の実行の構成（実行の構成の画面で直せる。手で書いてもよい）\n# [名前] の後に type = shell・maven・spring-boot・application・npm・gradle・url と、その種類の項目\n");
+    for c in configs {
+        let Some(id) = c.kind.id() else { continue };
+        s.push_str(&format!("\n[{}]\ntype = {id}\n", c.name));
+        for (k, _, v) in c.kind.fields() {
+            if !v.is_empty() {
+                s.push_str(&format!("{k} = {v}\n"));
+            }
+        }
+    }
+    s
 }
 
 /// `<component name="...">…</component>` の中身
@@ -426,7 +607,8 @@ mod tests {
         std::fs::write(dir.join(".run/a.run.xml"), MAVEN).unwrap();
         std::fs::write(dir.join(".nagi/run.conf"), "# 自分の\nサーバー = npm run dev   # 開発用\n").unwrap();
         let (v, sel) = load(&dir, &[WS.to_string()]);
-        assert_eq!(v.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["core.lib インストール", "DemoApplication", "Angular CLI Server", "Angular Application", "サーバー"]);
+        assert_eq!(v.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["サーバー", "core.lib インストール", "DemoApplication", "Angular CLI Server", "Angular Application"], "nagi の構成が先");
+        let v: Vec<RunConfig> = v[1..].iter().cloned().chain(std::iter::once(v[0].clone())).collect();
         assert_eq!(sel.as_deref(), Some("DemoApplication"));
         let Launch::Command { cmd, cwd, .. } = launch(&v[0], &dir).unwrap() else { panic!() };
         assert!(cmd.starts_with("mvn -B -f ") && cmd.ends_with("-P install-core-lib,!slow -N validate"), "{cmd}");
@@ -439,5 +621,25 @@ mod tests {
         assert_eq!(launch(&v[3], &dir).unwrap(), Launch::Open("http://localhost:4200".into()));
         let Launch::Command { cmd, .. } = launch(&v[4], &dir).unwrap() else { panic!() };
         assert_eq!(cmd, "npm run dev");
+    }
+
+    /// 節の形で書き出して読み直すと同じになる（IntelliJ の構成を nagi の構成として保存するときも）
+    #[test]
+    fn conf_round_trip() {
+        let mut v = parse_xml(WS);
+        v.extend(parse_xml(MAVEN));
+        v.push(RunConfig { name: "掃除".into(), kind: Kind::Shell { command: "rmdir /s /q target".into(), workdir: Some("app".into()) }, from: "nagi" });
+        let text = to_conf(&v);
+        assert!(text.contains("[DemoApplication]\ntype = spring-boot\nmodule = rest.demo\nmain = com.example.DemoApplication\nvm = -Xmx512m\nenv = TZ=Asia/Tokyo\n"), "{text}");
+        let back = parse_conf(&text);
+        assert_eq!(back.len(), v.len());
+        for (a, b) in v.iter().zip(&back) {
+            assert_eq!((&a.name, &a.kind), (&b.name, &b.kind));
+            assert_eq!(b.from, "nagi");
+        }
+        // 短い形と節を混ぜてもよい。URL の # は注釈ではない
+        let mixed = parse_conf("dev = npm run dev  # 開発\n[docs]\ntype = url\nurl = http://localhost:4200/#/top\n");
+        assert_eq!(mixed[0].kind, Kind::Shell { command: "npm run dev".into(), workdir: None });
+        assert_eq!(mixed[1].kind, Kind::Url { url: "http://localhost:4200/#/top".into() });
     }
 }

@@ -937,6 +937,9 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             }
         }
     }
+    if let Some(d) = &ed.run_dialog {
+        draw_run_dialog(&mut p, ed, d, cols, rows);
+    }
     if let Some(l) = &ed.launcher {
         draw_launcher(&mut p, l, cols, rows + ed.status_rows(), &ed.preedit);
     }
@@ -2675,6 +2678,164 @@ fn draw_read_view(p: &mut Painter, g: &crate::grep_panel::GrepPanel, v: &crate::
             p.out.push(Instance::fill(end as f32 * cell.w, y, cell.w, cell.h, FG));
         }
     }
+}
+
+/// 実行の構成の画面（画面の中央に重ねる）。左に一覧（上に ＋ ⧉ −）、右に欄、下にコマンドの見本とボタン
+fn draw_run_dialog(p: &mut Painter, ed: &Editor, d: &crate::run_dialog::RunDialog, cols: usize, rows: usize) {
+    use crate::run_dialog::{DialogButton, Focus};
+    const ACCENT: [f32; 4] = rgb(0x87afd7);
+    let cell = p.fonts.cell();
+    let w = cols.saturating_sub(6).clamp(40, 120).min(cols);
+    // 高さは中身に合わせる（一覧の数・欄の数とコマンドの見本の分）
+    let need = (d.configs.len() + 6).max(d.fields.len() + 13).max(16);
+    let h = need.min(30).min(rows.saturating_sub(2)).max(12.min(rows));
+    let (x0, y0) = ((cols - w) / 2, (rows - h) / 2);
+    let y = |r: usize| (y0 + r) as f32 * cell.h;
+    // 地と枠
+    p.out.push(Instance::fill((x0 as f32 - 0.5) * cell.w, y(0) - cell.h * 0.5, (w as f32 + 1.0) * cell.w, (h as f32 + 1.0) * cell.h, STATUS_FG));
+    p.out.push(Instance::fill((x0 as f32 - 0.5) * cell.w + 1.0, y(0) - cell.h * 0.5 + 1.0, (w as f32 + 1.0) * cell.w - 2.0, (h as f32 + 1.0) * cell.h - 2.0, rgb(0x141414)));
+    let saved = p.cols;
+    p.cols = x0 + w;
+    p.text(" 実行の構成", x0, y(0), FG);
+    let lw = (w / 3).clamp(22, 36);
+    let rx = x0 + lw + 2;
+    // 一覧と欄の間の線
+    p.out.push(Instance::fill((x0 + lw) as f32 * cell.w + cell.w * 0.5, y(1), 1.0, (h - 3) as f32 * cell.h, LINE_NO));
+    let mut buttons = Vec::new();
+    // 一覧の上: ＋ ⧉ −
+    let mut bx = x0 + 1;
+    for (label, b) in [("＋", DialogButton::Add), ("⧉", DialogButton::Copy), ("−", DialogButton::Delete)] {
+        let end = p.text(label, bx, y(1), STATUS_FG);
+        buttons.push((y0 + 1, bx, end, b));
+        bx = end + 2;
+    }
+    // 一覧
+    let list_focused = d.focus == Focus::List;
+    let body = h.saturating_sub(5);
+    let top = d.selected.saturating_sub(body.saturating_sub(1));
+    let mut list_rows = Vec::new();
+    p.cols = x0 + lw;
+    for (k, c) in d.configs.iter().enumerate().skip(top).take(body) {
+        let r = 2 + k - top;
+        let sel = k == d.selected;
+        if sel {
+            p.out.push(Instance::fill(x0 as f32 * cell.w, y(r), lw as f32 * cell.w, cell.h, if list_focused { FG } else { MATCH_BG }));
+        }
+        let (fg, dim) = if sel && list_focused { (BG, BG) } else { (FG, STATUS_FG) };
+        let mark = if Some(&c.name) == ed.run_selected.as_ref() { "● " } else { "  " };
+        let end = p.text(&format!(" {mark}{}", c.name), x0, y(r), fg);
+        let tag = if c.from == "IntelliJ" { format!("{}・IJ", c.kind_label()) } else { c.kind_label() };
+        let tw = p.width(&tag);
+        let tx = (x0 + lw).saturating_sub(tw + 1);
+        if tx > end {
+            p.text(&tag, tx, y(r), dim);
+        }
+        list_rows.push((y0 + r, k));
+    }
+    // 右: 欄
+    p.cols = x0 + w;
+    let mut field_rows = Vec::new();
+    let label_w = 14;
+    let fx = rx + label_w;
+    if let Some(c) = d.current() {
+        let mut r = 1;
+        let row = |p: &mut Painter, r: usize, label: &str, focused: bool| {
+            if focused {
+                p.out.push(Instance::fill(rx as f32 * cell.w - cell.w * 0.5, y(r), 2.0, cell.h, ACCENT));
+            }
+            p.text(label, rx, y(r), if focused { FG } else { STATUS_FG });
+        };
+        // 名前
+        row(p, r, "名前", d.focus == Focus::Name);
+        if d.focus == Focus::Name {
+            draw_vim_field(p, &d.name, fx, y(r), &ed.preedit);
+        } else {
+            p.text(&d.name.text(), fx, y(r), FG);
+        }
+        field_rows.push((y0 + r, Focus::Name));
+        r += 1;
+        // 種類（h/l で切り替え）
+        row(p, r, "種類", d.focus == Focus::Kind);
+        let kind = c.kind_label();
+        if d.focus == Focus::Kind {
+            let end = p.text(&format!("◀ {kind} ▶"), fx, y(r), FG);
+            p.text("   h/l で切り替え", end, y(r), STATUS_FG);
+        } else {
+            p.text(&kind, fx, y(r), FG);
+        }
+        field_rows.push((y0 + r, Focus::Kind));
+        r += 1;
+        for (i, (_, label, f)) in d.fields.iter().enumerate() {
+            let focused = d.focus == Focus::Field(i);
+            row(p, r, label, focused);
+            if focused {
+                draw_vim_field(p, f, fx, y(r), &ed.preedit);
+            } else {
+                let t = f.text();
+                p.text(if t.is_empty() { "—" } else { &t }, fx, y(r), if t.is_empty() { LINE_NO } else { FG });
+            }
+            field_rows.push((y0 + r, Focus::Field(i)));
+            r += 1;
+        }
+        r += 1;
+        let place = match (c.from, &c.kind) {
+            (_, nagi_workers::runconfig::Kind::Unsupported { .. }) => "この種類は nagi では動かせません（種類を選び直せば nagi の構成になる）",
+            ("IntelliJ", _) => "保存先: IntelliJ の構成（直すと nagi の構成として .nagi/run.conf に保存）",
+            _ => "保存先: nagi（.nagi/run.conf）",
+        };
+        p.text(place, rx, y(r), STATUS_FG);
+        r += 1;
+        // コマンドの見本（長ければ折り返す。ボタンの行の手前まで）
+        p.text("コマンド: ", rx, y(r), STATUS_FG);
+        let cx = rx + 10;
+        let width = (x0 + w).saturating_sub(cx + 1).max(10);
+        let mut line = String::new();
+        let mut lw = 0;
+        for g in ed.run_dialog_preview().graphemes(true) {
+            let gw = p.width(g);
+            if lw + gw > width {
+                if r + 2 >= h {
+                    line.push('…');
+                    break;
+                }
+                p.text(&line, cx, y(r), rgb(0xa8a8a8));
+                r += 1;
+                line.clear();
+                lw = 0;
+            }
+            line.push_str(g);
+            lw += gw;
+        }
+        p.text(&line, cx, y(r), rgb(0xa8a8a8));
+    } else {
+        p.text("構成がありません。＋（a）で追加", rx, y(1), STATUS_FG);
+    }
+    // 下: 案内とボタン
+    let help = match d.focus {
+        Focus::List => "j/k 選ぶ  Enter 直す  a 追加  c 複製  d 削除  r 実行  Ctrl+Enter 保存  Esc 閉じる",
+        Focus::Kind => "h/l 種類を切り替え  Tab 次の欄  Esc 一覧へ  Ctrl+Enter 保存",
+        _ => "Tab・Enter 次の欄  ↑↓ 前後  Esc ノーマル→一覧  Ctrl+Enter 保存",
+    };
+    let by = h - 1;
+    let mut bx = x0 + w;
+    let mut bs = Vec::new();
+    for (label, b) in [(" 取り消し ", DialogButton::Cancel), (" 保存 ", DialogButton::Save), (" 実行 ", DialogButton::Run)] {
+        let bw = p.width(label);
+        bx = bx.saturating_sub(bw + 1);
+        bs.push((bx, bw, label, b));
+    }
+    for (bx, bw, label, b) in bs {
+        let primary = b == DialogButton::Save;
+        p.out.push(Instance::fill(bx as f32 * cell.w, y(by), bw as f32 * cell.w, cell.h, if primary { ACCENT } else { MATCH_BG }));
+        p.text(label, bx, y(by), if primary { BG } else { FG });
+        buttons.push((y0 + by, bx, bx + bw, b));
+    }
+    p.cols = x0 + w.saturating_sub(30);
+    p.text(help, x0 + 1, y(by), STATUS_FG);
+    p.cols = saved;
+    *d.list_rows.borrow_mut() = list_rows;
+    *d.field_rows.borrow_mut() = field_rows;
+    *d.buttons.borrow_mut() = buttons;
 }
 
 /// ファインダーの候補を出す高さ（画面の 4 割、少なくとも 8 行）

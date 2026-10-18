@@ -20,6 +20,7 @@ mod dialogs;
 mod jumplist;
 mod read_view;
 mod run_configs;
+mod run_dialog;
 mod autoread;
 mod bottom_panel;
 mod terminal;
@@ -687,7 +688,7 @@ impl App {
             w.set_ime_allowed(want);
             self.ime_allowed = want;
         }
-        if want && matches!(ed.mode, Mode::CommitMsg | Mode::Launcher | Mode::Terminal) {
+        if want && matches!(ed.mode, Mode::CommitMsg | Mode::Launcher | Mode::Terminal | Mode::RunDialog) {
             // コミットメッセージの欄は、描いた縦棒の位置を draw で IME に知らせる
         } else if want {
             let cell = f.cell();
@@ -846,6 +847,15 @@ impl App {
     fn on_press(&mut self) {
         // ランチャー: 一覧の行を押すと選び、2 回で開く
         if let (Some(ed), Some(f)) = (&mut self.ed, &self.fonts) {
+            // 実行の構成の画面: 一覧・欄・ボタンを押す
+            if ed.mode == Mode::RunDialog {
+                let cell = f.cell();
+                let (row, col) = ((self.mouse.1 as f32 / cell.h) as usize, (self.mouse.0.max(0.0) as f32 / cell.w) as usize);
+                ed.run_dialog_click(row, col);
+                self.sync_ime();
+                self.draw();
+                return;
+            }
             if ed.mode == Mode::Launcher {
                 let row = (self.mouse.1 as f32 / f.cell().h).floor().max(0.0) as usize;
                 let now = Instant::now();

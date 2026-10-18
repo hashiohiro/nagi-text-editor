@@ -46,6 +46,8 @@ pub enum Mode {
     Terminal,
     /// ランチャー（起動時のプロジェクトの選択）
     Launcher,
+    /// 実行の構成の画面（run_dialog.rs）
+    RunDialog,
 }
 
 /// リストモードでいるパネル
@@ -305,6 +307,7 @@ pub struct Editor {
     pub run_selected: Option<String>,
     pub run_last: Option<String>,
     pub run_list: Vec<nagi_workers::runconfig::RunConfig>,
+    pub run_dialog: Option<crate::run_dialog::RunDialog>,
     pub right_tab: crate::right_panel::RightTab,
     pub right_hidden: bool,
     pub right_w: Option<usize>,
@@ -450,6 +453,7 @@ impl Editor {
             run_selected: None,
             run_last: None,
             run_list: Vec::new(),
+            run_dialog: None,
             right_tab: Default::default(),
             right_hidden: false,
             right_w: None,
@@ -622,6 +626,7 @@ impl Editor {
         matches!(self.mode, Mode::Command | Mode::Search | Mode::Replace | Mode::GrepPrompt)
             || (self.mode == Mode::Finder && self.finder.as_ref().is_some_and(|f| f.field.is_insert()))
             || self.mode == Mode::Terminal
+            || (self.mode == Mode::RunDialog && self.run_dialog.as_ref().is_some_and(|d| d.typing()))
             || (self.mode == Mode::Launcher && self.launcher.as_ref().is_some_and(|l| l.ask.as_ref().map_or(l.field.is_insert(), |a| a.1.is_insert())))
             || (self.mode == Mode::CommitMsg && self.commit.as_ref().is_some_and(|c| c.msg.is_insert()))
             || (self.mode == Mode::Log && self.log.as_ref().is_some_and(|l| l.filter.as_ref().is_some_and(|f| f.is_insert())))
@@ -821,6 +826,10 @@ impl Editor {
             Mode::Finder => self.finder_key(key),
             Mode::Launcher => {
                 self.launcher_key(key);
+                Effect::None
+            }
+            Mode::RunDialog => {
+                self.run_dialog_key(key);
                 Effect::None
             }
             Mode::GrepPrompt => {
@@ -1436,7 +1445,9 @@ impl Editor {
             "Run" => self.run_command(arg),
             "RunConfigs" => self.open_run_chooser(),
             "RunStop" => self.run_stop(),
-            "RunEdit" => self.run_edit(),
+            // :RunEdit は画面、:RunEdit! はファイル（.nagi/run.conf）をそのまま開く
+            "RunEdit!" => self.run_edit(),
+            "RunEdit" => self.open_run_dialog((!arg.is_empty()).then_some(arg)),
             "RunAdd" => self.run_add(arg),
             "Problems" => self.select_bottom_tab(crate::result_grid::BottomKind::Problems),
             "Output" => self.select_bottom_tab(crate::result_grid::BottomKind::Output),
@@ -1682,6 +1693,7 @@ impl Editor {
             }
             Mode::Finder => self.finder_insert(text),
             Mode::Launcher => self.launcher_insert(text),
+            Mode::RunDialog => self.run_dialog_insert(text),
             Mode::Terminal => self.terminal_input(text),
             Mode::GrepPrompt => self.grep_insert(text),
             Mode::CommitMsg => self.commit_msg_insert(text),
