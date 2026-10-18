@@ -77,6 +77,7 @@ const EX_COMMANDS: &[(&str, &str)] = &[
     ("Gpull", "pull"),
     ("Gfetch", "フェッチ"),
     ("Maven", "Maven（右の欄）。後にゴールを書けば実行"),
+    ("TreeSync", "プロジェクトの木を開いているファイルに合わせる・合わせない（切り替え）"),
     ("MarkdownPreview", "Markdown のプレビュー（右の欄）を出す・閉じる"),
     ("Project", "プロジェクトを開く（最近のプロジェクト・IntelliJ・Eclipse）。後にフォルダを書けばそこを開く"),
     ("Db", "データベース（右の欄）"),

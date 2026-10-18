@@ -283,6 +283,8 @@ pub struct Editor {
     pub(crate) git: crate::git_ui::GitState,
     /// 左の欄・下のパネルを隠しているか（中身は残す）
     pub left_hidden: bool,
+    /// 開いているファイルに木を合わせる（:TreeSync で切り替え。既定は合わせる）
+    pub tree_sync: bool,
     pub bottom_hidden: bool,
     /// 右の欄（データベース・Maven）と、下のパネルのクエリの結果
     pub db: Option<crate::db_panel::DbPanel>,
@@ -390,6 +392,7 @@ impl Editor {
             launcher: None,
             md_cache: Default::default(),
             md_preview: None,
+            tree_sync: true,
             grep: None,
             tree: None,
             list_side: Side::Bottom,
@@ -1376,6 +1379,11 @@ impl Editor {
             "e" | "edit" if !arg.is_empty() && std::path::Path::new(arg).is_dir() => self.open_project(PathBuf::from(arg)),
             "e" | "edit" if !arg.is_empty() => self.edit_file(PathBuf::from(arg)),
             "MarkdownPreview" | "MdPreview" => self.toggle_md_preview(),
+            "TreeSync" => {
+                self.tree_sync = !self.tree_sync;
+                self.message = if self.tree_sync { "木を開いているファイルに合わせます".into() } else { "木を開いているファイルに合わせません".into() };
+                self.sync_tree();
+            }
             "Project" | "project" if arg.is_empty() => self.pick_project(),
             "Project" | "project" => self.open_project(PathBuf::from(arg)),
             "e!" | "edit!" => self.reload(),
@@ -1460,6 +1468,7 @@ impl Editor {
             Some((Some("palette"), _)) => self.open_finder(crate::finder::Source::Commands),
             Some((Some("finder.symbols"), _)) => self.symbol_search(false),
             Some((Some("finder.projects"), _)) => self.pick_project(),
+            Some((Some("tree.select_file"), _)) => self.select_in_tree(),
             Some((Some("markdown.preview"), _)) => self.toggle_md_preview(),
             Some((Some("finder.types"), _)) => self.symbol_search(true),
             Some((Some("outline"), _)) => self.outline(),

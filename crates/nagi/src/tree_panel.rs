@@ -38,6 +38,8 @@ pub struct TreePanel {
     loading: std::collections::HashSet<PathBuf>,
     /// 開いたときに選びたいファイル（そこまでのフォルダが届くたびに展開を進める）
     reveal: Option<PathBuf>,
+    /// 最後に合わせた開いているファイル（変わったら木をそこまで展開して選ぶ）
+    synced: Option<PathBuf>,
     pending_g: bool,
     pending_w: bool,
 }
@@ -157,6 +159,33 @@ impl TreePanel {
 }
 
 impl Editor {
+    /// 開いているファイルに木を合わせる（IntelliJ の Always Select Opened File）。木が出ていて、木にいないとき、
+    /// 開いているファイルが変わっていたら、そこまで展開して選ぶ（描く前に呼ぶ）
+    pub(crate) fn sync_tree(&mut self) {
+        if !self.tree_sync || self.left_hidden || self.left_tab != LeftTab::Project || (self.mode == Mode::List && self.list_side == crate::editor::Side::Left) {
+            return;
+        }
+        let current = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
+        let waker = self.waker_or_noop();
+        let Some(t) = &mut self.tree else { return };
+        if current.is_none() || t.synced == current {
+            return;
+        }
+        t.synced = current.clone();
+        if current.as_ref().is_some_and(|c| c.starts_with(&t.root)) {
+            t.reveal = current;
+            t.advance_reveal(&waker);
+        }
+    }
+
+    /// SelectInProjectView（Alt+F1）: 今のファイルを木で選ぶ（木を出して移る）
+    pub(crate) fn select_in_tree(&mut self) {
+        if let Some(t) = &mut self.tree {
+            t.synced = None;
+        }
+        self.open_tree();
+    }
+
     fn waker_or_noop(&self) -> nagi_workers::Waker {
         self.waker.clone().unwrap_or_else(|| std::sync::Arc::new(|| {}))
     }
@@ -223,6 +252,7 @@ impl Editor {
                 rx,
                 loading: Default::default(),
                 reveal: None,
+                synced: None,
                 pending_g: false,
                 pending_w: false,
             };
@@ -232,6 +262,7 @@ impl Editor {
         self.left_tab = LeftTab::Project;
         self.left_hidden = false;
         let t = self.tree.as_mut().unwrap();
+        t.synced = current.clone();
         t.reveal = current;
         t.advance_reveal(&waker);
         self.list_side = crate::editor::Side::Left;
@@ -435,6 +466,50 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         panic!("ツリーが読み終わらない");
+    }
+
+    /// 開いているファイルが変わると、木をそこまで展開して選ぶ（木にいる間は動かさない）
+    #[test]
+    fn follows_open_file() {
+        let dir = std::env::temp_dir().join(format!("nagi-tree-sync-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::create_dir_all(dir.join("a/b")).unwrap();
+        std::fs::create_dir_all(dir.join("c")).unwrap();
+        std::fs::write(dir.join("a/b/deep.txt"), "x\n").unwrap();
+        std::fs::write(dir.join("c/other.txt"), "y\n").unwrap();
+        let mut buf = Buffer::open(&dir.join("c/other.txt")).unwrap();
+        buf.path = Some(dir.join("c/other.txt"));
+        let mut e = Editor::new(buf, None);
+        e.set_screen(120, 40);
+        e.open_tree();
+        let settle = |e: &mut Editor| {
+            for _ in 0..500 {
+                e.poll_tree();
+                e.sync_tree();
+                if e.tree.as_ref().is_some_and(|t| !t.loading() && t.reveal.is_none()) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+        };
+        settle(&mut e);
+        let sel = |e: &Editor| e.tree.as_ref().map(|t| t.rows[t.selected].path.clone()).unwrap();
+        assert!(sel(&e).ends_with("other.txt"));
+        // 本文へ戻って別のファイルを開くと、木もそこへ
+        e.mode = Mode::Normal;
+        e.edit_file(dir.join("a/b/deep.txt"));
+        e.sync_tree();
+        settle(&mut e);
+        assert!(sel(&e).ends_with("deep.txt"), "{:?}", sel(&e));
+        // :TreeSync で止める
+        for k in nagi_vim::parse_keys(":TreeSync<CR>", " ") {
+            e.key(k);
+        }
+        e.edit_file(dir.join("c/other.txt"));
+        e.sync_tree();
+        settle(&mut e);
+        assert!(sel(&e).ends_with("deep.txt"), "止めたら動かさない");
     }
 
     #[test]

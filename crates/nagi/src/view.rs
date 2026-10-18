@@ -464,6 +464,8 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     ed.set_screen(cols, rows);
     // Markdown のプレビュー: 打った内容と幅に合わせて作り直し、カーソルの行へ送る
     ed.refresh_md_preview();
+    // プロジェクトの木を開いているファイルに合わせる
+    ed.sync_tree();
     let bar = (cell.w / 6.0).round().max(2.0);
     let underline = (cell.h / 16.0).round().max(1.0);
     let mut p = Painter { out: Vec::with_capacity(cols * rows + 64), fonts, r, cols, bar, underline, caret_at: None };
