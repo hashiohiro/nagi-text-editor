@@ -170,12 +170,19 @@ pub fn receiver_before(line: &str, dot: usize, var: &dyn Fn(&str) -> Option<Stri
 }
 
 /// 打った語に合うか。(一致の度合い: 0 前方一致（大文字小文字も同じ）・1 前方一致・2 飛ばし打ち, あいまいさの点)
-fn matches(prefix: &str, q: &Query, name: &str) -> Option<(u8, i32)> {
+/// `case`: 設定の「大文字小文字」（first 最初の文字だけ区別・none 区別しない・all 区別する）
+fn matches(prefix: &str, q: &Query, name: &str, case: &str) -> Option<(u8, i32)> {
     if prefix.is_empty() {
         return Some((0, 0));
     }
     if name == prefix {
         return None;
+    }
+    // 区別する文字が合わなければ外す
+    match case {
+        "all" if !subsequence(prefix, name) => return None,
+        "first" if prefix.chars().next() != name.chars().next() && !name.starts_with(prefix.chars().next().unwrap_or(' ')) => return None,
+        _ => {}
     }
     if name.starts_with(prefix) {
         return Some((0, 0));
@@ -184,6 +191,12 @@ fn matches(prefix: &str, q: &Query, name: &str) -> Option<(u8, i32)> {
         return Some((1, 0));
     }
     q.score(name).map(|s| (2, s))
+}
+
+/// `p` の文字が `s` に同じ順で（大文字小文字も同じに）出てくるか
+fn subsequence(p: &str, s: &str) -> bool {
+    let mut it = s.chars();
+    p.chars().all(|c| it.any(|x| x == c))
 }
 
 impl Editor {
@@ -259,9 +272,11 @@ impl Editor {
         let words = regex::Regex::new(r"[A-Za-z_$][\w$]*").unwrap();
         let mut ws_list: Vec<(usize, &str)> = words.find_iter(&src).filter(|m| m.start() != start).map(|m| (m.start().abs_diff(start), m.as_str())).collect();
         ws_list.sort_by_key(|x| x.0);
-        let kws = keywords(lang);
-        for (_, w) in ws_list {
-            if w.len() > 1 && !kws.contains(&w) {
+        let kws: &[&str] = if self.settings.bool("completion.keywords") { keywords(lang) } else { &[] };
+        let all_kws = keywords(lang);
+        let words_on = self.settings.bool("completion.words");
+        for (_, w) in ws_list.into_iter().filter(|_| words_on) {
+            if w.len() > 1 && !all_kws.contains(&w) {
                 let call = src.contains(&format!("{w}("));
                 push(&mut out, Cand { name: w.to_string(), mark: 'v', note: String::new(), call: None, rank: 0 + u8::from(call) * 2 });
             }
@@ -292,12 +307,13 @@ impl Editor {
         }
         let prefix = self.buf.slice_string(c.start, abs);
         let q = Query::new(&prefix);
+        let case = self.settings.get("completion.case");
         let mut scored: Vec<(u8, u8, i32, usize, usize)> = st
             .all
             .iter()
             .enumerate()
             // 打っていなければ集めた順（定義の順・近い語の順）、打っていれば一致の度合い → 短い順
-            .filter_map(|(i, cand)| matches(&prefix, &q, &cand.name).map(|(m, s)| (m, cand.rank, -s, if prefix.is_empty() { 0 } else { cand.name.len() }, i)))
+            .filter_map(|(i, cand)| matches(&prefix, &q, &cand.name, &case).map(|(m, s)| (m, cand.rank, -s, if prefix.is_empty() { 0 } else { cand.name.len() }, i)))
             .collect();
         scored.sort();
         st.shown = scored.into_iter().map(|x| x.4).take(500).collect();
@@ -364,6 +380,39 @@ impl Editor {
                 false
             }
         }
+    }
+
+    /// 打ったキーの後に、設定の「自動で出す」の予約をする（語の文字が設定の数だけ並んだとき・`.` の後。続けて打てば待ち直す）
+    pub(crate) fn schedule_auto_complete(&mut self, key: Key) {
+        self.auto_complete_at = None;
+        if self.mode != crate::editor::Mode::Insert || self.completion.is_some() || !self.settings.bool("completion.auto") || self.console_source().is_some() {
+            return;
+        }
+        let Key::Char(c) = key else { return };
+        let line = self.buf.line(self.cursor.line);
+        let b = self.cursor.byte.min(line.len());
+        let n = line[..b].chars().rev().take_while(|c| word_char(*c)).count();
+        if c == '.' || (word_char(c) && n >= self.settings.int("completion.min_chars") as usize) {
+            self.auto_complete_at = Some(std::time::Instant::now() + std::time::Duration::from_millis(self.settings.int("completion.delay_ms") as u64));
+        }
+    }
+
+    /// 予約した時刻が来たら一覧を出す（候補が無ければ何も出さない）。出したら true
+    pub fn fire_auto_complete(&mut self, now: std::time::Instant) -> bool {
+        if !self.auto_complete_at.is_some_and(|t| now >= t) {
+            return false;
+        }
+        self.auto_complete_at = None;
+        if self.mode != crate::editor::Mode::Insert || self.completion.is_some() {
+            return false;
+        }
+        let msg = self.message.clone();
+        self.start_smart_completion();
+        // 自動で出すときは「候補はありません」を出さない
+        if self.completion.is_none() {
+            self.message = msg;
+        }
+        self.completion.is_some()
     }
 
     /// 選んでいる候補で決める（メソッドは () も入れる）
@@ -455,5 +504,28 @@ mod tests {
         // Esc は一覧だけ閉じる
         keys(&mut e, "<Esc>o<C-Space><Esc>");
         assert_eq!(e.mode, crate::editor::Mode::Insert);
+    }
+
+    /// 設定: 自動で出す（語の文字が 2 つ並んだら、待ち時間の後）、大文字小文字を区別する、予約語を出さない
+    #[test]
+    fn settings_auto_and_case() {
+        let mut e = Editor::new(Buffer::from_str("fooBar foobaz Fooqux\n"), None);
+        e.set_screen(100, 30);
+        e.settings.set("completion.auto", "true", false);
+        e.settings.set("completion.delay_ms", "0", false);
+        e.settings.set("completion.case", "all", false);
+        e.settings.set("completion.keywords", "false", false);
+        keys(&mut e, "Go");
+        keys(&mut e, "f");
+        assert!(e.auto_complete_at.is_none(), "1 文字では出さない");
+        keys(&mut e, "o");
+        assert!(e.auto_complete_at.is_some());
+        assert!(e.fire_auto_complete(std::time::Instant::now()));
+        let items = e.completion.as_ref().unwrap().items.clone();
+        assert!(items.contains(&"fooBar".to_string()) && items.contains(&"foobaz".to_string()));
+        assert!(!items.contains(&"Fooqux".to_string()), "区別するので Fooqux は出ない: {items:?}");
+        // 打つと絞り込む（区別する: B は fooBar だけ）
+        keys(&mut e, "oB");
+        assert_eq!(e.completion.as_ref().unwrap().items, ["fooBar"]);
     }
 }

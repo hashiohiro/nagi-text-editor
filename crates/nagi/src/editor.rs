@@ -315,6 +315,8 @@ pub struct Editor {
     pub settings_dialog: Option<crate::settings_dialog::SettingsDialog>,
     /// .ideavimrc に clipboard=unnamed があるか（設定の「クリップボード」と合わせて決める）
     pub rc_clipboard: bool,
+    /// 入力補完を自動で出す時刻（設定の「打っている間に自動で出す」）
+    pub auto_complete_at: Option<std::time::Instant>,
     pub right_tab: crate::right_panel::RightTab,
     pub right_hidden: bool,
     pub right_w: Option<usize>,
@@ -469,6 +471,7 @@ impl Editor {
             settings: crate::settings::Settings::load(None),
             settings_dialog: None,
             rc_clipboard: false,
+            auto_complete_at: None,
             right_tab: Default::default(),
             right_hidden: false,
             right_w: None,
@@ -740,6 +743,17 @@ impl Editor {
     }
 
     pub fn key(&mut self, key: Key) -> Effect {
+        let effect = self.key_inner(key);
+        // 入力補完を打っている間に自動で出す（設定）
+        if self.mode == Mode::Insert && self.settings.bool("completion.auto") {
+            self.schedule_auto_complete(key);
+        } else {
+            self.auto_complete_at = None;
+        }
+        effect
+    }
+
+    fn key_inner(&mut self, key: Key) -> Effect {
         // 先頭部分だけを表示している間は、全体が届くのを待ってから処理する（先頭部分を編集してしまわない）
         self.finish_load();
         // 入力欄での Ctrl+V（Shift+Insert）は貼り付け。ファインダーの Ctrl+V は縦に分割して開く

@@ -1316,6 +1316,10 @@ impl ApplicationHandler for App {
             if self.held.as_ref().is_some_and(|h| now >= h.3) {
                 self.on_held(el);
             }
+            // 入力補完を自動で出す（設定）
+            if self.ed.as_mut().is_some_and(|e| e.fire_auto_complete(now)) {
+                self.draw();
+            }
             if self.replay_deadline.is_some_and(|d| now >= d) {
                 self.replay_deadline = None;
                 if let Some(k) = self.replay.pop_front() {
@@ -1342,7 +1346,8 @@ impl ApplicationHandler for App {
                 }
             }
         }
-        let deadline = [self.map_deadline, self.snap_deadline, self.autoscroll_deadline, self.replay_deadline, self.held.as_ref().map(|h| h.3)].into_iter().flatten().min();
+        let auto = self.ed.as_ref().and_then(|e| e.auto_complete_at);
+        let deadline = [self.map_deadline, self.snap_deadline, self.autoscroll_deadline, self.replay_deadline, self.held.as_ref().map(|h| h.3), auto].into_iter().flatten().min();
         el.set_control_flow(if self.scroll_anim.is_some() {
             ControlFlow::Poll
         } else {
