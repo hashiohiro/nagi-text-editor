@@ -301,6 +301,10 @@ pub struct Editor {
     pub problems: crate::bottom_panel::ProblemsView,
     /// 下の欄の「ターミナル」の窓たち
     pub terminals: crate::terminal::Terminals,
+    /// 実行の構成: 選んでいるもの・最後に動かしたもの・一覧に出しているもの（run_configs.rs）
+    pub run_selected: Option<String>,
+    pub run_last: Option<String>,
+    pub run_list: Vec<nagi_workers::runconfig::RunConfig>,
     pub right_tab: crate::right_panel::RightTab,
     pub right_hidden: bool,
     pub right_w: Option<usize>,
@@ -443,6 +447,9 @@ impl Editor {
             grep_other: None,
             problems: Default::default(),
             terminals: Default::default(),
+            run_selected: None,
+            run_last: None,
+            run_list: Vec::new(),
             right_tab: Default::default(),
             right_hidden: false,
             right_w: None,
@@ -732,6 +739,19 @@ impl Editor {
         // SQL コンソールの Ctrl+Enter（Ctrl-m として届く）: カーソルのある文を流す
         if key == Key::Ctrl('m') && matches!(self.mode, Mode::Normal | Mode::Insert | Mode::Visual { .. }) && self.console_source().is_some() {
             self.db_run_at_cursor();
+            return Effect::None;
+        }
+        // 実行の構成（IntelliJ と同じ。入力欄にいるとき以外はどのモードからでも）
+        if matches!(key, Key::F(40..=43)) && !self.has_prompt() && self.mode != Mode::Finder {
+            if self.mode == Mode::Insert {
+                self.key(Key::Esc);
+            }
+            match key {
+                Key::F(40) => self.run_command(""),
+                Key::F(41) => self.open_run_chooser(),
+                Key::F(42) => self.run_stop(),
+                _ => self.run_again(),
+            }
             return Effect::None;
         }
         // Alt-1 プロジェクト、Alt-0 コミット（IntelliJ と同じ。どのモードからでも）
@@ -1413,6 +1433,10 @@ impl Editor {
             "e" | "edit" if !arg.is_empty() => self.edit_file(PathBuf::from(arg)),
             "MarkdownPreview" | "MdPreview" => self.toggle_md_preview(),
             "Terminal" | "term" => self.terminal_command(arg),
+            "Run" => self.run_command(arg),
+            "RunConfigs" => self.open_run_chooser(),
+            "RunStop" => self.run_stop(),
+            "RunEdit" => self.run_edit(),
             "Problems" => self.select_bottom_tab(crate::result_grid::BottomKind::Problems),
             "Output" => self.select_bottom_tab(crate::result_grid::BottomKind::Output),
             "TreeSync" => {

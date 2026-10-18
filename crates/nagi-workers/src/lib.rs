@@ -9,6 +9,7 @@ pub mod index;
 pub mod jobs;
 pub mod maven;
 pub mod project;
+pub mod runconfig;
 pub mod salesforce;
 pub mod term;
 pub mod wsl;

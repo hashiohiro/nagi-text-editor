@@ -222,6 +222,25 @@ fn workspace_members(ws: &Path) -> Vec<(String, PathBuf)> {
     out
 }
 
+/// IntelliJ の作業状態のファイルの中身（設定フォルダの workspace\<ID>.xml と .idea/workspace.xml の、あるもの全部。新しい形が先）
+pub fn workspace_xmls(root: &Path) -> Vec<String> {
+    let mut best: Option<(u64, PathBuf)> = None;
+    for cfg in jetbrains_dirs() {
+        let Ok(s) = std::fs::read_to_string(cfg.join("options").join("recentProjects.xml")) else { continue };
+        for e in recent_entries(&s) {
+            if same_path(&e.0, root) {
+                if let Some(id) = e.2 {
+                    let f = cfg.join("workspace").join(format!("{id}.xml"));
+                    if f.is_file() && best.as_ref().is_none_or(|b| e.1 > b.0) {
+                        best = Some((e.1, f));
+                    }
+                }
+            }
+        }
+    }
+    [best.map(|b| b.1), Some(root.join(".idea").join("workspace.xml"))].into_iter().flatten().filter_map(|f| std::fs::read_to_string(f).ok()).collect()
+}
+
 /// 前に開いていたファイル（IntelliJ の作業状態から）
 pub fn open_files(root: &Path) -> Vec<OpenFile> {
     // 新しい IntelliJ: 設定フォルダの workspace\<ID>.xml（ID は recentProjects.xml に）

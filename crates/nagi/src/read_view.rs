@@ -39,12 +39,14 @@ impl ReadView {
         let text = lines.join("\n");
         let mut ed = Box::new(Editor::new(nagi_core::Buffer::from_str(&text), None));
         ed.set_screen(400, 12);
-        // ログは新しい行が下に増えるので、最後の行から
+        // ログは新しい行が下に増えるので、最後の行の行末から（追いかける）
         ed.key(Key::Char('G'));
+        ed.key(Key::Char('$'));
         ReadView { ed, lines: lines.len(), text }
     }
 
-    /// 行が増えた・変わったら作り直す。カーソルの位置は残す（最後の行にいれば、新しい最後の行へ追いかける）
+    /// 行が増えた・変わったら作り直す。カーソルが最後の行にいれば、新しい最後の行の行末へ追いかけ、表示も合わせる。
+    /// カーソルを上へ動かせば追いかけるのをやめ（その場に残す）、最後の行へ戻せばまた追いかける
     pub fn set_lines(&mut self, lines: &[String]) {
         if lines.len() == self.lines && self.ed.buf.line_count() >= lines.len() {
             return;
@@ -58,6 +60,7 @@ impl ReadView {
         self.ed.anchor = anchor;
         if follow && !matches!(mode, Mode::Visual { .. }) {
             self.ed.key(Key::Char('G'));
+            self.ed.key(Key::Char('$'));
         } else {
             self.ed.cursor = cursor;
             self.ed.top = top;

@@ -720,6 +720,11 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     p.out.push(Instance::fill(0.0, y, w as f32, h as f32 - y, BG));
     let name = ed.buf.path.as_ref().map_or("[No Name]".to_string(), |p| p.display().to_string());
     let keys = format!("{}{}", ed.pending_keys.iter().map(|k| k.label()).collect::<String>(), ed.showcmd);
+    // 選んでいる実行の構成（Shift+F10 で動かすもの）
+    let keys = match &ed.run_selected {
+        Some(r) => format!("{keys}   ▶ {r}"),
+        None => keys,
+    };
     // git のブランチ（main ↑1）
     let keys = match ed.git_branch_label() {
         Some(b) => format!("{keys}   {b}"),

@@ -29,6 +29,8 @@ pub enum Source {
     Outline,
     /// 最近のプロジェクト（Nagi・IntelliJ・WebStorm・Eclipse）と、Eclipse のワークスペースの中のプロジェクト
     Projects,
+    /// 実行の構成（選ぶと動かす）
+    RunConfigs,
 }
 
 /// コマンドパレットの項目（説明, Ex コマンド）
@@ -76,6 +78,7 @@ impl Source {
             Source::Types => "型",
             Source::Outline => "構造",
             Source::Projects => "プロジェクト",
+            Source::RunConfigs => "実行の構成",
         }
     }
 }
@@ -252,6 +255,7 @@ impl Editor {
                     f.items.push(format!("{label}  :{cmd}"));
                 }
             }
+            Source::RunConfigs => f.items = self.run_list_items(),
             Source::Projects => {
                 let (tx, rx) = std::sync::mpsc::channel();
                 let waker = self.waker.clone();
@@ -404,7 +408,7 @@ impl Editor {
         self.mode = Mode::Normal;
         let Some(&(i, _)) = f.hits.get(f.selected) else { return Effect::None };
         let i = i as usize;
-        if let (Some(v), false) = (split, matches!(f.source, Source::Commands | Source::Outline | Source::Projects)) {
+        if let (Some(v), false) = (split, matches!(f.source, Source::Commands | Source::Outline | Source::Projects | Source::RunConfigs)) {
             self.split(v);
         }
         match f.source {
@@ -414,6 +418,11 @@ impl Editor {
                 self.edit_file(if p.is_absolute() { p } else { f.root.join(p) });
             }
             Source::Buffers => self.switch_doc(f.docs[i]),
+            Source::RunConfigs => {
+                if let Some(c) = self.run_list.get(i).cloned() {
+                    self.run_config(c);
+                }
+            }
             Source::Commands => {
                 let cmd = f.items[i].rsplit_once("  :").map_or("", |(_, c)| c).to_string();
                 return self.run_ex(&cmd);

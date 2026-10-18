@@ -255,6 +255,9 @@ impl Editor {
         self.diags.clear();
         self.finder = None;
         self.mode = Mode::Normal;
+        // 実行の構成は、選んでいたものを忘れて読み直す（ステータスバーに出す）
+        self.run_selected = None;
+        self.run_last = None;
         // 前に開いていたファイル（IntelliJ）。前面にあったものを最後に開く
         let mut files = project::open_files(&p.root);
         files.sort_by_key(|f| f.current);
@@ -290,6 +293,9 @@ impl Editor {
         let ex = if p.excludes.is_empty() { String::new() } else { format!("、除外 {} か所", p.excludes.len()) };
         let files = if restored > 0 { format!("、前に開いていたファイル {restored} 件") } else { String::new() };
         self.message = format!("{what}「{}」を開きました{files}{ex}", p.name);
+        if !cfg!(test) {
+            self.load_run_configs();
+        }
     }
 }
 

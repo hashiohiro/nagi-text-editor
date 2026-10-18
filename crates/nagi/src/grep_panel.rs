@@ -662,7 +662,7 @@ mod tests {
         assert_eq!(e.mode, Mode::List);
         // 末尾を追いかけている。gg で先頭、W で次の語、yiw でヤンク（クリップボードにも）
         assert_eq!(e.grep.as_ref().unwrap().view.as_ref().unwrap().ed.cursor.line, 2);
-        keys(&mut e, "ggWyiw");
+        keys(&mut e, "gg0Wyiw");
         assert_eq!(get().unwrap(), "Scanning");
         // V j y で 2 行
         keys(&mut e, "Vjy");
@@ -701,5 +701,22 @@ mod tests {
         e.sync_output_view();
         let v = e.grep.as_ref().unwrap().view.as_ref().unwrap();
         assert_eq!((v.ed.mode, v.ed.cursor.line, v.ed.buf.line_count()), (Mode::Normal, 199, 200));
+        // 最後の行の行末にいて、表示も最後の行が見える
+        assert_eq!(v.ed.cursor.byte, "[INFO] line 199".len() - 1);
+        assert!(v.ed.top + v.ed.rows > 199, "top {} rows {}", v.ed.top, v.ed.rows);
+        let push = |e: &mut Editor, t: &str| {
+            e.grep.as_mut().unwrap().hits.push(Hit { path: String::new(), line: 0, range: (0, 0), text: t.into() });
+            e.sync_output_view();
+        };
+        let line = |e: &Editor| e.grep.as_ref().unwrap().view.as_ref().unwrap().ed.cursor.line;
+        // カーソルを動かしたら追いかけない
+        e.focus_panel();
+        keys(&mut e, "5k");
+        push(&mut e, "[INFO] a");
+        assert_eq!(line(&e), 194);
+        // 最後の行へ戻せば、また追いかける
+        keys(&mut e, "G");
+        push(&mut e, "[INFO] b");
+        assert_eq!(line(&e), 201);
     }
 }

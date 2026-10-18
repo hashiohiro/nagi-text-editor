@@ -14,6 +14,37 @@ use crate::Waker;
 /// さかのぼって見られる行の数
 const SCROLLBACK: usize = 5000;
 
+/// コマンドの文字を引数に分ける（空白で区切り、"…" の中は 1 つ。"…" の中の \" は "）
+pub fn split_args(s: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let (mut quoted, mut any) = (false, false);
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' if quoted && chars.peek() == Some(&'"') => {
+                cur.push('"');
+                chars.next();
+            }
+            '"' => {
+                quoted = !quoted;
+                any = true;
+            }
+            c if c.is_whitespace() && !quoted => {
+                if any || !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+                any = false;
+            }
+            c => cur.push(c),
+        }
+    }
+    if any || !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
 pub struct Term {
     parser: Arc<Mutex<vt100::Parser>>,
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
@@ -37,17 +68,12 @@ impl Term {
     pub fn spawn(shell: &str, cwd: &Path, rows: u16, cols: u16, waker: Waker) -> Result<Term, String> {
         let (rows, cols) = (rows.max(2), cols.max(10));
         let pair = native_pty_system().openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }).map_err(|e| e.to_string())?;
-        // 先頭は "C:\Program Files\..." のように引用符で囲んだパスでもよい
+        // 空白で区切る。"C:\Program Files\..." のように引用符で囲めば 1 つ（中の \" は "）
         let shell = shell.trim();
-        let (prog, rest) = match shell.strip_prefix('"').and_then(|s| s.split_once('"')) {
-            Some((p, r)) => (p.to_string(), r.to_string()),
-            None => match shell.split_once(char::is_whitespace) {
-                Some((p, r)) => (p.to_string(), r.to_string()),
-                None => (shell.to_string(), String::new()),
-            },
-        };
+        let mut words = split_args(shell).into_iter();
+        let prog = words.next().unwrap_or_default();
         let mut cmd = CommandBuilder::new(if prog.is_empty() { "powershell.exe" } else { prog.as_str() });
-        for a in rest.split_whitespace() {
+        for a in words {
             cmd.arg(a);
         }
         if shell.to_ascii_lowercase().contains("powershell") || shell.to_ascii_lowercase().contains("pwsh") {
@@ -169,5 +195,12 @@ mod tests {
             assert!(start.elapsed().as_secs() < 15, "終わらない");
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
+    }
+
+    #[test]
+    fn split_quoted() {
+        assert_eq!(split_args(r#""C:\Program Files\Git\bin\bash.exe" --login -i"#), ["C:\\Program Files\\Git\\bin\\bash.exe", "--login", "-i"]);
+        assert_eq!(split_args(r#"wsl.exe -d kali sh -lc "echo \"a b\" && ls""#), ["wsl.exe", "-d", "kali", "sh", "-lc", "echo \"a b\" && ls"]);
+        assert_eq!(split_args(r#"cmd.exe /C """#), ["cmd.exe", "/C", ""]);
     }
 }

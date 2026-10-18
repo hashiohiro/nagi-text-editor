@@ -19,6 +19,7 @@ mod angular;
 mod dialogs;
 mod jumplist;
 mod read_view;
+mod run_configs;
 mod autoread;
 mod bottom_panel;
 mod terminal;
@@ -526,6 +527,11 @@ impl App {
                 NamedKey::PageDown => vec![VKey::PageDown],
                 // F12: 定義へ（IntelliJ・VS Code と同じ）
                 // Alt+F12: ターミナル（IntelliJ と同じ。F24 として渡す）
+                // 実行の構成（IntelliJ と同じ）: Shift+F10 実行、Alt+Shift+F10 選んで実行、Ctrl+F2 止める、Ctrl+F5 もう一度
+                NamedKey::F10 if alt && self.modifiers.shift_key() => vec![VKey::F(41)],
+                NamedKey::F10 if self.modifiers.shift_key() => vec![VKey::F(40)],
+                NamedKey::F2 if ctrl => vec![VKey::F(42)],
+                NamedKey::F5 if ctrl => vec![VKey::F(43)],
                 NamedKey::F12 if alt => vec![VKey::F(24)],
                 NamedKey::F12 => vec![VKey::F(12)],
                 _ => return,
