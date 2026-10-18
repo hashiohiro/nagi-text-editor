@@ -385,7 +385,7 @@ impl Editor {
     /// 打ったキーの後に、設定の「自動で出す」の予約をする（語の文字が設定の数だけ並んだとき・`.` の後。続けて打てば待ち直す）
     pub(crate) fn schedule_auto_complete(&mut self, key: Key) {
         self.auto_complete_at = None;
-        if self.mode != crate::editor::Mode::Insert || self.completion.is_some() || !self.settings.bool("completion.auto") || self.console_source().is_some() {
+        if self.state() != crate::editor::State::Insert || self.completion.is_some() || !self.settings.bool("completion.auto") || self.console_source().is_some() {
             return;
         }
         let Key::Char(c) = key else { return };
@@ -403,7 +403,7 @@ impl Editor {
             return false;
         }
         self.auto_complete_at = None;
-        if self.mode != crate::editor::Mode::Insert || self.completion.is_some() {
+        if self.state() != crate::editor::State::Insert || self.completion.is_some() {
             return false;
         }
         let msg = self.notify.text.clone();
@@ -503,7 +503,7 @@ mod tests {
         assert_eq!(e.buf.line(3), "    user.setName(x)");
         // Esc は一覧だけ閉じる
         keys(&mut e, "<Esc>o<C-Space><Esc>");
-        assert_eq!(e.mode, crate::editor::Mode::Insert);
+        assert_eq!(e.state(), crate::editor::State::Insert);
     }
 
     /// 設定: 自動で出す（語の文字が 2 つ並んだら、待ち時間の後）、大文字小文字を区別する、予約語を出さない

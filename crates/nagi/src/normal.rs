@@ -8,7 +8,7 @@ use nagi_vim::Key;
 use nagi_vim::cmd::{Action, Cmd, Kind, Motion as M, Op, Parse, Target, TextObj, parse_normal, parse_visual};
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::editor::{Editor, Effect, Mode};
+use crate::editor::{Editor, Effect, State};
 
 /// 移動の種類（オペレーターがどこまでを対象にするか）
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -29,7 +29,7 @@ fn leading_ws(line: &str) -> &str {
 impl Editor {
     pub(crate) fn normal_key(&mut self, key: Key) -> Effect {
         self.pending_keys.push(key);
-        let visual = matches!(self.mode, Mode::Visual { .. });
+        let visual = matches!(self.state(), State::Visual { .. });
         let parsed = if visual { parse_visual(&self.pending_keys) } else { parse_normal(&self.pending_keys) };
         match parsed {
             Parse::Incomplete => Effect::None,
@@ -69,10 +69,10 @@ impl Editor {
         if Self::is_change(&cmd.kind) && !self.replaying {
             self.dot_rec = Some(keys);
         }
-        let was_visual = matches!(self.mode, Mode::Visual { .. }).then(|| self.visual_range());
+        let was_visual = matches!(self.state(), State::Visual { .. }).then(|| self.visual_range());
         let effect = self.exec_inner(cmd);
         // Visual を抜けたら、選んでいた範囲を '< '> に残す
-        if let (Some((s, e, _)), false) = (was_visual, matches!(self.mode, Mode::Visual { .. })) {
+        if let (Some((s, e, _)), false) = (was_visual, matches!(self.state(), State::Visual { .. })) {
             let at = |a: usize| {
                 let (l, b) = self.buf.pos_of(a.min(self.buf.len_bytes()));
                 Cursor { line: l, byte: b, want_col: 0 }
@@ -82,14 +82,14 @@ impl Editor {
             self.marks.named.insert('>', b);
         }
         // Insert に入らなかった変更はここで記録を終える
-        if self.mode != Mode::Insert {
+        if self.state() != State::Insert {
             self.finish_dot();
         }
         // 跳んだ先が閉じた折りたたみの途中なら開く（検索・マーク・G など。Vim の foldopen と同じ）
         if !self.folds.is_empty() {
             self.open_folds_at_cursor();
         }
-        if matches!(self.mode, Mode::Normal) {
+        if matches!(self.state(), State::Normal) {
             self.clamp_normal();
         }
         effect
@@ -97,12 +97,12 @@ impl Editor {
 
     /// v / V / Ctrl-v: 同じ種類なら抜け、違う種類なら切り替える
     fn toggle_visual(&mut self, line: bool, block: bool) {
-        match self.mode {
-            Mode::Visual { line: l, block: b } if (l, b) == (line, block) => self.mode = Mode::Normal,
-            Mode::Visual { .. } => self.mode = Mode::Visual { line, block },
+        match self.state() {
+            State::Visual { line: l, block: b } if (l, b) == (line, block) => self.set_state(State::Normal),
+            State::Visual { .. } => self.set_state(State::Visual { line, block }),
             _ => {
                 self.anchor = self.abs();
-                self.mode = Mode::Visual { line, block };
+                self.set_state(State::Visual { line, block });
             }
         }
     }
@@ -127,8 +127,8 @@ impl Editor {
             return Effect::None;
         }
         let n = cmd.count.unwrap_or(1);
-        let visual = match self.mode {
-            Mode::Visual { line, .. } => Some(line),
+        let visual = match self.state() {
+            State::Visual { line, .. } => Some(line),
             _ => None,
         };
         match cmd.kind {
@@ -147,7 +147,7 @@ impl Editor {
             Kind::Operate(op, t) => self.operate(op, t, cmd.count, cmd.reg),
             Kind::VisualOp(op) => {
                 let (s, e, lw) = self.visual_range();
-                self.mode = Mode::Normal;
+                self.set_state(State::Normal);
                 self.apply(op, s, e, lw, cmd.reg);
             }
             Kind::VisualObj { inner, obj } => {
@@ -155,7 +155,7 @@ impl Editor {
                     self.anchor = s;
                     self.set_abs(self.prev_grapheme(e).max(s));
                     if lw {
-                        self.mode = Mode::Visual { line: true, block: false };
+                        self.set_state(State::Visual { line: true, block: false });
                     }
                 }
             }
@@ -381,8 +381,8 @@ impl Editor {
         let a = self.anchor.min(self.buf.len_bytes());
         let b = self.abs();
         let (s, e) = (a.min(b), a.max(b));
-        match self.mode {
-            Mode::Visual { line: true, .. } => {
+        match self.state() {
+            State::Visual { line: true, .. } => {
                 let (l1, l2) = (self.buf.pos_of(s).0, self.buf.pos_of(e).0);
                 let (s, e) = self.lines_range(l1, l2);
                 (s, e, true)
@@ -652,7 +652,7 @@ impl Editor {
                     self.set_abs(s);
                 }
                 // グループは Insert を抜けるまで開いたまま
-                self.mode = Mode::Insert;
+                self.set_state(State::Insert);
                 self.notify.clear();
             }
             Op::Indent | Op::Dedent => {
@@ -787,7 +787,7 @@ impl Editor {
         match a {
             Action::Esc => {
                 if visual.is_some() {
-                    self.mode = Mode::Normal;
+                    self.set_state(State::Normal);
                 }
                 self.notify.clear();
             }
@@ -818,7 +818,7 @@ impl Editor {
                     Some(_) => {
                         let (s, e, _) = self.visual_range();
                         let (a, b) = (self.buf.pos_of(s).0, self.buf.pos_of(e.saturating_sub(1)).0);
-                        self.mode = Mode::Normal;
+                        self.set_state(State::Normal);
                         (a, (b - a).max(1))
                     }
                     None => (self.cursor.line, n.max(2) - 1),
@@ -867,7 +867,7 @@ impl Editor {
                 None => self.goto_buffer("#"),
             },
             Action::Cmdline(':') => {
-                self.mode = Mode::Command;
+                self.set_state(State::Command);
                 self.cmdline = Default::default();
                 if visual.is_some() {
                     self.cmdline.set("'<,'>");
@@ -988,7 +988,7 @@ impl Editor {
     fn visual_put(&mut self, reg: Option<char>) {
         let (text, linewise) = self.get_register(reg);
         let (s, e, lw) = self.visual_range();
-        self.mode = Mode::Normal;
+        self.set_state(State::Normal);
         let nl = self.buf.newline();
         let mut t = text.replace('\n', nl);
         if lw && !linewise {
@@ -1030,7 +1030,7 @@ impl Editor {
         let (s, e) = match visual {
             Some(_) => {
                 let (s, e, _) = self.visual_range();
-                self.mode = Mode::Normal;
+                self.set_state(State::Normal);
                 (s, e)
             }
             None => {
@@ -1065,7 +1065,7 @@ impl Editor {
         let (s, e) = match visual {
             Some(_) => {
                 let (s, e, _) = self.visual_range();
-                self.mode = Mode::Normal;
+                self.set_state(State::Normal);
                 (s, e)
             }
             None => {

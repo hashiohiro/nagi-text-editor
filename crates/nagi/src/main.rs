@@ -81,7 +81,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc;
 
-use editor::{Editor, Effect, Mode};
+use editor::{Editor, Effect, State};
 use nagi_vim::{Feed, Key as VKey, Matcher, Rc};
 use std::time::{Duration, Instant};
 use nagi_core::Buffer;
@@ -656,7 +656,7 @@ impl App {
     /// 自分で繰り返す移動のキーか（本文・ビジュアル・一覧で、数や演算子の途中でないとき）
     fn repeatable(&self, keys: &[VKey]) -> bool {
         let Some(ed) = &self.ed else { return false };
-        let mode_ok = matches!(ed.mode, Mode::Normal | Mode::Visual { .. } | Mode::List | Mode::Log) && !ed.in_text_field();
+        let mode_ok = matches!(ed.state(), State::Normal | State::Visual { .. } | State::List | State::Log) && !ed.in_text_field();
         let key_ok = matches!(keys, [VKey::Char('h' | 'j' | 'k' | 'l' | 'w' | 'b' | 'e' | 'W' | 'B' | 'E') | VKey::Up | VKey::Down | VKey::Left | VKey::Right]);
         mode_ok && key_ok && ed.pending_keys.is_empty() && ed.preedit.is_empty() && self.matcher.pending().is_empty()
     }
@@ -709,7 +709,7 @@ impl App {
                 sample.present,
                 ime.as_micros(),
                 rt.as_micros(),
-                self.ed.as_ref().map(|e| e.mode)
+                self.ed.as_ref().map(|e| e.state())
             );
         }
         self.stats.push(sample);
@@ -719,12 +719,12 @@ impl App {
     fn feed(&mut self, k: VKey, el: &ActiveEventLoop) -> bool {
         // マッピングは Normal モードだけ（ideavimrc は nnoremap だけを使っている）。
         // リストモード（ツリー・検索結果）では leader で始まるものだけを通す（j/k などは置き換えない。architecture.md §7.1）
-        let mode = self.ed.as_ref().map(|e| e.mode);
+        let mode = self.ed.as_ref().map(|e| e.state());
         let leader = nagi_vim::parse_keys(&self.rc.leader, &self.rc.leader).first().copied();
         // パネルの入力欄にいる間は割り当てを通さない（Space などがそのまま文字になるように）
         let in_field = self.ed.as_ref().is_some_and(|e| e.in_text_field());
-        let list_leader = mode == Some(Mode::List) && !in_field && (!self.matcher.pending().is_empty() || Some(k) == leader);
-        let out = if mode == Some(Mode::Normal) || list_leader {
+        let list_leader = mode == Some(State::List) && !in_field && (!self.matcher.pending().is_empty() || Some(k) == leader);
+        let out = if mode == Some(State::Normal) || list_leader {
             match self.matcher.feed(&self.rc.keymap, k) {
                 Feed::Pending => {
                     self.map_deadline = Some(Instant::now() + TIMEOUT_LEN);
@@ -794,34 +794,34 @@ impl App {
     fn sync_ime(&mut self) {
         let rows = self.rows();
         let (Some(w), Some(ed), Some(f)) = (&self.window, &self.ed, &self.fonts) else { return };
-        let want = ed.mode == Mode::Insert || ed.has_prompt();
+        let want = ed.state() == State::Insert || ed.has_prompt();
         if want != self.ime_allowed {
             w.set_ime_allowed(want);
             self.ime_allowed = want;
         }
-        if want && matches!(ed.mode, Mode::CommitMsg | Mode::Launcher | Mode::Terminal | Mode::RunDialog | Mode::Settings) {
+        if want && matches!(ed.state(), State::CommitMsg | State::Launcher | State::Terminal | State::RunDialog | State::Settings) {
             // コミットメッセージの欄は、描いた縦棒の位置を draw で IME に知らせる
         } else if want {
             let cell = f.cell();
             let (col, row) = if ed.has_prompt() {
                 // 最下行の入力欄のカーソル位置
-                let (p, row) = match ed.mode {
-                    Mode::Replace if ed.replace_field == 1 => (&ed.repl, rows + 1),
-                    Mode::Command => (&ed.cmdline, rows),
-                    Mode::Finder => match &ed.finder {
+                let (p, row) = match ed.state() {
+                    State::Replace if ed.replace_field == 1 => (&ed.repl, rows + 1),
+                    State::Command => (&ed.cmdline, rows),
+                    State::Finder => match &ed.finder {
                         Some(f) => (&f.query, rows),
                         None => (&ed.query, rows),
                     },
-                    Mode::GrepPrompt => match &ed.grep {
+                    State::GrepPrompt => match &ed.grep {
                         Some(g) => (&g.query, rows),
                         None => (&ed.query, rows),
                     },
                     _ => (&ed.query, rows),
                 };
                 // 入力欄の前の印（`:` `/` は 1 セル、ファインダーの `> ` は 2 セル）
-                let lead = match ed.mode {
-                    Mode::Finder => 2,
-                    Mode::GrepPrompt => nagi_core::display_col(grep_panel::GREP_LEAD, grep_panel::GREP_LEAD.len(), false),
+                let lead = match ed.state() {
+                    State::Finder => 2,
+                    State::GrepPrompt => nagi_core::display_col(grep_panel::GREP_LEAD, grep_panel::GREP_LEAD.len(), false),
                     _ => 1,
                 };
                 (lead + nagi_core::display_col(&p.text, p.cursor, false), row)
@@ -1153,7 +1153,7 @@ impl App {
         ed.rows = rows;
         // Ctrl+クリックで定義へ、Ctrl+Alt+クリックで実装へ（IntelliJ と同じ）
         if clicks == 1 && self.modifiers.control_key() {
-            if ed.mode == Mode::Insert {
+            if ed.state() == State::Insert {
                 ed.key(VKey::Esc);
             }
             ed.click(row, col);
@@ -1190,8 +1190,8 @@ impl App {
         ed.rows = rows;
         // 画面の上下へはみ出したら端の行で選び、続きは自動スクロールで送る
         let r = row.clamp(0, rows as isize - 1) as usize;
-        let before = (ed.cursor, ed.mode);
-        let dragging = matches!(ed.mode, Mode::Visual { .. }) || (ed.top + r, col) != start;
+        let before = (ed.cursor, ed.state());
+        let dragging = matches!(ed.state(), State::Visual { .. }) || (ed.top + r, col) != start;
         if dragging {
             ed.drag(anchor, r, col);
         }
@@ -1199,7 +1199,7 @@ impl App {
         if outside && self.autoscroll_deadline.is_none() {
             self.autoscroll_deadline = Some(Instant::now());
         }
-        if before != (ed.cursor, ed.mode) {
+        if before != (ed.cursor, ed.state()) {
             self.sync_ime();
             self.draw();
         }

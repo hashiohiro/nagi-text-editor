@@ -6,7 +6,7 @@
 
 use nagi_vim::Key;
 
-use crate::editor::{Clipboard, Editor, Mode};
+use crate::editor::{Clipboard, Editor, State};
 use crate::vim_field::Registers;
 
 /// キーを流した結果
@@ -52,13 +52,13 @@ impl ReadView {
             return;
         }
         let follow = self.ed.cursor.line + 1 >= self.lines.max(1);
-        let (cursor, top, mode, anchor) = (self.ed.cursor, self.ed.top, self.ed.mode, self.ed.anchor);
+        let (cursor, top, mode, anchor) = (self.ed.cursor, self.ed.top, self.ed.state(), self.ed.anchor);
         self.text = lines.join("\n");
         self.lines = lines.len();
         self.rebuild();
-        self.ed.mode = mode;
+        self.ed.set_state(mode);
         self.ed.anchor = anchor;
-        if follow && !matches!(mode, Mode::Visual { .. }) {
+        if follow && !matches!(mode, State::Visual { .. }) {
             self.ed.key(Key::Char('G'));
             self.ed.key(Key::Char('$'));
         } else {
@@ -88,12 +88,12 @@ impl ReadView {
 
     /// 検索の入力中なら (前の印, 打っている語)
     pub fn prompt(&self) -> Option<(&'static str, &str)> {
-        (self.ed.mode == Mode::Search).then(|| (if self.ed.search.forward { "/" } else { "?" }, self.ed.query.text.as_str()))
+        (self.ed.state() == State::Search).then(|| (if self.ed.search.forward { "/" } else { "?" }, self.ed.query.text.as_str()))
     }
 
     /// キーを流す。`regs` は本文のレジスタ（共有するため、流す間だけ入れ替える）
     pub fn key(&mut self, key: Key, regs: &mut Registers, clip: Option<Clipboard>) -> ViewOut {
-        let normal = self.ed.mode == Mode::Normal && self.ed.pending_keys.is_empty();
+        let normal = self.ed.state() == State::Normal && self.ed.pending_keys.is_empty();
         match key {
             Key::Esc if normal => return ViewOut::Leave,
             Key::Char('q') if normal => return ViewOut::Quit,
@@ -101,7 +101,7 @@ impl ReadView {
             Key::Char(':') if normal => return ViewOut::Command,
             // Ctrl+C: 選んでいればそこを、選んでいなければ今の行をコピー
             Key::Ctrl('c') => {
-                let keys: &[Key] = if matches!(self.ed.mode, Mode::Visual { .. }) { &[Key::Char('y')] } else { &[Key::Char('y'), Key::Char('y')] };
+                let keys: &[Key] = if matches!(self.ed.state(), State::Visual { .. }) { &[Key::Char('y')] } else { &[Key::Char('y'), Key::Char('y')] };
                 let mut out = ViewOut::None;
                 for &k in keys {
                     out = self.key(k, regs, clip);
@@ -118,14 +118,14 @@ impl ReadView {
         std::mem::swap(&mut self.ed.registers, regs);
         // 読み取り専用: 挿入・置き換え・コマンドラインには入らない。中身が変わったら戻す
         let mut out = ViewOut::None;
-        if matches!(self.ed.mode, Mode::Insert | Mode::Command | Mode::Replace) {
-            self.ed.mode = Mode::Normal;
+        if matches!(self.ed.state(), State::Insert | State::Command | State::Replace) {
+            self.ed.set_state(State::Normal);
             out = ViewOut::ReadOnly;
         }
         if self.ed.buf.version != version {
             let cursor = self.ed.cursor;
             self.rebuild();
-            self.ed.mode = Mode::Normal;
+            self.ed.set_state(State::Normal);
             self.ed.cursor = cursor;
             self.ed.cursor.line = cursor.line.min(self.ed.buf.line_count().saturating_sub(1));
             self.ed.clamp_normal();
@@ -148,17 +148,17 @@ impl ReadView {
 
     /// 押した位置（見えている行・表示の列）へカーソルを置く。ビジュアルなら抜ける
     pub fn click(&mut self, row: usize, col: usize) {
-        if matches!(self.ed.mode, Mode::Visual { .. }) {
-            self.ed.mode = Mode::Normal;
+        if matches!(self.ed.state(), State::Visual { .. }) {
+            self.ed.set_state(State::Normal);
         }
         self.place(row, col);
     }
 
     /// ドラッグ: 押した位置からビジュアルで選ぶ
     pub fn drag(&mut self, row: usize, col: usize) {
-        if !matches!(self.ed.mode, Mode::Visual { .. }) {
+        if !matches!(self.ed.state(), State::Visual { .. }) {
             self.ed.anchor = self.ed.buf.line_start(self.ed.cursor.line) + self.ed.cursor.byte;
-            self.ed.mode = Mode::Visual { line: false, block: false };
+            self.ed.set_state(State::Visual { line: false, block: false });
         }
         self.place(row, col);
     }
@@ -169,7 +169,7 @@ impl ReadView {
         self.ed.cursor.line = line;
         self.ed.cursor.byte = nagi_core::byte_at_col(&text, col, false);
         self.ed.cursor.want_col = col;
-        if self.ed.mode == Mode::Normal {
+        if self.ed.state() == State::Normal {
             self.ed.clamp_normal();
         }
         self.ed.scroll_into_view();
@@ -185,7 +185,7 @@ impl ReadView {
 
     /// 描く用: 行 `line` の中のビジュアルの範囲（byte。無ければ None）
     pub fn visual_in(&self, line: usize) -> Option<(usize, usize)> {
-        let Mode::Visual { line: whole, block } = self.ed.mode else { return None };
+        let State::Visual { line: whole, block } = self.ed.state() else { return None };
         let start = self.ed.buf.line_start(line);
         let text = self.ed.buf.line(line);
         if block {
@@ -247,10 +247,10 @@ pub(crate) mod draw {
                 p.caret(end, y0);
             }
             None => {
-                let mode = match ed.mode {
-                    Mode::Visual { block: true, .. } => "   -- VISUAL BLOCK --",
-                    Mode::Visual { line: true, .. } => "   -- VISUAL LINE --",
-                    Mode::Visual { .. } => "   -- VISUAL --",
+                let mode = match ed.state() {
+                    State::Visual { block: true, .. } => "   -- VISUAL BLOCK --",
+                    State::Visual { line: true, .. } => "   -- VISUAL LINE --",
+                    State::Visual { .. } => "   -- VISUAL --",
                     _ => "",
                 };
                 let head = format!(

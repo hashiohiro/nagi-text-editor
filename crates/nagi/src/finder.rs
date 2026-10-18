@@ -10,7 +10,7 @@ use nagi_core::fuzzy::{Query, rank_ids, sort_hits};
 use nagi_vim::Key;
 use nagi_workers::files::FileWalk;
 
-use crate::editor::{Editor, Effect, Mode, Prompt};
+use crate::editor::{Editor, Effect, State, Prompt};
 use crate::vim_field::FieldOut;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -247,7 +247,7 @@ impl Editor {
         }
         f.refilter();
         self.finder = Some(f);
-        self.mode = Mode::Finder;
+        self.set_state(State::Finder);
         self.notify.clear();
     }
 
@@ -314,7 +314,7 @@ impl Editor {
 
     pub(crate) fn finder_key(&mut self, key: Key) -> Effect {
         let Some(f) = &mut self.finder else {
-            self.mode = Mode::Normal;
+            self.set_state(State::Normal);
             return Effect::None;
         };
         let normal = !f.field.is_insert() && f.field.ed.pending_keys.is_empty() && f.field.visual().is_none();
@@ -359,13 +359,13 @@ impl Editor {
 
     fn close_finder(&mut self) {
         self.finder = None;
-        self.mode = Mode::Normal;
+        self.set_state(State::Normal);
     }
 
     /// 選んだ候補を開く（コマンドなら実行する）。`split` は分割して開く（true: 左右、false: 上下）
     fn accept_finder(&mut self, split: Option<bool>) -> Effect {
         let Some(f) = self.finder.take() else { return Effect::None };
-        self.mode = Mode::Normal;
+        self.set_state(State::Normal);
         let Some(&(i, _)) = f.hits.get(f.selected) else { return Effect::None };
         let i = i as usize;
         if let (Some(v), false) = (split, matches!(f.source, Source::Commands | Source::Outline | Source::Projects | Source::RunConfigs)) {
@@ -506,7 +506,7 @@ mod tests {
         e.buf.path = Some(dir.join("README.md"));
         e.set_screen(100, 40);
         e.open_finder(Source::Files);
-        assert_eq!(e.mode, Mode::Finder);
+        assert_eq!(e.state(), State::Finder);
         wait_walk(&mut e);
         let f = e.finder.as_ref().unwrap();
         assert_eq!(f.items.len(), 3);
@@ -516,7 +516,7 @@ mod tests {
         let f = e.finder.as_ref().unwrap();
         assert_eq!(f.hits.len(), 1);
         keys(&mut e, "<CR>");
-        assert_eq!(e.mode, Mode::Normal);
+        assert_eq!(e.state(), State::Normal);
         assert_eq!(e.buf.line(0), "panes");
         // 2 回目は覚えた一覧をすぐ出す（裏で集め直している間も）。Ctrl-v で左右に分けて開く
         e.open_finder(Source::Files);
@@ -533,7 +533,7 @@ mod tests {
         // 欄は Vim 風: Esc でノーマル（j / k で選ぶ、ciw で直す）、もう一度 Esc で閉じる。閉じても何も変えない
         e.open_finder(Source::Files);
         keys(&mut e, "read<Esc>");
-        assert_eq!(e.mode, Mode::Finder);
+        assert_eq!(e.state(), State::Finder);
         assert!(!e.finder.as_ref().unwrap().field.is_insert());
         keys(&mut e, "ciwmain<Esc>");
         assert_eq!(e.finder.as_ref().unwrap().query.text, "main");
@@ -543,7 +543,7 @@ mod tests {
         keys(&mut e, "j");
         assert_eq!(e.finder.as_ref().unwrap().selected, 0);
         keys(&mut e, "<Esc>");
-        assert_eq!(e.mode, Mode::Normal);
+        assert_eq!(e.state(), State::Normal);
         assert_eq!(e.buf.line(0), "main");
     }
 

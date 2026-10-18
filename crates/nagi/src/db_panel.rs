@@ -18,7 +18,7 @@ use nagi_vim::Key;
 use nagi_workers::db::{Client, Column, DataSource, Index, Key as DbKey, Kind, Objects, Reply, Req};
 use nagi_workers::drivers::{self, Download};
 
-use crate::editor::{Editor, Effect, Mode, Prompt};
+use crate::editor::{Editor, Effect, State, Prompt};
 use crate::right_panel::RightTab;
 use crate::vim_field::{FieldOut, VimField};
 
@@ -888,7 +888,7 @@ impl Editor {
             return;
         }
         self.edit_file(path.clone());
-        self.mode = Mode::Normal;
+        self.set_state(State::Normal);
         self.notify.info(format!("{} に書きました", path.display()));
     }
 
@@ -988,10 +988,10 @@ impl Editor {
     /// Ctrl+Enter（コンソールで）: カーソルのある文、Visual なら選んだ範囲を流す
     pub(crate) fn db_run_at_cursor(&mut self) {
         let Some(i) = self.console_source() else { return };
-        let sql = if let Mode::Visual { .. } = self.mode {
+        let sql = if let State::Visual { .. } = self.state() {
             let (a, b, _) = self.visual_range();
             let s = self.buf.slice_string(a, b);
-            self.mode = Mode::Normal;
+            self.set_state(State::Normal);
             s
         } else {
             match self.console_statement() {
@@ -999,7 +999,7 @@ impl Editor {
                 None => String::new(),
             }
         };
-        if self.mode == Mode::Insert {
+        if self.state() == State::Insert {
             self.key(Key::Esc);
         }
         self.db_execute(i, sql);
@@ -1109,7 +1109,7 @@ impl Editor {
         let abs = std::path::absolute(&path).unwrap_or(path.clone());
         p.consoles.insert(abs, i);
         self.edit_file(path);
-        self.mode = Mode::Normal;
+        self.set_state(State::Normal);
         if let Some(sql) = initial {
             let end = self.buf.len_bytes();
             let text = self.buf.text();
@@ -1140,7 +1140,7 @@ impl Editor {
         let abs = std::path::absolute(&path).unwrap_or(path.clone());
         p.consoles.insert(abs, i);
         self.edit_file(path);
-        self.mode = Mode::Normal;
+        self.set_state(State::Normal);
         // 最後の行の終わりから Insert で書き始める
         self.key(Key::Char('G'));
         self.key(Key::Char('A'));
@@ -1183,7 +1183,7 @@ impl Editor {
             // Salesforce は表を直さないので、SOQL で先頭の 200 件を出す
             Some(DbRow::Object(i, _, t, Group::Tables | Group::Views, _)) if self.db.as_ref().and_then(|p| p.kind(i)) == Some(Kind::Salesforce) => {
                 self.db_execute(i, format!("SELECT FIELDS(STANDARD) FROM {t} LIMIT 200"));
-                self.mode = Mode::List;
+                self.set_state(State::List);
                 self.list_side = crate::editor::Side::Right;
             }
             Some(DbRow::Object(i, s, t, Group::Tables | Group::Views, _)) => self.db_open_table(i, &s, &t),
@@ -1229,7 +1229,7 @@ impl Editor {
     pub(crate) fn db_key(&mut self, key: Key) -> Effect {
         let half = (self.windows_rows() / 2).max(1);
         let Some(p) = &mut self.db else {
-            self.mode = Mode::Normal;
+            self.set_state(State::Normal);
             return Effect::None;
         };
         // パスワードの入力中
@@ -1416,11 +1416,11 @@ impl Editor {
                     self.notify.info("まだコミットしていない変更があります。先にコミットかロールバックを");
                 } else {
                     self.db = None;
-                    self.mode = Mode::Normal;
+                    self.set_state(State::Normal);
                     self.rows = self.text_rows(self.active_rect());
                 }
             }
-            Key::Esc => self.mode = Mode::Normal,
+            Key::Esc => self.set_state(State::Normal),
             Key::Char(':') => {
                 self.enter_command("");
             }
@@ -1644,7 +1644,7 @@ pub(crate) mod tests {
         e.focus_right(RightTab::Database);
         e.db.as_mut().unwrap().selected = e.db.as_ref().unwrap().rows.iter().position(|r| *r == DbRow::Source(i)).unwrap();
         keys(&mut e, "n");
-        assert_eq!(e.mode, Mode::Insert);
+        assert_eq!(e.state(), State::Insert);
         assert!(e.buf.path.as_ref().unwrap().to_string_lossy().ends_with("shop_query_1.sql"));
         keys(&mut e, "select 42 as answer<C-m>");
         wait(&mut e, &|e| e.db_results.active_tab().is_some_and(|t| !t.running && !t.rows.is_empty()));

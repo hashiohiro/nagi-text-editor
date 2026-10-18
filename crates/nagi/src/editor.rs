@@ -14,8 +14,10 @@ use unicode_segmentation::UnicodeSegmentation;
 /// 行番号の欄の幅（セル）
 pub const GUTTER: usize = 6;
 
+/// 入力の状態の見え方（Vim の状態と、向いている部品を合わせたもの）。持つのは `vim`（Mode）と `focus`（Panel）で、
+/// これは `Editor::state()` が導く。変えるときは `Editor::set_state`
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Mode {
+pub enum State {
     Normal,
     Insert,
     /// `line` は行単位（V）、`block` は矩形（Ctrl-v）
@@ -49,6 +51,63 @@ pub enum Mode {
     /// 実行の構成の画面（run_dialog.rs）
     RunDialog,
     /// 設定の画面（settings_dialog.rs）
+    Settings,
+}
+
+/// 見え方の状態を、持つもの（Vim の状態, 向いている部品）に分ける
+pub fn split_state(s: State) -> (Mode, Option<Panel>) {
+    match s {
+        State::Normal => (Mode::Normal, None),
+        State::Insert => (Mode::Insert, None),
+        State::Visual { line, block } => (Mode::Visual { line, block }, None),
+        State::Command => (Mode::Command, None),
+        State::Search => (Mode::Search, None),
+        State::Replace => (Mode::Replace, None),
+        State::Finder => (Mode::Normal, Some(Panel::Finder)),
+        State::GrepPrompt => (Mode::Normal, Some(Panel::GrepPrompt)),
+        State::List => (Mode::Normal, Some(Panel::List)),
+        State::CommitMsg => (Mode::Normal, Some(Panel::CommitMsg)),
+        State::Diff => (Mode::Normal, Some(Panel::Diff)),
+        State::Log => (Mode::Normal, Some(Panel::Log)),
+        State::Branches => (Mode::Normal, Some(Panel::Branches)),
+        State::DbTable => (Mode::Normal, Some(Panel::DbTable)),
+        State::Terminal => (Mode::Normal, Some(Panel::Terminal)),
+        State::Launcher => (Mode::Normal, Some(Panel::Launcher)),
+        State::RunDialog => (Mode::Normal, Some(Panel::RunDialog)),
+        State::Settings => (Mode::Normal, Some(Panel::Settings)),
+    }
+}
+
+/// Vim の状態
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Mode {
+    Normal,
+    Insert,
+    /// `line` は行単位（V）、`block` は矩形（Ctrl-v）
+    Visual { line: bool, block: bool },
+    /// `:` のコマンドライン
+    Command,
+    /// `/` `?` の検索
+    Search,
+    /// 置換
+    Replace,
+}
+
+/// 向いている部品（component.rs の Component の実装と対応する）
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Panel {
+    Finder,
+    GrepPrompt,
+    /// 一覧（木・結果・問題・ログ・コミット・右の欄。どれかは list_side と bottom_kind で決まる）
+    List,
+    CommitMsg,
+    Diff,
+    Log,
+    Branches,
+    DbTable,
+    Terminal,
+    Launcher,
+    RunDialog,
     Settings,
 }
 
@@ -191,7 +250,10 @@ pub struct Editor {
     pub top: usize,
     /// スムーズスクロール中の、行に満たない分（0.0〜1.0 行。描画は top + frac から始める）
     pub frac: f32,
-    pub mode: Mode,
+    /// Vim の状態（Normal・Insert・Visual・コマンドライン・検索・置換）
+    pub vim: Mode,
+    /// 向いている部品（パネル・ダイアログ。None ならエディタ）。component::focused が引く
+    pub focus: Option<Panel>,
     /// 状態の行の文・知らせの履歴（notify.rs。self.notify.info・warn・error で書く）
     pub notify: crate::notify::Notify,
     pub cmdline: Prompt,
@@ -350,7 +412,7 @@ pub struct Editor {
     pub commit: Option<crate::commit_panel::CommitPanel>,
     /// 左右並べの差分（開いている間だけ）と、閉じたときに戻るモード
     pub diff: Option<crate::diff_view::DiffView>,
-    pub(crate) diff_return: Option<Mode>,
+    pub(crate) diff_return: Option<State>,
     pub(crate) diff_pending: Option<char>,
     /// 動いている診断のコマンドと、その結果
     pub(crate) make: Option<crate::diagnostics::MakeState>,
@@ -382,11 +444,11 @@ impl Editor {
     /// キーマップの組み合わせで `cmd`（コマンドの表の名前）を動かす。入力欄の最中や、ダイアログ・ファインダーを
     /// 出している間は動かさない（None。キーはその部品へ）。Insert・Visual は抜けてから
     pub fn shortcut(&mut self, cmd: &str) -> Option<Effect> {
-        let ok = !self.has_prompt() && matches!(self.mode, Mode::Normal | Mode::Visual { .. } | Mode::Insert | Mode::List | Mode::CommitMsg | Mode::Log | Mode::Terminal | Mode::Diff);
+        let ok = !self.has_prompt() && matches!(self.state(), State::Normal | State::Visual { .. } | State::Insert | State::List | State::CommitMsg | State::Log | State::Terminal | State::Diff);
         if !ok {
             return None;
         }
-        if matches!(self.mode, Mode::Insert | Mode::Visual { .. }) {
+        if matches!(self.state(), State::Insert | State::Visual { .. }) {
             self.key(Key::Esc);
         }
         Some(crate::commands::run(self, cmd))
@@ -423,6 +485,40 @@ impl Editor {
         changed
     }
 
+    /// 入力の状態の見え方（Vim の状態と、向いている部品を合わせたもの）
+    pub fn state(&self) -> State {
+        let Some(p) = self.focus else {
+            return match self.vim {
+                Mode::Normal => State::Normal,
+                Mode::Insert => State::Insert,
+                Mode::Visual { line, block } => State::Visual { line, block },
+                Mode::Command => State::Command,
+                Mode::Search => State::Search,
+                Mode::Replace => State::Replace,
+            };
+        };
+        match p {
+            Panel::Finder => State::Finder,
+            Panel::GrepPrompt => State::GrepPrompt,
+            Panel::List => State::List,
+            Panel::CommitMsg => State::CommitMsg,
+            Panel::Diff => State::Diff,
+            Panel::Log => State::Log,
+            Panel::Branches => State::Branches,
+            Panel::DbTable => State::DbTable,
+            Panel::Terminal => State::Terminal,
+            Panel::Launcher => State::Launcher,
+            Panel::RunDialog => State::RunDialog,
+            Panel::Settings => State::Settings,
+        }
+    }
+
+    /// 入力の状態を変える（部品へ向くなら Vim の状態は Normal に、Vim の状態にするなら部品から離れる）。
+    /// パネルを借りている途中なら `(self.vim, self.focus) = split_state(…)` と書く（フィールドだけを借りる）
+    pub fn set_state(&mut self, s: State) {
+        (self.vim, self.focus) = split_state(s);
+    }
+
     /// UI を起こす関数（裏の処理に渡す。UI の無い試験では何もしない）
     pub(crate) fn waker(&self) -> nagi_core::task::Waker {
         self.waker.clone().unwrap_or_else(nagi_core::task::no_waker)
@@ -435,7 +531,8 @@ impl Editor {
             cursor: Cursor::default(),
             top: 0,
             frac: 0.0,
-            mode: Mode::Normal,
+            vim: Mode::Normal,
+            focus: None,
             notify: Default::default(),
             cmdline: Prompt::default(),
             query: Prompt::default(),
@@ -688,23 +785,23 @@ impl Editor {
 
     /// 最下行に使う行数（置換は 2 行）
     pub fn status_rows(&self) -> usize {
-        if self.mode == Mode::Replace { 2 } else { 1 }
+        if self.state() == State::Replace { 2 } else { 1 }
     }
 
     /// 入力欄（IME の確定先）があるモードか
     pub fn has_prompt(&self) -> bool {
-        matches!(self.mode, Mode::Command | Mode::Search | Mode::Replace | Mode::GrepPrompt)
-            || (self.mode == Mode::Finder && self.finder.as_ref().is_some_and(|f| f.field.is_insert()))
-            || self.mode == Mode::Terminal
-            || (self.mode == Mode::RunDialog && self.run_dialog.as_ref().is_some_and(|d| d.typing()))
-            || (self.mode == Mode::Settings && self.settings_typing())
-            || (self.mode == Mode::Launcher && self.launcher.as_ref().is_some_and(|l| l.ask.as_ref().map_or(l.field.is_insert(), |a| a.1.is_insert())))
-            || (self.mode == Mode::CommitMsg && self.commit.as_ref().is_some_and(|c| c.msg.is_insert()))
-            || (self.mode == Mode::Log && self.log.as_ref().is_some_and(|l| l.filter.as_ref().is_some_and(|f| f.is_insert())))
-            || (self.mode == Mode::Branches && self.branch_popup.as_ref().is_some_and(|b| b.naming.as_ref().is_none_or(|n| n.1.is_insert())))
+        matches!(self.state(), State::Command | State::Search | State::Replace | State::GrepPrompt)
+            || (self.state() == State::Finder && self.finder.as_ref().is_some_and(|f| f.field.is_insert()))
+            || self.state() == State::Terminal
+            || (self.state() == State::RunDialog && self.run_dialog.as_ref().is_some_and(|d| d.typing()))
+            || (self.state() == State::Settings && self.settings_typing())
+            || (self.state() == State::Launcher && self.launcher.as_ref().is_some_and(|l| l.ask.as_ref().map_or(l.field.is_insert(), |a| a.1.is_insert())))
+            || (self.state() == State::CommitMsg && self.commit.as_ref().is_some_and(|c| c.msg.is_insert()))
+            || (self.state() == State::Log && self.log.as_ref().is_some_and(|l| l.filter.as_ref().is_some_and(|f| f.is_insert())))
+            || (self.state() == State::Branches && self.branch_popup.as_ref().is_some_and(|b| b.naming.as_ref().is_none_or(|n| n.1.is_insert())))
             || self.db_typing()
             || self.db_table_typing()
-            || (self.mode == Mode::List && self.list_side == Side::Bottom && self.db_results.editing.as_ref().is_some_and(|e| e.1.is_insert()))
+            || (self.state() == State::List && self.list_side == Side::Bottom && self.db_results.editing.as_ref().is_some_and(|e| e.1.is_insert()))
     }
 
     pub(crate) fn motion(&self) -> Motion<'_> {
@@ -747,7 +844,7 @@ impl Editor {
 
     pub(crate) fn enter_insert(&mut self) {
         self.hist.begin();
-        self.mode = Mode::Insert;
+        self.set_state(State::Insert);
         self.notify.clear();
     }
 
@@ -756,7 +853,7 @@ impl Editor {
         // 矩形の I A c: 打った文字列をほかの行へ（同じ undo のグループに入れる）
         let placed = self.finish_block_insert();
         self.hist.close();
-        self.mode = Mode::Normal;
+        self.set_state(State::Normal);
         self.preedit.clear();
         self.preedit_cursor = None;
         // Vim と同じく、Insert を抜けるとカーソルは 1 つ左へ（矩形の I A は左上の角に置いた）
@@ -797,7 +894,7 @@ impl Editor {
     pub fn key(&mut self, key: Key) -> Effect {
         let effect = self.key_inner(key);
         // 入力補完を打っている間に自動で出す（設定）
-        if self.mode == Mode::Insert && self.settings.bool("completion.auto") {
+        if self.state() == State::Insert && self.settings.bool("completion.auto") {
             self.schedule_auto_complete(key);
         } else {
             self.auto_complete_at = None;
@@ -809,7 +906,7 @@ impl Editor {
         // 先頭部分だけを表示している間は、全体が届くのを待ってから処理する（先頭部分を編集してしまわない）
         self.finish_load();
         // 入力欄での Ctrl+V（Shift+Insert）は貼り付け。ファインダーの Ctrl+V は縦に分割して開く
-        if (key == Key::Paste || (key == Key::Ctrl('v') && self.mode != Mode::Finder)) && self.paste_target() {
+        if (key == Key::Paste || (key == Key::Ctrl('v') && self.state() != State::Finder)) && self.paste_target() {
             self.paste_clipboard();
             return Effect::None;
         }
@@ -818,7 +915,7 @@ impl Editor {
             return Effect::None;
         }
         // SQL コンソールの Ctrl+Enter（Ctrl-m として届く）: カーソルのある文を流す
-        if key == Key::Ctrl('m') && matches!(self.mode, Mode::Normal | Mode::Insert | Mode::Visual { .. }) && self.console_source().is_some() {
+        if key == Key::Ctrl('m') && matches!(self.state(), State::Normal | State::Insert | State::Visual { .. }) && self.console_source().is_some() {
             self.db_run_at_cursor();
             return Effect::None;
         }
@@ -832,7 +929,7 @@ impl Editor {
         if self.recording.is_some()
             && self.macro_depth == 0
             && key == Key::Char('q')
-            && matches!(self.mode, Mode::Normal | Mode::Visual { .. })
+            && matches!(self.state(), State::Normal | State::Visual { .. })
             && self.pending_keys.is_empty()
         {
             self.stop_recording();
@@ -849,23 +946,23 @@ impl Editor {
             }
         }
         // 変更のポップアップを開いている間の u s Esc
-        if self.mode == Mode::Normal && self.hunk_popup_key(key) {
+        if self.state() == State::Normal && self.hunk_popup_key(key) {
             self.scroll_into_view();
             return Effect::None;
         }
         // パネル・ダイアログなどの部品はそれぞれの Component へ（component.rs）。Vim の編集の状態はここで
         let effect = match crate::component::focused(self) {
             Some(c) => c.key(self, key),
-            None => match self.mode {
-                Mode::Insert => {
+            None => match self.state() {
+                State::Insert => {
                     self.insert(key);
                     Effect::None
                 }
-                Mode::Search => {
+                State::Search => {
                     self.search_key(key);
                     Effect::None
                 }
-                Mode::Replace => {
+                State::Replace => {
                     self.replace_key(key);
                     Effect::None
                 }
@@ -873,7 +970,7 @@ impl Editor {
             },
         };
         // 検索や :{行} で閉じた折りたたみの途中へ跳んだら開く
-        if !self.folds.is_empty() && self.mode == Mode::Normal {
+        if !self.folds.is_empty() && self.state() == State::Normal {
             self.open_folds_at_cursor();
         }
         self.scroll_into_view();
@@ -942,17 +1039,17 @@ impl Editor {
         match key {
             Key::Esc | Key::Ctrl('c') => {
                 self.cmdline = Prompt::default();
-                self.mode = Mode::Normal;
+                self.set_state(State::Normal);
                 self.cmd_complete = None;
             }
             Key::Backspace if self.cmdline.text.is_empty() => {
-                self.mode = Mode::Normal;
+                self.set_state(State::Normal);
                 self.cmd_complete = None;
             }
             Key::Enter => {
                 self.cmd_complete = None;
                 let line = std::mem::take(&mut self.cmdline).text;
-                self.mode = Mode::Normal;
+                self.set_state(State::Normal);
                 // `|` で区切った複数のコマンド（`source ~/.ideavimrc | echo "..."`）。:s の中の | は区切らない
                 let cmds: Vec<String> = if self.keeps_bar(&line) { vec![line] } else { line.split('|').map(str::to_string).collect() };
                 let mut effect = Effect::None;
@@ -977,9 +1074,9 @@ impl Editor {
 
     /// 今の検索語（入力中ならその語、Normal なら最後に確定した語）
     fn active_pattern(&self) -> Option<(String, bool)> {
-        let (p, regex) = match self.mode {
-            Mode::Search | Mode::Replace if !self.query.text.is_empty() => (self.query.text.clone(), self.search.regex),
-            Mode::Search | Mode::Replace => return None,
+        let (p, regex) = match self.state() {
+            State::Search | State::Replace if !self.query.text.is_empty() => (self.query.text.clone(), self.search.regex),
+            State::Search | State::Replace => return None,
             _ => self.search.last.as_ref().map(|(p, r, _)| (p.clone(), *r))?,
         };
         Some(self.case_pattern(p, regex))
@@ -1101,7 +1198,7 @@ impl Editor {
         self.query.set(initial);
         self.repl = Prompt::default();
         self.replace_field = if replace && !initial.is_empty() { 1 } else { 0 };
-        self.mode = if replace { Mode::Replace } else { Mode::Search };
+        self.set_state(if replace { State::Replace } else { State::Search });
         self.notify.clear();
         self.update_incsearch();
     }
@@ -1115,7 +1212,7 @@ impl Editor {
         let Some((origin, top)) = self.search.origin else { return };
         self.refresh_matches();
         let at = self.buf.line_start(origin.line) + origin.byte;
-        let include_at = self.mode == Mode::Replace;
+        let include_at = self.state() == State::Replace;
         self.search.move_when_counted = false;
         self.search.current = if self.search.job.is_some() {
             // 全件を裏で数えている大きなファイル: 近くだけ探し、無ければ全件が届いてから決める
@@ -1141,7 +1238,7 @@ impl Editor {
             self.cursor = c;
             self.top = top;
         }
-        self.mode = Mode::Normal;
+        self.set_state(State::Normal);
         self.clamp_normal();
     }
 
@@ -1170,7 +1267,7 @@ impl Editor {
                     self.update_incsearch();
                     self.search.move_when_counted = false;
                 }
-                self.mode = Mode::Normal;
+                self.set_state(State::Normal);
                 self.search.last = Some((pattern.clone(), self.search.regex, self.search.forward));
                 self.search.highlight = self.settings.bool("vim.hlsearch");
                 if let Some((from, _)) = self.search.origin.take() {
@@ -1251,7 +1348,7 @@ impl Editor {
         match key {
             Key::Esc | Key::Ctrl('c') => {
                 self.search.origin = None;
-                self.mode = Mode::Normal;
+                self.set_state(State::Normal);
                 self.clamp_normal();
             }
             Key::Tab | Key::Down | Key::Up => self.replace_field = 1 - self.replace_field,
@@ -1273,7 +1370,7 @@ impl Editor {
                     Some((s, _)) => self.set_abs(s),
                     None => {
                         self.notify.info("置換が終わりました");
-                        self.mode = Mode::Normal;
+                        self.set_state(State::Normal);
                         self.set_abs(s);
                         self.clamp_normal();
                     }
@@ -1297,7 +1394,7 @@ impl Editor {
                 }
                 self.hist.close();
                 self.notify.info(format!("{} 箇所を置換しました", ms.len()));
-                self.mode = Mode::Normal;
+                self.set_state(State::Normal);
                 self.search.origin = None;
                 self.set_abs(ms[0].0);
                 self.clamp_normal();
@@ -1453,14 +1550,14 @@ impl Editor {
     /// パネルの入力欄（フォーム・絞り込み・パスワード・WHERE / ORDER BY）にいるか。いる間は <leader> の割り当てを通さない
     pub fn in_text_field(&self) -> bool {
         (self.right_focused() && self.db.as_ref().is_some_and(|p| p.form.is_some() || p.filter.is_some() || p.password.is_some()))
-            || (self.mode == Mode::List && self.list_side == Side::Bottom && self.db_results.editing.is_some())
+            || (self.state() == State::List && self.list_side == Side::Bottom && self.db_results.editing.is_some())
     }
 
     /// 貼り付けを受ける入力欄にいるか（Vim の Insert の Ctrl-V は別）
     fn paste_target(&self) -> bool {
         self.has_prompt()
-            || matches!(self.mode, Mode::Branches)
-            || (self.mode == Mode::Log && self.log.as_ref().is_some_and(|l| l.filter.is_some()))
+            || matches!(self.state(), State::Branches)
+            || (self.state() == State::Log && self.log.as_ref().is_some_and(|l| l.filter.is_some()))
             || (self.right_focused() && self.db.as_ref().is_some_and(|p| p.password.is_some()))
     }
 
@@ -1474,7 +1571,7 @@ impl Editor {
             self.notify.info("クリップボードが空です");
             return;
         };
-        let text = if self.mode == Mode::CommitMsg {
+        let text = if self.state() == State::CommitMsg {
             text.replace("\r\n", "\n")
         } else {
             text.trim_end_matches(['\r', '\n']).replace("\r\n", " ").replace(['\n', '\r'], " ")
@@ -1507,19 +1604,19 @@ impl Editor {
             c.text(self, text);
             return;
         }
-        match self.mode {
-            Mode::Insert => {
+        match self.state() {
+            State::Insert => {
                 // IME で確定した文字は補完の語ではないので、一覧は閉じる
                 if self.completion.as_ref().is_some_and(|c| c.smart.is_some()) {
                     self.completion = None;
                 }
                 self.insert_text(text)
             }
-            Mode::Search => {
+            State::Search => {
                 self.query.insert(text);
                 self.update_incsearch();
             }
-            Mode::Replace => {
+            State::Replace => {
                 if self.replace_field == 0 {
                     self.query.insert(text);
                     self.update_incsearch();
@@ -1551,7 +1648,7 @@ impl Editor {
                     let seg = row.saturating_sub(r).min(lr - 1);
                     let text = self.buf.line(ln);
                     let c = seg * w + col.saturating_sub(self.gutter()).min(w.saturating_sub(1));
-                    let byte = if self.mode == Mode::Insert && c >= display_col(&text, text.len(), false) { text.len() } else { byte_at_col(&text, c, false) };
+                    let byte = if self.state() == State::Insert && c >= display_col(&text, text.len(), false) { text.len() } else { byte_at_col(&text, c, false) };
                     return Cursor { line: ln, byte, want_col: display_col(&text, byte, false) };
                 }
                 r += lr;
@@ -1566,7 +1663,7 @@ impl Editor {
         };
         let text = self.buf.line(line);
         let col = col.saturating_sub(self.gutter());
-        let byte = if self.mode == Mode::Insert && col >= display_col(&text, text.len(), false) {
+        let byte = if self.state() == State::Insert && col >= display_col(&text, text.len(), false) {
             text.len()
         } else {
             byte_at_col(&text, col, false)
@@ -1576,8 +1673,8 @@ impl Editor {
 
     /// パネル（木・検索の結果・右の欄など）にいたら本文の操作に戻る（本文をクリックしたとき）
     fn leave_panel(&mut self) {
-        if matches!(self.mode, Mode::List | Mode::Terminal) {
-            self.mode = Mode::Normal;
+        if matches!(self.state(), State::List | State::Terminal) {
+            self.set_state(State::Normal);
             self.pending_keys.clear();
         }
     }
@@ -1588,11 +1685,11 @@ impl Editor {
             return;
         }
         self.leave_panel();
-        if matches!(self.mode, Mode::Visual { .. }) {
-            self.mode = Mode::Normal;
+        if matches!(self.state(), State::Visual { .. }) {
+            self.set_state(State::Normal);
         }
         self.cursor = self.pos_at(row, col);
-        if self.mode == Mode::Normal {
+        if self.state() == State::Normal {
             self.clamp_normal();
         }
         self.scroll_into_view();
@@ -1604,12 +1701,12 @@ impl Editor {
             return;
         }
         self.leave_panel();
-        if self.mode == Mode::Insert {
+        if self.state() == State::Insert {
             self.key(Key::Esc);
         }
-        if !matches!(self.mode, Mode::Visual { .. }) {
+        if !matches!(self.state(), State::Visual { .. }) {
             self.anchor = anchor;
-            self.mode = Mode::Visual { line: false, block: false };
+            self.set_state(State::Visual { line: false, block: false });
         }
         self.cursor = self.pos_at(row, col);
         self.clamp_normal();
@@ -1621,10 +1718,10 @@ impl Editor {
             return;
         }
         self.leave_panel();
-        if self.mode == Mode::Insert {
+        if self.state() == State::Insert {
             self.key(Key::Esc);
         }
-        self.mode = Mode::Normal;
+        self.set_state(State::Normal);
         self.cursor = self.pos_at(row, col);
         self.clamp_normal();
         if clicks == 2 {
@@ -1662,7 +1759,7 @@ impl Editor {
             self.motion().vertical(&mut c, d);
         }
         self.cursor = c;
-        if self.mode == Mode::Normal {
+        if self.state() == State::Normal {
             self.clamp_normal();
         }
     }
@@ -1747,7 +1844,7 @@ mod tests {
         assert_eq!(e.cursor.line, 80_000);
         assert_eq!(e.match_count(), Some((Some(0), 1)));
         e.key(Key::Enter);
-        assert_eq!(e.mode, Mode::Normal);
+        assert_eq!(e.state(), State::Normal);
         assert_eq!(e.notify.text, "/needle  [1/1]");
         // n は近くから探す（全件はもう数えてある）
         e.key(Key::Char('g'));
@@ -1762,7 +1859,7 @@ mod tests {
         e.click(0, GUTTER + 2);
         let anchor = e.abs();
         e.drag(anchor, 1, GUTTER + 3);
-        assert_eq!(e.mode, Mode::Visual { line: false, block: false });
+        assert_eq!(e.state(), State::Visual { line: false, block: false });
         assert_eq!((e.cursor.line, e.cursor.byte), (1, 3));
         assert_eq!(e.visual_range(), (2, 16, false));
     }
@@ -1772,7 +1869,7 @@ mod tests {
         let mut e = ed("abc\n");
         e.key(Key::Char('i'));
         e.drag(0, 0, GUTTER + 2);
-        assert_eq!(e.mode, Mode::Visual { line: false, block: false });
+        assert_eq!(e.state(), State::Visual { line: false, block: false });
     }
 
     #[test]
@@ -1781,7 +1878,7 @@ mod tests {
         e.select_at(0, GUTTER + 5, 2);
         assert_eq!(e.visual_range(), (4, 8, false), "単語 name");
         e.select_at(0, GUTTER + 5, 3);
-        assert_eq!(e.mode, Mode::Visual { line: true, block: false });
+        assert_eq!(e.state(), State::Visual { line: true, block: false });
     }
 
     #[test]

@@ -11,7 +11,7 @@ use std::cell::RefCell;
 
 use nagi_vim::Key;
 
-use crate::editor::{Editor, Mode};
+use crate::editor::{Editor, State};
 use crate::settings::{CATEGORIES, Item, SCHEMA, SKind, Settings};
 use crate::vim_field::{FieldOut, VimField};
 
@@ -468,7 +468,7 @@ impl Editor {
         let mut work = self.settings.clone();
         work.set_root(Some(&self.nav_root()));
         let mut filter = VimField::new(query, false);
-        filter.ed.mode = Mode::Normal;
+        filter.ed.set_state(State::Normal);
         let d = SettingsDialog {
             work,
             cat: 0,
@@ -495,7 +495,7 @@ impl Editor {
             probe_tools(&self.nav_root(), d.tool_info.clone(), waker);
         }
         self.settings_dialog = Some(d);
-        self.mode = Mode::Settings;
+        self.set_state(State::Settings);
         self.notify.clear();
     }
 
@@ -532,12 +532,12 @@ impl Editor {
             SButton::Ok => {
                 if self.apply_settings_dialog() {
                     self.settings_dialog = None;
-                    self.mode = Mode::Normal;
+                    self.set_state(State::Normal);
                 }
             }
             SButton::Cancel => {
                 self.settings_dialog = None;
-                self.mode = Mode::Normal;
+                self.set_state(State::Normal);
                 self.notify.info("設定の画面を閉じました（適用していない変更は捨てました）");
             }
             SButton::Scope => {
@@ -584,7 +584,7 @@ impl Editor {
 
     pub(crate) fn settings_key(&mut self, key: Key) {
         let Some(d) = &mut self.settings_dialog else {
-            self.mode = Mode::Normal;
+            self.set_state(State::Normal);
             return;
         };
         if key == Key::Ctrl('m') {
@@ -995,7 +995,7 @@ mod tests {
         e.buf.path = Some(dir.join("a.txt"));
         e.set_screen(140, 40);
         e.open_settings("");
-        assert_eq!(e.mode, Mode::Settings);
+        assert_eq!(e.state(), State::Settings);
         // エディタの分類 → 行番号（選択肢）を l で相対に
         keys(&mut e, "j<Tab>");
         let d = e.settings_dialog.as_ref().unwrap();
@@ -1014,15 +1014,15 @@ mod tests {
         assert!(e.settings_dialog.as_ref().unwrap().project_scope);
         // Ctrl+Enter で適用して閉じる → Editor.settings に入り、プロジェクトのファイルは書かない（全体に入れたので）
         keys(&mut e, "<C-m>");
-        assert_eq!(e.mode, Mode::Normal, "{}", e.notify.text);
+        assert_eq!(e.state(), State::Normal, "{}", e.notify.text);
         assert_eq!(e.settings.get("editor.line_numbers"), "relative");
         assert_eq!(e.settings.int("editor.indent_width"), 2);
         // 直してから Esc を 1 回だと確かめる
         e.open_settings("波線");
         keys(&mut e, " <Esc>");
-        assert_eq!(e.mode, Mode::Settings);
+        assert_eq!(e.state(), State::Settings);
         keys(&mut e, "<Esc>");
-        assert_eq!(e.mode, Mode::Normal);
+        assert_eq!(e.state(), State::Normal);
         assert!(e.settings.bool("editor.squiggles"), "捨てたので変わらない");
     }
 

@@ -8,7 +8,7 @@
 use nagi_core::fuzzy::Query;
 use nagi_vim::Key;
 
-use crate::editor::{Editor, Mode, Prompt};
+use crate::editor::{Editor, State, Prompt};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Branch {
@@ -167,13 +167,13 @@ impl Editor {
         let mut p = BranchPopup { query: Prompt::default(), branches: Vec::new(), entries: Vec::new(), selected: 0, ops: None, naming: None, confirm_delete: None, rx: Some(rx) };
         p.rebuild();
         self.branch_popup = Some(p);
-        self.mode = Mode::Branches;
+        self.set_state(State::Branches);
     }
 
     fn close_branches(&mut self) {
         self.branch_popup = None;
-        if self.mode == Mode::Branches {
-            self.mode = Mode::Normal;
+        if self.state() == State::Branches {
+            self.set_state(State::Normal);
         }
     }
 
@@ -301,7 +301,7 @@ impl Editor {
     /// ポップアップのキー
     pub(crate) fn branches_key(&mut self, key: Key) {
         let Some(p) = &mut self.branch_popup else {
-            self.mode = Mode::Normal;
+            self.set_state(State::Normal);
             return;
         };
         // 削除の確認

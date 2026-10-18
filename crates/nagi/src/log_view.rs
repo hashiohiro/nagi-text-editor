@@ -6,7 +6,7 @@
 
 use nagi_vim::Key;
 
-use crate::editor::{Editor, Mode};
+use crate::editor::{Editor, State};
 
 #[derive(Clone, Debug, Default)]
 pub struct Commit {
@@ -236,7 +236,7 @@ impl Editor {
             rx_branches,
             rx_detail: None,
         });
-        self.mode = Mode::Log;
+        self.set_state(State::Log);
     }
 
     /// 裏で取ったログ・ブランチ・コミットの中身を受け取る。変わったら true
@@ -297,7 +297,7 @@ impl Editor {
         if docked && self.log.as_ref().is_some_and(|l| l.filter.is_none() && l.confirm.is_none() && !l.focus_files) {
             match key {
                 Key::Esc => {
-                    self.mode = Mode::Normal;
+                    self.set_state(State::Normal);
                     return;
                 }
                 Key::Char('q') => {
@@ -308,7 +308,7 @@ impl Editor {
             }
         }
         let Some(l) = &mut self.log else {
-            self.mode = Mode::Normal;
+            self.set_state(State::Normal);
             return;
         };
         if let Some(c) = l.confirm.take() {
@@ -444,7 +444,7 @@ impl Editor {
     /// 下の欄の Git を押した（欄の中身の行・列・幅。0 行目は絞り込みの見出し）。
     /// 真ん中はコミットを選ぶ（ダブルクリックで変えたファイルへ）、右は変えたファイルを選ぶ（ダブルクリックで差分）
     pub(crate) fn log_click(&mut self, row: usize, col: usize, w: usize, clicks: u32) {
-        self.mode = Mode::Log;
+        self.set_state(State::Log);
         let Some(l) = &mut self.log else { return };
         l.confirm = None;
         if row == 0 {
@@ -484,8 +484,8 @@ impl Editor {
 
     pub(crate) fn close_log(&mut self) {
         self.log = None;
-        if self.mode == Mode::Log {
-            self.mode = Mode::Normal;
+        if self.state() == State::Log {
+            self.set_state(State::Normal);
         }
     }
 
@@ -500,7 +500,7 @@ impl Editor {
         let new = nagi_workers::git::blob_at(&root, &h, &path).unwrap_or_default();
         let short = &h[..7.min(h.len())];
         self.show_diff(format!("{short}^  {path}"), format!("{short}  {path}"), &old, &new, None);
-        self.diff_return = Some(Mode::Log);
+        self.diff_return = Some(State::Log);
     }
 
     /// `:Gbranch 名前 [起点]`: ブランチを作ってチェックアウトする
@@ -739,19 +739,19 @@ mod tests {
             rx_detail: None,
         });
         e.select_bottom_tab(crate::result_grid::BottomKind::Git);
-        e.mode = Mode::Normal;
+        e.set_state(State::Normal);
         // 真ん中の 3 行目（グラフだけの行の次）を押す。欄の 0 行目はタブ、1 行目は絞り込みの見出し
         e.bottom_click(4, 60, 1);
-        assert_eq!(e.mode, Mode::Log);
+        assert_eq!(e.state(), State::Log);
         assert_eq!(e.log.as_ref().unwrap().selected, 2);
         // グラフだけの行は選ばない
         e.bottom_click(3, 60, 1);
         assert_eq!(e.log.as_ref().unwrap().selected, 2);
         // 本文へ戻ってから、右の変えたファイル（見出し 2 行・件名 1 行・「変えたファイル」の次）を押す
-        e.mode = Mode::Normal;
+        e.set_state(State::Normal);
         e.bottom_click(1 + 5 + 1 + 1, 110, 1);
         let l = e.log.as_ref().unwrap();
-        assert_eq!((e.mode, l.focus_files, l.file_sel), (Mode::Log, true, 1));
+        assert_eq!((e.state(), l.focus_files, l.file_sel), (State::Log, true, 1));
         // 真ん中を押せばコミットの選びへ戻る
         e.bottom_click(2, 60, 1);
         let l = e.log.as_ref().unwrap();

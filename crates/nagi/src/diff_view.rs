@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use nagi_core::linediff::{Hunk, HunkKind, diff_lines, split_lines};
 use nagi_vim::Key;
 
-use crate::editor::{Editor, Mode};
+use crate::editor::{Editor, State};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum RowKind {
@@ -117,23 +117,24 @@ impl Editor {
         }
         let cursor = hunk_rows.first().copied().unwrap_or(0);
         self.diff = Some(DiffView { left_title, right_title, rows, top: cursor.saturating_sub(5), cursor, hunk_rows, work, hunks, old_text: old.to_string() });
-        self.diff_return = Some(self.mode);
-        self.mode = Mode::Diff;
+        self.diff_return = Some(self.state());
+        self.set_state(State::Diff);
     }
 
     fn close_diff(&mut self) {
         self.diff = None;
-        self.mode = match self.diff_return.take() {
-            Some(m @ (Mode::List | Mode::Normal | Mode::Log)) => m,
-            _ => Mode::Normal,
+        let back = match self.diff_return.take() {
+            Some(m @ (State::List | State::Normal | State::Log)) => m,
+            _ => State::Normal,
         };
+        self.set_state(back);
     }
 
     /// 差分の画面のキー
     pub(crate) fn diff_key(&mut self, key: Key) {
         let rows = self.screen.1.saturating_sub(2).max(1);
         let Some(d) = &mut self.diff else {
-            self.mode = Mode::Normal;
+            self.set_state(State::Normal);
             return;
         };
         let last = d.rows.len().saturating_sub(1);
@@ -161,7 +162,7 @@ impl Editor {
                 let target = d.rows[d.cursor].right.as_ref().map(|r| r.0).or_else(|| d.rows[..d.cursor].iter().rev().find_map(|r| r.right.as_ref().map(|x| x.0 + 1)));
                 let path = d.work.as_ref().map(|w| w.2.clone());
                 self.close_diff();
-                self.mode = Mode::Normal;
+                self.set_state(State::Normal);
                 if let (Some(p), Some(l)) = (path, target) {
                     self.jump_to(&p, l, 0);
                 }

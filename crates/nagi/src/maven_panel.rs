@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use nagi_vim::Key;
 use nagi_workers::maven::{LIFECYCLE, Pom};
 
-use crate::editor::{Editor, Effect, Mode};
+use crate::editor::{Editor, Effect, State};
 use crate::right_panel::RightTab;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -149,7 +149,7 @@ impl Editor {
                 let name = dir.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned());
                 self.run_job(&cmd, &root, &format!("Maven: {goal}（{name}）"), true);
                 // 右の欄にいたまま続けて操作できるように
-                self.mode = Mode::List;
+                self.set_state(State::List);
                 self.list_side = crate::editor::Side::Right;
             }
             RowKind::Leaf => {}
@@ -159,7 +159,7 @@ impl Editor {
     pub(crate) fn maven_key(&mut self, key: Key) -> Effect {
         let half = (self.windows_rows() / 2).max(1);
         let Some(m) = &mut self.maven else {
-            self.mode = Mode::Normal;
+            self.set_state(State::Normal);
             return Effect::None;
         };
         let moved = crate::list::step(key, m.selected, m.rows.len(), half * 2);
@@ -192,10 +192,10 @@ impl Editor {
             Key::Char('r') => self.reload_maven(),
             Key::Char('q') => {
                 self.maven = None;
-                self.mode = Mode::Normal;
+                self.set_state(State::Normal);
                 self.rows = self.text_rows(self.active_rect());
             }
-            Key::Esc => self.mode = Mode::Normal,
+            Key::Esc => self.set_state(State::Normal),
             Key::Char(':') => {
                 self.enter_command("");
             }

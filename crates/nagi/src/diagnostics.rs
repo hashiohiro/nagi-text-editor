@@ -11,7 +11,7 @@ use nagi_workers::grep::Hit;
 use nagi_workers::jobs::{Job, JobMsg};
 use regex::Regex;
 
-use crate::editor::{Editor, Mode};
+use crate::editor::{Editor, State};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Diag {
@@ -428,7 +428,7 @@ impl Editor {
             g.query.set("");
         }
         self.bottom_kind = crate::result_grid::BottomKind::Output;
-        self.mode = Mode::Normal;
+        self.set_state(State::Normal);
     }
 }
 

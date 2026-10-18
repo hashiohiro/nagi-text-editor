@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use nagi_syntax::markdown::{Line, render};
 use nagi_vim::Key;
 
-use crate::editor::{Editor, Effect, Mode};
+use crate::editor::{Editor, Effect, State};
 use crate::right_panel::RightTab;
 
 pub struct MdPreview {
@@ -33,7 +33,7 @@ impl Editor {
         if self.md_preview.is_some() && self.right_visible() == Some(RightTab::Preview) {
             self.md_preview = None;
             if self.right_focused() {
-                self.mode = Mode::Normal;
+                self.set_state(State::Normal);
             }
             self.rows = self.text_rows(self.active_rect());
             return;
@@ -84,7 +84,7 @@ impl Editor {
     pub(crate) fn md_preview_key(&mut self, key: Key) -> Effect {
         let h = self.right_rect().map_or(20, |r| r.h.saturating_sub(1)).max(1);
         let Some(pv) = &mut self.md_preview else {
-            self.mode = Mode::Normal;
+            self.set_state(State::Normal);
             return Effect::None;
         };
         pv.follow = false;
@@ -101,10 +101,10 @@ impl Editor {
             }
             Key::Char('q') => {
                 self.md_preview = None;
-                self.mode = Mode::Normal;
+                self.set_state(State::Normal);
                 self.rows = self.text_rows(self.active_rect());
             }
-            Key::Esc => self.mode = Mode::Normal,
+            Key::Esc => self.set_state(State::Normal),
             Key::Char(':') => self.enter_command(""),
             _ => {}
         }
@@ -128,7 +128,7 @@ impl Editor {
         let base = self.md_preview.as_ref().and_then(|p| p.key.0.parent().map(|d| d.to_path_buf())).unwrap_or_default();
         let target = base.join(path.replace('/', std::path::MAIN_SEPARATOR_STR));
         if target.is_file() {
-            self.mode = Mode::Normal;
+            self.set_state(State::Normal);
             self.edit_file(target);
         } else {
             self.notify.info(format!("ファイルがありません: {}", target.display()));
@@ -252,7 +252,7 @@ mod tests {
         e.key(Key::Enter);
         assert!(e.buf.path.as_ref().unwrap().ends_with("setup.md"), "{:?} {}", e.buf.path, e.notify.text);
         // もう一度で閉じる
-        e.mode = Mode::Normal;
+        e.set_state(State::Normal);
         e.toggle_md_preview();
         assert!(e.md_preview.is_none());
     }

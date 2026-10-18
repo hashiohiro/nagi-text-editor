@@ -10,7 +10,7 @@
 
 use nagi_workers::runconfig::{self, Kind, Launch, RunConfig};
 
-use crate::editor::{Editor, Mode};
+use crate::editor::{Editor, State};
 use crate::result_grid::BottomKind;
 
 /// 構成を動かすターミナルの窓の名前の頭
@@ -198,7 +198,7 @@ impl Editor {
             let _ = std::fs::write(&path, RUN_CONF_TEMPLATE);
         }
         self.edit_file(path);
-        self.mode = Mode::Normal;
+        self.set_state(State::Normal);
     }
 
     /// 名前の窓を閉じる（動いていれば止める）
@@ -260,17 +260,17 @@ mod tests {
         assert_eq!(e.terminals.list.len(), 1);
         // 一覧（Alt+Shift+F10）
         e.shortcut("RunConfigs");
-        assert_eq!(e.mode, Mode::Finder);
+        assert_eq!(e.state(), State::Finder);
         assert!(e.run_list_items()[0].contains("あいさつ"));
         // 最後の行は「追加・編集」
         assert!(e.run_list_items().last().unwrap().contains("追加"));
         // 選んで動かした後はエディタのまま
         e.key(nagi_vim::Key::Enter);
-        assert_eq!(e.mode, Mode::Normal);
+        assert_eq!(e.state(), State::Normal);
         // 実行の窓に移っても、Esc でエディタへ戻る
-        e.mode = Mode::Terminal;
+        e.set_state(State::Terminal);
         e.key(nagi_vim::Key::Esc);
-        assert_eq!(e.mode, Mode::Normal);
+        assert_eq!(e.state(), State::Normal);
         // :RunAdd で足すと、一覧に出て選ばれる
         e.run_add("テスト = echo t");
         assert_eq!(e.run_selected.as_deref(), Some("テスト"));

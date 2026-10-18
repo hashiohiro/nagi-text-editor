@@ -6,14 +6,14 @@
 //! 新しい部品（パネル・ダイアログ）の作り方:
 //! 1. 状態の構造体を Editor のフィールドに置き、操作を Editor のメソッドとして書く（そのパネルのファイルに）。
 //! 2. 同じファイルに `pub struct XxxComponent;` と `impl Component for XxxComponent` を書く（key は必須、text・click は要るものだけ）。
-//! 3. 入力の状態（Mode）を 1 つ足し、下の `focused` に 1 行足す。描き方はそのファイルの `draw` モジュールに。
+//! 3. editor.rs の Panel（と見え方の State）に 1 つ足し、下の `focused` に 1 行足す。描き方はそのファイルの `draw` モジュールに。
 //!
 //! Vim の編集の状態（Normal・Visual・Insert・検索・置換）は Editor そのものが受け取る（ここには載せない）。
 //! 欄（木・下の欄・右の欄）の上でのクリックは位置で決まるので、main.rs が画面の配置から振り分ける。
 
 use nagi_vim::Key;
 
-use crate::editor::{Editor, Effect, Mode, Side};
+use crate::editor::{Editor, Effect, Mode, Panel, Side};
 use crate::result_grid::BottomKind;
 
 pub trait Component: Sync {
@@ -33,17 +33,18 @@ pub trait Component: Sync {
     }
 }
 
-/// 今向いている部品（Vim の編集の状態なら None）
+/// 今向いている部品（Vim の編集の状態なら None）。`:` のコマンドラインは Vim の状態だが、候補の窓を持つので部品として扱う
 pub fn focused(ed: &Editor) -> Option<&'static dyn Component> {
-    Some(match ed.mode {
-        Mode::Normal | Mode::Visual { .. } | Mode::Insert | Mode::Search | Mode::Replace => return None,
-        Mode::Command => &crate::cmdline_complete::CommandLineComponent,
-        Mode::Finder => &crate::finder::FinderComponent,
-        Mode::Launcher => &crate::launcher::LauncherComponent,
-        Mode::RunDialog => &crate::run_dialog::RunDialogComponent,
-        Mode::Settings => &crate::settings_dialog::SettingsComponent,
-        Mode::GrepPrompt => &crate::grep_panel::GrepPromptComponent,
-        Mode::List => match ed.list_side {
+    if ed.vim == Mode::Command {
+        return Some(&crate::cmdline_complete::CommandLineComponent);
+    }
+    Some(match ed.focus? {
+        Panel::Finder => &crate::finder::FinderComponent,
+        Panel::Launcher => &crate::launcher::LauncherComponent,
+        Panel::RunDialog => &crate::run_dialog::RunDialogComponent,
+        Panel::Settings => &crate::settings_dialog::SettingsComponent,
+        Panel::GrepPrompt => &crate::grep_panel::GrepPromptComponent,
+        Panel::List => match ed.list_side {
             Side::Left => &crate::tree_panel::TreeComponent,
             Side::Bottom if ed.bottom_kind == BottomKind::Result => &crate::result_grid::ResultComponent,
             Side::Bottom if ed.bottom_kind == BottomKind::Problems => &crate::bottom_panel::ProblemsComponent,
@@ -51,11 +52,11 @@ pub fn focused(ed: &Editor) -> Option<&'static dyn Component> {
             Side::Commit => &crate::commit_panel::CommitListComponent,
             Side::Right => &crate::right_panel::RightComponent,
         },
-        Mode::CommitMsg => &crate::commit_panel::CommitMsgComponent,
-        Mode::Diff => &crate::diff_view::DiffComponent,
-        Mode::Log => &crate::log_view::LogComponent,
-        Mode::Terminal => &crate::terminal::TerminalComponent,
-        Mode::Branches => &crate::branches::BranchesComponent,
-        Mode::DbTable => &crate::db_table::DbTableComponent,
+        Panel::CommitMsg => &crate::commit_panel::CommitMsgComponent,
+        Panel::Diff => &crate::diff_view::DiffComponent,
+        Panel::Log => &crate::log_view::LogComponent,
+        Panel::Terminal => &crate::terminal::TerminalComponent,
+        Panel::Branches => &crate::branches::BranchesComponent,
+        Panel::DbTable => &crate::db_table::DbTableComponent,
     })
 }

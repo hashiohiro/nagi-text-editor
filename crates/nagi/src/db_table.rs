@@ -12,7 +12,7 @@ use nagi_vim::Key;
 use nagi_workers::db::{Column, Reply};
 
 use crate::db_panel::{MAX_ROWS, ident, literal, qualified};
-use crate::editor::{Editor, Mode};
+use crate::editor::{Editor, State};
 use crate::vim_field::{FieldOut, VimField};
 use crate::result_grid::{Field, ResultTab, widths};
 
@@ -307,7 +307,7 @@ impl Editor {
         }
         c.send_table_query(te.select_sql(), 0, Some(te.count_sql()));
         self.db_table = Some(te);
-        self.mode = Mode::DbTable;
+        self.set_state(State::DbTable);
     }
 
     /// 読み直す（変更は捨てる）
@@ -323,8 +323,8 @@ impl Editor {
 
     pub(crate) fn close_db_table(&mut self) {
         self.db_table = None;
-        if self.mode == Mode::DbTable {
-            self.mode = Mode::Normal;
+        if self.state() == State::DbTable {
+            self.set_state(State::Normal);
         }
     }
 
@@ -340,13 +340,13 @@ impl Editor {
 
     /// IME を使う入力欄にいるか
     pub fn db_table_typing(&self) -> bool {
-        self.mode == Mode::DbTable && self.db_table.as_ref().is_some_and(|t| t.editing.as_ref().is_some_and(|f| f.is_insert()) || t.filter_edit.as_ref().is_some_and(|f| f.1.is_insert()))
+        self.state() == State::DbTable && self.db_table.as_ref().is_some_and(|t| t.editing.as_ref().is_some_and(|f| f.is_insert()) || t.filter_edit.as_ref().is_some_and(|f| f.1.is_insert()))
     }
 
     pub(crate) fn db_table_key(&mut self, key: Key) {
         let half = (self.windows_rows() / 2).max(1);
         let Some(te) = &mut self.db_table else {
-            self.mode = Mode::Normal;
+            self.set_state(State::Normal);
             return;
         };
         // 送る前の確認
@@ -657,7 +657,7 @@ mod tests {
         }
         e.db.as_mut().unwrap().conns[i].manual = false;
         e.db_open_table(i, "main", "item");
-        assert_eq!(e.mode, Mode::DbTable);
+        assert_eq!(e.state(), State::DbTable);
         wait(&mut e, &|e| e.db_table.as_ref().is_some_and(|t| !t.running && !t.colinfo.is_empty() && t.total.is_some()));
         assert_eq!(e.db_table.as_ref().unwrap().range_label(), "1–3 / 3");
         // 1 行目の name を直す、2 行目の note を NULL に、3 行目を消す、行を足す

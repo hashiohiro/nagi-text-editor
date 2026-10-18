@@ -52,7 +52,7 @@ impl Editor {
     /// 入力欄が変わったら候補を作り直す
     /// コマンドラインに入る（パネルの中の `:` もここを通して、候補を出す）
     pub(crate) fn enter_command(&mut self, initial: &str) {
-        self.mode = crate::editor::Mode::Command;
+        self.set_state(crate::editor::State::Command);
         self.cmdline = Default::default();
         self.cmdline.set(initial);
         self.pending_keys.clear();
@@ -84,7 +84,7 @@ impl Editor {
         let (root, _, mut files) = self.cmd_files.take().unwrap();
         files.sort_by(|a, b| a.len().cmp(&b.len()).then_with(|| a.cmp(b)));
         self.file_cache.insert(root, files);
-        if self.mode == crate::editor::Mode::Command {
+        if self.state() == crate::editor::State::Command {
             self.update_cmd_complete();
         }
         true
@@ -309,7 +309,7 @@ mod tests {
         keys(&mut e, "<Tab>");
         assert_eq!(e.cmdline.text, "no", "端の先は打った語");
         keys(&mut e, "<C-p><CR>");
-        assert_eq!(e.mode, crate::editor::Mode::Normal);
+        assert_eq!(e.state(), crate::editor::State::Normal);
         // 範囲の後ろでもコマンド名を出す
         keys(&mut e, ":%no");
         assert_eq!(e.cmd_complete.as_ref().unwrap().items.len(), 2);

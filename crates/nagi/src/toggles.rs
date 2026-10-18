@@ -4,7 +4,7 @@
 //! 行番号の欄の空いたセルに薄い `»`（左上）・`▴`（左下）。マウスを載せると明るくなり、名前を横に出す。
 //! 隠しても中身（ツリーの開き具合、書きかけのコミットメッセージ、検索の結果）は消さない。
 
-use crate::editor::{Editor, Mode, Side};
+use crate::editor::{Editor, State, Side};
 use crate::tree_panel::LeftTab;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -124,8 +124,8 @@ impl Editor {
     /// 左の欄を隠す（中身は残す）
     pub(crate) fn hide_left(&mut self) {
         self.left_hidden = true;
-        if self.mode == Mode::CommitMsg || (self.mode == Mode::List && matches!(self.list_side, Side::Left | Side::Commit)) {
-            self.mode = Mode::Normal;
+        if self.state() == State::CommitMsg || (self.state() == State::List && matches!(self.list_side, Side::Left | Side::Commit)) {
+            self.set_state(State::Normal);
         }
         self.rows = self.text_rows(self.active_rect());
     }
@@ -133,8 +133,8 @@ impl Editor {
     /// 下のパネルを隠す（結果は残す）
     pub(crate) fn hide_bottom(&mut self) {
         self.bottom_hidden = true;
-        if self.mode == Mode::GrepPrompt || (self.mode == Mode::List && self.list_side == Side::Bottom) {
-            self.mode = Mode::Normal;
+        if self.state() == State::GrepPrompt || (self.state() == State::List && self.list_side == Side::Bottom) {
+            self.set_state(State::Normal);
         }
         self.rows = self.text_rows(self.active_rect());
     }
@@ -148,8 +148,8 @@ impl Editor {
     /// Alt-1 / Alt-0: そのタブを出して移る。もう出ていて移っていれば隠す（IntelliJ と同じ）
     pub(crate) fn toggle_left_tab(&mut self, tab: LeftTab) {
         let focused = match tab {
-            LeftTab::Project => self.mode == Mode::List && self.list_side == Side::Left,
-            LeftTab::Commit => self.mode == Mode::CommitMsg || (self.mode == Mode::List && self.list_side == Side::Commit),
+            LeftTab::Project => self.state() == State::List && self.list_side == Side::Left,
+            LeftTab::Commit => self.state() == State::CommitMsg || (self.state() == State::List && self.list_side == Side::Commit),
         };
         if self.left_visible() == Some(tab) && focused {
             self.hide_left();
@@ -183,11 +183,11 @@ mod tests {
         let (b, r, c) = e.toggle_buttons()[0];
         assert_eq!((b, r, c), (Button::HideLeft, 0, 34));
         e.press_button(b);
-        assert_eq!((e.left_visible(), e.windows_x(), e.mode), (None, (0, 120), Mode::Normal));
+        assert_eq!((e.left_visible(), e.windows_x(), e.state()), (None, (0, 120), State::Normal));
         assert!(e.tree.is_some());
         // Alt-1 で出して移り、もう一度で隠す
         e.key(nagi_vim::Key::Alt('1'));
-        assert_eq!((e.left_visible(), e.mode), (Some(LeftTab::Project), Mode::List));
+        assert_eq!((e.left_visible(), e.state()), (Some(LeftTab::Project), State::List));
         e.key(nagi_vim::Key::Alt('1'));
         assert_eq!(e.left_visible(), None);
         // 右上の隅には、右の欄を開いていなくても「出す」ボタン
@@ -196,7 +196,7 @@ mod tests {
         assert_eq!(e.right_visible(), Some(crate::right_panel::RightTab::Database));
         // 右の欄の中で : を押しても、コマンドの候補が出る
         e.key(nagi_vim::Key::Char(':'));
-        assert_eq!(e.mode, Mode::Command);
+        assert_eq!(e.state(), State::Command);
         assert!(e.cmd_complete.as_ref().is_some_and(|c| c.items.len() > 20), "パネルの中の : でも候補を出す");
         let (_, r, c) = e.toggle_buttons().into_iter().find(|b| b.0 == Button::HideRight).unwrap();
         e.key(nagi_vim::Key::Esc);

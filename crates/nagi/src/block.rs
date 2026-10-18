@@ -10,7 +10,7 @@ use nagi_core::display_col;
 use nagi_vim::cmd::Op;
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::editor::{Editor, Mode};
+use crate::editor::{Editor, State};
 
 /// 矩形の選択（行は 0 始まり、列は表示の列。right は含む。None は行末まで）
 #[derive(Clone, Copy, Debug)]
@@ -76,7 +76,7 @@ fn byte_at(line: &str, col: usize) -> Option<usize> {
 
 impl Editor {
     pub fn is_block(&self) -> bool {
-        matches!(self.mode, Mode::Visual { block: true, .. })
+        matches!(self.state(), State::Visual { block: true, .. })
     }
 
     pub fn block_sel(&self) -> BlockSel {
@@ -127,7 +127,7 @@ impl Editor {
     pub(crate) fn block_op(&mut self, op: Op, reg: Option<char>) {
         let sel = self.block_sel();
         let spans = self.block_spans();
-        self.mode = Mode::Normal;
+        self.set_state(State::Normal);
         if matches!(op, Op::Indent | Op::Dedent) {
             let (s, e) = self.lines_range(sel.l1, sel.l2);
             self.apply(op, s, e, true, None);
@@ -152,7 +152,7 @@ impl Editor {
             let start = self.abs();
             self.block_insert = Some(BlockInsert { lines: sel.l1 + 1..=sel.l2, col: sel.left, eol: false, pad: false, start, back_to: None });
             // グループは Insert を抜けるまで開いたまま
-            self.mode = Mode::Insert;
+            self.set_state(State::Insert);
             return;
         }
         self.hist.close();
@@ -163,7 +163,7 @@ impl Editor {
     /// 矩形の `I`（`append` = false）と `A`
     pub(crate) fn block_insert_cmd(&mut self, append: bool) {
         let sel = self.block_sel();
-        self.mode = Mode::Normal;
+        self.set_state(State::Normal);
         let corner = {
             let line = self.buf.line(sel.l1);
             self.buf.line_start(sel.l1) + byte_at(&line, sel.left).unwrap_or(line.len())
@@ -190,7 +190,7 @@ impl Editor {
         };
         self.set_abs(at);
         self.block_insert = Some(BlockInsert { lines: sel.l1 + 1..=sel.l2, col, eol, pad: append, start: at, back_to: Some(corner) });
-        self.mode = Mode::Insert;
+        self.set_state(State::Insert);
     }
 
     /// Insert を抜けるとき: 1 行目で打った文字列をほかの行へ入れる。カーソルを置いたら true
@@ -237,7 +237,7 @@ impl Editor {
     pub(crate) fn block_map_chars(&mut self, f: impl Fn(&str) -> String) {
         let sel = self.block_sel();
         let spans = self.block_spans();
-        self.mode = Mode::Normal;
+        self.set_state(State::Normal);
         self.hist.begin();
         for &(_, s, e) in spans.iter().rev() {
             if e > s {
@@ -256,7 +256,7 @@ impl Editor {
     /// 矩形の `J`（行を結ぶ）
     pub(crate) fn block_join(&mut self) {
         let sel = self.block_sel();
-        self.mode = Mode::Normal;
+        self.set_state(State::Normal);
         self.join(sel.l1, (sel.l2 - sel.l1).max(1));
     }
 
@@ -342,6 +342,6 @@ mod tests {
         assert_eq!(e.buf.line(2), "xあyz");
         assert_eq!(e.buf.line(3), " ab");
         assert!(e.notify.text.is_empty() || !e.notify.text.starts_with('E'));
-        assert_eq!(e.mode, Mode::Normal);
+        assert_eq!(e.state(), State::Normal);
     }
 }

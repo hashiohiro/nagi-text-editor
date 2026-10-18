@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use nagi_core::Buffer;
 use nagi_vim::Key;
 
-use crate::editor::{Clipboard, Editor, Mode};
+use crate::editor::{Clipboard, Editor, State};
 
 /// 欄に流したキーの結果
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,14 +55,14 @@ impl VimField {
     }
 
     pub fn is_insert(&self) -> bool {
-        self.ed.mode == Mode::Insert
+        self.ed.state() == State::Insert
     }
 
     /// 最下行に出すモードの名前
     pub fn mode_label(&self) -> &'static str {
-        match self.ed.mode {
-            Mode::Insert => "INSERT",
-            Mode::Visual { .. } => "VISUAL",
+        match self.ed.state() {
+            State::Insert => "INSERT",
+            State::Visual { .. } => "VISUAL",
             _ => "NORMAL",
         }
     }
@@ -80,7 +80,7 @@ impl VimField {
     /// キーを流す。`regs` はエディタのレジスタ（共有するため、流す間だけ入れ替える）
     pub fn key(&mut self, key: Key, regs: &mut Registers, clip: Option<Clipboard>) -> FieldOut {
         let insert = self.is_insert();
-        let normal = self.ed.mode == Mode::Normal && self.ed.pending_keys.is_empty();
+        let normal = self.ed.state() == State::Normal && self.ed.pending_keys.is_empty();
         match key {
             Key::Ctrl('m') => return FieldOut::Submit,
             Key::Enter if !self.multiline && (insert || normal) => return FieldOut::Submit,
@@ -101,8 +101,8 @@ impl VimField {
         self.ed.clipboard = clip;
         self.ed.key(key);
         std::mem::swap(&mut self.ed.registers, regs);
-        if self.ed.mode == Mode::Command {
-            self.ed.mode = Mode::Normal;
+        if self.ed.state() == State::Command {
+            self.ed.set_state(State::Normal);
         }
         if self.text() != before { FieldOut::Changed } else { FieldOut::None }
     }
@@ -113,7 +113,7 @@ impl VimField {
     }
 
     pub fn visual(&self) -> Option<(usize, usize)> {
-        matches!(self.ed.mode, Mode::Visual { .. }).then(|| {
+        matches!(self.ed.state(), State::Visual { .. }).then(|| {
             let (a, b, _) = self.ed.visual_range();
             (a, b)
         })
@@ -129,7 +129,7 @@ impl VimField {
     /// 欄に移ったとき: ノーマルになっていれば行末から Insert に戻す
     pub fn reinsert(&mut self) {
         if !self.is_insert() {
-            self.ed.mode = Mode::Normal;
+            self.ed.set_state(State::Normal);
             self.ed.pending_keys.clear();
             self.ed.key(Key::Char('A'));
         }
@@ -208,7 +208,7 @@ mod tests {
         let mut regs = Registers::new();
         let mut f = VimField::new("alpha beta gamma", false);
         keys(&mut f, &mut regs, "<Esc>0v");
-        assert!(f.visual().is_some(), "v で Visual に入る: {:?}", f.ed.mode);
+        assert!(f.visual().is_some(), "v で Visual に入る: {:?}", f.ed.state());
         keys(&mut f, &mut regs, "e");
         assert_eq!(f.visual(), Some((0, 5)), "alpha を選ぶ");
         keys(&mut f, &mut regs, "y");

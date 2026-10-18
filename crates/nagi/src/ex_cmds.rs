@@ -8,7 +8,7 @@ use nagi_vim::Key;
 use nagi_vim::cmd::Op;
 use regex::{Regex, RegexBuilder};
 
-use crate::editor::{Editor, Effect, Mode};
+use crate::editor::{Editor, Effect, State};
 
 /// 直前の `:s`（`&` `g&` `:&&` で繰り返す）
 #[derive(Clone, Default)]
@@ -267,7 +267,7 @@ impl Editor {
                     return Effect::Quit;
                 }
             }
-            if ed.mode != Mode::Normal {
+            if ed.state() != State::Normal {
                 ed.key(Key::Esc);
             }
             Effect::None

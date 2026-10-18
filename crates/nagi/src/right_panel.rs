@@ -5,7 +5,7 @@
 
 use nagi_vim::Key;
 
-use crate::editor::{Editor, Effect, Mode, Side};
+use crate::editor::{Editor, Effect, State, Side};
 use crate::panes::Rect;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
@@ -81,7 +81,7 @@ impl Editor {
 
     /// 右の欄にいるか（リストモード）
     pub fn right_focused(&self) -> bool {
-        self.mode == Mode::List && self.list_side == Side::Right
+        self.state() == State::List && self.list_side == Side::Right
     }
 
     pub(crate) fn select_right_tab(&mut self, tab: RightTab) {
@@ -112,7 +112,7 @@ impl Editor {
         self.right_tab = tab;
         self.right_hidden = false;
         self.list_side = Side::Right;
-        self.mode = Mode::List;
+        self.set_state(State::List);
         self.pending_keys.clear();
         self.rows = self.text_rows(self.active_rect());
     }
@@ -120,7 +120,7 @@ impl Editor {
     pub(crate) fn hide_right(&mut self) {
         self.right_hidden = true;
         if self.right_focused() {
-            self.mode = Mode::Normal;
+            self.set_state(State::Normal);
         }
         self.rows = self.text_rows(self.active_rect());
     }
@@ -129,7 +129,7 @@ impl Editor {
     pub(crate) fn right_key(&mut self, key: Key) -> Effect {
         if std::mem::take(&mut self.right_pending_w) {
             if matches!(key, Key::Char('h') | Key::Ctrl('h') | Key::Char('w') | Key::Ctrl('w') | Key::Char('p')) {
-                self.mode = Mode::Normal;
+                self.set_state(State::Normal);
             }
             return Effect::None;
         }
@@ -142,7 +142,7 @@ impl Editor {
             Some(RightTab::Database) => self.db_key(key),
             Some(RightTab::Preview) => self.md_preview_key(key),
             None => {
-                self.mode = Mode::Normal;
+                self.set_state(State::Normal);
                 Effect::None
             }
         }

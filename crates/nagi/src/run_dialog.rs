@@ -12,7 +12,7 @@ use std::cell::RefCell;
 use nagi_vim::Key;
 use nagi_workers::runconfig::{self, KINDS, Kind, RunConfig};
 
-use crate::editor::{Editor, Mode};
+use crate::editor::{Editor, State};
 use crate::vim_field::{FieldOut, VimField};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -191,13 +191,13 @@ impl Editor {
             d.dirty = true;
         }
         self.run_dialog = Some(d);
-        self.mode = Mode::RunDialog;
+        self.set_state(State::RunDialog);
         self.notify.clear();
     }
 
     fn close_run_dialog(&mut self) {
         self.run_dialog = None;
-        self.mode = Mode::Normal;
+        self.set_state(State::Normal);
     }
 
     /// 保存（nagi の構成を .nagi/run.conf に書き出す）。うまくいけば true
@@ -283,7 +283,7 @@ impl Editor {
 
     pub(crate) fn run_dialog_key(&mut self, key: Key) {
         let Some(d) = &mut self.run_dialog else {
-            self.mode = Mode::Normal;
+            self.set_state(State::Normal);
             return;
         };
         // どこからでも: Ctrl+Enter で保存して閉じる
@@ -655,7 +655,7 @@ mod tests {
         e.buf.path = Some(dir.join("a.txt"));
         e.set_screen(140, 40);
         e.open_run_dialog(None);
-        assert_eq!(e.mode, Mode::RunDialog);
+        assert_eq!(e.state(), State::RunDialog);
         assert_eq!(e.run_dialog.as_ref().unwrap().configs.len(), 1);
         // a で追加 → 名前を打つ → Tab で種類 → l で Maven → Tab でゴール
         keys(&mut e, "a");
@@ -674,7 +674,7 @@ mod tests {
         assert_eq!(e.run_dialog.as_ref().unwrap().configs[0].from, "nagi");
         // Ctrl+Enter で保存して閉じる
         keys(&mut e, "<C-m>");
-        assert_eq!(e.mode, Mode::Normal, "{}", e.notify.text);
+        assert_eq!(e.state(), State::Normal, "{}", e.notify.text);
         let text = std::fs::read_to_string(dir.join(".nagi/run.conf")).unwrap();
         assert!(text.contains("[IJ]\ntype = shell\ncommand = echo nagi\n") && text.contains("[テスト]\ntype = maven\ngoals = test -q\n"), "{text}");
         // 読み直すと、直した IJ は nagi の方が使われる
@@ -683,9 +683,9 @@ mod tests {
         // 直してから Esc を 1 回だと確かめ、2 回で閉じる
         e.open_run_dialog(Some("テスト"));
         keys(&mut e, "c<Esc>");
-        assert_eq!(e.mode, Mode::RunDialog);
+        assert_eq!(e.state(), State::RunDialog);
         keys(&mut e, "<Esc>");
-        assert_eq!(e.mode, Mode::Normal);
+        assert_eq!(e.state(), State::Normal);
     }
 
     /// マウス: 欄を押すとその文字の位置で打てる。種類は押すたびに次へ。一覧の行・ボタンも押せる

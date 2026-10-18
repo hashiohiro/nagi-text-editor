@@ -12,7 +12,7 @@ use std::sync::mpsc::Sender;
 use nagi_syntax::defs::DefKind;
 use nagi_workers::index::{Entry, Index, Progress};
 
-use crate::editor::{Editor, Mode};
+use crate::editor::{Editor, State};
 use crate::finder::Source;
 
 /// 索引の状態（Editor が持つ）
@@ -394,8 +394,8 @@ impl Editor {
         if let Some(f) = &mut self.finder {
             f.set_locations(items, locs);
         }
-        if self.mode != Mode::Finder {
-            self.mode = Mode::Finder;
+        if self.state() != State::Finder {
+            self.set_state(State::Finder);
         }
     }
 }
@@ -496,11 +496,11 @@ mod tests {
         assert!(e.buf.path.as_ref().unwrap().ends_with("b.ts"), "{:?} {}", e.buf.path, e.notify.text);
         keys(&mut e, "<C-o>3G0i<F12>");
         assert!(e.buf.path.as_ref().unwrap().ends_with("b.ts"), "{:?} {}", e.buf.path, e.notify.text);
-        assert_eq!(e.mode, Mode::Normal);
+        assert_eq!(e.state(), State::Normal);
         keys(&mut e, "<C-o>");
         // 候補が 2 つ（Box）: ファインダーで選ぶ
         keys(&mut e, "4Gwgd");
-        assert_eq!(e.mode, Mode::Finder);
+        assert_eq!(e.state(), State::Finder);
         assert_eq!(e.finder.as_ref().unwrap().hits.len(), 2);
         keys(&mut e, "c.ts<CR>");
         assert!(e.buf.path.as_ref().unwrap().ends_with("c.ts"));

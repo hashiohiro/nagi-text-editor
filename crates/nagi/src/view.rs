@@ -9,7 +9,7 @@ pub(crate) use nagi_render::{Instance, Renderer};
 pub(crate) use nagi_text::Fonts;
 pub(crate) use unicode_segmentation::UnicodeSegmentation;
 
-pub(crate) use crate::editor::{Editor, GUTTER, Mode};
+pub(crate) use crate::editor::{Editor, GUTTER, State};
 pub(crate) use crate::panes::Rect;
 
 pub(crate) const fn rgb(hex: u32) -> [f32; 4] {
@@ -375,7 +375,7 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
     let t0 = std::time::Instant::now();
     // 強調は画面に見えている範囲だけを探す（入力中も、確定後の hlsearch も）。
     // 件数（3/12）のための全件は、検索の処理が別に（大きなファイルでは裏で）数える
-    let searching = matches!(ed.mode, Mode::Search | Mode::Replace);
+    let searching = matches!(ed.state(), State::Search | State::Replace);
     let highlight = searching || ed.search.highlight;
     let t_matches = t0.elapsed();
     // スムーズスクロール中は 1 行多く描き、全体を frac 行ぶん上へずらす
@@ -419,15 +419,15 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
     } else {
         &[]
     };
-    let visual = match ed.mode {
-        Mode::Visual { block: false, .. } if pane.active => Some(ed.visual_range()),
+    let visual = match ed.state() {
+        State::Visual { block: false, .. } if pane.active => Some(ed.visual_range()),
         _ => None,
     };
     // 矩形の選択は、見えている行ごとに列の範囲から求める
     let block = (pane.active && ed.is_block()).then(|| ed.block_sel());
     // 行単位の Visual は、選んでいる行の範囲にしておく（1 文字ごとに位置を引き直さない）
     let visual_lines = visual.map(|(vs, ve, _)| (pane.buf.pos_of(vs).0, pane.buf.pos_of(ve.saturating_sub(1).max(vs)).0));
-    let replacing = pane.active && ed.mode == Mode::Replace && !ed.query.text.is_empty();
+    let replacing = pane.active && ed.state() == State::Replace && !ed.query.text.is_empty();
     // 折り返し（設定）: 本文の幅で折り返す。1 行が使う画面の行を数えながら並べる
     let wrapw = if ed.settings.bool("editor.wrap") { rect.w.saturating_sub(gutter) } else { 0 };
 
@@ -445,7 +445,7 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
         };
         let folded = pane.folds.outer_at(ln).is_some_and(|f| f.0 == ln);
         let line_rows = if wrapw > 0 && !folded {
-            let extra = if pane.active && ln == pane.cursor.line && ed.mode == Mode::Insert { p.width(&ed.preedit) } else { 0 };
+            let extra = if pane.active && ln == pane.cursor.line && ed.state() == State::Insert { p.width(&ed.preedit) } else { 0 };
             (p.width(&heads[i].0) + extra + 1).div_ceil(wrapw).max(1).min(drawn - vrow)
         } else {
             1
@@ -506,7 +506,7 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
             let end = p.text(&label, rect.x + gutter, y, STATUS_FG);
             let _ = end;
             p.cols = saved;
-            if pane.active && pane.cursor.line == ln && !matches!(ed.mode, Mode::Command | Mode::Search | Mode::Replace | Mode::Finder | Mode::GrepPrompt | Mode::List) {
+            if pane.active && pane.cursor.line == ln && !matches!(ed.state(), State::Command | State::Search | State::Replace | State::Finder | State::GrepPrompt | State::List) {
                 p.out.push(Instance::fill(x, y, cell.w, cell.h, CURSOR));
             }
             continue;
@@ -577,7 +577,7 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
             let mut it = Item { g: Cow::Borrowed(g), width, fg: colors.get(b).copied().unwrap_or(FG), bg: None, underline: false };
             if let Some(&(ms, me)) = line_matches.get(mi) {
                 if a >= ms && a < me {
-                    if pane.active && Some((ms, me)) == ed.search.current && matches!(ed.mode, Mode::Search) {
+                    if pane.active && Some((ms, me)) == ed.search.current && matches!(ed.state(), State::Search) {
                         it.bg = Some(it.fg);
                         it.fg = BG;
                     } else {
@@ -609,11 +609,11 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
                 items.push(Item { g: Cow::Borrowed(" "), width: 1, fg: BG, bg: Some(FG), underline: false });
             }
         }
-        if !is_cursor_line || matches!(ed.mode, Mode::Command | Mode::Search | Mode::Replace | Mode::Finder | Mode::GrepPrompt | Mode::List | Mode::CommitMsg | Mode::Diff | Mode::Log | Mode::Branches | Mode::DbTable) {
+        if !is_cursor_line || matches!(ed.state(), State::Command | State::Search | State::Replace | State::Finder | State::GrepPrompt | State::List | State::CommitMsg | State::Diff | State::Log | State::Branches | State::DbTable) {
             p.draw(&items, rect.x + gutter, y);
             continue;
         }
-        if ed.mode == Mode::Insert {
+        if ed.state() == State::Insert {
             // 本文の途中に変換中の文字列（下線）を差し込み、カーソルは縦棒
             let at = cursor_item.unwrap_or(items.len());
             let mut pre = p.items(&ed.preedit, FG);
@@ -793,7 +793,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     }
     if let (Some(r), Some(t)) = (ed.tree_rect(), &ed.tree) {
         let git = ed.tree_git_states();
-        draw_tree(&mut p, t, r, ed.mode == Mode::List && ed.list_side == crate::editor::Side::Left, &git, ed.nav.index.as_ref());
+        draw_tree(&mut p, t, r, ed.state() == State::List && ed.list_side == crate::editor::Side::Left, &git, ed.nav.index.as_ref());
     }
     if let (Some(r), Some(c)) = (ed.commit_rect(), &ed.commit) {
         draw_commit_panel(&mut p, ed, c, r);
@@ -825,15 +825,15 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     if let Some(b) = &ed.branch_popup {
         draw_branch_popup(&mut p, b, rows, cols, &ed.preedit);
     }
-    if ed.git.popup.is_some() && ed.mode == Mode::Normal {
+    if ed.git.popup.is_some() && ed.state() == State::Normal {
         draw_hunk_popup(&mut p, ed, rows, cols);
-    } else if ed.blame_active() && ed.mode == Mode::Normal {
+    } else if ed.blame_active() && ed.state() == State::Normal {
         draw_blame_popup(&mut p, ed, rows);
     }
-    if let (Some(c), Mode::Insert) = (&ed.completion, ed.mode) {
+    if let (Some(c), State::Insert) = (&ed.completion, ed.state()) {
         draw_completion(&mut p, ed, c, rows, cols);
     }
-    if let (Some(c), Mode::Command) = (&ed.cmd_complete, ed.mode) {
+    if let (Some(c), State::Command) = (&ed.cmd_complete, ed.state()) {
         draw_cmd_complete(&mut p, ed, c, rows, cols);
     }
     draw_toggle_buttons(&mut p, ed, cols);
@@ -891,16 +891,16 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         (Some(_), _) => format!("?/…{re} "),
         _ => format!("0/0{re} "),
     };
-    match ed.mode {
-        Mode::Command => prompt_line(&mut p, ":", &ed.cmdline.text, ed.cmdline.cursor, &ed.preedit, y, true),
-        Mode::GrepPrompt if ed.grep.is_some() => {
+    match ed.state() {
+        State::Command => prompt_line(&mut p, ":", &ed.cmdline.text, ed.cmdline.cursor, &ed.preedit, y, true),
+        State::GrepPrompt if ed.grep.is_some() => {
             let g = ed.grep.as_ref().unwrap();
             prompt_line(&mut p, crate::grep_panel::GREP_LEAD, &g.query.text, g.query.cursor, &ed.preedit, y, true);
             let info = format!("{}{} 件{} ", if g.regex { "[.*]  " } else { "" }, g.hits.len(), if g.searching() { " …" } else { "" });
             let pc = cols.saturating_sub(p.width(&info));
             p.text(&info, pc, y, STATUS_FG);
         }
-        Mode::List if ed.list_side == crate::editor::Side::Commit => {
+        State::List if ed.list_side == crate::editor::Side::Commit => {
             let end = status_left(&mut p, ed, "-- コミット --", y, FG);
             let help = "Space 選択  d 差分  u 戻す  c メッセージ  Ctrl-Enter コミット  P プッシュも  Alt-1 プロジェクト  q 閉じる ";
             let pc = cols.saturating_sub(p.width(help));
@@ -908,10 +908,10 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
                 p.text(help, pc, y, STATUS_FG);
             }
         }
-        Mode::CommitMsg => {
+        State::CommitMsg => {
             status_left(&mut p, ed, "-- コミットメッセージ --   Esc 一覧へ   Ctrl-Enter コミット", y, FG);
         }
-        Mode::DbTable => {
+        State::DbTable => {
             let n = ed.db_table.as_ref().map_or(0, |t| t.changes());
             let left = if !ed.notify.text.is_empty() { ed.notify.text.clone() } else if n > 0 { format!("-- 編集 --  変更 {n} 件（未送信）") } else { "-- テーブル --".into() };
             let end = status_text(&mut p, &left, !ed.notify.text.is_empty(), y, if n > 0 && ed.notify.text.is_empty() { DIAG_WARN } else { FG });
@@ -921,7 +921,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
                 p.text(help, pc, y, STATUS_FG);
             }
         }
-        Mode::Branches => {
+        State::Branches => {
             let left = if ed.notify.text.is_empty() { "-- ブランチ --".to_string() } else { ed.notify.text.clone() };
             let end = status_text(&mut p, &left, !ed.notify.text.is_empty(), y, msg_color(ed, FG));
             let help = "打つと絞り込み  ↑↓ 移動  Enter チェックアウト  → 操作  Esc 閉じる ";
@@ -930,7 +930,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
                 p.text(help, pc, y, STATUS_FG);
             }
         }
-        Mode::Log => {
+        State::Log => {
             let l = ed.log.as_ref();
             let left = if !ed.notify.text.is_empty() {
                 ed.notify.text.clone()
@@ -946,7 +946,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
                 p.text(help, pc, y, STATUS_FG);
             }
         }
-        Mode::Diff => {
+        State::Diff => {
             let d = ed.diff.as_ref();
             let n = d.map_or(0, |d| d.hunk_rows.len());
             let i = d.map_or(0, |d| d.hunk_rows.iter().rposition(|&r| r <= d.cursor).map_or(0, |i| i + 1));
@@ -958,7 +958,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
                 p.text(help, pc, y, STATUS_FG);
             }
         }
-        Mode::List if ed.list_side == crate::editor::Side::Right => {
+        State::List if ed.list_side == crate::editor::Side::Right => {
             let (name, help) = match ed.right_visible() {
                 Some(crate::right_panel::RightTab::Maven) => ("-- Maven --", "Enter 実行・開閉  l/h 開く・閉じる  r 読み直す  q 閉じる  Ctrl-w h 窓へ "),
                 Some(crate::right_panel::RightTab::Preview) => ("-- プレビュー --", "j/k 送る  Enter リンクを開く  g/G 先頭・末尾  q 閉じる  Ctrl-w h 窓へ "),
@@ -970,7 +970,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
                 p.text(help, pc, y, STATUS_FG);
             }
         }
-        Mode::List if ed.list_side == crate::editor::Side::Bottom && ed.bottom_kind == crate::result_grid::BottomKind::Problems => {
+        State::List if ed.list_side == crate::editor::Side::Bottom && ed.bottom_kind == crate::result_grid::BottomKind::Problems => {
             let end = status_left(&mut p, ed, "-- 問題 --", y, FG);
             let help = "j/k 移動  Enter 開く  o 欄に残って開く  ]e [e 次・前  q 隠す  Ctrl-w k 窓へ ";
             let pc = cols.saturating_sub(p.width(help));
@@ -978,7 +978,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
                 p.text(help, pc, y, STATUS_FG);
             }
         }
-        Mode::Terminal => {
+        State::Terminal => {
             let run = ed.terminals.current().is_some_and(|t| t.name.starts_with(crate::run_configs::RUN_PREFIX));
             let end = status_left(&mut p, ed, if run { "-- 実行 --" } else { "-- ターミナル --" }, y, FG);
             let help = if run {
@@ -991,7 +991,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
                 p.text(help, pc, y, STATUS_FG);
             }
         }
-        Mode::List if ed.list_side == crate::editor::Side::Bottom && ed.bottom_kind == crate::result_grid::BottomKind::Result => {
+        State::List if ed.list_side == crate::editor::Side::Bottom && ed.bottom_kind == crate::result_grid::BottomKind::Result => {
             let end = status_left(&mut p, ed, "-- クエリの結果 --", y, FG);
             let help = "hjkl 移動  y 値  Y 行  gy 表全体（タブ区切り）  q 閉じる ";
             let pc = cols.saturating_sub(p.width(help));
@@ -999,10 +999,10 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
                 p.text(help, pc, y, STATUS_FG);
             }
         }
-        Mode::List if ed.list_side == crate::editor::Side::Left => {
+        State::List if ed.list_side == crate::editor::Side::Left => {
             status_left(&mut p, ed, "-- プロジェクト --", y, FG);
         }
-        Mode::List if ed.grep.is_some() => {
+        State::List if ed.grep.is_some() => {
             let g = ed.grep.as_ref().unwrap();
             let end = status_left(&mut p, ed, "-- 検索結果 --", y, FG);
             let info = format!("{}/{} ", (g.selected + 1).min(g.hits.len()), g.hits.len());
@@ -1011,7 +1011,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
                 p.text(&info, pc, y, STATUS_FG);
             }
         }
-        Mode::Finder if ed.finder.is_some() => {
+        State::Finder if ed.finder.is_some() => {
             let f = ed.finder.as_ref().unwrap();
             if f.field.is_insert() {
                 prompt_line(&mut p, "> ", &f.query.text, f.query.cursor, &ed.preedit, y, true);
@@ -1025,13 +1025,13 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             let pc = cols.saturating_sub(p.width(&info));
             p.text(&info, pc, y, STATUS_FG);
         }
-        Mode::Search => {
+        State::Search => {
             let lead = if ed.search.forward { "/" } else { "?" };
             prompt_line(&mut p, lead, &ed.query.text, ed.query.cursor, &ed.preedit, y, true);
             let pc = cols.saturating_sub(p.width(&count));
             p.text(&count, pc, y, STATUS_FG);
         }
-        Mode::Replace => {
+        State::Replace => {
             let y2 = y + cell.h;
             prompt_line(&mut p, "/", &ed.query.text, ed.query.cursor, &ed.preedit, y, ed.replace_field == 0);
             prompt_line(&mut p, "→", &ed.repl.text, ed.repl.cursor, &ed.preedit, y2, ed.replace_field == 1);
@@ -1043,11 +1043,11 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             let left = if !ed.notify.text.is_empty() {
                 ed.notify.text.clone()
             } else {
-                let mode = match ed.mode {
-                    Mode::Insert => "-- INSERT --",
-                    Mode::Visual { block: true, .. } => "-- VISUAL BLOCK --",
-                    Mode::Visual { line: false, .. } => "-- VISUAL --",
-                    Mode::Visual { line: true, .. } => "-- VISUAL LINE --",
+                let mode = match ed.state() {
+                    State::Insert => "-- INSERT --",
+                    State::Visual { block: true, .. } => "-- VISUAL BLOCK --",
+                    State::Visual { line: false, .. } => "-- VISUAL --",
+                    State::Visual { line: true, .. } => "-- VISUAL LINE --",
                     _ => "",
                 };
                 // マクロの記録中は Vim と同じく「recording @a」を出す
@@ -1058,7 +1058,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             };
             // 何も出していなければ、カーソルの行の診断を出す
             let (left, color) = match ed.diag_at_cursor() {
-                Some(d) if left.is_empty() && ed.mode == Mode::Normal => (format!("{}: {}", if d.error { "error" } else { "warning" }, d.msg), if d.error { DIAG_ERROR } else { DIAG_WARN }),
+                Some(d) if left.is_empty() && ed.state() == State::Normal => (format!("{}: {}", if d.error { "error" } else { "warning" }, d.msg), if d.error { DIAG_ERROR } else { DIAG_WARN }),
                 _ => (left, msg_color(ed, FG)),
             };
             let end = status_text(&mut p, &left, !ed.notify.text.is_empty(), y, color);

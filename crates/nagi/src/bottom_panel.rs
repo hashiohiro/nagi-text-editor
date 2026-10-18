@@ -14,7 +14,7 @@ use std::path::PathBuf;
 
 use nagi_vim::Key;
 
-use crate::editor::{Editor, Effect, Mode, Side};
+use crate::editor::{Editor, Effect, State, Side};
 use crate::panes::Rect;
 use crate::result_grid::BottomKind;
 
@@ -112,7 +112,7 @@ impl Editor {
                     l.docked = true;
                 }
                 if self.log.is_some() {
-                    self.mode = Mode::Log;
+                    self.set_state(State::Log);
                     self.rows = self.text_rows(self.active_rect());
                     return;
                 }
@@ -124,7 +124,7 @@ impl Editor {
             BottomKind::Problems | BottomKind::Result => {}
         }
         self.list_side = Side::Bottom;
-        self.mode = Mode::List;
+        self.set_state(State::List);
         self.pending_keys.clear();
         self.rows = self.text_rows(self.active_rect());
     }
@@ -142,9 +142,9 @@ impl Editor {
     /// 下の欄にいるか
     pub fn bottom_focused(&self) -> bool {
         match self.bottom_kind {
-            BottomKind::Git => self.mode == Mode::Log,
-            BottomKind::Terminal => self.mode == Mode::Terminal,
-            _ => (self.mode == Mode::List && self.list_side == Side::Bottom) || self.mode == Mode::GrepPrompt,
+            BottomKind::Git => self.state() == State::Log,
+            BottomKind::Terminal => self.state() == State::Terminal,
+            _ => (self.state() == State::List && self.list_side == Side::Bottom) || self.state() == State::GrepPrompt,
         }
     }
 
@@ -181,7 +181,7 @@ impl Editor {
         let g = std::mem::take(&mut p.pending_g);
         if std::mem::take(&mut p.pending_w) {
             if matches!(key, Key::Char('k') | Key::Ctrl('k') | Key::Char('w') | Key::Ctrl('w') | Key::Char('p')) {
-                self.mode = Mode::Normal;
+                self.set_state(State::Normal);
             }
             return Effect::None;
         }
@@ -205,12 +205,12 @@ impl Editor {
                 if let Some(i) = target {
                     let d = self.diags[i].clone();
                     self.jump_to(&d.path, d.line, d.col);
-                    self.mode = if stay { Mode::List } else { Mode::Normal };
+                    self.set_state(if stay { State::List } else { State::Normal });
                     self.list_side = Side::Bottom;
                 }
             }
             Key::Char('q') => self.hide_bottom(),
-            Key::Esc => self.mode = Mode::Normal,
+            Key::Esc => self.set_state(State::Normal),
             Key::Char(':') => self.enter_command(""),
             _ => {}
         }
@@ -222,7 +222,7 @@ impl Editor {
     /// 問題の一覧のクリック（中身の行。2 回で開く）
     pub(crate) fn problems_click(&mut self, row: usize, clicks: u32) {
         self.list_side = Side::Bottom;
-        self.mode = Mode::List;
+        self.set_state(State::List);
         let n = self.problem_rows().len();
         let i = self.problems.scroll + row;
         if i < n {
@@ -311,7 +311,7 @@ pub(crate) mod draw {
         match ed.bottom_kind {
             BottomKind::Result => draw_db_results(p, ed, c),
             BottomKind::Grep | BottomKind::Output => match &ed.grep {
-                Some(g) => draw_grep_panel(p, g, c, matches!(ed.mode, Mode::List | Mode::GrepPrompt)),
+                Some(g) => draw_grep_panel(p, g, c, matches!(ed.state(), State::List | State::GrepPrompt)),
                 None if ed.bottom_kind == BottomKind::Grep => empty(p, "検索していません（:Grep 語、Ctrl+Shift+F）"),
                 None => empty(p, "コマンドの出力はありません（:Make、Maven のタブのゴール）"),
             },
@@ -383,7 +383,7 @@ mod tests {
         e.toggle_bottom_tab(BottomKind::Problems);
         assert!(e.bottom_visible());
         assert_eq!(e.bottom_kind, BottomKind::Problems);
-        assert_eq!(e.mode, Mode::List);
+        assert_eq!(e.state(), State::List);
         let rows = e.problem_rows();
         assert_eq!(rows[0], ProblemRow::File(PathBuf::from("a.ts"), 1, 1));
         assert_eq!(rows[1], ProblemRow::Item(1), "エラーを先に");
@@ -421,7 +421,7 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        assert_eq!((m.cursor.line, m.mode), (0, Mode::Normal), "{}", m.notify.text);
+        assert_eq!((m.cursor.line, m.state()), (0, State::Normal), "{}", m.notify.text);
         assert_eq!(m.bottom_kind, BottomKind::Output);
         assert_eq!(m.problem_rows().len(), 3, "問題のタブにも出る");
         // タブの位置

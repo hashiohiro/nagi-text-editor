@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use nagi_vim::Key;
 use nagi_workers::git::{Change, FileState};
 
-use crate::editor::{Editor, Effect, Mode, Side};
+use crate::editor::{Editor, Effect, State, Side};
 
 pub struct Item {
     pub change: Change,
@@ -130,14 +130,14 @@ impl Editor {
         self.sync_commit_items();
         self.refresh_status();
         self.list_side = Side::Commit;
-        self.mode = Mode::List;
+        self.set_state(State::List);
         self.rows = self.text_rows(self.active_rect());
     }
 
     pub(crate) fn close_commit_panel(&mut self) {
         self.commit = None;
-        if self.mode == Mode::CommitMsg || (self.mode == Mode::List && self.list_side == Side::Commit) {
-            self.mode = Mode::Normal;
+        if self.state() == State::CommitMsg || (self.state() == State::List && self.list_side == Side::Commit) {
+            self.set_state(State::Normal);
         }
         self.rows = self.text_rows(self.active_rect());
     }
@@ -319,7 +319,7 @@ impl Editor {
                 Some(at - 2)
             };
             self.list_side = Side::Commit;
-            self.mode = Mode::List;
+            (self.vim, self.focus) = crate::editor::split_state(State::List);
             let Some(i) = item.filter(|&i| i < p.items.len()) else { return };
             p.selected = i;
             // チェックボックスの上なら切り替え、ダブルクリックで差分
@@ -330,7 +330,7 @@ impl Editor {
             }
         } else if row >= l.msg && row < l.msg + l.msg_h {
             p.msg.reinsert();
-            self.mode = Mode::CommitMsg;
+            self.set_state(State::CommitMsg);
         } else if row == l.amend {
             p.amend = !p.amend;
         } else if row == l.buttons {
@@ -345,7 +345,7 @@ impl Editor {
     /// パネルにいる間（リストモード）のキー
     pub(crate) fn commit_list_key(&mut self, key: Key) -> Effect {
         let Some(p) = &mut self.commit else {
-            self.mode = Mode::Normal;
+            self.set_state(State::Normal);
             return Effect::None;
         };
         // 送る前の確認
@@ -386,7 +386,7 @@ impl Editor {
             Key::Char('A') => p.amend = !p.amend,
             Key::Char('c') | Key::Char('i') => {
                 p.msg.reinsert();
-                self.mode = Mode::CommitMsg;
+                self.set_state(State::CommitMsg);
             }
             Key::Ctrl('m') => self.commit(false),
             Key::Char('P') => self.commit(true),
@@ -408,7 +408,7 @@ impl Editor {
                 let path: PathBuf = root.join(&it.change.path);
                 let stay = key == Key::Char('o');
                 self.edit_file(path);
-                self.mode = if stay { Mode::List } else { Mode::Normal };
+                self.set_state(if stay { State::List } else { State::Normal });
             }
             Key::Char('d') => {
                 let (Some(root), Some(it)) = (self.git.root.clone(), p.items.get(p.selected)) else { return Effect::None };
@@ -416,8 +416,8 @@ impl Editor {
                 self.open_file_diff(&root, &rel);
             }
             Key::Char('q') => self.close_commit_panel(),
-            Key::Esc => self.mode = Mode::Normal,
-            Key::Ctrl('w') => self.mode = Mode::Normal,
+            Key::Esc => self.set_state(State::Normal),
+            Key::Ctrl('w') => self.set_state(State::Normal),
             Key::Char(':') => {
                 self.enter_command("");
             }
@@ -430,20 +430,20 @@ impl Editor {
     pub(crate) fn commit_msg_key(&mut self, key: Key) {
         use crate::vim_field::FieldOut;
         if self.commit.is_none() {
-            self.mode = Mode::Normal;
+            self.set_state(State::Normal);
             return;
         }
         // Tab は一覧へ。ほかは Vim 風の欄（Ctrl+Enter でコミット、ノーマルの Esc で一覧へ）
         if key == Key::Tab {
-            self.mode = Mode::List;
+            self.set_state(State::List);
             return;
         }
         match self.feed_field(key, |e| e.commit.as_mut().map(|c| &mut c.msg)) {
             FieldOut::Submit => {
-                self.mode = Mode::List;
+                self.set_state(State::List);
                 self.commit(false);
             }
-            FieldOut::Cancel => self.mode = Mode::List,
+            FieldOut::Cancel => self.set_state(State::List),
             _ => {}
         }
     }
@@ -494,8 +494,8 @@ pub(crate) mod draw {
         let (x0, y0, wpx) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
         p.out.push(Instance::fill(x0, y0, wpx, r.h as f32 * cell.h, BG));
         p.out.push(Instance::fill(((r.x + r.w) as f32 + 0.5) * cell.w, y0, 1.0, r.h as f32 * cell.h, LINE_NO));
-        let focused = ed.mode == Mode::List && ed.list_side == crate::editor::Side::Commit;
-        let editing = ed.mode == Mode::CommitMsg;
+        let focused = ed.state() == State::List && ed.list_side == crate::editor::Side::Commit;
+        let editing = ed.state() == State::CommitMsg;
         let l = crate::commit_panel::layout(r.h);
         let row_y = |k: usize| y0 + k as f32 * cell.h;
         let saved = p.cols;

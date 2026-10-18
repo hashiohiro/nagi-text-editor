@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use nagi_core::fuzzy::Query;
 use nagi_vim::Key;
 
-use crate::editor::{Editor, Mode};
+use crate::editor::{Editor, State};
 use crate::project_open::{Entry, recent_entries};
 use crate::vim_field::{FieldOut, VimField};
 
@@ -182,7 +182,7 @@ impl Editor {
             pick_insert: true,
         });
         self.finder = None;
-        self.mode = Mode::Launcher;
+        self.set_state(State::Launcher);
     }
 
     /// 裏で集めた一覧・プレビュー・clone の結果を受け取る。変わったら true
@@ -281,22 +281,22 @@ impl Editor {
         if self.launcher.is_some() {
             self.launcher = None;
         }
-        if !matches!(self.mode, Mode::Normal) {
-            self.mode = Mode::Normal;
+        if !matches!(self.state(), State::Normal) {
+            self.set_state(State::Normal);
         }
         self.edit_file(path);
     }
 
     fn close_launcher_to(&mut self, dir: PathBuf) {
         self.launcher = None;
-        self.mode = Mode::Normal;
+        self.set_state(State::Normal);
         self.open_project(dir);
     }
 
     /// ランチャーを閉じて空のバッファで始める
     fn close_launcher(&mut self) {
         self.launcher = None;
-        self.mode = Mode::Normal;
+        self.set_state(State::Normal);
     }
 
     pub(crate) fn launcher_insert(&mut self, text: &str) {
@@ -313,7 +313,7 @@ impl Editor {
 
     pub(crate) fn launcher_key(&mut self, key: Key) {
         let Some(l) = &mut self.launcher else {
-            self.mode = Mode::Normal;
+            self.set_state(State::Normal);
             return;
         };
         // フォルダを選ぶダイアログを開いている間は、キーを受けない
@@ -769,7 +769,7 @@ mod tests {
         l.loading = None;
         l.all = vec![entry("shop", true, false), entry("shop-front", false, false), entry("billing", false, false), entry("old-notes", false, true)];
         l.refilter();
-        assert_eq!(e.mode, Mode::Launcher);
+        assert_eq!(e.state(), State::Launcher);
         assert_eq!(e.launcher.as_ref().unwrap().hits.len(), 4);
         // 打てば絞り込み（Insert で始まる）
         for k in nagi_vim::parse_keys("bil", " ") {
@@ -789,7 +789,7 @@ mod tests {
         assert_eq!(e.launcher.as_ref().unwrap().selected_entry().unwrap().name, "old-notes");
         // 無いフォルダは開かない
         e.launcher_key(Key::Enter);
-        assert_eq!(e.mode, Mode::Launcher);
+        assert_eq!(e.state(), State::Launcher);
         assert!(e.launcher.as_ref().unwrap().message.contains("ありません"), "{}", e.launcher.as_ref().unwrap().message);
         // ダイアログ（ここでは本物の代わりの通り道）を開いている間のキーは受けず、閉じたら開いたときの入力の状態に戻る
         e.launcher_key(Key::Char('i'));
@@ -816,7 +816,7 @@ mod tests {
         assert!(e.launcher.as_ref().unwrap().ask.is_none());
         // ノーマルの Esc で閉じて空のバッファ
         e.launcher_key(Key::Esc);
-        assert_eq!(e.mode, Mode::Normal);
+        assert_eq!(e.state(), State::Normal);
         assert!(e.launcher.is_none());
         assert_eq!(ago(crate::project_open::now_ms() - 180_000), "3 分前");
     }
@@ -833,12 +833,12 @@ mod tests {
         e.open_launcher();
         e.open_dropped(dir.join("a.txt"));
         assert!(e.launcher.is_none());
-        assert_eq!(e.mode, Mode::Normal);
+        assert_eq!(e.state(), State::Normal);
         assert_eq!(e.buf.line(0), "dropped");
         e.open_launcher();
         e.open_dropped(dir.join("proj"));
         assert!(e.launcher.is_none());
-        assert_ne!(e.mode, Mode::Launcher, "ランチャーから開いたときと同じく、ツリーへ");
+        assert_ne!(e.state(), State::Launcher, "ランチャーから開いたときと同じく、ツリーへ");
         assert!(e.git.root.as_ref().is_some_and(|r| r.ends_with("proj")) || e.notify.text.contains("proj"), "{}", e.notify.text);
     }
 }

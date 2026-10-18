@@ -10,7 +10,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use nagi_vim::Key;
 use nagi_workers::files::DirList;
 
-use crate::editor::{Editor, Effect, Mode};
+use crate::editor::{Editor, Effect, State};
 use crate::panes::Rect;
 
 /// 画面に出す 1 行
@@ -157,7 +157,7 @@ impl Editor {
     /// 開いているファイルに木を合わせる（IntelliJ の Always Select Opened File）。木が出ていて、木にいないとき、
     /// 開いているファイルが変わっていたら、そこまで展開して選ぶ（描く前に呼ぶ）
     pub(crate) fn sync_tree(&mut self) {
-        if !self.tree_sync || self.left_hidden || self.left_tab != LeftTab::Project || (self.mode == Mode::List && self.list_side == crate::editor::Side::Left) {
+        if !self.tree_sync || self.left_hidden || self.left_tab != LeftTab::Project || (self.state() == State::List && self.list_side == crate::editor::Side::Left) {
             return;
         }
         let current = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
@@ -263,14 +263,14 @@ impl Editor {
         t.reveal = current;
         t.advance_reveal(&waker);
         self.list_side = crate::editor::Side::Left;
-        self.mode = Mode::List;
+        self.set_state(State::List);
         self.pending_keys.clear();
         self.rows = self.text_rows(self.active_rect());
     }
 
     /// `<leader>.`: 閉じていれば開いて移り、開いていて移っていれば閉じる
     pub(crate) fn toggle_tree(&mut self) {
-        if self.left_visible() == Some(LeftTab::Project) && self.mode == Mode::List && self.list_side == crate::editor::Side::Left {
+        if self.left_visible() == Some(LeftTab::Project) && self.state() == State::List && self.list_side == crate::editor::Side::Left {
             self.close_tree();
         } else {
             self.open_tree();
@@ -279,7 +279,7 @@ impl Editor {
 
     /// 左のストライプの「コミット」: 閉じていれば開いて移り、出していて移っていれば閉じる
     pub(crate) fn toggle_commit(&mut self) {
-        if self.left_visible() == Some(LeftTab::Commit) && matches!(self.mode, Mode::List | Mode::CommitMsg) && (self.mode == Mode::CommitMsg || self.list_side == crate::editor::Side::Commit) {
+        if self.left_visible() == Some(LeftTab::Commit) && matches!(self.state(), State::List | State::CommitMsg) && (self.state() == State::CommitMsg || self.list_side == crate::editor::Side::Commit) {
             self.close_commit_panel();
         } else {
             self.open_commit_panel();
@@ -296,8 +296,8 @@ impl Editor {
 
     pub(crate) fn close_tree(&mut self) {
         self.tree = None;
-        if self.mode == Mode::List && self.list_side == crate::editor::Side::Left {
-            self.mode = Mode::Normal;
+        if self.state() == State::List && self.list_side == crate::editor::Side::Left {
+            self.set_state(State::Normal);
         }
         self.rows = self.text_rows(self.active_rect());
     }
@@ -342,7 +342,7 @@ impl Editor {
         let waker = self.waker_or_noop();
         let half = (self.tree_rect().map_or(10, |r| r.h) / 2).max(1);
         let Some(t) = &mut self.tree else {
-            self.mode = Mode::Normal;
+            self.set_state(State::Normal);
             return Effect::None;
         };
         let g_pending = std::mem::take(&mut t.pending_g);
@@ -351,7 +351,7 @@ impl Editor {
                 Key::Char('c' | 'q') | Key::Ctrl('c' | 'q') => self.close_tree(),
                 Key::Char('h') | Key::Ctrl('h') => {}
                 Key::Char('j') | Key::Ctrl('j') if self.grep.is_some() => self.focus_panel(),
-                _ => self.mode = Mode::Normal,
+                _ => self.set_state(State::Normal),
             }
             return Effect::None;
         }
@@ -376,7 +376,7 @@ impl Editor {
                     }
                 } else {
                     self.edit_file(row.path);
-                    self.mode = if stay { Mode::List } else { Mode::Normal };
+                    self.set_state(if stay { State::List } else { State::Normal });
                 }
             }
             Key::Char('h') => {
@@ -403,7 +403,7 @@ impl Editor {
                 }
             }
             Key::Char('q') => self.close_tree(),
-            Key::Esc => self.mode = Mode::Normal,
+            Key::Esc => self.set_state(State::Normal),
             Key::Char(':') => {
                 self.enter_command("");
             }
@@ -415,7 +415,7 @@ impl Editor {
     /// ツリーの中のクリック。`row` はツリーの中の行（0 は見出し）
     pub fn tree_click(&mut self, row: usize, clicks: u32) {
         self.list_side = crate::editor::Side::Left;
-        self.mode = Mode::List;
+        self.set_state(State::List);
         let waker = self.waker_or_noop();
         let Some(t) = &mut self.tree else { return };
         if row == 0 {
@@ -434,7 +434,7 @@ impl Editor {
             }
         } else if clicks >= 2 {
             self.edit_file(r.path);
-            self.mode = Mode::Normal;
+            self.set_state(State::Normal);
         }
     }
 }
@@ -650,11 +650,11 @@ mod tests {
         e.set_screen(120, 40);
         e.open_tree();
         e.tree_click(1, 1);
-        assert_eq!(e.mode, Mode::List);
+        assert_eq!(e.state(), State::List);
         // 本文の 2 行目をクリック
         let r = e.active_rect();
         e.click(1, r.x + e.gutter() + 1);
-        assert_eq!(e.mode, Mode::Normal, "本文に戻る");
+        assert_eq!(e.state(), State::Normal, "本文に戻る");
         assert_eq!(e.cursor.line, 1);
         e.key(nagi_vim::Key::Char('j'));
         assert_eq!(e.cursor.line, 2, "キーは本文へ");
@@ -689,7 +689,7 @@ mod tests {
         let sel = |e: &Editor| e.tree.as_ref().map(|t| t.rows[t.selected].path.clone()).unwrap();
         assert!(sel(&e).ends_with("other.txt"));
         // 本文へ戻って別のファイルを開くと、木もそこへ
-        e.mode = Mode::Normal;
+        e.set_state(State::Normal);
         e.edit_file(dir.join("a/b/deep.txt"));
         e.sync_tree();
         settle(&mut e);
@@ -720,7 +720,7 @@ mod tests {
         e.set_screen(120, 40);
         e.toggle_tree();
         settle(&mut e);
-        assert_eq!(e.mode, Mode::List);
+        assert_eq!(e.state(), State::List);
         assert_eq!(e.windows_x(), (37, 83), "ツリーの分だけ窓が右へ寄る");
         let t = e.tree.as_ref().unwrap();
         let names: Vec<String> = t.rows.iter().map(|r| format!("{}{}", "  ".repeat(r.depth), r.name)).collect();
@@ -734,11 +734,11 @@ mod tests {
         assert!(!t.is_expanded(&dir.join("src/view")));
         // j で main.rs、Enter で開いて編集画面へ
         keys(&mut e, "j<CR>");
-        assert_eq!(e.mode, Mode::Normal);
+        assert_eq!(e.state(), State::Normal);
         assert_eq!(e.buf.line(0), "main");
         // Ctrl-w h でツリーへ戻り、q で閉じる
         keys(&mut e, "<C-w>h");
-        assert_eq!(e.mode, Mode::List);
+        assert_eq!(e.state(), State::List);
         keys(&mut e, "q");
         assert!(e.tree.is_none());
         assert_eq!(e.windows_x(), (0, 120));

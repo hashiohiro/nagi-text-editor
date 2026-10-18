@@ -5,7 +5,7 @@
 //! - 中を編集したら、その折りたたみは開く（Vim と同じ）
 //! - 検索やマークで中へ跳んだら開く（Vim の foldopen の既定と同じ）
 
-use crate::editor::{Editor, Mode};
+use crate::editor::{Editor, State};
 
 #[derive(Default, Clone, Debug)]
 pub struct Folds {
@@ -87,7 +87,7 @@ impl Editor {
                         self.folds.closed.push((l1, l2));
                     }
                 }
-                self.mode = Mode::Normal;
+                self.set_state(State::Normal);
                 self.cursor.line = visual.map_or(line, |v| v.0);
             }
             'c' | 'a' if c == 'c' || self.folds.outer_at(line).is_none() => {

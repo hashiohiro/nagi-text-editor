@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use nagi_core::{Buffer, Cursor, History};
 
-use crate::editor::{Editor, Mode};
+use crate::editor::{Editor, State};
 
 /// 脇に置いたバッファと、その表示状態
 pub(crate) struct Doc {
@@ -85,8 +85,8 @@ impl Editor {
             top: std::mem::replace(&mut self.top, d.top),
         };
         self.frac = 0.0;
-        if !matches!(self.mode, Mode::Normal) {
-            self.mode = Mode::Normal;
+        if !matches!(self.state(), State::Normal) {
+            self.set_state(State::Normal);
         }
         self.pending_keys.clear();
         self.reset_search_cache();

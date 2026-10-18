@@ -9,7 +9,7 @@ use nagi_vim::Key;
 use nagi_workers::db::Reply;
 
 use crate::db_panel::MAX_ROWS;
-use crate::editor::{Editor, Mode, Side};
+use crate::editor::{Editor, State, Side};
 use crate::vim_field::{FieldOut, VimField};
 
 /// 下のパネルに出しているもの
@@ -368,7 +368,7 @@ impl Editor {
         match key {
             Key::Char(']') | Key::Ctrl('n') => r.active = (r.active + 1) % (r.tabs.len() + 1),
             Key::Char('[') | Key::Ctrl('p') => r.active = (r.active + r.tabs.len()) % (r.tabs.len() + 1),
-            Key::Esc | Key::Ctrl('w') => self.mode = Mode::Normal,
+            Key::Esc | Key::Ctrl('w') => self.set_state(State::Normal),
             Key::Char(':') => {
                 self.enter_command("");
             }
@@ -469,7 +469,7 @@ impl Editor {
     /// 結果のパネルのクリック（`row` はパネルの中の行、`col` はパネルの左端から）
     pub(crate) fn result_click(&mut self, row: usize, col: usize) {
         self.list_side = Side::Bottom;
-        self.mode = Mode::List;
+        self.set_state(State::List);
         let r = &mut self.db_results;
         // 1 行目: タブ
         if row == 0 {
@@ -546,7 +546,7 @@ pub(crate) mod draw {
         let (x0, y0, wpx) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
         p.out.push(Instance::fill(x0, y0, wpx, r.h as f32 * cell.h, BG));
         p.out.push(Instance::fill(x0, y0, wpx, 1.0, LINE_NO));
-        let focused = ed.mode == Mode::List && ed.list_side == crate::editor::Side::Bottom;
+        let focused = ed.state() == State::List && ed.list_side == crate::editor::Side::Bottom;
         let saved = p.cols;
         p.cols = (r.x + r.w).saturating_sub(3);
         // タブ

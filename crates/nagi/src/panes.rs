@@ -8,7 +8,7 @@
 use nagi_core::Cursor;
 
 use crate::buffers::Slot;
-use crate::editor::{Editor, Mode};
+use crate::editor::{Editor, State};
 
 /// 脇に置いた窓
 #[derive(Clone, Copy)]
@@ -202,8 +202,8 @@ impl Editor {
             self.switch_doc(next.doc);
             self.jump_lock = false;
         }
-        if matches!(self.mode, Mode::Visual { .. } | Mode::Insert) {
-            self.mode = Mode::Normal;
+        if matches!(self.state(), State::Visual { .. } | State::Insert) {
+            self.set_state(State::Normal);
         }
         self.pending_keys.clear();
         self.cursor = next.cursor;

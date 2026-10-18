@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use nagi_workers::project::{self, Kind};
 
-use crate::editor::{Editor, Mode};
+use crate::editor::{Editor, State};
 use crate::finder::Source;
 
 /// Nagi の設定フォルダのファイル（`%LOCALAPPDATA%\nagi\<name>`）
@@ -257,7 +257,7 @@ impl Editor {
         self.branch_popup = None;
         self.diags.clear();
         self.finder = None;
-        self.mode = Mode::Normal;
+        self.set_state(State::Normal);
         // プロジェクトの設定の上書き（.nagi\settings.conf）を読み直す
         self.settings.set_root(Some(&p.root));
         self.apply_settings(None);
@@ -290,7 +290,7 @@ impl Editor {
         self.open_tree();
         // ファイルを復元したら本文へ（木は出したまま）
         if restored > 0 {
-            self.mode = Mode::Normal;
+            self.set_state(State::Normal);
         }
         let what = match p.kind {
             Kind::Plain => "プロジェクト".to_string(),

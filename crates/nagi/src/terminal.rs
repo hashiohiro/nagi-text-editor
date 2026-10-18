@@ -9,7 +9,7 @@
 use nagi_vim::Key;
 use nagi_workers::term::Term;
 
-use crate::editor::{Editor, Mode};
+use crate::editor::{Editor, State};
 use crate::panes::Rect;
 use crate::result_grid::BottomKind;
 
@@ -194,7 +194,7 @@ impl Editor {
     pub(crate) fn open_terminal(&mut self) {
         self.bottom_hidden = false;
         self.bottom_kind = BottomKind::Terminal;
-        self.mode = Mode::Terminal;
+        self.set_state(State::Terminal);
         self.pending_keys.clear();
         self.rows = self.text_rows(self.active_rect());
         if self.terminals.list.is_empty() {
@@ -217,7 +217,7 @@ impl Editor {
             Some((name, cmd)) => {
                 self.bottom_hidden = false;
                 self.bottom_kind = BottomKind::Terminal;
-                self.mode = Mode::Terminal;
+                self.set_state(State::Terminal);
                 self.rows = self.text_rows(self.active_rect());
                 self.new_terminal_chosen(&name, &cmd);
             }
@@ -276,7 +276,7 @@ impl Editor {
         // 実行の構成の窓（▶）は、IntelliJ の実行の窓と同じく Esc でエディタへ戻る（シェルの窓では Esc はシェルへ）
         if key == Key::Esc && self.terminals.chooser.is_none() && self.terminals.current().is_some_and(|t| t.name.starts_with(crate::run_configs::RUN_PREFIX)) {
             self.terminals.sel = None;
-            self.mode = Mode::Normal;
+            self.set_state(State::Normal);
             return;
         }
         // シェルを選んでいる
@@ -297,7 +297,7 @@ impl Editor {
                 Key::Esc | Key::Char('q') | Key::Ctrl('c') => {
                     self.terminals.chooser = None;
                     if self.terminals.list.is_empty() {
-                        self.mode = Mode::Normal;
+                        self.set_state(State::Normal);
                     }
                 }
                 _ => {}
@@ -308,7 +308,7 @@ impl Editor {
             match key {
                 Key::Enter => self.open_terminal(),
                 Key::Char('c') => self.terminals.chooser = Some(0),
-                _ => self.mode = Mode::Normal,
+                _ => self.set_state(State::Normal),
             }
             return;
         }
@@ -316,7 +316,7 @@ impl Editor {
         if std::mem::take(&mut self.terminals.pending) {
             match key {
                 Key::Char('n') | Key::Ctrl('n') | Key::Char('k') | Key::Ctrl('k') => {
-                    self.mode = Mode::Normal;
+                    self.set_state(State::Normal);
                     return;
                 }
                 Key::Char('c') => {
@@ -422,7 +422,7 @@ impl Editor {
         let Some(cell) = self.terminal_cell(row, col) else { return false };
         self.terminals.sel = None;
         self.terminals.anchor = Some(cell);
-        self.mode = Mode::Terminal;
+        self.set_state(State::Terminal);
         true
     }
 
@@ -444,7 +444,7 @@ impl Editor {
 
     /// 右クリック: 選んでいればコピー、選んでいなければ貼り付け（Windows Terminal と同じ）
     pub(crate) fn terminal_right_click(&mut self) {
-        self.mode = Mode::Terminal;
+        self.set_state(State::Terminal);
         if !self.terminal_copy() {
             self.terminal_key(Key::Paste);
         }
@@ -459,7 +459,7 @@ impl Editor {
         }
         self.terminals.active = self.terminals.active.min(self.terminals.list.len().saturating_sub(1));
         if self.terminals.list.is_empty() {
-            self.mode = Mode::Normal;
+            self.set_state(State::Normal);
         }
     }
 
@@ -479,7 +479,7 @@ impl Editor {
 
     /// 欄の中を押した（中身の行・列。0 行目は窓の並び）
     pub(crate) fn terminal_click(&mut self, row: usize, col: usize) {
-        self.mode = Mode::Terminal;
+        self.set_state(State::Terminal);
         if row == 0 {
             let mut x = 0;
             for (label, target) in strip_items(&self.terminals) {
@@ -700,7 +700,7 @@ mod tests {
         let mut e = Editor::new(Buffer::from_str("x\n"), None);
         e.set_screen(120, 40);
         e.toggle_bottom_tab(BottomKind::Terminal);
-        assert_eq!(e.mode, Mode::Terminal);
+        assert_eq!(e.state(), State::Terminal);
         assert_eq!(e.terminals.list.len(), 1, "{}", e.notify.text);
         for k in nagi_vim::parse_keys("echo nagi-tab-ok<CR>", " ") {
             e.key(k);
@@ -753,7 +753,7 @@ mod tests {
         // 本文へ
         e.key(Key::Ctrl('\\'));
         e.key(Key::Char('n'));
-        assert_eq!(e.mode, Mode::Normal);
+        assert_eq!(e.state(), State::Normal);
         e.key(Key::Char('x'));
         assert_eq!(e.buf.line(0), "");
         // :Terminal cmd で開く
@@ -761,6 +761,6 @@ mod tests {
             e.key(k);
         }
         assert_eq!(e.terminals.list.len(), 2);
-        assert_eq!(e.mode, Mode::Terminal);
+        assert_eq!(e.state(), State::Terminal);
     }
 }

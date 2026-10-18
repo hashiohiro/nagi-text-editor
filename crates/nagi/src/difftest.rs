@@ -281,7 +281,7 @@ fn run_nagi(start: (usize, usize), keys: &str) -> (String, (usize, usize)) {
     }
     // :normal と同じく、最後に Insert / Visual / 入力中のコマンドを終える
     for _ in 0..2 {
-        if ed.mode != crate::editor::Mode::Normal {
+        if ed.state() != crate::editor::State::Normal {
             ed.key(nagi_vim::Key::Esc);
         }
     }
