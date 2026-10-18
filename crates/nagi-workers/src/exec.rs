@@ -7,9 +7,10 @@
 //! ```
 //!
 //! WSL の決まり（全体共通。作業フォルダが `\\wsl.localhost\<名前>\…` のとき）:
-//! - WSL の中で動かす（`wsl.exe -d <名前> --cd <フォルダ> --exec sh -lc "<行>"`。`--exec` で既定のシェルを通さない。
+//! - WSL の中で動かす（`wsl.exe -d <名前> --cd <フォルダ> --exec sh -c "<行>"`。`--exec` で既定のシェルを通さない。
 //!   `--` だと外側のシェルが `$` や `&&` を先に読んでしまう）。
-//! - 対話のシェルでだけ PATH に入るツール（nvm の node など）の場所を行の頭で PATH に足す（wsl::path_prefix）。
+//! - ログインのシェルの環境（.profile・.bashrc の PATH。nvm の node など）を行の頭に付ける（wsl::login_env。1 度だけ調べる）。
+//!   ログインシェル（-l）にはしない（ログインの挨拶が毎回出るため）。PATH から Windows の場所（/mnt/…）は外す。
 //! - Windows 側のツールの設定と JDK（JAVA_HOME）は渡さない。
 //!
 //! Windows では窓を出さずに cmd で動かす（設定のツールと JDK は nagi の環境変数で PATH に入っている）。
@@ -36,6 +37,11 @@ impl Exec {
     /// `cwd` で動かす（WSL のフォルダなら WSL の中で）
     pub fn in_dir(cwd: &Path) -> Self {
         Self { cwd: cwd.to_path_buf(), wsl: crate::wsl::split_unc(cwd), env: Vec::new() }
+    }
+
+    /// WSL のディストリビューション `distro` のホームで動かす（ツールの調べもの・~ の解決）
+    pub fn in_distro(distro: &str) -> Self {
+        Self { cwd: crate::wsl::to_unc(distro, "/"), wsl: Some((distro.to_string(), "~".to_string())), env: Vec::new() }
     }
 
     /// WSL のフォルダでも Windows のコマンドで動かす（設定で WSL の git を使わないときなど）
@@ -95,11 +101,11 @@ impl Exec {
         self.env.iter().filter(|(k, _)| !WINDOWS_ONLY.contains(&k.as_str())).map(|(k, v)| format!("export {k}={}; ", q(v))).collect()
     }
 
-    /// WSL の中で動かす sh の行（対話のシェルの PATH・環境変数を頭に）
+    /// WSL の中で動かす sh の行（ログインのシェルの環境・環境変数を頭に）
     fn wsl_line(&self, distro: &str, line: &str) -> String {
         // 試験では WSL を呼ばない
-        let path = if cfg!(test) { String::new() } else { crate::wsl::path_prefix(distro) };
-        format!("{path}{}{line}", self.exports())
+        let login = if cfg!(test) { String::new() } else { crate::wsl::login_env(distro) };
+        format!("{login}{}{line}", self.exports())
     }
 
     /// シェルの行を動かす Command（標準入力なし・標準出力と標準エラーは受け取る・窓を出さない）
@@ -107,7 +113,7 @@ impl Exec {
         let mut cmd = match &self.wsl {
             Some((distro, linux)) => {
                 let mut c = Command::new("wsl.exe");
-                c.args(["-d", distro, "--cd", linux, "--exec", "sh", "-lc", &self.wsl_line(distro, line)]);
+                c.args(["-d", distro, "--cd", linux, "--exec", "sh", "-c", &self.wsl_line(distro, line)]);
                 c
             }
             None => {
@@ -157,11 +163,11 @@ impl Exec {
     }
 
     /// ターミナルの窓（ConPTY）に渡すコマンドの行。Windows は作業フォルダと環境変数も書いた一時の .cmd を
-    /// `cmd.exe /C` で（UTF-8 のコードページで）、WSL は `wsl.exe … --exec sh -lc "…"` で。`name` は一時ファイルの名前に使う
+    /// `cmd.exe /C` で（UTF-8 のコードページで）、WSL は `wsl.exe … --exec sh -c "…"` で。`name` は一時ファイルの名前に使う
     pub fn terminal_line(&self, name: &str, line: &str) -> nagi_core::Result<String> {
         if let Some((distro, linux)) = &self.wsl {
             let l = self.wsl_line(distro, line);
-            return Ok(format!("wsl.exe -d {distro} --cd {linux} --exec sh -lc \"{}\"", l.replace('"', "\\\"")));
+            return Ok(format!("wsl.exe -d {distro} --cd {linux} --exec sh -c \"{}\"", l.replace('"', "\\\"")));
         }
         let dir = std::env::temp_dir().join("nagi-run");
         std::fs::create_dir_all(&dir).map_err(|e| format!("一時フォルダを作れません: {e}"))?;
@@ -177,6 +183,14 @@ impl Exec {
         std::fs::write(&file, text).map_err(|e| format!("{}: {e}", file.display()))?;
         Ok(format!("cmd.exe /C \"{}\"", file.display()))
     }
+}
+
+/// Windows に付いているツール（curl.exe・tar.exe・wsl.exe）を窓を出さずに動かす Command（標準入力なし・出力は受け取る）
+pub fn system(name: &str) -> Command {
+    let mut c = Command::new(crate::sys::system_tool(name));
+    c.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    crate::sys::no_window(&mut c);
+    c
 }
 
 /// Maven・Gradle など JDK の要るコマンドか（行の最初の語で見る）
@@ -204,7 +218,7 @@ mod tests {
         assert_eq!(w.pick("python", "python3"), "python3");
         assert_eq!(w.path(Path::new(r"\\wsl.localhost\kali-linux\home\me\os\a.py")), "/home/me/os/a.py");
         let line = w.terminal_line("x", "echo \"a\"").unwrap();
-        assert_eq!(crate::term::split_args(&line), ["wsl.exe", "-d", "kali-linux", "--cd", "/home/me/os", "--exec", "sh", "-lc", "export A='it'\\''s'; echo \"a\""], "JAVA_HOME は WSL に渡さない");
+        assert_eq!(crate::term::split_args(&line), ["wsl.exe", "-d", "kali-linux", "--cd", "/home/me/os", "--exec", "sh", "-c", "export A='it'\\''s'; echo \"a\""], "JAVA_HOME は WSL に渡さない");
         let c = w.program("git", &["status"]);
         let args: Vec<String> = c.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
         assert_eq!(args, ["-d", "kali-linux", "--cd", "/home/me/os", "--exec", "env", "A=it's", "git", "status"]);

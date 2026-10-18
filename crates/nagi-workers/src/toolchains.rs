@@ -166,7 +166,7 @@ pub fn installed(id: &str) -> Vec<Found> {
 
 /// URL の中身（Windows の curl.exe。GitHub の API のために User-Agent を付ける）
 fn fetch_text(url: &str) -> nagi_core::Result<String> {
-    let out = hidden(Command::new(crate::sys::system_tool("curl.exe")).args(["-sSfL", "--retry", "2", "-A", "nagi", url])).output().map_err(|e| format!("curl.exe を起動できません: {e}"))?;
+    let out = crate::exec::system("curl.exe").args(["-sSfL", "--retry", "2", "-A", "nagi", url]).output().map_err(|e| format!("curl.exe を起動できません: {e}"))?;
     if !out.status.success() {
         return Err(format!("{url} を読めません: {}", String::from_utf8_lossy(&out.stderr).trim()).into());
     }
@@ -393,7 +393,7 @@ fn install_rustup(channel: &str, send: &dyn Fn(DlMsg)) -> nagi_core::Result<Path
     let dir = tools_dir();
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let exe = dir.join("rustup-init.exe");
-    let st = hidden(Command::new(crate::sys::system_tool("curl.exe")).args(["-sSfL", "-o"]).arg(&exe).arg("https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe")).status().map_err(|e| e.to_string())?;
+    let st = crate::exec::system("curl.exe").args(["-sSfL", "-o"]).arg(&exe).arg("https://static.rust-lang.org/rustup/dist/x86_64-pc-windows-msvc/rustup-init.exe").status().map_err(|e| e.to_string())?;
     if !st.success() {
         return Err("rustup-init.exe をダウンロードできません".into());
     }
@@ -413,8 +413,8 @@ pub fn wsl_report(distro: &str) -> Vec<(&'static str, String, String)> {
         let ver = if t.version_args == ["version"] { "version" } else { "--version" };
         script.push_str(&format!("p=$(command -v {c} 2>/dev/null) && echo \"{id}|$p|$({c} {ver} 2>&1 | head -n 1)\"; ", c = t.wsl, id = t.id));
     }
-    // 対話のシェルの設定（nvm・pyenv など）も読む
-    let out = hidden(Command::new("wsl.exe").args(["-d", distro, "--exec", "bash", "-ic", &script])).output();
+    // コマンドを動かすときと同じ環境（ログインのシェルの PATH。nvm・pyenv なども）で調べる
+    let out = crate::exec::Exec::in_distro(distro).shell(&script).output();
     let text = out.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
     TOOLS
         .iter()

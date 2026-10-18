@@ -4,14 +4,10 @@
 //! （Windows の git で UNC を扱うと遅く、所有者が違うので safe.directory で断られる）。
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// WSL のディストリビューション（既定のものが先頭）。データ用（〜-data）は除く
 pub fn distros() -> Vec<String> {
-    let mut cmd = Command::new("wsl.exe");
-    cmd.args(["-l", "-q"]);
-    crate::sys::no_window(&mut cmd);
-    let Ok(out) = cmd.output() else { return Vec::new() };
+    let Ok(out) = crate::exec::system("wsl.exe").args(["-l", "-q"]).output() else { return Vec::new() };
     // UTF-16LE で返る
     let u16s: Vec<u16> = out.stdout.chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
     String::from_utf16_lossy(&u16s)
@@ -52,10 +48,7 @@ pub fn resolve_typed(path: &str) -> PathBuf {
         if let Some(d) = distros().first() {
             let linux = if let Some(rest) = p.strip_prefix("~/") {
                 // ~ はそのディストリビューションの $HOME
-                let mut cmd = Command::new("wsl.exe");
-                cmd.args(["-d", d, "--", "sh", "-c", "printf %s \"$HOME\""]);
-                crate::sys::no_window(&mut cmd);
-                let home = cmd.output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|h| h.starts_with('/')).unwrap_or_else(|| "/root".into());
+                let home = crate::exec::Exec::in_distro(d).shell("printf %s \"$HOME\"").output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|h| h.starts_with('/')).unwrap_or_else(|| "/root".into());
                 format!("{home}/{rest}")
             } else {
                 p.to_string()
@@ -66,9 +59,11 @@ pub fn resolve_typed(path: &str) -> PathBuf {
     PathBuf::from(p)
 }
 
-/// 対話のシェル（~/.bashrc）でだけ PATH に入るツール（nvm の node・pyenv・sdkman など）のフォルダを、
-/// コマンドの頭で PATH に足す文（`export PATH='…':"$PATH"; `。足すものが無ければ空）。ディストリビューションごとに 1 度だけ調べる
-pub fn path_prefix(distro: &str) -> String {
+/// ログインのシェル（~/.profile と ~/.bashrc。nvm・pyenv・sdkman などもここで PATH に入る）の環境のうち、
+/// コマンドに要るもの（PATH と主な変数）を `export K='V'; ` の並びにしたもの。ディストリビューションごとに 1 度だけ調べる。
+/// コマンドはログインシェルにせず（-l だとログインの挨拶が毎回出る）、これを頭に付けた `sh -c` で動かす（exec.rs）。
+/// PATH から Windows の場所（/mnt/…）は外す（WSL のプロジェクトでは WSL のツールだけを使う）
+pub fn login_env(distro: &str) -> String {
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
     static CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
@@ -76,30 +71,35 @@ pub fn path_prefix(distro: &str) -> String {
     if let Some(v) = cache.lock().ok().and_then(|m| m.get(distro).cloned()) {
         return v;
     }
-    const CMDS: &str = "python3 python pip node npm npx deno bun go cargo rustc dotnet gcc g++ clang cmake make zig dart php ruby bundle lua luac ghc stack cabal mix elixir swift sbt scala java mvn gradle kotlinc";
-    let script = format!("for c in {CMDS}; do command -v \"$c\"; done");
-    let mut cmd = Command::new("wsl.exe");
-    cmd.args(["-d", distro, "--exec", "bash", "-ic", &script]).stdin(std::process::Stdio::null());
-    crate::sys::no_window(&mut cmd);
-    let out = cmd.output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
-    let v = prefix_from(&out);
+    let script = format!("printf '\\n{MARK}\\n'; for k in {KEYS}; do v=$(printenv \"$k\") && printf '%s=%s\\n' \"$k\" \"$v\"; done");
+    let out = crate::exec::system("wsl.exe").args(["-d", distro, "--exec", "bash", "-lic", &script]).output();
+    let text = out.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+    let v = env_from(&text);
     if let Ok(mut m) = cache.lock() {
         m.insert(distro.to_string(), v.clone());
     }
     v
 }
 
-/// `command -v` の出力から、いつもの場所でないフォルダを PATH に足す文に
-fn prefix_from(out: &str) -> String {
-    const STD: &[&str] = &["/usr/bin", "/bin", "/usr/sbin", "/sbin", "/usr/local/bin", "/usr/local/sbin"];
-    let mut dirs: Vec<&str> = Vec::new();
-    for l in out.lines().map(str::trim).filter(|l| l.starts_with('/')) {
-        let Some((d, _)) = l.rsplit_once('/') else { continue };
-        if !STD.contains(&d) && !d.starts_with("/mnt/") && !dirs.contains(&d) {
-            dirs.push(d);
+/// 調べた出力の始まりの印（ログインの挨拶と分けるため）
+const MARK: &str = "NAGI_ENV";
+/// 引き継ぐ変数
+const KEYS: &str = "PATH JAVA_HOME GOPATH GOROOT CARGO_HOME RUSTUP_HOME NVM_DIR PYENV_ROOT SDKMAN_DIR DOTNET_ROOT LANG";
+
+/// 出力（印の後ろの K=V の行）から export の並びに
+fn env_from(out: &str) -> String {
+    let Some(i) = out.find(MARK) else { return String::new() };
+    let q = |v: &str| format!("'{}'", v.replace('\'', "'\\''"));
+    let mut s = String::new();
+    for l in out[i + MARK.len()..].lines() {
+        let Some((k, v)) = l.split_once('=') else { continue };
+        if !KEYS.split(' ').any(|x| x == k) {
+            continue;
         }
+        let v = if k == "PATH" { v.split(':').filter(|d| !d.starts_with("/mnt/") && !d.is_empty()).collect::<Vec<_>>().join(":") } else { v.to_string() };
+        s.push_str(&format!("export {k}={}; ", q(&v)));
     }
-    if dirs.is_empty() { String::new() } else { format!("export PATH='{}':\"$PATH\"; ", dirs.join(":").replace('\'', "")) }
+    s
 }
 
 /// WSL のパスなら Linux のパス（シェルに渡す用）、それ以外はそのまま
@@ -127,8 +127,9 @@ mod tests {
     }
 
     #[test]
-    fn prefix() {
-        assert_eq!(prefix_from("/usr/bin/python3\n/home/me/.nvm/versions/node/v22/bin/node\n/home/me/.nvm/versions/node/v22/bin/npm\n/mnt/c/x/go.exe\n"), "export PATH='/home/me/.nvm/versions/node/v22/bin':\"$PATH\"; ");
-        assert_eq!(prefix_from("/usr/bin/gcc\n"), "");
+    fn login_env_lines() {
+        let out = "┏━(Message from Kali developers)\nNAGI_ENV\nPATH=/home/me/.nvm/bin:/usr/bin:/mnt/c/WINDOWS:/mnt/c/tools/mvn/bin\nNVM_DIR=/home/me/.nvm\nLANG=en_US.UTF-8\nOTHER=x\n";
+        assert_eq!(env_from(out), "export PATH='/home/me/.nvm/bin:/usr/bin'; export NVM_DIR='/home/me/.nvm'; export LANG='en_US.UTF-8'; ");
+        assert_eq!(env_from("挨拶だけ"), "");
     }
 }

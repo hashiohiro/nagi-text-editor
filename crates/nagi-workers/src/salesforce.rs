@@ -10,7 +10,7 @@
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use nagi_core::hash::sha256;
@@ -34,10 +34,9 @@ pub fn login_url(url: &str) -> String {
 
 /// curl.exe に設定（`-K -`）を標準入力で渡して流す。(HTTP の状態, 本文)
 fn curl(config: &str) -> R<(u16, String)> {
-    let mut child = crate::sys::no_window(Command::new(crate::sys::system_tool("curl.exe")).args(["-sS", "-K", "-", "-w", "\n%{http_code}"]))
+    let mut child = crate::exec::system("curl.exe")
+        .args(["-sS", "-K", "-", "-w", "\n%{http_code}"])
         .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("curl.exe を起動できません: {e}"))?;
     child.stdin.take().ok_or("標準入力を開けません")?.write_all(config.as_bytes()).map_err(|e| e.to_string())?;
@@ -153,7 +152,7 @@ fn load_refresh(url: &str, user: &str) -> Option<String> {
 fn open_browser(url: &str) -> R<()> {
     // 自動テスト: ブラウザの代わりに curl でログイン画面の転送をたどる（偽の Salesforce が戻り先へ転送する）
     if std::env::var("NAGI_SF_BROWSER").as_deref() == Ok("curl") {
-        return crate::sys::no_window(Command::new(crate::sys::system_tool("curl.exe")).args(["-s", "-L", "-o", "NUL", url])).stdout(Stdio::null()).stderr(Stdio::null()).spawn().map(|_| ()).map_err(nagi_core::Error::of);
+        return crate::exec::system("curl.exe").args(["-s", "-L", "-o", "NUL", url]).stdout(Stdio::null()).stderr(Stdio::null()).spawn().map(|_| ()).map_err(nagi_core::Error::of);
     }
     crate::config::open_url(url)
 }

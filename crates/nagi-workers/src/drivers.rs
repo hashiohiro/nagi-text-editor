@@ -6,7 +6,7 @@
 
 use nagi_core::Context;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::Mutex;
 
 use crate::Waker;
@@ -104,10 +104,6 @@ impl Download {
     }
 }
 
-fn hidden(c: &mut Command) -> &mut Command {
-    crate::sys::no_window(c).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::piped())
-}
-
 /// Instant Client をダウンロードして展開する（裏のスレッド）
 pub fn download_oracle(waker: Waker) -> Download {
     download_zip(ORACLE_CLIENT_URL, ORACLE_CLIENT_SIZE_MB * 1024 * 1024, &drivers_dir().join("oracle"), waker)
@@ -131,7 +127,7 @@ pub fn download_and_extract(url: &str, expect: u64, dest: &Path, find: Box<dyn F
             std::fs::create_dir_all(&dest).map_err(|e| format!("{} を作れません: {e}", dest.display()))?;
             let zip = dest.join("download.zip");
             let _ = std::fs::remove_file(&zip);
-            let mut child = hidden(Command::new(crate::sys::system_tool("curl.exe")).args(["-sSfL", "--retry", "2", "-o"]).arg(&zip).arg(&url)).spawn().map_err(|e| format!("curl.exe を起動できません: {e}"))?;
+            let mut child = crate::exec::system("curl.exe").args(["-sSfL", "--retry", "2", "-o"]).arg(&zip).arg(&url).stdout(Stdio::null()).spawn().map_err(|e| format!("curl.exe を起動できません: {e}"))?;
             let status = loop {
                 if let Some(s) = child.try_wait().map_err(|e| e.to_string())? {
                     break s;
@@ -148,7 +144,7 @@ pub fn download_and_extract(url: &str, expect: u64, dest: &Path, find: Box<dyn F
                 return Err(format!("ダウンロードできません: {}", err.trim()).into());
             }
             send(DlMsg::Extracting);
-            let out = hidden(Command::new(crate::sys::system_tool("tar.exe")).arg("-xf").arg(&zip).arg("-C").arg(&dest)).output().map_err(|e| format!("tar.exe を起動できません: {e}"))?;
+            let out = crate::exec::system("tar.exe").arg("-xf").arg(&zip).arg("-C").arg(&dest).output().map_err(|e| format!("tar.exe を起動できません: {e}"))?;
             let _ = std::fs::remove_file(&zip);
             if !out.status.success() {
                 return Err(format!("展開できません: {}", String::from_utf8_lossy(&out.stderr).trim()).into());
