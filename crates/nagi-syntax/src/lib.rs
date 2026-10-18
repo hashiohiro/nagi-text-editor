@@ -11,6 +11,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 pub mod defs;
+pub mod markdown;
 
 use nagi_core::{Buffer, EditLog};
 use tree_sitter::{InputEdit, Language, Node, Parser, Point, Query, QueryCursor, StreamingIterator, Tree};

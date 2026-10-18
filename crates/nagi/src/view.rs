@@ -245,7 +245,10 @@ fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
             (s, pane.buf.line_start(ln), cut)
         })
         .collect();
+    let md = ed.markdown_spans(pane.buf);
     let spans = match pane.syntax {
+        // Markdown: 文章全体を解析した覚えから、見えている範囲だけ
+        _ if md.is_some() => md.as_ref().unwrap().iter().filter(|(r, _)| r.end > view_start && r.start < view_end).cloned().collect(),
         // 長い行があるとき（と折りたたみで行が飛ぶとき）は、行ごとに見えている部分だけを問い合わせる
         Some(syn) if heads.iter().any(|h| h.2) || !pane.folds.is_empty() => heads.iter().flat_map(|(s, abs, _)| syn.highlight(pane.buf, *abs..*abs + s.len())).collect(),
         Some(syn) => syn.highlight(pane.buf, view_start..view_end.max(view_start)),
@@ -459,6 +462,8 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     let cols = (w as f32 / cell.w) as usize;
     let rows = ((h as f32 / cell.h) as usize).saturating_sub(ed.status_rows()).max(1);
     ed.set_screen(cols, rows);
+    // Markdown のプレビュー: 打った内容と幅に合わせて作り直し、カーソルの行へ送る
+    ed.refresh_md_preview();
     let bar = (cell.w / 6.0).round().max(2.0);
     let underline = (cell.h / 16.0).round().max(1.0);
     let mut p = Painter { out: Vec::with_capacity(cols * rows + 64), fonts, r, cols, bar, underline, caret_at: None };
@@ -761,6 +766,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         Mode::List if ed.list_side == crate::editor::Side::Right => {
             let (name, help) = match ed.right_visible() {
                 Some(crate::right_panel::RightTab::Maven) => ("-- Maven --", "Enter 実行・開閉  l/h 開く・閉じる  r 読み直す  q 閉じる  Ctrl-w h 窓へ "),
+                Some(crate::right_panel::RightTab::Preview) => ("-- プレビュー --", "j/k 送る  Enter リンクを開く  g/G 先頭・末尾  q 閉じる  Ctrl-w h 窓へ "),
                 _ => ("-- データベース --", "Enter つなぐ・開閉  o 中身  n 新しいクエリ  c コンソール  / 絞り込み  a 足す  x 切る  Ctrl-w h 窓へ "),
             };
             let end = p.text(if ed.message.is_empty() { name } else { &ed.message }, 0, y, FG);
@@ -980,14 +986,34 @@ fn draw_right_panel(p: &mut Painter, ed: &Editor, r: Rect) {
     let extra = match tab {
         RightTab::Maven => ed.maven.as_ref().and_then(|m| m.root.file_name()).map_or(String::new(), |n| n.to_string_lossy().into_owned()),
         RightTab::Database => String::new(),
+        RightTab::Preview => ed.md_preview.as_ref().and_then(|m| m.key.0.file_name()).map_or(String::new(), |n| n.to_string_lossy().into_owned()),
     };
+    let tabs: Vec<(&str, bool)> = crate::right_panel::RTABS
+        .iter()
+        .zip(tabs)
+        .filter(|((_, t), _)| *t == tab || match t {
+            RightTab::Database => ed.db.is_some(),
+            RightTab::Maven => ed.maven.is_some(),
+            RightTab::Preview => ed.md_preview.is_some(),
+        })
+        .map(|(_, x)| x)
+        .collect();
     draw_tabs(p, r, &tabs, focused, &extra);
     let saved = p.cols;
     p.cols = r.x + r.w;
+    if tab == RightTab::Preview {
+        if let Some(pv) = &ed.md_preview {
+            draw_md_preview(p, pv, r, focused);
+        }
+        p.cols = saved;
+        return;
+    }
     // (字下げ, 開け閉めの印, 種類の印と色, 本文, 補足, 本文の色)
     let mut lines: Vec<(usize, &str, (char, [f32; 4]), String, String, [f32; 4])> = Vec::new();
     let mut top = 1;
     let (selected, scroll) = match tab {
+        // 上で描いて戻っている
+        RightTab::Preview => (0, 0),
         RightTab::Maven => {
             let Some(m) = &ed.maven else {
                 p.cols = saved;
@@ -2335,6 +2361,53 @@ fn draw_launcher(p: &mut Painter, l: &crate::launcher::Launcher, cols: usize, ro
         p.text(help, c + 3, by, STATUS_FG);
     }
     p.cols = saved;
+}
+
+/// Markdown のプレビュー（右の欄）。等幅のまま、見出しの罫・コードの地・表の罫線・引用の ▎
+fn draw_md_preview(p: &mut Painter, pv: &crate::md_preview::MdPreview, r: Rect, focused: bool) {
+    use nagi_syntax::markdown::Style;
+    const CODE_BG: [f32; 4] = rgb(0x1a1a1a);
+    let cell = p.fonts.cell();
+    let (x0, y0, wpx) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
+    let body = r.h.saturating_sub(1);
+    if pv.lines.is_empty() {
+        p.text(" （空の文書）", r.x, y0 + cell.h, STATUS_FG);
+        return;
+    }
+    for (k, l) in pv.lines.iter().enumerate().skip(pv.scroll).take(body) {
+        let y = y0 + (1 + k - pv.scroll) as f32 * cell.h;
+        if l.code {
+            p.out.push(Instance::fill(x0 + cell.w, y, wpx - 2.0 * cell.w, cell.h, CODE_BG));
+        }
+        if focused && k == pv.selected {
+            p.out.push(Instance::fill(x0, y, 2.0, cell.h, FG));
+        }
+        // 範囲ごとの色（無いところは地の色）
+        let color = |st: Style| match st {
+            Style::Plain => FG,
+            Style::Heading => rgb(0x87afd7),
+            Style::Strong => rgb(0xeeeeee),
+            Style::Emph => rgb(0xd7af87),
+            Style::Code => rgb(0xafaf87),
+            Style::Link => rgb(0x87afd7),
+            Style::Strike => rgb(0x6c6c6c),
+            Style::Dim => rgb(0x6c6c6c),
+            Style::Marker => rgb(0xd7875f),
+            Style::Hl(h) => hl_color(h),
+        };
+        let mut items: Vec<Item> = Vec::new();
+        let mut bi = 0;
+        for g in l.text.graphemes(true) {
+            let st = l.spans.iter().rev().find(|(rg, _)| rg.start <= bi && bi < rg.end).map(|x| x.1);
+            let width = p.cell_width(g);
+            let fg = st.map_or(FG, color);
+            let bg = if st == Some(Style::Code) && !l.code { Some(CODE_BG) } else { None };
+            let underline = st == Some(Style::Link);
+            items.push(Item { g: Cow::Borrowed(g), width, fg, bg, underline });
+            bi += g.len();
+        }
+        p.draw(&items, r.x + 1, y);
+    }
 }
 
 /// 表示の幅 `w` に収まるように切る（切ったら末尾に …）

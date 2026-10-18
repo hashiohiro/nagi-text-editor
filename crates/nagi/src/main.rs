@@ -11,6 +11,7 @@
 
 mod autoread;
 mod launcher;
+mod md_preview;
 mod project_open;
 mod blame;
 mod db_panel;

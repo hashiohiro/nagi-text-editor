@@ -247,6 +247,10 @@ pub struct Editor {
     pub finder: Option<crate::finder::Finder>,
     /// ランチャー（起動時のプロジェクトの選択）
     pub launcher: Option<crate::launcher::Launcher>,
+    /// Markdown のプレビュー（右の欄）
+    pub md_preview: Option<crate::md_preview::MdPreview>,
+    /// Markdown のハイライトの覚え（(パス, 版) → 範囲）。描くたびに解析し直さない
+    pub(crate) md_cache: std::cell::RefCell<Vec<(std::path::PathBuf, u64, std::rc::Rc<Vec<(std::ops::Range<usize>, nagi_syntax::Hl)>>)>>,
     /// 全文検索のパネル（開いている間だけ）
     pub grep: Option<crate::grep_panel::GrepPanel>,
     /// ファイルツリー（開いている間だけ）
@@ -384,6 +388,8 @@ impl Editor {
             screen: (80, 24),
             finder: None,
             launcher: None,
+            md_cache: Default::default(),
+            md_preview: None,
             grep: None,
             tree: None,
             list_side: Side::Bottom,
@@ -525,6 +531,26 @@ impl Editor {
         if spawned.is_ok() {
             self.pending_syntax = Some(rx);
         }
+    }
+
+    /// Markdown のファイルなら、文章全体のハイライト（版が変わったときだけ解析し直す）
+    pub(crate) fn markdown_spans(&self, buf: &Buffer) -> Option<std::rc::Rc<Vec<(std::ops::Range<usize>, nagi_syntax::Hl)>>> {
+        let path = buf.path.as_deref()?;
+        let ext = path.extension()?.to_string_lossy().to_ascii_lowercase();
+        if !matches!(ext.as_str(), "md" | "markdown" | "mdx") || buf.len_bytes() > 4 << 20 {
+            return None;
+        }
+        let mut cache = self.md_cache.borrow_mut();
+        if let Some((_, _, s)) = cache.iter().find(|(p, v, _)| p == path && *v == buf.version) {
+            return Some(s.clone());
+        }
+        let spans = std::rc::Rc::new(nagi_syntax::markdown::highlight(&buf.text()));
+        cache.retain(|(p, _, _)| p != path);
+        cache.push((path.to_path_buf(), buf.version, spans.clone()));
+        if cache.len() > 8 {
+            cache.remove(0);
+        }
+        Some(spans)
     }
 
     /// 構文木を使うコマンドの前に: 裏で解析中なら終わるのを待ち、今の内容に合わせる
@@ -1344,6 +1370,7 @@ impl Editor {
             // フォルダならプロジェクトとして開く（IntelliJ・Eclipse の設定を読む）
             "e" | "edit" if !arg.is_empty() && std::path::Path::new(arg).is_dir() => self.open_project(PathBuf::from(arg)),
             "e" | "edit" if !arg.is_empty() => self.edit_file(PathBuf::from(arg)),
+            "MarkdownPreview" | "MdPreview" => self.toggle_md_preview(),
             "Project" | "project" if arg.is_empty() => self.pick_project(),
             "Project" | "project" => self.open_project(PathBuf::from(arg)),
             "e!" | "edit!" => self.reload(),
@@ -1428,6 +1455,7 @@ impl Editor {
             Some((Some("palette"), _)) => self.open_finder(crate::finder::Source::Commands),
             Some((Some("finder.symbols"), _)) => self.symbol_search(false),
             Some((Some("finder.projects"), _)) => self.pick_project(),
+            Some((Some("markdown.preview"), _)) => self.toggle_md_preview(),
             Some((Some("finder.types"), _)) => self.symbol_search(true),
             Some((Some("outline"), _)) => self.outline(),
             Some((Some("nav.definition"), _)) => self.goto_definition(),

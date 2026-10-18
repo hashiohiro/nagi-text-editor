@@ -40,10 +40,11 @@ impl Button {
             Button::HideBottom => "隠す".into(),
             Button::ShowBottom => if ed.bottom_kind == crate::result_grid::BottomKind::Result { "クエリの結果".into() } else { "検索の結果".into() },
             Button::HideRight => "隠す".into(),
-            Button::ShowRight => match (ed.db.is_some() || ed.maven.is_some(), ed.right_last()) {
+            Button::ShowRight => match (ed.db.is_some() || ed.maven.is_some() || ed.md_preview.is_some(), ed.right_last()) {
                 (false, _) => "データベース・Maven".into(),
                 (true, crate::right_panel::RightTab::Database) => "データベース".into(),
                 (true, crate::right_panel::RightTab::Maven) => "Maven".into(),
+                (true, crate::right_panel::RightTab::Preview) => "プレビュー".into(),
             },
         }
     }

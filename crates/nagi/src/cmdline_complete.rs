@@ -77,6 +77,7 @@ const EX_COMMANDS: &[(&str, &str)] = &[
     ("Gpull", "pull"),
     ("Gfetch", "フェッチ"),
     ("Maven", "Maven（右の欄）。後にゴールを書けば実行"),
+    ("MarkdownPreview", "Markdown のプレビュー（右の欄）を出す・閉じる"),
     ("Project", "プロジェクトを開く（最近のプロジェクト・IntelliJ・Eclipse）。後にフォルダを書けばそこを開く"),
     ("Db", "データベース（右の欄）"),
     ("DbAdd", "接続先を足す（名前 jdbc:URL [利用者]）"),

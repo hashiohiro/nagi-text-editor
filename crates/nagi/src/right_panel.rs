@@ -13,12 +13,14 @@ pub enum RightTab {
     #[default]
     Database,
     Maven,
+    /// Markdown のプレビュー
+    Preview,
 }
 
-pub const RTABS: [(&str, RightTab); 2] = [(" データベース ", RightTab::Database), (" Maven ", RightTab::Maven)];
+pub const RTABS: [(&str, RightTab); 3] = [(" データベース ", RightTab::Database), (" Maven ", RightTab::Maven), (" プレビュー ", RightTab::Preview)];
 
 /// 右のストライプのラベル（縦書き。見出し, タブ, 上端の行）
-pub const RSTRIPE: [(&str, RightTab, usize); 2] = [("データベース", RightTab::Database, 0), ("Maven", RightTab::Maven, 7)];
+pub const RSTRIPE: [(&str, RightTab, usize); 3] = [("データベース", RightTab::Database, 0), ("Maven", RightTab::Maven, 7), ("プレビュー", RightTab::Preview, 13)];
 
 pub fn rstripe_at(row: usize) -> Option<RightTab> {
     RSTRIPE.iter().find(|(l, _, top)| row >= *top && row < top + l.chars().count()).map(|s| s.1)
@@ -38,32 +40,42 @@ pub fn rtab_at(col: usize) -> Option<RightTab> {
 }
 
 impl Editor {
+    /// 中身のあるタブ
+    fn right_open_tabs(&self) -> Vec<RightTab> {
+        let mut v = Vec::new();
+        if self.db.is_some() {
+            v.push(RightTab::Database);
+        }
+        if self.maven.is_some() {
+            v.push(RightTab::Maven);
+        }
+        if self.md_preview.is_some() {
+            v.push(RightTab::Preview);
+        }
+        v
+    }
+
     pub fn right_visible(&self) -> Option<RightTab> {
         if self.right_hidden {
             return None;
         }
-        match (self.db.is_some(), self.maven.is_some()) {
-            (true, true) => Some(self.right_tab),
-            (true, false) => Some(RightTab::Database),
-            (false, true) => Some(RightTab::Maven),
-            (false, false) => None,
-        }
+        let open = self.right_open_tabs();
+        if open.contains(&self.right_tab) { Some(self.right_tab) } else { open.first().copied() }
     }
 
     /// 最後に選んだタブ（隠していても覚えている）
     pub fn right_last(&self) -> RightTab {
-        match (self.db.is_some(), self.maven.is_some()) {
-            (true, true) => self.right_tab,
-            (false, true) => RightTab::Maven,
-            _ => RightTab::Database,
-        }
+        let open = self.right_open_tabs();
+        if open.contains(&self.right_tab) { self.right_tab } else { open.first().copied().unwrap_or(RightTab::Database) }
     }
 
     /// 右の欄の幅（既定は 40 列。狭い画面では 1/3 まで。窓に 20 列は残す）
     pub fn right_width(&self) -> usize {
         let cols = self.screen.0;
         let left = self.left_rect().map_or(0, |r| r.w + 1);
-        let w = self.right_w.unwrap_or_else(|| 40.min(cols / 3).max(10));
+        // プレビューは広め（画面の 45%）
+        let def = if self.right_visible() == Some(RightTab::Preview) { cols * 45 / 100 } else { 40.min(cols / 3) };
+        let w = self.right_w.unwrap_or(def.max(10));
         w.min(cols.saturating_sub(left + 21)).max(10.min(cols))
     }
 
@@ -83,6 +95,14 @@ impl Editor {
         match tab {
             RightTab::Database => self.open_db_panel(),
             RightTab::Maven => self.open_maven(),
+            RightTab::Preview => {
+                if self.md_preview.is_none() {
+                    self.toggle_md_preview();
+                }
+                if self.md_preview.is_some() {
+                    self.focus_right(RightTab::Preview);
+                }
+            }
         }
     }
 
@@ -127,6 +147,7 @@ impl Editor {
         match self.right_visible() {
             Some(RightTab::Maven) => self.maven_key(key),
             Some(RightTab::Database) => self.db_key(key),
+            Some(RightTab::Preview) => self.md_preview_key(key),
             None => {
                 self.mode = Mode::Normal;
                 Effect::None
@@ -145,6 +166,7 @@ impl Editor {
         match self.right_visible() {
             Some(RightTab::Maven) => self.maven_click(row, clicks),
             Some(RightTab::Database) => self.db_click(row, clicks),
+            Some(RightTab::Preview) => self.md_preview_click(row, clicks),
             None => {}
         }
     }

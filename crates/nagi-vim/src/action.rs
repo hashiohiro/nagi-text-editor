@@ -18,6 +18,7 @@ pub fn ideavim(name: &str) -> Option<(Option<&'static str>, &'static str)> {
         "RecentFiles" => (Some("finder.recent"), "最近開いたファイル"),
         "RecentLocations" => (Some("jump.recent"), "最近の編集箇所"),
         "ManageRecentProjects" => (Some("finder.projects"), "最近のプロジェクト"),
+        "Markdown.Layout.EditorAndPreview" | "Markdown.Layout.PreviewOnly" | "Markdown.Layout.EditorOnly" => (Some("markdown.preview"), "Markdown のプレビュー（右の欄）を出す・閉じる"),
         "FileStructurePopup" => (Some("outline"), "ファイルの構造（tree-sitter）"),
         "GotoDeclaration" | "GotoTypeDeclaration" => (Some("nav.definition"), "定義へ（tree-sitter の索引）"),
         "GotoImplementation" => (Some("nav.implementation"), "実装へ（継承・実装している型の中）"),
