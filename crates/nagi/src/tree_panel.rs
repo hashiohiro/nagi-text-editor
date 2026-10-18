@@ -57,8 +57,11 @@ pub enum LeftTab {
     Commit,
 }
 
-/// タブの見出し（1 行目に並べる）
-pub const TABS: [(&str, LeftTab); 2] = [(" プロジェクト ", LeftTab::Project), (" コミット ", LeftTab::Commit)];
+/// タブ（1 行目にアイコンで並べる。名前は出しているタブの横に出す）
+pub const TABS: [(&str, LeftTab); 2] = [("プロジェクト", LeftTab::Project), ("コミット", LeftTab::Commit)];
+
+/// アイコンのタブ 1 つの幅（列）
+pub const TAB_W: usize = 4;
 
 /// 左のストライプのラベル（縦書き。見出し, タブ, 上端の行）
 pub const STRIPE: [(&str, LeftTab, usize); 2] = [("プロジェクト", LeftTab::Project, 0), ("コミット", LeftTab::Commit, 7)];
@@ -70,15 +73,7 @@ pub fn stripe_at(row: usize) -> Option<LeftTab> {
 
 /// 1 行目の `col` にあるタブ
 pub fn tab_at(col: usize) -> Option<LeftTab> {
-    let mut x = 0;
-    for (label, tab) in TABS {
-        let w = nagi_core::display_col(label, label.len(), false);
-        if col >= x && col < x + w {
-            return Some(tab);
-        }
-        x += w;
-    }
-    None
+    TABS.get(col / TAB_W).map(|t| t.1)
 }
 
 impl TreePanel {

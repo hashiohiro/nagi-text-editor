@@ -989,8 +989,106 @@ fn draw_toggle_buttons(p: &mut Painter, ed: &Editor, cols: usize) {
 
 /// 左の欄の 1 行目: タブ（プロジェクト・コミット）。出しているタブは明るい字と下線
 fn draw_left_tabs(p: &mut Painter, r: Rect, active: crate::tree_panel::LeftTab, focused: bool, extra: &str) {
-    let tabs: Vec<(&str, bool)> = crate::tree_panel::TABS.iter().map(|(l, t)| (*l, *t == active)).collect();
-    draw_tabs(p, r, &tabs, focused, extra);
+    use crate::tree_panel::LeftTab;
+    let tabs: Vec<(TabIcon, &str, bool)> = crate::tree_panel::TABS
+        .iter()
+        .map(|(l, t)| (if *t == LeftTab::Project { TabIcon::Project } else { TabIcon::Commit }, *l, *t == active))
+        .collect();
+    draw_icon_tabs(p, r, &tabs, focused, extra);
+}
+
+/// 左右の欄のタブのアイコン
+#[derive(Clone, Copy)]
+enum TabIcon {
+    Project,
+    Commit,
+    Database,
+    Maven,
+    Preview,
+}
+
+/// 左右の欄の 1 行目: タブをアイコンで並べ（出しているタブは明るく下線）、その横に出しているタブの名前
+fn draw_icon_tabs(p: &mut Painter, r: Rect, tabs: &[(TabIcon, &str, bool)], focused: bool, extra: &str) {
+    let cell = p.fonts.cell();
+    let y = r.y as f32 * cell.h;
+    let tw = crate::tree_panel::TAB_W;
+    let mut x = r.x;
+    let mut name = "";
+    for &(icon, label, on) in tabs {
+        if x + tw + 3 > r.x + r.w {
+            break;
+        }
+        let color = if on && focused { FG } else if on { rgb(0xc8c8c8) } else { STATUS_FG };
+        draw_tab_icon(p, icon, (x as f32 + tw as f32 / 2.0) * cell.w, y, color);
+        if on {
+            p.out.push(Instance::fill(x as f32 * cell.w + cell.w * 0.5, y + cell.h - 2.0, (tw - 1) as f32 * cell.w, 2.0, if focused { GIT_MOD } else { STATUS_FG }));
+            name = label;
+        }
+        x += tw;
+    }
+    let saved = p.cols;
+    p.cols = (r.x + r.w).saturating_sub(3);
+    let end = p.text(&format!(" {name}"), x, y, STATUS_FG);
+    if !extra.is_empty() {
+        p.text(&format!(" {extra}"), end, y, LINE_NO);
+    }
+    p.cols = saved;
+    p.out.push(Instance::fill(r.x as f32 * cell.w, y + cell.h - 1.0, r.w as f32 * cell.w, 1.0, LINE_NO));
+}
+
+/// タブのアイコンを、中心の x・行の y に 1 色で描く（IntelliJ の新しい UI のような線のアイコン）
+fn draw_tab_icon(p: &mut Painter, icon: TabIcon, cx: f32, y: f32, c: [f32; 4]) {
+    let cell = p.fonts.cell();
+    let s = (cell.h * 0.7).round().clamp(10.0, 30.0);
+    let x = (cx - s / 2.0).round();
+    // 下の線（下線 2px）と重ならないよう、その上の範囲の真ん中に
+    let y = y + ((cell.h - 3.0 - s) / 2.0).round().max(0.0);
+    let px = (s / 16.0).max(1.0).round();
+    let mut f = |x: f32, y: f32, w: f32, h: f32| p.out.push(Instance::fill(x, y, w, h, c));
+    // 枠（線の太さ px）
+    let frame = |f: &mut dyn FnMut(f32, f32, f32, f32), x: f32, y: f32, w: f32, h: f32| {
+        f(x, y, w, px);
+        f(x, y + h - px, w, px);
+        f(x, y, px, h);
+        f(x + w - px, y, px, h);
+    };
+    match icon {
+        TabIcon::Project => {
+            // フォルダ: つまみと枠
+            f(x, y + px, s * 0.45, px);
+            f(x, y + px, px, px * 2.0);
+            f(x + s * 0.45 - px, y + px, px, px * 2.0);
+            frame(&mut f, x, y + px * 3.0, s, s - px * 4.0);
+        }
+        TabIcon::Commit => {
+            // コミット: 横線と、真ん中の輪
+            let r = (s * 0.5).round();
+            let my = y + (s / 2.0).round();
+            f(x, my - px / 2.0, (s - r) / 2.0, px);
+            f(x + (s + r) / 2.0, my - px / 2.0, (s - r) / 2.0, px);
+            frame(&mut f, x + (s - r) / 2.0, my - r / 2.0, r, r);
+        }
+        TabIcon::Database => {
+            // データベース: 積み重ねた円筒（3 段の枠）
+            let h = ((s - px * 2.0) / 3.0).floor();
+            for k in 0..3 {
+                frame(&mut f, x + px, y + k as f32 * (h + px), s - px * 2.0, h);
+            }
+        }
+        TabIcon::Maven => {
+            // Maven: m の文字
+            p.small_text("m", x + (s - cell.w * 1.1) / 2.0, y + (s - cell.h * 1.1) / 2.0, 1.1, c);
+        }
+        TabIcon::Preview => {
+            // プレビュー: 紙と行
+            let w = s * 0.8;
+            let x = x + (s - w) / 2.0;
+            frame(&mut f, x, y, w, s);
+            for k in 0..3 {
+                f(x + px * 3.0, y + px * 4.0 + k as f32 * px * 3.0, w - px * 6.0, px);
+            }
+        }
+    }
 }
 
 /// 欄の 1 行目のタブ（見出し, 出しているか）。右端の隠すボタンの手前で切る
@@ -1098,23 +1196,19 @@ fn draw_right_panel(p: &mut Painter, ed: &Editor, r: Rect) {
     p.out.push(Instance::fill(x0 - cell.w * 0.5, y0, 1.0, r.h as f32 * cell.h, LINE_NO));
     let focused = ed.right_focused();
     let tab = ed.right_visible().unwrap_or_default();
-    let tabs: Vec<(&str, bool)> = crate::right_panel::RTABS.iter().map(|(l, t)| (*l, *t == tab)).collect();
-    let extra = match tab {
-        RightTab::Maven => ed.maven.as_ref().and_then(|m| m.root.file_name()).map_or(String::new(), |n| n.to_string_lossy().into_owned()),
-        RightTab::Database => String::new(),
-        RightTab::Preview => ed.md_preview.as_ref().and_then(|m| m.key.0.file_name()).map_or(String::new(), |n| n.to_string_lossy().into_owned()),
-    };
-    let tabs: Vec<(&str, bool)> = crate::right_panel::RTABS
+    // 左の欄と同じく、タブはいつも全部をアイコンで並べる
+    let tabs: Vec<(TabIcon, &str, bool)> = crate::right_panel::RTABS
         .iter()
-        .zip(tabs)
-        .filter(|((_, t), _)| *t == tab || match t {
-            RightTab::Database => ed.db.is_some(),
-            RightTab::Maven => ed.maven.is_some(),
-            RightTab::Preview => ed.md_preview.is_some(),
+        .map(|(l, t)| {
+            let icon = match t {
+                RightTab::Database => TabIcon::Database,
+                RightTab::Maven => TabIcon::Maven,
+                RightTab::Preview => TabIcon::Preview,
+            };
+            (icon, *l, *t == tab)
         })
-        .map(|(_, x)| x)
         .collect();
-    draw_tabs(p, r, &tabs, focused, &extra);
+    draw_icon_tabs(p, r, &tabs, focused, "");
     let saved = p.cols;
     p.cols = r.x + r.w;
     if tab == RightTab::Preview {

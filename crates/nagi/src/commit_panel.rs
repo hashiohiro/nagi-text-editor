@@ -552,8 +552,8 @@ mod layout_tests {
         }
         // タブ「 プロジェクト 」は 14 セル、その右が「 コミット 」
         assert_eq!(tab_at(1), Some(LeftTab::Project));
-        assert_eq!(tab_at(15), Some(LeftTab::Commit));
-        assert_eq!(tab_at(30), None);
+        assert_eq!(tab_at(5), Some(LeftTab::Commit));
+        assert_eq!(tab_at(8), None);
         assert_eq!((stripe_at(0), stripe_at(8), stripe_at(20)), (Some(LeftTab::Project), Some(LeftTab::Commit), None));
         // ボタンは右寄せで重ならない
         let [(_, px, pw, true), (_, mx, _, false)] = buttons(36) else { panic!() };

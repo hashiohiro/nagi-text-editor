@@ -17,7 +17,8 @@ pub enum RightTab {
     Preview,
 }
 
-pub const RTABS: [(&str, RightTab); 3] = [(" データベース ", RightTab::Database), (" Maven ", RightTab::Maven), (" プレビュー ", RightTab::Preview)];
+/// タブ（左の欄と同じく、いつも全部をアイコンで並べる。名前は出しているタブの横に出す）
+pub const RTABS: [(&str, RightTab); 3] = [("データベース", RightTab::Database), ("Maven", RightTab::Maven), ("プレビュー", RightTab::Preview)];
 
 /// 右のストライプのラベル（縦書き。見出し, タブ, 上端の行）
 pub const RSTRIPE: [(&str, RightTab, usize); 3] = [("データベース", RightTab::Database, 0), ("Maven", RightTab::Maven, 7), ("プレビュー", RightTab::Preview, 13)];
@@ -28,15 +29,7 @@ pub fn rstripe_at(row: usize) -> Option<RightTab> {
 
 /// 1 行目の（欄の左端から数えた）`col` にあるタブ
 pub fn rtab_at(col: usize) -> Option<RightTab> {
-    let mut x = 0;
-    for (label, tab) in RTABS {
-        let w = nagi_core::display_col(label, label.len(), false);
-        if col >= x && col < x + w {
-            return Some(tab);
-        }
-        x += w;
-    }
-    None
+    RTABS.get(col / crate::tree_panel::TAB_W).map(|t| t.1)
 }
 
 impl Editor {
