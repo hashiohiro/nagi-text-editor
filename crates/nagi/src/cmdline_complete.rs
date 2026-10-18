@@ -2,7 +2,8 @@
 //!
 //! 打つたびに最下行の上へ候補を説明付きで出す。コマンド名を打っている間はコマンドの一覧を前方一致で、
 //! ファイル名を取るコマンド（`:e` `:w` `:sp` `:vs` `:saveas`）の後ろではプロジェクトのファイルをファジーに、
-//! `:b` の後ろでは開いているバッファを出す。Tab と `Ctrl-n` で次、`Ctrl-p` で前の候補を入力欄へ入れる。
+//! `:b` の後ろでは開いているバッファを出す。Tab・↓・`Ctrl-n`・`Ctrl-j` で次、↑・`Ctrl-p`・`Ctrl-k` で前の候補を入力欄へ入れる
+//! （h j k l は文字として打つので、選ぶのは Ctrl と組み合わせる）。マウスで押してもその候補を入れる。
 
 use nagi_core::fuzzy::{Query, rank_ids};
 use nagi_vim::Key;
@@ -151,6 +152,8 @@ pub struct CmdComplete {
     pub start: usize,
     /// 選ぶ前の語（候補の端の先で戻す）
     pub original: String,
+    /// 描いた位置（マウス用）: (画面の行, 列の始め, 終わり, 候補の番号)
+    pub rows: std::cell::RefCell<Vec<(usize, usize, usize, usize)>>,
 }
 
 impl Editor {
@@ -212,7 +215,7 @@ impl Editor {
             None => {
                 // コマンド名を打っている
                 let items = match_commands(body, force);
-                (!items.is_empty()).then(|| CmdComplete { items, sel: None, start: body_at, original: body.to_string() })
+                (!items.is_empty()).then(|| CmdComplete { items, sel: None, start: body_at, original: body.to_string(), rows: Default::default() })
             }
             Some((name, arg)) => {
                 let start = body_at + name.len() + 1;
@@ -225,7 +228,7 @@ impl Editor {
                 if let Some(list) = fixed {
                     let low = arg.to_lowercase();
                     let items: Vec<(String, String)> = list.into_iter().filter(|s| s.to_lowercase().starts_with(&low)).map(|s| (s, String::new())).collect();
-                    return (!items.is_empty()).then(|| CmdComplete { items, sel: None, start, original: arg.to_string() });
+                    return (!items.is_empty()).then(|| CmdComplete { items, sel: None, start, original: arg.to_string(), rows: Default::default() });
                 }
                 if matches!(name, "b" | "buffer" | "bd" | "bdelete") {
                     let low = arg.to_lowercase();
@@ -237,7 +240,7 @@ impl Editor {
                             n.to_lowercase().contains(&low).then(|| (n, format!("バッファ {}{}", i + 1, if dirty { " [+]" } else { "" })))
                         })
                         .collect();
-                    return (!items.is_empty()).then(|| CmdComplete { items, sel: None, start, original: arg.to_string() });
+                    return (!items.is_empty()).then(|| CmdComplete { items, sel: None, start, original: arg.to_string(), rows: Default::default() });
                 }
                 if FILE_ARG.contains(&name) {
                     // プロジェクトのファイル（ファインダーで集めた一覧）をファジーに。まだ無ければ裏で集める
@@ -247,18 +250,44 @@ impl Editor {
                     let ids: Vec<u32> = (0..files.len() as u32).collect();
                     let hits = rank_ids(&q, files, &ids);
                     let items: Vec<(String, String)> = hits.iter().take(200).map(|&(i, _)| (files[i as usize].clone(), String::new())).collect();
-                    return (!items.is_empty()).then(|| CmdComplete { items, sel: None, start, original: arg.to_string() });
+                    return (!items.is_empty()).then(|| CmdComplete { items, sel: None, start, original: arg.to_string(), rows: Default::default() });
                 }
                 None
             }
         }
     }
 
-    /// Tab / Ctrl-n / Ctrl-p。扱ったら true
+    /// 候補 `i` を入力欄へ入れる（マウスで押したとき）
+    pub(crate) fn cmd_complete_pick(&mut self, i: usize) {
+        let Some(c) = &mut self.cmd_complete else { return };
+        if i >= c.items.len() {
+            return;
+        }
+        c.sel = Some(i);
+        let word = c.items[i].0.clone();
+        let start = c.start;
+        let end = self.cmdline.cursor;
+        self.cmdline.text.replace_range(start..end, &word);
+        self.cmdline.cursor = start + word.len();
+    }
+
+    /// マウス: 画面の (行, 列) が候補の上ならそれを入れる。当たれば true
+    pub(crate) fn cmd_complete_click(&mut self, row: usize, col: usize) -> bool {
+        let hit = self.cmd_complete.as_ref().and_then(|c| c.rows.borrow().iter().find(|(r, c0, c1, _)| *r == row && col >= *c0 && col < *c1).map(|x| x.3));
+        match hit {
+            Some(i) => {
+                self.cmd_complete_pick(i);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Tab・↓・Ctrl-n・Ctrl-j で次、↑・Ctrl-p・Ctrl-k で前。扱ったら true
     pub(crate) fn cmd_complete_key(&mut self, key: Key) -> bool {
         let forward = match key {
-            Key::Tab | Key::Ctrl('n') => true,
-            Key::Ctrl('p') => false,
+            Key::Tab | Key::Down | Key::Ctrl('n') | Key::Ctrl('j') => true,
+            Key::Up | Key::Ctrl('p') | Key::Ctrl('k') => false,
             _ => return false,
         };
         if self.cmd_complete.is_none() {
@@ -362,5 +391,28 @@ mod tests {
         let mut e = Editor::new(Buffer::from_str("alpha\nal"), None);
         keys(&mut e, "GA<C-Space>");
         assert!(e.completion.is_some());
+    }
+
+    /// ↑↓・Ctrl-j/k でも選べ、マウスで押した候補も入る
+    #[test]
+    fn arrows_and_click() {
+        let mut e = Editor::new(nagi_core::Buffer::from_str(""), None);
+        e.set_screen(100, 40);
+        e.enter_command("Ru");
+        e.key(Key::Down);
+        let first = e.cmdline.text.clone();
+        assert!(first.starts_with("Run"), "{first}");
+        e.key(Key::Ctrl('j'));
+        assert_ne!(e.cmdline.text, first);
+        e.key(Key::Up);
+        assert_eq!(e.cmdline.text, first);
+        // 押す（描いた位置の代わりに入れる）
+        let c = e.cmd_complete.as_ref().unwrap();
+        let last = c.items.len() - 1;
+        let want = c.items[last].0.clone();
+        *c.rows.borrow_mut() = vec![(30, 1, 40, last)];
+        assert!(e.cmd_complete_click(30, 5));
+        assert_eq!(e.cmdline.text, want);
+        assert!(!e.cmd_complete_click(29, 5));
     }
 }

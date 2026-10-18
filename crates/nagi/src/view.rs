@@ -2327,7 +2327,9 @@ fn draw_cmd_complete(p: &mut Painter, ed: &Editor, c: &crate::cmdline_complete::
     let width = (name_w + desc_w + if desc_w > 0 { 5 } else { 2 }).min(cols);
     let col = (1 + p.width(&ed.cmdline.text[..c.start.min(ed.cmdline.text.len())])).min(cols.saturating_sub(width));
     let top = rows - n;
+    let mut hits = Vec::new();
     for (k, (name, desc)) in shown.iter().enumerate() {
+        hits.push((top + k, col, col + width, first + k));
         let y = (top + k) as f32 * cell.h;
         let selected = c.sel == Some(first + k);
         let (bg, fg, dim) = if selected { (FG, BG, BG) } else { (MATCH_BG, FG, STATUS_FG) };
@@ -2337,6 +2339,7 @@ fn draw_cmd_complete(p: &mut Painter, ed: &Editor, c: &crate::cmdline_complete::
             p.text(desc, end.max(col + name_w + 1) + 2, y, dim);
         }
     }
+    *c.rows.borrow_mut() = hits;
     // 件数が多いときは、残りの数を一覧の右上に
     if c.items.len() > n {
         let more = format!(" {}/{} ", c.sel.map_or(0, |s| s + 1), c.items.len());
@@ -2730,7 +2733,7 @@ fn draw_run_dialog(p: &mut Painter, ed: &Editor, d: &crate::run_dialog::RunDialo
         if tx > end {
             p.text(&tag, tx, y(r), dim);
         }
-        list_rows.push((y0 + r, k));
+        list_rows.push((y0 + r, k, x0, x0 + lw));
     }
     // 右: 欄
     p.cols = x0 + w;
@@ -2752,7 +2755,7 @@ fn draw_run_dialog(p: &mut Painter, ed: &Editor, d: &crate::run_dialog::RunDialo
         } else {
             p.text(&d.name.text(), fx, y(r), FG);
         }
-        field_rows.push((y0 + r, Focus::Name));
+        field_rows.push((y0 + r, Focus::Name, fx));
         r += 1;
         // 種類（h/l で切り替え）
         row(p, r, "種類", d.focus == Focus::Kind);
@@ -2763,7 +2766,7 @@ fn draw_run_dialog(p: &mut Painter, ed: &Editor, d: &crate::run_dialog::RunDialo
         } else {
             p.text(&kind, fx, y(r), FG);
         }
-        field_rows.push((y0 + r, Focus::Kind));
+        field_rows.push((y0 + r, Focus::Kind, fx));
         r += 1;
         for (i, (_, label, f)) in d.fields.iter().enumerate() {
             let focused = d.focus == Focus::Field(i);
@@ -2774,7 +2777,7 @@ fn draw_run_dialog(p: &mut Painter, ed: &Editor, d: &crate::run_dialog::RunDialo
                 let t = f.text();
                 p.text(if t.is_empty() { "—" } else { &t }, fx, y(r), if t.is_empty() { LINE_NO } else { FG });
             }
-            field_rows.push((y0 + r, Focus::Field(i)));
+            field_rows.push((y0 + r, Focus::Field(i), fx));
             r += 1;
         }
         r += 1;

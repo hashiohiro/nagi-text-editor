@@ -847,6 +847,16 @@ impl App {
     fn on_press(&mut self) {
         // ランチャー: 一覧の行を押すと選び、2 回で開く
         if let (Some(ed), Some(f)) = (&mut self.ed, &self.fonts) {
+            // `:` の候補を押すと、その候補を入力欄へ
+            if ed.mode == Mode::Command {
+                let cell = f.cell();
+                let (row, col) = ((self.mouse.1 as f32 / cell.h) as usize, (self.mouse.0.max(0.0) as f32 / cell.w) as usize);
+                if ed.cmd_complete_click(row, col) {
+                    self.sync_ime();
+                    self.draw();
+                    return;
+                }
+            }
             // 実行の構成の画面: 一覧・欄・ボタンを押す
             if ed.mode == Mode::RunDialog {
                 let cell = f.cell();

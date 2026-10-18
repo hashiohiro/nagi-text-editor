@@ -48,8 +48,10 @@ pub struct RunDialog {
     /// 直したものを捨てて閉じるか確かめている
     pub confirm_close: bool,
     /// 描いた位置（マウス用）: 一覧の (画面の行, 番号)、欄の (画面の行, Focus)、ボタンの (行, 列の始め, 終わり, ボタン)
-    pub list_rows: RefCell<Vec<(usize, usize)>>,
-    pub field_rows: RefCell<Vec<(usize, Focus)>>,
+    /// 一覧の (画面の行, 構成の番号, 列の始め, 終わり)
+    pub list_rows: RefCell<Vec<(usize, usize, usize, usize)>>,
+    /// 欄の (画面の行, Focus, 値の始まりの列)
+    pub field_rows: RefCell<Vec<(usize, Focus, usize)>>,
     pub buttons: RefCell<Vec<(usize, usize, usize, DialogButton)>>,
 }
 
@@ -412,21 +414,33 @@ impl Editor {
             self.run_dialog_button(b);
             return;
         }
-        let item = d.list_rows.borrow().iter().find(|(r, _)| *r == row).map(|x| x.1);
+        let item = d.list_rows.borrow().iter().find(|(r, _, c0, c1)| *r == row && col >= *c0 && col < *c1).map(|x| x.1);
         if let Some(i) = item {
             d.select(i);
             d.focus = Focus::List;
             return;
         }
-        let field = d.field_rows.borrow().iter().find(|(r, _)| *r == row).map(|x| x.1);
-        if let Some(f) = field {
+        // 欄は名前の列から右（一覧より右）
+        let field = d.field_rows.borrow().iter().find(|(r, _, x)| *r == row && col + 16 >= *x).map(|x| (x.1, x.2));
+        if let Some((f, x)) = field {
             d.commit();
-            if d.focus == Focus::Kind && f == Focus::Kind {
-                d.cycle_kind(1);
+            // 種類は押すたびに次の種類へ
+            if f == Focus::Kind {
+                if d.focus == Focus::Kind {
+                    d.cycle_kind(1);
+                }
+                d.focus = f;
+                return;
             }
             d.focus = f;
+            // 押した文字の位置へカーソルを置いて打てるように（値より右なら行末）
             if let Some(v) = d.field_mut(f) {
                 v.reinsert();
+                let text = v.ed.buf.line(0);
+                let byte = nagi_core::byte_at_col(&text, col.saturating_sub(x), false).min(text.len());
+                v.ed.cursor.line = 0;
+                v.ed.cursor.byte = byte;
+                v.ed.cursor.want_col = nagi_core::display_col(&text, byte, false);
             }
         }
     }
@@ -502,5 +516,37 @@ mod tests {
         assert_eq!(e.mode, Mode::RunDialog);
         keys(&mut e, "<Esc>");
         assert_eq!(e.mode, Mode::Normal);
+    }
+
+    /// マウス: 欄を押すとその文字の位置で打てる。種類は押すたびに次へ。一覧の行・ボタンも押せる
+    #[test]
+    fn mouse() {
+        let dir = std::env::temp_dir().join(format!("nagi-rundlg-m-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::create_dir_all(dir.join(".nagi")).unwrap();
+        std::fs::write(dir.join(".nagi/run.conf"), "a = echo abc\nb = echo b\n").unwrap();
+        std::fs::write(dir.join("a.txt"), "x\n").unwrap();
+        let mut e = Editor::new(Buffer::open(&dir.join("a.txt")).unwrap(), None);
+        e.buf.path = Some(dir.join("a.txt"));
+        e.set_screen(140, 40);
+        e.open_run_dialog(Some("a"));
+        // 描いた位置の代わりに入れる（行 10: 名前、行 11: 種類、行 12: コマンド。値は 50 列から）
+        let d = e.run_dialog.as_ref().unwrap();
+        *d.field_rows.borrow_mut() = vec![(10, Focus::Name, 50), (11, Focus::Kind, 50), (12, Focus::Field(0), 50)];
+        *d.list_rows.borrow_mut() = vec![(5, 0, 0, 30), (6, 1, 0, 30), (12, 0, 0, 30)];
+        // コマンドの「abc」の b の前を押して打つ
+        e.run_dialog_click(12, 56);
+        assert_eq!(e.run_dialog.as_ref().unwrap().focus, Focus::Field(0));
+        keys(&mut e, "X");
+        assert_eq!(e.run_dialog.as_ref().unwrap().fields[0].2.text(), "echo aXbc");
+        // 種類を 2 回押すと、2 回目で次の種類へ
+        e.run_dialog_click(11, 50);
+        e.run_dialog_click(11, 50);
+        assert_eq!(e.run_dialog.as_ref().unwrap().current().unwrap().kind.id(), Some("maven"));
+        // 一覧の 2 行目
+        e.run_dialog_click(6, 1);
+        let d = e.run_dialog.as_ref().unwrap();
+        assert_eq!((d.selected, d.focus), (1, Focus::List));
     }
 }
