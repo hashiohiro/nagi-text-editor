@@ -15,7 +15,18 @@ import re
 import subprocess
 import sys
 
-CARGO = os.environ.get("CARGO", "/mnt/c/Users/hashi/.cargo/bin/cargo.exe")
+def find_cargo():
+    """Windows の cargo.exe（WSL から使う）。CARGO で指定、無ければ PATH、無ければ %USERPROFILE%\\.cargo\\bin"""
+    import shutil
+    if os.environ.get("CARGO"):
+        return os.environ["CARGO"]
+    if shutil.which("cargo.exe"):
+        return shutil.which("cargo.exe")
+    home = subprocess.run(["cmd.exe", "/c", "echo %USERPROFILE%"], capture_output=True, text=True).stdout.strip()
+    return subprocess.run(["wslpath", home], capture_output=True, text=True).stdout.strip() + "/.cargo/bin/cargo.exe"
+
+
+CARGO = find_cargo()
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LICENSE_FILE = re.compile(r"^(licen[cs]e|copying|notice|unlicense|copyright)([-_.].*)?$", re.I)
 

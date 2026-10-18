@@ -15,7 +15,11 @@
 #   （zip だけ作り直したら gh release upload grammars-v1 target/grammars/dist/grammar-*.zip --clobber --repo hashiohiro/nagi-text-editor）
 set -euo pipefail
 cd "$(dirname "$0")/.."
-CARGO="${CARGO:-/mnt/c/Users/hashi/.cargo/bin/cargo.exe}"
+# Windows の cargo.exe（WSL から使う）。CARGO で指定、無ければ PATH、無ければ %USERPROFILE%\.cargo\bin
+if [ -z "${CARGO:-}" ]; then
+  CARGO="$(command -v cargo.exe || true)"
+  [ -n "$CARGO" ] || CARGO="$(wslpath "$(cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\r')")/.cargo/bin/cargo.exe"
+fi
 ALL="c cpp go csharp php ruby lua scala swift dart zig haskell elixir r sql toml xml make cmake dockerfile groovy"
 IDS="${*:-$ALL}"
 DIST=target/grammars/dist
