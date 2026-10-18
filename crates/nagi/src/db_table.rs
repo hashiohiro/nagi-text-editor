@@ -567,6 +567,14 @@ impl crate::layout::View for DbTableView {
             draw::draw_db_table(p, ed, te, r);
         }
     }
+
+    fn click(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, clicks: u32) -> crate::layout::Click {
+        let _ = (col, clicks);
+        // 窓を覆って出ているテーブル: 押したらテーブルへ向く（下の本文へは通さない）
+        let _ = (r, row);
+        ed.set_state(crate::editor::State::DbTable);
+        crate::layout::Click::Done
+    }
 }
 
 /// 描き方（view.rs の Painter で描く）

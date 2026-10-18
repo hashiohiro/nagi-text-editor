@@ -69,6 +69,7 @@ mod normal;
 mod stats;
 mod view;
 mod list;
+mod menu;
 mod layout;
 mod component;
 mod commands;
@@ -1407,7 +1408,11 @@ impl ApplicationHandler for App {
                 if let (Some(f), Some(ed)) = (&self.fonts, &mut self.ed) {
                     let cell = f.cell();
                     let (row, col) = ((self.mouse.1 as f32 / cell.h) as usize, (self.mouse.0.max(0.0) as f32 / cell.w) as usize);
-                    if ed.bottom_kind == result_grid::BottomKind::Terminal && ed.terminal_rect().is_some_and(|r| r.contains(row, col)) {
+                    // 部品の右クリックのメニュー（layout.rs の View の context・menu.rs）
+                    if layout::context(ed, layout::Screen { rows: ed.screen.1, cols: ed.screen.0 }, row, col) {
+                        self.sync_ime();
+                        self.draw();
+                    } else if ed.bottom_kind == result_grid::BottomKind::Terminal && ed.terminal_rect().is_some_and(|r| r.contains(row, col)) {
                         ed.terminal_right_click();
                         self.sync_ime();
                         self.draw();

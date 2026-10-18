@@ -210,7 +210,7 @@ impl Editor {
     }
 
     /// git をその場で動かして結果を知らせる（チェックアウトなど、手元だけで済むもの）
-    fn git_now(&mut self, args: &[&str], ok: String) -> bool {
+    pub(crate) fn git_now(&mut self, args: &[&str], ok: String) -> bool {
         let Some(root) = self.git.root.clone() else { return false };
         let r = nagi_workers::git::git(&root, args);
         match &r {
@@ -226,20 +226,23 @@ impl Editor {
             self.notify.info(format!("{} はもうチェックアウトしています", b.name));
             return;
         }
-        let ok = if b.remote {
-            // origin/x → x を作って追跡する（あればそれをチェックアウト）
-            let local = b.name.split_once('/').map_or(b.name.as_str(), |(_, n)| n).to_string();
-            let exists = self.branch_popup.as_ref().is_some_and(|p| p.branches.iter().any(|x| !x.remote && x.name == local));
-            if exists {
-                self.git_now(&["checkout", "-q", &local], format!("{local} をチェックアウトしました"))
-            } else {
-                self.git_now(&["checkout", "-q", "--track", &b.name], format!("{local} を作って {} を追跡します", b.name))
-            }
-        } else {
-            self.git_now(&["checkout", "-q", &b.name], format!("{} をチェックアウトしました", b.name))
-        };
-        if ok {
+        let local = b.name.split_once('/').map_or(b.name.as_str(), |(_, n)| n).to_string();
+        let exists = self.branch_popup.as_ref().is_some_and(|p| p.branches.iter().any(|x| !x.remote && x.name == local));
+        if self.checkout_ref(&b.name, b.remote, exists) {
             self.close_branches();
+        }
+    }
+
+    /// ブランチをチェックアウトする。リモートの origin/x なら x（`local_exists` でなければ作って追跡する）
+    pub(crate) fn checkout_ref(&mut self, name: &str, remote: bool, local_exists: bool) -> bool {
+        if !remote {
+            return self.git_now(&["checkout", "-q", name], format!("{name} をチェックアウトしました"));
+        }
+        let local = name.split_once('/').map_or(name, |(_, n)| n).to_string();
+        if local_exists {
+            self.git_now(&["checkout", "-q", &local], format!("{local} をチェックアウトしました"))
+        } else {
+            self.git_now(&["checkout", "-q", "--track", name], format!("{local} を作って {name} を追跡します"))
         }
     }
 

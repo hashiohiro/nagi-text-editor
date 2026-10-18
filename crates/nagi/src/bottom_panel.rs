@@ -304,6 +304,15 @@ impl crate::layout::View for BottomView {
             crate::layout::Click::Done
         }
     }
+
+    fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize) -> bool {
+        // Git のタブ（履歴）: 1 行目はタブなので、2 行目から中身
+        if ed.bottom_kind != BottomKind::Git || row <= r.y {
+            return false;
+        }
+        let w = ed.bottom_content_rect().map_or(0, |c| c.w);
+        ed.log_context(row - r.y - 1, col.saturating_sub(r.x), w, (row, col))
+    }
 }
 
 /// 描き方（view.rs の Painter で描く）
@@ -353,7 +362,7 @@ pub(crate) mod draw {
             },
             BottomKind::Problems => draw_problems(p, ed, c, focused),
             BottomKind::Git => match &ed.log {
-                Some(l) if l.docked => draw_log_view(p, l, c, &ed.preedit),
+                Some(l) if l.docked => draw_log_view(p, l, c, &ed.preedit, ed.git.status.as_ref().map(|s| (s.branch.as_str(), s.ahead as usize, s.behind as usize))),
                 _ => empty(p, "git のリポジトリではありません"),
             },
             BottomKind::Terminal => draw_terminal(p, ed, c, focused),

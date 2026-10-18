@@ -52,6 +52,7 @@ pub enum State {
     RunDialog,
     /// 設定の画面（settings_dialog.rs）
     Settings,
+    Menu,
 }
 
 /// 見え方の状態を、持つもの（Vim の状態, 向いている部品）に分ける
@@ -75,6 +76,7 @@ pub fn split_state(s: State) -> (Mode, Option<Panel>) {
         State::Launcher => (Mode::Normal, Some(Panel::Launcher)),
         State::RunDialog => (Mode::Normal, Some(Panel::RunDialog)),
         State::Settings => (Mode::Normal, Some(Panel::Settings)),
+        State::Menu => (Mode::Normal, Some(Panel::Menu)),
     }
 }
 
@@ -109,6 +111,8 @@ pub enum Panel {
     Launcher,
     RunDialog,
     Settings,
+    /// 右クリックのメニュー（menu.rs）
+    Menu,
 }
 
 /// リストモードでいるパネル
@@ -254,6 +258,8 @@ pub struct Editor {
     pub vim: Mode,
     /// 向いている部品（パネル・ダイアログ。None ならエディタ）。component::focused が引く
     pub focus: Option<Panel>,
+    /// 右クリックのメニュー（menu.rs）
+    pub(crate) menu: Option<crate::menu::Menu>,
     /// 状態の行の文・知らせの履歴（notify.rs。self.notify.info・warn・error で書く）
     pub notify: crate::notify::Notify,
     pub cmdline: Prompt,
@@ -510,6 +516,7 @@ impl Editor {
             Panel::Launcher => State::Launcher,
             Panel::RunDialog => State::RunDialog,
             Panel::Settings => State::Settings,
+            Panel::Menu => State::Menu,
         }
     }
 
@@ -533,6 +540,7 @@ impl Editor {
             frac: 0.0,
             vim: Mode::Normal,
             focus: None,
+            menu: None,
             notify: Default::default(),
             cmdline: Prompt::default(),
             query: Prompt::default(),
@@ -1672,8 +1680,11 @@ impl Editor {
     }
 
     /// パネル（木・検索の結果・右の欄など）にいたら本文の操作に戻る（本文をクリックしたとき）
+    /// 本文を押した: 向いている部品（欄・差分など、どのペインでも）から離れる。画面を覆う小窓・ダイアログは
+    /// 自分でクリックを受け取るので、ここへは来ない（来ても離れない）
     fn leave_panel(&mut self) {
-        if matches!(self.state(), State::List | State::Terminal) {
+        let overlay = matches!(self.focus, Some(Panel::Finder | Panel::Launcher | Panel::RunDialog | Panel::Settings | Panel::Branches | Panel::GrepPrompt | Panel::Menu));
+        if self.focus.is_some() && !overlay {
             self.set_state(State::Normal);
             self.pending_keys.clear();
         }

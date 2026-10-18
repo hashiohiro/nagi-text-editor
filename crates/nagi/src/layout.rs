@@ -49,6 +49,12 @@ pub trait View: Sync {
         Click::Pass
     }
 
+    /// 右クリック（メニューを開いたら true。`menu::Menu` を作って `open_menu` に渡す）
+    fn context(&self, ed: &mut Editor, r: Rect, row: usize, col: usize) -> bool {
+        let _ = (ed, r, row, col);
+        false
+    }
+
     /// 型の名前（試験で部品を見分ける。大きさ 0 の型は番地では見分けられない）
     #[cfg(test)]
     fn name(&self) -> &'static str {
@@ -80,6 +86,7 @@ pub static PANELS: &[&dyn View] = &[
     &crate::blame::BlamePopupView,
     &crate::complete::CompletionView,
     &crate::cmdline_complete::CmdCompleteView,
+    &crate::menu::MenuView,
 ];
 
 pub static OVERLAYS: &[&dyn View] = &[&crate::run_dialog::RunDialogView, &crate::settings_dialog::SettingsView, &crate::launcher::LauncherView];
@@ -112,6 +119,14 @@ pub fn press(ed: &mut Editor, s: Screen, row: usize, col: usize, clicks: impl Fn
         }
     }
     None
+}
+
+/// 右クリックを、押した位置の部品へ欄の層の上から渡す。どれかがメニューを開いたら true
+pub fn context(ed: &mut Editor, s: Screen, row: usize, col: usize) -> bool {
+    if ed.menu.is_some() {
+        return false;
+    }
+    PANELS.iter().rev().any(|v| v.rect(ed, s).filter(|r| r.contains(row, col)).is_some_and(|r| v.context(ed, r, row, col)))
 }
 
 #[cfg(test)]

@@ -297,7 +297,7 @@ impl Editor {
         self.rows = self.text_rows(self.active_rect());
     }
 
-    fn copy_text(&mut self, s: String, what: &str) {
+    pub(crate) fn copy_text(&mut self, s: String, what: &str) {
         if let Some(cb) = &self.clipboard {
             (cb.set)(&s);
         }

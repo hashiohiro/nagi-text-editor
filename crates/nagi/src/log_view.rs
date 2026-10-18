@@ -35,11 +35,27 @@ pub struct Detail {
     pub files: Vec<(char, String)>,
 }
 
-/// 確かめてから行う操作
+/// 確かめてから行う操作（y で進める）
 #[derive(Clone, Debug)]
 pub enum Confirm {
     Checkout(String),
     CherryPick(String),
+    Revert(String),
+    /// HEAD のコミットを取り消して、変更は作業ツリーに残す（IntelliJ の Undo Commit）
+    Undo(String),
+    /// 親にまとめる（true ならメッセージをつなぐスカッシュ、false ならフィックスアップ）
+    Squash(String, bool),
+    Drop(String),
+    /// このコミットまでリセット（--soft・--mixed・--hard・--keep）
+    Reset(String, &'static str),
+    /// 今のブランチをこの上へ載せ直す
+    Rebase(String),
+    /// ここまで push（ハッシュ, 上流のブランチ）
+    PushTo(String, String),
+    /// ブランチを消す（名前, 強制）
+    DeleteBranch(String, bool),
+    /// このブランチをチェックアウトして、さっきまでのブランチの上へ載せ直す
+    CheckoutRebase(String, String),
 }
 
 type Rx<T> = Option<nagi_core::task::Task<nagi_core::Result<T>>>;
@@ -64,6 +80,11 @@ pub struct LogView {
     pub path: Option<String>,
     pub confirm: Option<Confirm>,
     pub loading: bool,
+    /// ブランチの列で選んでいるもの（branches の番号）
+    pub branch_sel: Option<usize>,
+    /// 読み直すための元（ファイルの履歴のパス・比べる範囲）
+    src_path: Option<String>,
+    src_range: Option<String>,
     rx_log: Rx<Vec<LogRow>>,
     rx_branches: Rx<Vec<(String, String, bool)>>,
     rx_detail: Rx<Detail>,
@@ -130,6 +151,33 @@ fn spawn<T: Send + 'static>(waker: Option<std::sync::Arc<dyn Fn() + Send + Sync>
 }
 
 impl LogView {
+    /// ブランチの列の行（見出しの下を 0 とする）→ ブランチの番号（区分の見出しの行は None）
+    pub fn branch_at(&self, row: usize) -> Option<usize> {
+        let mut r = 0;
+        let mut last = "";
+        for (i, (sec, _, _)) in self.branches.iter().enumerate() {
+            if sec != last {
+                if r == row {
+                    return None;
+                }
+                r += 1;
+                last = sec;
+            }
+            if r == row {
+                return Some(i);
+            }
+            r += 1;
+        }
+        None
+    }
+
+    /// 名前（ブランチ・タグ）の指すコミットの行（見せている行の番号）
+    pub fn row_of_ref(&self, name: &str) -> Option<usize> {
+        self.visible.iter().position(|&i| {
+            self.rows[i].commit.as_ref().is_some_and(|c| c.refs.split(", ").any(|r| r.trim_start_matches("HEAD -> ").trim_start_matches("tag: ") == name))
+        })
+    }
+
     fn current(&self) -> Option<&Commit> {
         self.visible.get(self.selected).and_then(|&i| self.rows[i].commit.as_ref())
     }
@@ -182,6 +230,23 @@ impl Editor {
         } else {
             None
         };
+        // 新しく開く（下の欄に収めるのは select_bottom_tab が後で決める）
+        self.log = None;
+        self.load_log(root, path, range);
+    }
+
+    /// 履歴を読み直す（操作の後。下の欄に収めているかは保つ）
+    pub(crate) fn reload_log(&mut self) {
+        let (Some(root), Some(l)) = (self.git.root.clone(), &self.log) else { return };
+        let (path, range) = (l.src_path.clone(), l.src_range.clone());
+        let state = self.state();
+        self.load_log(root, path, range);
+        self.set_state(state);
+    }
+
+    /// 履歴を（読み直すときも）裏で取る
+    fn load_log(&mut self, root: std::path::PathBuf, path: Option<String>, range: Option<String>) {
+        let docked = self.log.as_ref().is_some_and(|l| l.docked);
         let r2 = root.clone();
         let p2 = path.clone();
         let range2 = range.clone();
@@ -203,7 +268,8 @@ impl Editor {
             let mut v = Vec::new();
             for l in String::from_utf8_lossy(&out).lines() {
                 let f: Vec<&str> = l.split('\x1f').collect();
-                if f.len() < 3 || f[2].ends_with("/HEAD") {
+                // origin/HEAD は除く（短い名前だと「origin」になるので、元の名前で見る）
+                if f.len() < 3 || f[1].ends_with("/HEAD") {
                     continue;
                 }
                 let sec = if f[1].starts_with("refs/heads") {
@@ -218,7 +284,10 @@ impl Editor {
             Ok(v)
         });
         self.log = Some(LogView {
-            docked: false,
+            docked,
+            branch_sel: None,
+            src_path: path.clone(),
+            src_range: range.clone(),
             rows: Vec::new(),
             visible: Vec::new(),
             selected: 0,
@@ -292,7 +361,7 @@ impl Editor {
     /// 履歴の画面のキー
     pub(crate) fn log_key(&mut self, key: Key) {
         let docked = self.log.as_ref().is_some_and(|l| l.docked);
-        let rows = if docked { self.bottom_content_rect().map_or(5, |r| r.h).saturating_sub(2).max(1) } else { self.windows_rows().saturating_sub(3).max(1) };
+        let rows = self.log_rows();
         // 下の欄に収めているとき: Esc は本文へ戻るだけ、q は欄を隠す（どちらも履歴は残す）。Ctrl-w k も本文へ
         if docked && self.log.as_ref().is_some_and(|l| l.filter.is_none() && l.confirm.is_none() && !l.focus_files) {
             match key {
@@ -313,18 +382,7 @@ impl Editor {
         };
         if let Some(c) = l.confirm.take() {
             if key == Key::Char('y') {
-                let (args, label): (Vec<String>, &str) = match &c {
-                    Confirm::Checkout(h) => (vec!["checkout".into(), "-q".into(), h.clone()], "チェックアウトしました"),
-                    Confirm::CherryPick(h) => (vec!["cherry-pick".into(), h.clone()], "チェリーピックしました"),
-                };
-                if let Some(root) = self.git.root.clone() {
-                    let a: Vec<&str> = args.iter().map(String::as_str).collect();
-                    match nagi_workers::git::git(&root, &a) {
-                        Ok(_) => self.notify.info(label.to_string()),
-                        Err(e) => self.notify.error(format!("git: {}", e.last_line())),
-                    }
-                    self.refresh_git();
-                }
+                self.log_do(c);
             } else {
                 self.notify.info("やめました");
             }
@@ -372,42 +430,24 @@ impl Editor {
                 }
             }
             Key::Char('o') => {
-                if let Some(c) = l.current() {
-                    let h = c.hash.clone();
-                    self.notify.info(format!("{} をチェックアウトしますか（HEAD を切り離す。y で進める）", &h[..7.min(h.len())]));
-                    if let Some(l) = &mut self.log {
-                        l.confirm = Some(Confirm::Checkout(h));
-                    }
+                if let Some(h) = l.current().map(|c| c.hash.clone()) {
+                    self.log_ask(Confirm::Checkout(h));
                 }
             }
             Key::Char('c') => {
-                if let Some(c) = l.current() {
-                    let h = c.hash.clone();
-                    self.notify.info(format!("{} を今のブランチにチェリーピックしますか（y で進める）", &h[..7.min(h.len())]));
-                    if let Some(l) = &mut self.log {
-                        l.confirm = Some(Confirm::CherryPick(h));
-                    }
+                if let Some(h) = l.current().map(|c| c.hash.clone()) {
+                    self.log_ask(Confirm::CherryPick(h));
                 }
             }
             Key::Char('b') => {
-                // ここからブランチ: :Gbranch 名前 ハッシュ を打たせる
-                if let Some(c) = l.current() {
-                    let h = c.short.clone();
-                    self.enter_command("");
-                    self.cmdline.set(&format!("Gbranch  {h}"));
-                    self.cmdline.cursor = "Gbranch ".len();
-                    self.update_cmd_complete();
+                if let Some(h) = l.current().map(|c| c.short.clone()) {
+                    self.prompt_command("Gbranch ", &format!(" {h}"));
                     return;
                 }
             }
             Key::Char('y') => {
-                if let Some(c) = l.current() {
-                    let h = c.hash.clone();
-                    if let Some(cb) = &self.clipboard {
-                        (cb.set)(&h);
-                    }
-                    self.registers.insert('"', (h.clone(), false));
-                    self.notify.info(format!("ハッシュをコピーしました: {h}"));
+                if let Some(h) = l.current().map(|c| c.hash.clone()) {
+                    self.copy_text(h, "ハッシュ");
                 }
             }
             Key::Char('q') | Key::Esc => self.close_log(),
@@ -453,8 +493,272 @@ impl Editor {
                     self.log_open_file_diff();
                 }
             }
+        } else if col < bw {
+            // 左: ブランチ。押すとそのブランチの指すコミットへ、ダブルクリックでチェックアウト
+            l.focus_files = false;
+            let Some(i) = l.branch_at(row - 1) else { return };
+            l.branch_sel = Some(i);
+            if let Some(k) = l.row_of_ref(&l.branches[i].1) {
+                l.selected = k;
+                let rows = self.log_rows();
+                if let Some(l) = &mut self.log {
+                    crate::list::fit(k, &mut l.top, rows);
+                }
+            }
+            if clicks >= 2 {
+                self.log_checkout_branch(i);
+            }
         } else {
             l.focus_files = false;
+        }
+    }
+
+    /// `:` の行に `head` と `tail` を入れ、その間にカーソルを置く（名前などを打たせる）
+    fn prompt_command(&mut self, head: &str, tail: &str) {
+        self.enter_command("");
+        self.cmdline.set(&format!("{head}{tail}"));
+        self.cmdline.cursor = head.len();
+        self.update_cmd_complete();
+    }
+
+    /// 確かめてから行う（知らせに何をするかを出し、y で log_do）
+    pub(crate) fn log_ask(&mut self, c: Confirm) {
+        let s = |h: &str| h[..7.min(h.len())].to_string();
+        let cur = self.git.status.as_ref().map(|s| s.branch.clone()).unwrap_or_default();
+        let q = match &c {
+            Confirm::Checkout(h) => format!("{} をチェックアウトしますか（HEAD を切り離す）", s(h)),
+            Confirm::CherryPick(h) => format!("{} を {cur} にチェリーピックしますか", s(h)),
+            Confirm::Revert(h) => format!("{} を取り消すコミットを足しますか（revert）", s(h)),
+            Confirm::Undo(h) => format!("{} を取り消して、変更は作業ツリーに残しますか", s(h)),
+            Confirm::Squash(h, true) => format!("{} を 1 つ前のコミットにまとめますか（メッセージはつなぐ）", s(h)),
+            Confirm::Squash(h, false) => format!("{} を 1 つ前のコミットにまとめますか（このメッセージは捨てる）", s(h)),
+            Confirm::Drop(h) => format!("{} を消しますか（その後のコミットは載せ直す）", s(h)),
+            Confirm::Reset(h, "--hard") => format!("{cur} を {} までリセットしますか（--hard: 作業中の変更も消える）", s(h)),
+            Confirm::Reset(h, m) => format!("{cur} を {} までリセットしますか（{m}）", s(h)),
+            Confirm::Rebase(h) => format!("{cur} を {} の上へリベースしますか", s(h)),
+            Confirm::PushTo(h, up) => format!("{} までを {up} へ push しますか", s(h)),
+            Confirm::DeleteBranch(b, false) => format!("ブランチ {b} を消しますか"),
+            Confirm::DeleteBranch(b, true) => format!("ブランチ {b} はマージされていません。それでも消しますか"),
+            Confirm::CheckoutRebase(b, onto) => format!("{b} をチェックアウトして {onto} の上へリベースしますか"),
+        };
+        self.notify.warn(format!("{q}（y で進める）"));
+        if let Some(l) = &mut self.log {
+            l.confirm = Some(c);
+        }
+    }
+
+    /// 確かめた操作を行い、git の状態と履歴を読み直す
+    fn log_do(&mut self, c: Confirm) {
+        use nagi_workers::git;
+        let Some(root) = self.git.root.clone() else { return };
+        let r: nagi_core::Result<String> = match &c {
+            Confirm::Checkout(h) => git::git(&root, &["checkout", "-q", h]).map(|_| "チェックアウトしました".into()),
+            Confirm::CherryPick(h) => git::cherry_pick(&root, h).map(|_| "チェリーピックしました".into()),
+            Confirm::Revert(h) => git::revert(&root, h).map(|_| "取り消すコミットを足しました".into()),
+            Confirm::Undo(_) => git::git(&root, &["reset", "--soft", "HEAD~1"]).map(|_| "コミットを取り消しました（変更は残っています）".into()),
+            Confirm::Squash(h, keep) => git::squash_into_parent(&root, h, *keep).map(|_| "1 つ前のコミットにまとめました".into()),
+            Confirm::Drop(h) => git::drop_commit(&root, h).map(|_| "コミットを消しました".into()),
+            Confirm::Reset(h, m) => git::git(&root, &["reset", m, h]).map(|_| format!("リセットしました（{m}）")),
+            Confirm::Rebase(h) => git::rebase_onto(&root, h).map(|_| "リベースしました".into()),
+            Confirm::PushTo(h, up) => {
+                // 送るのはネットワークを使うので裏で
+                let (remote, branch) = up.split_once('/').unwrap_or(("origin", up));
+                let refspec = format!("{h}:refs/heads/{branch}");
+                self.run_git_job("push ", &["push", remote, &refspec]);
+                return;
+            }
+            Confirm::DeleteBranch(b, force) => match git::git(&root, &["branch", if *force { "-D" } else { "-d" }, b]) {
+                // マージされていなければ、もう一度確かめてから -D
+                Err(e) if !force && e.to_string().contains("not fully merged") => {
+                    self.log_ask(Confirm::DeleteBranch(b.clone(), true));
+                    return;
+                }
+                r => r.map(|_| format!("ブランチ {b} を消しました")),
+            },
+            Confirm::CheckoutRebase(b, onto) => git::git(&root, &["checkout", "-q", b]).and_then(|_| git::rebase_onto(&root, onto)).map(|_| format!("{b} を {onto} の上へリベースしました")),
+        };
+        match r {
+            Ok(m) => self.notify.info(m),
+            Err(e) => self.notify.error(format!("git: {}", e.last_line())),
+        }
+        self.refresh_git();
+        self.reload_log();
+    }
+
+    /// ブランチの列の i 番目をチェックアウトする（ダブルクリック・メニュー）
+    pub(crate) fn log_checkout_branch(&mut self, i: usize) {
+        let Some((sec, name, cur)) = self.log.as_ref().and_then(|l| l.branches.get(i).cloned()) else { return };
+        if cur {
+            self.notify.info(format!("{name} はもうチェックアウトしています"));
+            return;
+        }
+        if sec == "タグ" {
+            self.log_ask(Confirm::Checkout(name));
+            return;
+        }
+        let remote = sec == "リモート";
+        let local = name.split_once('/').map_or(name.as_str(), |(_, n)| n).to_string();
+        let exists = self.log.as_ref().is_some_and(|l| l.branches.iter().any(|(s, n, _)| s == "ローカル" && *n == local));
+        self.checkout_ref(&name, remote, exists);
+        self.reload_log();
+    }
+
+    /// 履歴の行の高さ（下の欄か窓の領域か）
+    fn log_rows(&self) -> usize {
+        if self.log.as_ref().is_some_and(|l| l.docked) {
+            self.bottom_content_rect().map_or(5, |r| r.h).saturating_sub(2).max(1)
+        } else {
+            self.windows_rows().saturating_sub(3).max(1)
+        }
+    }
+
+    /// 右クリック（欄の中の行・列・幅と、メニューを出す画面の位置）。押した行を選んでから、その行のメニューを出す
+    pub(crate) fn log_context(&mut self, row: usize, col: usize, w: usize, at: (usize, usize)) -> bool {
+        self.log_click(row, col, w, 1);
+        let Some(l) = &self.log else { return false };
+        let bw = 20.min(w / 6);
+        let cur = self.git.status.as_ref().map(|s| s.branch.clone()).unwrap_or_default();
+        let upstream = self.git.status.as_ref().and_then(|s| s.upstream.clone());
+        let menu = if col < bw {
+            let Some(i) = l.branch_sel.filter(|_| row >= 1 && l.branch_at(row - 1).is_some()) else { return false };
+            let (sec, name, is_cur) = l.branches[i].clone();
+            let local = sec == "ローカル";
+            let mut m = crate::menu::Menu::new(at.0, at.1);
+            if !is_cur {
+                m = m.item("チェックアウト", move |e| e.log_checkout_branch(i));
+            }
+            let n = name.clone();
+            m = m.item(format!("{name} から新しいブランチ…"), move |e| e.prompt_command("Gbranch ", &format!(" {n}")));
+            if !is_cur && sec != "タグ" {
+                let (n, c) = (name.clone(), cur.clone());
+                m = m.item(format!("チェックアウトして {cur} の上へリベース"), move |e| e.log_ask(Confirm::CheckoutRebase(n, c)));
+                let n = name.clone();
+                let c = cur.clone();
+                m = m.item(format!("{cur} と比べる"), move |e| e.open_log_range(&format!("{c}..{n}")));
+                let n = name.clone();
+                m = m.item(format!("{cur} を {name} の上へリベース"), move |e| e.log_ask(Confirm::Rebase(n)));
+                let n = name.clone();
+                m = m.item(format!("{name} を {cur} へマージ"), move |e| {
+                    if e.git_now(&["merge", "--no-edit", &n], format!("{n} をマージしました")) {
+                        e.reload_log();
+                    }
+                });
+            }
+            if local {
+                m = m.sep();
+                let n = name.clone();
+                m = m.item("名前を変える…", move |e| e.prompt_command(&format!("Grename {n} "), ""));
+                let n = name.clone();
+                m = m.item("プッシュ", move |e| e.run_git_job("push ", &["push", "-u", "origin", &n]));
+                if !is_cur {
+                    let n = name.clone();
+                    m = m.item("削除", move |e| e.log_ask(Confirm::DeleteBranch(n, false)));
+                }
+            }
+            m
+        } else {
+            let Some(c) = l.current().filter(|_| !l.focus_files).cloned() else { return false };
+            let head = l.rows.iter().filter_map(|r| r.commit.as_ref()).find(|c| c.refs.starts_with("HEAD")).map(|c| c.hash.clone());
+            let is_head = head.as_deref() == Some(c.hash.as_str());
+            let (h, short) = (c.hash.clone(), c.short.clone());
+            let mut m = crate::menu::Menu::new(at.0, at.1);
+            let x = h.clone();
+            m = m.item("ハッシュをコピー", move |e| e.copy_text(x, "ハッシュ"));
+            let x = h.clone();
+            m = m.item("チェリーピック", move |e| e.log_ask(Confirm::CherryPick(x)));
+            let x = h.clone();
+            m = m.item("このリビジョンをチェックアウト", move |e| e.log_ask(Confirm::Checkout(x)));
+            let x = short.clone();
+            m = m.item("新しいブランチ…", move |e| e.prompt_command("Gbranch ", &format!(" {x}")));
+            let x = short.clone();
+            m = m.item("新しいタグ…", move |e| e.prompt_command("Gtag ", &format!(" {x}")));
+            m = m.sep();
+            let x = h.clone();
+            m = m.item(format!("{cur} をここまでリセット（--soft）"), move |e| e.log_ask(Confirm::Reset(x, "--soft")));
+            let x = h.clone();
+            m = m.item(format!("{cur} をここまでリセット（--mixed）"), move |e| e.log_ask(Confirm::Reset(x, "--mixed")));
+            let x = h.clone();
+            m = m.item(format!("{cur} をここまでリセット（--hard）"), move |e| e.log_ask(Confirm::Reset(x, "--hard")));
+            let x = h.clone();
+            m = m.item(format!("{cur} をここまでリセット（--keep）"), move |e| e.log_ask(Confirm::Reset(x, "--keep")));
+            let x = h.clone();
+            m = m.item("コミットを取り消す（revert）", move |e| e.log_ask(Confirm::Revert(x)));
+            if is_head {
+                let x = h.clone();
+                m = m.item("コミットを元に戻す（undo）", move |e| e.log_ask(Confirm::Undo(x)));
+            }
+            m = m.sep();
+            let (x, subject) = (short.clone(), c.subject.clone());
+            m = m.item("メッセージを編集…", move |e| e.prompt_command(&format!("Greword {x} "), &subject));
+            let x = h.clone();
+            m = m.item("1 つ前にまとめる（フィックスアップ）", move |e| e.log_ask(Confirm::Squash(x, false)));
+            let x = h.clone();
+            m = m.item("1 つ前にまとめる（スカッシュ）", move |e| e.log_ask(Confirm::Squash(x, true)));
+            let x = h.clone();
+            m = m.item("コミットを消す", move |e| e.log_ask(Confirm::Drop(x)));
+            let x = h.clone();
+            m = m.item(format!("{cur} をここへリベース"), move |e| e.log_ask(Confirm::Rebase(x)));
+            if let Some(up) = upstream {
+                let x = h.clone();
+                m = m.item(format!("ここまでプッシュ（{up}）"), move |e| e.log_ask(Confirm::PushTo(x, up)));
+            }
+            m = m.sep();
+            m = m.item("親のコミットへ", |e| e.log_goto_parent());
+            m
+        };
+        self.open_menu(menu);
+        true
+    }
+
+    /// 選んでいるコミットの（1 つ目の）親の行へ
+    fn log_goto_parent(&mut self) {
+        let rows = self.log_rows();
+        let Some(l) = &mut self.log else { return };
+        let Some(p) = l.detail.as_ref().and_then(|d| d.parents.split(' ').next().map(String::from)).filter(|p| !p.is_empty()) else { return };
+        if let Some(k) = l.visible.iter().position(|&i| l.rows[i].commit.as_ref().is_some_and(|c| c.hash == p)) {
+            l.selected = k;
+            crate::list::fit(k, &mut l.top, rows);
+        }
+    }
+
+    /// `:Greword ハッシュ 新しいメッセージ`
+    pub(crate) fn git_reword(&mut self, arg: &str) {
+        let Some(root) = self.git.root.clone() else { return };
+        let Some((h, msg)) = arg.trim().split_once(' ') else {
+            self.notify.info("ハッシュと新しいメッセージを書いてください");
+            return;
+        };
+        match nagi_workers::git::reword(&root, h, msg.trim()) {
+            Ok(()) => self.notify.info("メッセージを直しました"),
+            Err(e) => self.notify.error(format!("git: {}", e.last_line())),
+        }
+        self.refresh_git();
+        self.reload_log();
+    }
+
+    /// `:Gtag 名前 [ハッシュ]`
+    pub(crate) fn git_tag(&mut self, arg: &str) {
+        let mut it = arg.split_whitespace();
+        let Some(name) = it.next() else {
+            self.notify.info("タグの名前を書いてください");
+            return;
+        };
+        let mut args = vec!["tag", name];
+        args.extend(it.next());
+        if self.git_now(&args, format!("タグ {name} を付けました")) {
+            self.reload_log();
+        }
+    }
+
+    /// `:Grename 今の名前 新しい名前`
+    pub(crate) fn git_rename_branch(&mut self, arg: &str) {
+        let v: Vec<&str> = arg.split_whitespace().collect();
+        let [old, new] = v[..] else {
+            self.notify.info("今の名前と新しい名前を書いてください");
+            return;
+        };
+        if self.git_now(&["branch", "-m", old, new], format!("{old} を {new} に変えました")) {
+            self.reload_log();
         }
     }
 
@@ -496,9 +800,8 @@ impl Editor {
             Err(e) => self.notify.error(format!("git: {}", e.last_line())),
         }
         self.refresh_git();
-        if self.log.is_some() {
-            self.close_log();
-        }
+        // 履歴を出していれば読み直す（新しいブランチが見える）
+        self.reload_log();
     }
 }
 
@@ -550,8 +853,19 @@ impl crate::layout::View for LogScreenView {
     fn draw(&self, ed: &crate::editor::Editor, p: &mut crate::view::Painter, r: crate::panes::Rect, s: crate::layout::Screen) {
         let _ = (r, s);
         if let Some(l) = &ed.log {
-            draw::draw_log_view(p, l, r, &ed.preedit);
+            draw::draw_log_view(p, l, r, &ed.preedit, ed.git.status.as_ref().map(|s| (s.branch.as_str(), s.ahead as usize, s.behind as usize)));
         }
+    }
+
+    fn click(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, clicks: u32) -> crate::layout::Click {
+        let _ = (col, clicks);
+        // 窓を覆って出ている履歴: 下の欄と同じ割り付けで選ぶ
+        ed.log_click(row - r.y, col - r.x, r.w, clicks);
+        crate::layout::Click::Done
+    }
+
+    fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize) -> bool {
+        ed.log_context(row - r.y, col - r.x, r.w, (row, col))
     }
 }
 
@@ -562,7 +876,8 @@ pub(crate) mod draw {
     use crate::view::*;
 
     /// 履歴（窓の領域全体）。左にブランチ、中央にグラフ付きのコミット、右に選んだコミットの中身
-    pub(crate) fn draw_log_view(p: &mut Painter, l: &crate::log_view::LogView, r: Rect, preedit: &str) {
+    /// `ab` は今のブランチの (名前, 送るコミット数, 受け取るコミット数)
+    pub(crate) fn draw_log_view(p: &mut Painter, l: &crate::log_view::LogView, r: Rect, preedit: &str, ab: Option<(&str, usize, usize)>) {
         const LANES: [[f32; 4]; 5] = [rgb(0x87afd7), rgb(0xd7af87), rgb(0x87af87), rgb(0xd787af), rgb(0xafafd7)];
         let cell = p.fonts.cell();
         let (x0, y0) = (r.x as f32 * cell.w, r.y as f32 * cell.h);
@@ -588,6 +903,16 @@ pub(crate) mod draw {
         } else {
             p.text(&head, r.x, y0, STATUS_FG);
         }
+        // 右上: 今のブランチと、送る（↑）・受け取る（↓）コミットの数（受け取る数は最後にフェッチした時点）
+        if let Some((name, ahead, behind)) = ab {
+            let s = format!("{name}  ↑{ahead} 送る  ↓{behind} 受け取る ");
+            let x = (r.x + r.w).saturating_sub(p.width(&s));
+            let c = p.text(&format!("{name}  "), x, y0, FG);
+            let c = p.text(&format!("↑{ahead}"), c, y0, if ahead > 0 { GIT_ADD } else { STATUS_FG });
+            let c = p.text(" 送る  ", c, y0, STATUS_FG);
+            let c = p.text(&format!("↓{behind}"), c, y0, if behind > 0 { DIAG_WARN } else { STATUS_FG });
+            p.text(" 受け取る ", c, y0, STATUS_FG);
+        }
         p.out.push(Instance::fill(x0, y0 + cell.h - 1.0, r.w as f32 * cell.w, 1.0, LINE_NO));
         let body = r.h.saturating_sub(1);
         // 左: ブランチ
@@ -595,7 +920,7 @@ pub(crate) mod draw {
         p.cols = r.x + bw;
         let mut y = y0 + cell.h;
         let mut last_sec = "";
-        for (sec, name, cur) in &l.branches {
+        for (i, (sec, name, cur)) in l.branches.iter().enumerate() {
             if y >= y0 + body as f32 * cell.h {
                 break;
             }
@@ -603,6 +928,9 @@ pub(crate) mod draw {
                 p.text(&format!(" {sec}"), r.x, y, STATUS_FG);
                 y += cell.h;
                 last_sec = sec;
+            }
+            if l.branch_sel == Some(i) {
+                p.out.push(Instance::fill(x0, y, bw as f32 * cell.w, cell.h, MATCH_BG));
             }
             p.text(&format!(" {} {name}", if *cur { '*' } else { ' ' }), r.x, y, if *cur { FG } else { STATUS_FG });
             y += cell.h;
@@ -726,6 +1054,9 @@ mod tests {
         e.set_screen(120, 40);
         let rows = parse_log("*\x1fa1\x1f\x1f一\x1fA\x1f1\x1fa1\n|\n*\x1fb2\x1f\x1f二\x1fA\x1f2\x1fb2\n");
         e.log = Some(LogView {
+            branch_sel: None,
+            src_path: None,
+            src_range: None,
             docked: true,
             visible: (0..rows.len()).collect(),
             rows,
@@ -762,5 +1093,80 @@ mod tests {
         e.bottom_click(2, 60, 1);
         let l = e.log.as_ref().unwrap();
         assert_eq!((l.focus_files, l.selected), (false, 0));
+    }
+
+    /// 本物のリポジトリで: ブランチの列を押して選ぶ・ダブルクリックでチェックアウト・本文を押すと戻る・右クリックのメニューで消す
+    #[test]
+    fn branches_and_commit_menu() {
+        let dir = std::env::temp_dir().join(format!("nagi-logops-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = |args: &[&str]| String::from_utf8_lossy(&nagi_workers::git::git(&dir, args).unwrap()).trim().to_string();
+        g(&["init", "-q", "-b", "main"]);
+        g(&["config", "user.email", "test@example.com"]);
+        g(&["config", "user.name", "test"]);
+        g(&["config", "core.autocrlf", "false"]);
+        for f in ["a", "b", "c"] {
+            std::fs::write(dir.join(f), format!("{f}\n")).unwrap();
+            g(&["add", "."]);
+            g(&["commit", "-q", "-m", &format!("add {f}")]);
+            if f == "a" {
+                g(&["branch", "topic"]);
+            }
+        }
+        let mut buf = nagi_core::Buffer::open(&dir.join("a")).unwrap();
+        buf.path = Some(dir.join("a"));
+        let mut e = Editor::new(buf, None);
+        e.set_screen(120, 40);
+        e.start_git();
+        let wait = |e: &mut Editor| {
+            for _ in 0..500 {
+                e.poll_background();
+                if e.log.as_ref().is_some_and(|l| !l.loading && !l.branches.is_empty() && l.rx_detail.is_none()) && e.git.status.is_some() {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            panic!("履歴が届かない");
+        };
+        e.select_bottom_tab(crate::result_grid::BottomKind::Git);
+        wait(&mut e);
+        let l = e.log.as_ref().unwrap();
+        // ブランチの列: 0 行目は「ローカル」の見出し、1 行目 main、2 行目 topic
+        assert_eq!((l.branch_at(0), l.branch_at(1), l.branch_at(2)), (None, Some(0), Some(1)));
+        // 欄の 0 行目はタブ、1 行目は見出し、2 行目から中身。topic を押すと、その指すコミットへ
+        e.bottom_click(4, 2, 1);
+        let l = e.log.as_ref().unwrap();
+        assert_eq!(l.branch_sel, Some(1));
+        assert_eq!(l.current().map(|c| c.subject.as_str()), Some("add a"));
+        // ダブルクリックでチェックアウト
+        e.bottom_click(4, 2, 2);
+        assert_eq!(g(&["rev-parse", "--abbrev-ref", "HEAD"]), "topic", "{}", e.notify.text);
+        wait(&mut e);
+        // 本文を押すとエディタへ（どのペインからでも）
+        assert_eq!(e.state(), State::Log);
+        let r = e.active_rect();
+        e.click(0, r.x + e.gutter());
+        assert_eq!(e.state(), State::Normal);
+        // main に戻って、真ん中の 2 つ目のコミット（add b）を右クリック →「コミットを消す」→ y
+        g(&["checkout", "-q", "main"]);
+        e.refresh_git();
+        e.reload_log();
+        wait(&mut e);
+        let k = e.log.as_ref().unwrap().visible.iter().position(|&i| e.log.as_ref().unwrap().rows[i].commit.as_ref().is_some_and(|c| c.subject == "add b")).unwrap();
+        let w = e.bottom_content_rect().unwrap().w;
+        assert!(e.log_context(1 + k, 60, w, (10, 60)));
+        assert_eq!(e.state(), State::Menu);
+        let i = e.menu.as_ref().unwrap().items.iter().position(|it| it.label == "コミットを消す").unwrap();
+        e.menu_run(i);
+        assert_eq!(e.state(), State::Log, "メニューを閉じたら履歴へ");
+        assert!(e.notify.text.contains("y で進める"), "{}", e.notify.text);
+        e.key(Key::Char('y'));
+        assert_eq!(g(&["log", "--format=%s"]), "add c\nadd a", "{}", e.notify.text);
+        // メッセージを編集（:Greword）
+        let head = g(&["rev-parse", "--short", "HEAD"]);
+        e.git_reword(&format!("{head} add c!"));
+        assert_eq!(g(&["log", "-1", "--format=%s"]), "add c!");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -259,6 +259,14 @@ impl crate::layout::View for DiffScreenView {
             draw::draw_diff_view(p, d, r);
         }
     }
+
+    fn click(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, clicks: u32) -> crate::layout::Click {
+        let _ = (col, clicks);
+        // 窓を覆って出ている差分: 押したら差分へ向く（下の本文へは通さない）
+        let _ = (r, row);
+        ed.set_state(crate::editor::State::Diff);
+        crate::layout::Click::Done
+    }
 }
 
 /// 描き方（view.rs の Painter で描く）

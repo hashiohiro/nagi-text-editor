@@ -12,12 +12,24 @@ pub fn git(root: &Path, args: &[&str]) -> nagi_core::Result<Vec<u8>> {
 
 /// 標準入力を渡して git を動かす（パッチの適用・コミットのメッセージ）
 pub fn git_input(root: &Path, args: &[&str], input: Option<&[u8]>) -> nagi_core::Result<Vec<u8>> {
+    run(root, args, input, &[])
+}
+
+/// 環境変数を足して git を動かす（対話の rebase の todo と編集を差し替えて、対話なしで流す）
+pub fn git_env(root: &Path, args: &[&str], env: &[(&str, &str)]) -> nagi_core::Result<Vec<u8>> {
+    run(root, args, None, env)
+}
+
+fn run(root: &Path, args: &[&str], input: Option<&[u8]>, env: &[(&str, &str)]) -> nagi_core::Result<Vec<u8>> {
     // 出力を英語と UTF-8 の決まった形にする（読み取りがずれないように）
     let base = ["-c", "core.quotepath=false", "-c", "color.ui=false"];
     // WSL のプロジェクトは WSL の中の git で（Windows の git だと遅く、safe.directory で断られる）。設定で切り替えられる
     let cfg = crate::config::get();
     let ex = if cfg.git_wsl { crate::exec::Exec::in_dir(root) } else { crate::exec::Exec::windows(root) };
-    let ex = ex.env("LANG", "C").env("LC_ALL", "C").env("GIT_TERMINAL_PROMPT", "0");
+    let mut ex = ex.env("LANG", "C").env("LC_ALL", "C").env("GIT_TERMINAL_PROMPT", "0");
+    for (k, v) in env {
+        ex = ex.env(*k, *v);
+    }
     // 設定の「git の場所」（Windows のときだけ）
     let git = if ex.is_wsl() { "git" } else { cfg.git.as_deref().unwrap_or("git") };
     let mut cmd = ex.program(git, &[base.as_slice(), args].concat());
@@ -186,6 +198,113 @@ pub fn hunk_patch(rel: &str, old_start: usize, old_lines: &[&str], new_start: us
     p
 }
 
+// ---------------------------------------------------------------- 履歴を書き換える操作（IntelliJ の Git ログの右クリックと同じもの）
+
+/// `h` の親（マージなら 2 つ以上、最初のコミットなら空）
+pub fn parents(root: &Path, h: &str) -> nagi_core::Result<Vec<String>> {
+    let out = text(git(root, &["rev-list", "--parents", "-n", "1", h])?);
+    Ok(out.split_whitespace().skip(1).map(String::from).collect())
+}
+
+/// `h` が今の HEAD から辿れる（今のブランチの履歴にある）か
+pub fn is_ancestor(root: &Path, h: &str) -> bool {
+    git(root, &["merge-base", "--is-ancestor", h, "HEAD"]).is_ok()
+}
+
+/// 書き換えてよいコミットか（今のブランチにあり、マージでない）。親を返す（最初のコミットなら None）
+fn rewritable(root: &Path, h: &str) -> nagi_core::Result<Option<String>> {
+    if !is_ancestor(root, h) {
+        return Err("今のブランチの履歴にないコミットは書き換えられません".into());
+    }
+    let p = parents(root, h)?;
+    if p.len() > 1 {
+        return Err("マージのコミットは書き換えられません".into());
+    }
+    Ok(p.into_iter().next())
+}
+
+/// todo の `pick <h>` の行を `verb <h>` に変える sed（todo のハッシュは短い形なので、頭の 7 文字で合わせる）
+fn todo_sed(h: &str, verb: &str) -> String {
+    format!("sed -i -E -e 's/^pick ({}[0-9a-f]*)/{verb} \\1/'", &h[..7.min(h.len())])
+}
+
+/// 対話の rebase を、todo の書き換えと編集を差し替えて流す（`base` が None なら最初のコミットから）。
+/// 作業中の変更は退避して戻す。失敗したら rebase をやめて元に戻す
+fn rebase_scripted(root: &Path, base: Option<&str>, sed: &str, msg: Option<&str>) -> nagi_core::Result<()> {
+    let mut args = vec!["rebase", "-i", "--autostash", "--rebase-merges"];
+    args.push(base.unwrap_or("--root"));
+    // メッセージを書くときは、編集のファイル（引数）に NAGI_MSG を書く。書かないときは出てきたものをそのまま使う
+    let editor = if msg.is_some() { r#"f() { printf '%s\n' "$NAGI_MSG" > "$1"; }; f"# } else { "true" };
+    let env = [("GIT_SEQUENCE_EDITOR", sed), ("GIT_EDITOR", editor), ("NAGI_MSG", msg.unwrap_or(""))];
+    match git_env(root, &args, &env) {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            let _ = git(root, &["rebase", "--abort"]);
+            Err(format!("{}（rebase をやめて元に戻しました）", e.last_line()).into())
+        }
+    }
+}
+
+/// コミットを消す（その後のコミットを親の上へ載せ直す）
+pub fn drop_commit(root: &Path, h: &str) -> nagi_core::Result<()> {
+    rewritable(root, h)?;
+    let parent = parents(root, h)?.into_iter().next();
+    rebase_scripted(root, parent.as_deref(), &todo_sed(h, "drop"), None)
+}
+
+/// 1 つ前（親）のコミットにまとめる。`keep_message` ならメッセージをつなぐ（スカッシュ）、でなければ親のメッセージだけ（フィックスアップ）
+pub fn squash_into_parent(root: &Path, h: &str, keep_message: bool) -> nagi_core::Result<()> {
+    let Some(parent) = rewritable(root, h)? else { return Err("最初のコミットは、まとめる先がありません".into()) };
+    let pp = rewritable(root, &parent)?;
+    rebase_scripted(root, pp.as_deref(), &todo_sed(h, if keep_message { "squash" } else { "fixup" }), None)
+}
+
+/// コミットのメッセージを直す（HEAD なら amend、それより前なら rebase で）
+pub fn reword(root: &Path, h: &str, msg: &str) -> nagi_core::Result<()> {
+    if msg.trim().is_empty() {
+        return Err("メッセージが空です".into());
+    }
+    let head = text(git(root, &["rev-parse", "HEAD"])?);
+    let full = text(git(root, &["rev-parse", h])?);
+    if head.trim() == full.trim() {
+        // --only: ステージしている変更は入れない（メッセージだけ）
+        git(root, &["commit", "--amend", "--only", "-m", msg])?;
+        return Ok(());
+    }
+    let parent = rewritable(root, h)?;
+    rebase_scripted(root, parent.as_deref(), &todo_sed(h, "reword"), Some(msg))
+}
+
+/// 今のブランチを `onto` の上へ載せ直す（衝突したらやめて元に戻す）
+pub fn rebase_onto(root: &Path, onto: &str) -> nagi_core::Result<()> {
+    git(root, &["rebase", "--autostash", onto]).map(|_| ()).map_err(|e| {
+        let _ = git(root, &["rebase", "--abort"]);
+        format!("{}（rebase をやめて元に戻しました）", e.last_line()).into()
+    })
+}
+
+/// 取り消すコミットを足す（revert。衝突したらやめて元に戻す）
+pub fn revert(root: &Path, h: &str) -> nagi_core::Result<()> {
+    let mut args = vec!["revert", "--no-edit"];
+    // マージのコミットは 1 つ目の親を本流とみなす
+    if parents(root, h)?.len() > 1 {
+        args.extend(["-m", "1"]);
+    }
+    args.push(h);
+    git(root, &args).map(|_| ()).map_err(|e| {
+        let _ = git(root, &["revert", "--abort"]);
+        format!("{}（revert をやめて元に戻しました）", e.last_line()).into()
+    })
+}
+
+/// チェリーピック（衝突したらやめて元に戻す）
+pub fn cherry_pick(root: &Path, h: &str) -> nagi_core::Result<()> {
+    git(root, &["cherry-pick", h]).map(|_| ()).map_err(|e| {
+        let _ = git(root, &["cherry-pick", "--abort"]);
+        format!("{}（チェリーピックをやめて元に戻しました）", e.last_line()).into()
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -242,5 +361,72 @@ mod tests {
         // 足しただけの変更（0 行の置き換え）もステージできる
         apply_cached(&dir, &hunk_patch("a.txt", 3, &[], 3, &["4"], false)).unwrap();
         assert!(text(g(&["diff", "--cached"])).contains("+4"));
+    }
+
+    /// 試験のリポジトリ（a・b・c の 3 つのコミット。改行は変えない）
+    fn repo(name: &str) -> (PathBuf, impl Fn(&[&str]) -> String) {
+        let dir = std::env::temp_dir().join(format!("nagi-rewrite-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let d = dir.clone();
+        let g = move |args: &[&str]| text(git(&d, args).unwrap()).trim().to_string();
+        g(&["init", "-q", "-b", "main"]);
+        g(&["config", "user.email", "test@example.com"]);
+        g(&["config", "user.name", "test"]);
+        g(&["config", "core.autocrlf", "false"]);
+        for (f, m) in [("a", "add a"), ("b", "add b"), ("c", "add c")] {
+            std::fs::write(dir.join(f), format!("{f}\n")).unwrap();
+            g(&["add", "."]);
+            g(&["commit", "-q", "-m", m]);
+        }
+        (dir, g)
+    }
+
+    #[test]
+    fn rewrite_history() {
+        let (dir, g) = repo("ops");
+        let log = |g: &dyn Fn(&[&str]) -> String| g(&["log", "--format=%s"]);
+        let b = g(&["rev-parse", "HEAD~1"]);
+        // 作業中の変更があっても退避して戻す
+        std::fs::write(dir.join("a"), "edited\n").unwrap();
+        reword(&dir, &b, "add b (reworded)").unwrap();
+        assert_eq!(log(&g), "add c\nadd b (reworded)\nadd a");
+        assert_eq!(std::fs::read_to_string(dir.join("a")).unwrap(), "edited\n", "作業中の変更は戻る");
+        // HEAD のメッセージは amend
+        let head = g(&["rev-parse", "HEAD"]);
+        reword(&dir, &head, "add c!").unwrap();
+        assert_eq!(log(&g), "add c!\nadd b (reworded)\nadd a");
+        // c を b にまとめる（フィックスアップ: b のメッセージだけ）
+        let c = g(&["rev-parse", "HEAD"]);
+        squash_into_parent(&dir, &c, false).unwrap();
+        assert_eq!(log(&g), "add b (reworded)\nadd a");
+        assert_eq!(std::fs::read_to_string(dir.join("c")).unwrap(), "c\n");
+        // b（c も入った）を消す
+        let b = g(&["rev-parse", "HEAD"]);
+        drop_commit(&dir, &b).unwrap();
+        assert_eq!(log(&g), "add a");
+        assert!(!dir.join("b").exists() && !dir.join("c").exists());
+        // 最初のコミットはまとめる先がない
+        let a = g(&["rev-parse", "HEAD"]);
+        assert!(squash_into_parent(&dir, &a, true).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn revert_and_conflicts() {
+        let (dir, g) = repo("revert");
+        let b = g(&["rev-parse", "HEAD~1"]);
+        revert(&dir, &b).unwrap();
+        assert!(!dir.join("b").exists());
+        assert!(g(&["log", "-1", "--format=%s"]).starts_with("Revert \"add b\""));
+        // 衝突するチェリーピックは、やめて元に戻す
+        g(&["checkout", "-q", "-b", "side", "HEAD~3"]);
+        std::fs::write(dir.join("b"), "other\n").unwrap();
+        g(&["add", "."]);
+        g(&["commit", "-q", "-m", "other b"]);
+        let e = cherry_pick(&dir, &b).unwrap_err();
+        assert!(e.to_string().contains("元に戻しました"), "{e}");
+        assert_eq!(g(&["status", "--porcelain"]), "", "途中の状態を残さない");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
