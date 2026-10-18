@@ -63,6 +63,8 @@ pub struct Launcher {
     pub act_map: std::cell::RefCell<(Vec<(usize, char)>, usize)>,
     /// フォルダを選ぶダイアログを出している
     pub picking: Option<Receiver<Option<PathBuf>>>,
+    /// ダイアログを開いたとき入力中だったか（閉じたら戻す。ダイアログで押した Esc などが漏れてきても変わらないように）
+    pick_insert: bool,
 }
 
 /// 左の操作（文字, 名前, 入力中のキー）
@@ -184,6 +186,7 @@ impl Editor {
             row_map: Default::default(),
             act_map: Default::default(),
             picking: None,
+            pick_insert: true,
         });
         self.finder = None;
         self.mode = Mode::Launcher;
@@ -222,7 +225,14 @@ impl Editor {
                     self.close_launcher_to(dir);
                     return true;
                 }
-                None => changed = true,
+                None => {
+                    if let Some(l) = &mut self.launcher {
+                        if l.pick_insert {
+                            l.field.reinsert();
+                        }
+                    }
+                    changed = true;
+                }
             }
         }
         let Some(l) = &mut self.launcher else { return changed };
@@ -299,6 +309,10 @@ impl Editor {
             self.mode = Mode::Normal;
             return;
         };
+        // フォルダを選ぶダイアログを開いている間は、キーを受けない
+        if l.picking.is_some() {
+            return;
+        }
         l.message.clear();
         // o・g の入力
         if l.ask.is_some() {
@@ -419,6 +433,7 @@ impl Editor {
     pub(crate) fn launcher_action(&mut self, a: char) {
         let waker = self.waker.clone();
         let Some(l) = &mut self.launcher else { return };
+        l.pick_insert = l.field.is_insert();
         match a {
             'o' => {
                 l.message = "フォルダを選んでください（ダイアログ）".into();
@@ -515,6 +530,20 @@ mod tests {
         e.launcher_key(Key::Enter);
         assert_eq!(e.mode, Mode::Launcher);
         assert!(e.launcher.as_ref().unwrap().message.contains("ありません"), "{}", e.launcher.as_ref().unwrap().message);
+        // ダイアログ（ここでは本物の代わりの通り道）を開いている間のキーは受けず、閉じたら開いたときの入力の状態に戻る
+        e.launcher_key(Key::Char('i'));
+        assert!(e.launcher.as_ref().unwrap().field.is_insert());
+        let (tx, rx) = std::sync::mpsc::channel();
+        let l = e.launcher.as_mut().unwrap();
+        l.pick_insert = l.field.is_insert();
+        l.picking = Some(rx);
+        e.launcher_key(Key::Esc);
+        assert!(e.launcher.as_ref().unwrap().field.is_insert(), "ダイアログ中の Esc は受けない");
+        tx.send(None).unwrap();
+        e.poll_launcher();
+        let l = e.launcher.as_ref().unwrap();
+        assert!(l.picking.is_none() && l.field.is_insert());
+        e.launcher_key(Key::Esc);
         // g で git の URL の入力、Esc Esc でやめる（o はダイアログを出すので試験では押さない）
         for k in nagi_vim::parse_keys("g", " ") {
             e.launcher_key(k);

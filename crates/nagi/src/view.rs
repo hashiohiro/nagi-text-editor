@@ -2400,13 +2400,12 @@ fn draw_launcher(p: &mut Painter, l: &crate::launcher::Launcher, cols: usize, ro
     p.cols = lw;
     p.text("nagi", 3, y(1), FG);
     p.text(env!("CARGO_PKG_VERSION"), 3, y(2), STATUS_FG);
-    // 左の操作（押せる。入力中は Ctrl のキー、ノーマルでは文字のキー）
+    // 左の操作（押せる。Ctrl のキーは入力中でもノーマルでも効くので、いつも同じ表示に）
     let acts = crate::launcher::ACTIONS;
-    let insert = l.field.is_insert() && l.ask.is_none();
     let mut map = Vec::new();
     for (i, (k, label, ctrl)) in acts.iter().enumerate() {
         let r = 4 + i * 2;
-        let key = if insert { ctrl.to_string() } else { k.to_string() };
+        let key = ctrl.to_string();
         let kw = p.width(&key);
         p.out.push(Instance::fill(3.0 * cell.w, y(r), (kw + 2) as f32 * cell.w, cell.h, STATUS_FG));
         p.text(&key, 4, y(r), BG);
@@ -2607,7 +2606,7 @@ fn draw_launcher(p: &mut Painter, l: &crate::launcher::Launcher, cols: usize, ro
     } else {
         let mode = if l.field.is_insert() { "-- INSERT --" } else { "-- NORMAL --" };
         let c = p.text(mode, 1, by, FG);
-        let help = if l.field.is_insert() { "Enter 開く   ↑↓ 選ぶ   左の操作は ^（Ctrl）のキーかクリック   Esc → j/k・p ピン留め・dd 外す" } else { "Enter 開く   j/k 選ぶ   p ピン留め   dd 外す   o フォルダ   w WSL   g clone   r 最近   n 空で   Esc 閉じる" };
+        let help = if l.field.is_insert() { "Enter 開く   ↑↓ 選ぶ   左の操作は ^（Ctrl）のキーかクリック   Esc → j/k・p ピン留め・dd 外す" } else { "Enter 開く   j/k 選ぶ   p ピン留め   dd 外す   左の操作は ^（Ctrl）のキーかクリック   i 入力   Esc 閉じる" };
         p.text(help, c + 3, by, STATUS_FG);
     }
     p.cols = saved;
