@@ -23,7 +23,6 @@ pub fn ideavim(name: &str) -> Option<(Option<&'static str>, &'static str)> {
         "ActivateVersionControlToolWindow" | "Vcs.Show.Log" => (Some("tool.git"), "Git の履歴（下の欄）"),
         "ActivateFindToolWindow" => (Some("tool.find"), "検索の結果（下の欄）"),
         "ActivateRunToolWindow" | "ActivateBuildToolWindow" | "ActivateMessagesToolWindow" => (Some("tool.output"), "実行の出力（下の欄のログ）"),
-        "HideAllWindows" => (Some("tool.hide_bottom"), "下の欄を隠す"),
         "SelectInProjectView" | "SelectIn" => (Some("tree.select_file"), "今のファイルをプロジェクトの木で選ぶ"),
         "Markdown.Layout.EditorAndPreview" | "Markdown.Layout.PreviewOnly" | "Markdown.Layout.EditorOnly" => (Some("markdown.preview"), "Markdown のプレビュー（右の欄）を出す・閉じる"),
         "FileStructurePopup" => (Some("outline"), "ファイルの構造（tree-sitter）"),
@@ -50,7 +49,6 @@ pub fn ideavim(name: &str) -> Option<(Option<&'static str>, &'static str)> {
         // ツールウィンドウ・バッファ（M2）
         "CloseContent" => (Some("buffer.close"), "バッファを閉じる"),
         "ReopenClosedTab" => (Some("buffer.reopen"), "閉じたバッファを開き直す"),
-        "ActivateTerminalToolWindow" => (Some("tool.terminal"), "ターミナルの表示切替"),
         "ActivateProjectToolWindow" => (Some("tool.project"), "プロジェクトの表示切替"),
         "HideAllWindows" => (Some("tool.hide_all"), "ツールウィンドウをすべて隠す"),
         // 整形・実行（外部コマンド。M4）

@@ -1509,7 +1509,12 @@ impl Editor {
             Some((Some("tool.git"), _)) => self.toggle_bottom_tab(crate::result_grid::BottomKind::Git),
             Some((Some("tool.find"), _)) => self.toggle_bottom_tab(crate::result_grid::BottomKind::Grep),
             Some((Some("tool.output"), _)) => self.toggle_bottom_tab(crate::result_grid::BottomKind::Output),
-            Some((Some("tool.hide_bottom"), _)) => self.hide_bottom(),
+            // HideAllWindows（Ctrl+Shift+F12）: 左・右・下の欄をすべて隠す
+            Some((Some("tool.hide_all"), _)) => {
+                self.hide_left();
+                self.hide_right();
+                self.hide_bottom();
+            }
             Some((Some("tree.select_file"), _)) => self.select_in_tree(),
             Some((Some("markdown.preview"), _)) => self.toggle_md_preview(),
             Some((Some("finder.types"), _)) => self.symbol_search(true),
