@@ -23,6 +23,7 @@ tree-sitter-yaml = "=0.7.2"
 tree-sitter-vim = "=0.4.0"
 tree-sitter-rust = "=0.24.2"
 tree-sitter-css = "=0.25.0"
+tree-sitter-html = "=0.23.2"
 # 本家 1.0.0 はビルドの台本が gcc の -Wno-unused-parameter を MSVC にも渡して失敗する。MSVC を直したフォーク（文法は同じ）
 tree-sitter-scss = { package = "cortexkit-tree-sitter-scss", version = "=1.0.1" }
 # Markdown（ハイライトとプレビュー。tree-sitter の文法は 2 つに分かれていて注入が要るので、こちらで元の位置を取る）

@@ -35,9 +35,10 @@ pub enum Lang {
     Vim,
     Css,
     Scss,
+    Html,
 }
 
-const ALL: [Lang; 16] = [
+const ALL: [Lang; 17] = [
     Lang::Rust,
     Lang::TypeScript,
     Lang::Tsx,
@@ -54,6 +55,7 @@ const ALL: [Lang; 16] = [
     Lang::Vim,
     Lang::Css,
     Lang::Scss,
+    Lang::Html,
 ];
 
 // tree-sitter-vim 0.4.0 は古い形式のバインディング（Language を値で返す宣言）なので使わず、
@@ -91,6 +93,7 @@ impl Lang {
             "rs" => Lang::Rust,
             "css" => Lang::Css,
             "scss" => Lang::Scss,
+            "html" | "htm" | "xhtml" => Lang::Html,
             _ => return None,
         })
     }
@@ -113,6 +116,7 @@ impl Lang {
             Lang::Vim => "Vim",
             Lang::Css => "CSS",
             Lang::Scss => "SCSS",
+            Lang::Html => "HTML",
         }
     }
 
@@ -154,6 +158,7 @@ impl Lang {
             Lang::Vim => VIM_LANGUAGE.into(),
             Lang::Css => tree_sitter_css::LANGUAGE.into(),
             Lang::Scss => tree_sitter_scss::language(),
+            Lang::Html => tree_sitter_html::LANGUAGE.into(),
         }
     }
 
@@ -178,6 +183,7 @@ impl Lang {
             Lang::Css => tree_sitter_css::HIGHLIGHTS_QUERY.to_string(),
             // SCSS は CSS のクエリに SCSS 固有分を足す（nvim-treesitter と同じ）
             Lang::Scss => format!("{}\n{}", tree_sitter_css::HIGHLIGHTS_QUERY, tree_sitter_scss::HIGHLIGHTS_QUERY),
+            Lang::Html => tree_sitter_html::HIGHLIGHTS_QUERY.to_string(),
         }
     }
 
@@ -210,6 +216,9 @@ fn classify(capture: &str, lang: Lang) -> Option<Hl> {
         "property" if lang.is_css() => Hl::Attribute,
         "tag" | "mixin" | "include" | "extend" | "use" | "forward" | "for" | "while" | "each" | "if" | "else" | "return" | "warn" | "error" | "debug" if lang.is_css() => Hl::Keyword,
         "variable" if lang.is_css() => Hl::Type,
+        // HTML: タグは青、属性の名前は属性の色、<!DOCTYPE> は控えめに
+        "tag" if lang == Lang::Html => Hl::Keyword,
+        "constant" if lang == Lang::Html => Hl::Comment,
         // JSON はキーを string.special.key として取り出す
         _ if lang.is_data() && capture.split('.').any(|p| p == "key") => Hl::Keyword,
         "variable" if lang.is_shell() && !capture.contains("builtin") => Hl::Type,
@@ -247,6 +256,8 @@ pub struct Syntax {
     last_parse: Duration,
     /// 裏の再解析が終わったときに UI スレッドを起こす
     pub waker: Option<Arc<dyn Fn() + Send + Sync>>,
+    /// HTML の <script> <style> の中のハイライトの覚え（中身 → 中身の中の範囲）
+    injected: std::sync::Mutex<Vec<(Lang, String, Vec<(Range<usize>, Hl)>)>>,
 }
 
 // Parser と Tree は別スレッドへ移せる（初回のパースを読み込みスレッドで行う）
@@ -267,7 +278,7 @@ impl Syntax {
     pub fn new(lang: Lang) -> Option<Self> {
         let mut parser = Parser::new();
         parser.set_language(&lang.language()).ok()?;
-        Some(Self { lang, parser: Some(parser), tree: None, stale: false, job: None, last_parse: Duration::ZERO, waker: None })
+        Some(Self { lang, parser: Some(parser), tree: None, stale: false, job: None, last_parse: Duration::ZERO, waker: None, injected: Default::default() })
     }
 
     /// バッファ全体をその場でパースする（初回）
@@ -376,7 +387,68 @@ impl Syntax {
             }
             out.push((r, hl));
         }
+        if self.lang == Lang::Html {
+            self.html_injections(tree, buf, &range, &mut out);
+            out.sort_by_key(|(r, _)| r.start);
+        }
         out
+    }
+
+    /// HTML の <script> は JavaScript、<style> は CSS でハイライトする（見えている範囲にかかるものだけ。中身ごとに覚える）
+    fn html_injections(&self, tree: &Tree, buf: &Buffer, range: &Range<usize>, out: &mut Vec<(Range<usize>, Hl)>) {
+        let mut stack = vec![tree.root_node()];
+        let mut seen = Vec::new();
+        while let Some(n) = stack.pop() {
+            if n.end_byte() <= range.start || n.start_byte() >= range.end {
+                continue;
+            }
+            let lang = match n.kind() {
+                "script_element" => {
+                    // type が JavaScript 以外（テンプレート・JSON など）は JSON だけ色を付ける
+                    let start = n.child(0).map(|t| buf.slice_string(t.start_byte(), t.end_byte()).to_ascii_lowercase()).unwrap_or_default();
+                    if start.contains("json") {
+                        Some(Lang::Json)
+                    } else if start.contains("type=") && !start.contains("javascript") && !start.contains("module") {
+                        None
+                    } else {
+                        Some(Lang::JavaScript)
+                    }
+                }
+                "style_element" => Some(Lang::Css),
+                _ => {
+                    let mut c = n.walk();
+                    stack.extend(n.children(&mut c));
+                    continue;
+                }
+            };
+            let Some(lang) = lang else { continue };
+            let mut c = n.walk();
+            let Some(raw) = n.children(&mut c).find(|x| x.kind() == "raw_text") else { continue };
+            let (s, e) = (raw.start_byte(), raw.end_byte());
+            let text = buf.slice_string(s, e);
+            let mut cache = self.injected.lock().unwrap_or_else(|p| p.into_inner());
+            let spans = match cache.iter().find(|(l, t, _)| *l == lang && *t == text) {
+                Some((_, _, sp)) => sp.clone(),
+                None => {
+                    let sp = Syntax::new(lang)
+                        .map(|mut syn| {
+                            let mut b = Buffer::from_str(&text);
+                            syn.parse(&mut b);
+                            syn.highlight(&b, 0..text.len())
+                        })
+                        .unwrap_or_default();
+                    cache.push((lang, text.clone(), sp.clone()));
+                    sp
+                }
+            };
+            seen.push(text);
+            out.extend(spans.into_iter().map(|(r, h)| (r.start + s..r.end + s, h)).filter(|(r, _)| r.end > range.start && r.start < range.end));
+        }
+        // 今の文書に無くなった中身の覚えは捨てる（見えていないものは残す。数は抑える）
+        let mut cache = self.injected.lock().unwrap_or_else(|p| p.into_inner());
+        if cache.len() > 32 {
+            cache.retain(|(_, t, _)| seen.contains(t));
+        }
     }
 
     /// ERROR ノードの数（構文エラーの有無の目安。[e ]e で使う）
@@ -778,6 +850,21 @@ mod tests {
         assert!(k.contains(&("Item".into(), Hl::Type)), "{k:?}");
         assert_eq!(Lang::detect(Path::new("a/App.tsx")), Some(Lang::Tsx));
         assert_eq!(Lang::detect(Path::new("a/App.jsx")), Some(Lang::JavaScript));
+    }
+
+    #[test]
+    fn html() {
+        let src = "<!DOCTYPE html>\n<!-- c -->\n<div class=\"box\" id=\"a\"><p>本文</p></div>\n<style>\n.box { color: red; }\n</style>\n<script>\nconst n = 1;\n</script>\n";
+        let k = kinds(Lang::Html, src);
+        assert!(k.contains(&("div".into(), Hl::Keyword)), "{k:?}");
+        assert!(k.contains(&("class".into(), Hl::Attribute)), "{k:?}");
+        assert!(k.iter().any(|(t, h)| t.contains("box") && *h == Hl::String), "{k:?}");
+        assert!(k.iter().any(|(t, h)| t.contains("<!-- c") && *h == Hl::Comment), "{k:?}");
+        // <style> の中は CSS、<script> の中は JavaScript
+        assert!(k.contains(&("color".into(), Hl::Attribute)), "{k:?}");
+        assert!(k.contains(&("const".into(), Hl::Keyword)), "{k:?}");
+        assert!(k.contains(&("1".into(), Hl::Number)), "{k:?}");
+        assert_eq!(Lang::detect(Path::new("app/page.component.html")), Some(Lang::Html));
     }
 
     #[test]
