@@ -20,7 +20,7 @@ pub fn ideavim(name: &str) -> Option<(Option<&'static str>, &'static str)> {
         "ManageRecentProjects" => (Some("finder.projects"), "最近のプロジェクト"),
         "ActivateTerminalToolWindow" | "Terminal.OpenInTerminal" => (Some("tool.terminal"), "ターミナル（下の欄）"),
         "ActivateProblemsViewToolWindow" => (Some("tool.problems"), "問題（下の欄）"),
-        "ActivateVersionControlToolWindow" | "Vcs.Show.Log" => (Some("tool.git"), "Git の履歴（下の欄）"),
+        "ActivateVersionControlToolWindow" => (Some("tool.git"), "Git の履歴（下の欄）"),
         "ActivateFindToolWindow" => (Some("tool.find"), "検索の結果（下の欄）"),
         "ActivateRunToolWindow" | "ActivateBuildToolWindow" | "ActivateMessagesToolWindow" => (Some("tool.output"), "実行の出力（下の欄のログ）"),
         "SelectInProjectView" | "SelectIn" => (Some("tree.select_file"), "今のファイルをプロジェクトの木で選ぶ"),
@@ -58,7 +58,7 @@ pub fn ideavim(name: &str) -> Option<(Option<&'static str>, &'static str)> {
         "Stop" => (Some("job.stop"), "実行中のコマンドを止める"),
         // git（M5）
         "Vcs.ShowTabbedFileHistory" => (Some("git.file_history"), "ファイルの履歴"),
-        "Vcs.Show.Log" | "ActivateVersionControlToolWindow" => (Some("git.log"), "履歴（グラフ付きのログ）"),
+        "Vcs.Show.Log" => (Some("git.log"), "履歴（グラフ付きのログ）"),
         "Annotate" => (Some("git.blame"), "blame"),
         "ChangesView" => (Some("git.changes"), "変更の一覧（コミットのパネル）"),
         "CheckinProject" => (Some("git.commit"), "コミット（コミットのパネル）"),
