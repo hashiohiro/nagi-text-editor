@@ -1654,3 +1654,36 @@ pub(crate) mod tests {
         assert!(e.db.as_ref().unwrap().rows.iter().any(|r| matches!(r, DbRow::Object(..))));
     }
 }
+
+/// 描き方（view.rs の Painter で描く）
+pub(crate) mod draw {
+    #![allow(unused_imports)]
+    use super::*;
+    use crate::view::*;
+
+    /// SQL コンソールの上の帯（▶ 実行・Tx・未コミット・コミット・ロールバック・接続先 › スキーマ）
+    pub(crate) fn draw_console_bar(p: &mut Painter, ed: &Editor) {
+        let cell = p.fonts.cell();
+        let (x, w) = ed.windows_x();
+        let (x0, wpx) = (x as f32 * cell.w, w as f32 * cell.w);
+        p.out.push(Instance::fill(x0, 0.0, wpx, cell.h, BG));
+        p.out.push(Instance::fill(x0, cell.h - 1.0, wpx, 1.0, rgb(0x2a2a2a)));
+        let hover = ed.hover_bar;
+        for (label, bx, bw, item) in ed.console_bar(w) {
+            use crate::db_panel::BarItem;
+            let color = match item {
+                BarItem::Run | BarItem::Commit => GIT_ADD,
+                BarItem::Rollback => DIAG_ERROR,
+                BarItem::Pending => DIAG_WARN,
+                BarItem::Label => LINE_NO,
+                BarItem::Tx if label.contains("手動") => DIAG_WARN,
+                BarItem::Schema => FG,
+                BarItem::Tx => STATUS_FG,
+            };
+            if hover == Some(item) && item != BarItem::Label && item != BarItem::Pending {
+                p.out.push(Instance::fill((x + bx) as f32 * cell.w - 3.0, 1.0, bw as f32 * cell.w + 6.0, cell.h - 2.0, MATCH_BG));
+            }
+            p.text(&label, x + bx, 0.0, color);
+        }
+    }
+}

@@ -414,6 +414,61 @@ impl Editor {
     }
 }
 
+
+/// 描き方（view.rs の Painter で描く）
+pub(crate) mod draw {
+    #![allow(unused_imports)]
+    use super::*;
+    use crate::view::*;
+
+    /// 行頭のマーカーから出る差分のポップアップ（変更のまとまりの下。古い行は赤、新しい行は緑の地、変わった部分を濃く）
+    pub(crate) fn draw_hunk_popup(p: &mut Painter, ed: &Editor, rows: usize, cols: usize) {
+        const MAX_LINES: usize = 12;
+        let Some((old, new, h)) = ed.popup_lines() else { return };
+        let cell = p.fonts.cell();
+        let rect = ed.active_rect();
+        let last = if new.is_empty() { h.new.start.saturating_sub(1) } else { h.new.end - 1 };
+        if last < ed.top {
+            return;
+        }
+        let below = rect.y + (last - ed.top) + 1;
+        let x0 = rect.x + ed.gutter() - 1;
+        let w = rect.w.saturating_sub(ed.gutter()).min(110).max(40).min(cols.saturating_sub(x0));
+        let n_old = old.len().min(MAX_LINES);
+        let n_new = new.len().min(MAX_LINES);
+        let h_rows = 1 + n_old + n_new;
+        // 下に入らなければ、まとまりの上に出す
+        let top = if below + h_rows <= rows { below } else { (rect.y + h.new.start.saturating_sub(ed.top)).saturating_sub(h_rows) };
+        let (x, y0) = (x0 as f32 * cell.w, top as f32 * cell.h);
+        p.out.push(Instance::fill(x - 1.0, y0 - 1.0, w as f32 * cell.w + 2.0, h_rows as f32 * cell.h + 2.0, LINE_NO));
+        p.out.push(Instance::fill(x, y0, w as f32 * cell.w, h_rows as f32 * cell.h, rgb(0x141414)));
+        let saved = p.cols;
+        p.cols = x0 + w;
+        let total = ed.git.popup.map(|i| i + 1).unwrap_or(0);
+        let kind = match h.kind {
+            nagi_core::linediff::HunkKind::Add => format!("{} 行を足した", new.len()),
+            nagi_core::linediff::HunkKind::Del => format!("{} 行を消した", old.len()),
+            nagi_core::linediff::HunkKind::Mod => format!("{} 行を変えた", new.len().max(old.len())),
+        };
+        p.text(&format!(" 変更 {total}   {kind}     [c 前  ]c 次  u 戻す  s ステージ  Esc 閉じる"), x0, y0, STATUS_FG);
+        let mut y = y0 + cell.h;
+        // 対になる行は変わった部分を濃く塗る
+        for (i, l) in old.iter().take(n_old).enumerate() {
+            p.out.push(Instance::fill(x, y, w as f32 * cell.w, cell.h, DIFF_DEL_BG));
+            let span = new.get(i).map(|n| nagi_core::linediff::changed_span(l, n).0);
+            draw_diff_line(p, "−", l, span, DIFF_WORD_DEL_BG, GIT_DEL, x0, y);
+            y += cell.h;
+        }
+        for (i, l) in new.iter().take(n_new).enumerate() {
+            p.out.push(Instance::fill(x, y, w as f32 * cell.w, cell.h, DIFF_ADD_BG));
+            let span = old.get(i).map(|o| nagi_core::linediff::changed_span(o, l).1);
+            draw_diff_line(p, "+", l, span, DIFF_WORD_BG, GIT_ADD, x0, y);
+            y += cell.h;
+        }
+        p.cols = saved;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

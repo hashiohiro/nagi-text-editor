@@ -518,6 +518,99 @@ pub fn tab_label(k: usize, t: &ResultTab) -> String {
     format!("結果 {} · {short}", k + 1)
 }
 
+
+/// 描き方（view.rs の Painter で描く）
+pub(crate) mod draw {
+    #![allow(unused_imports)]
+    use super::*;
+    use crate::view::*;
+
+    /// データベースの結果（下のパネル）。1 行目はタブ、出力なら記録、結果なら絞り込みの行と表
+    pub(crate) fn draw_db_results(p: &mut Painter, ed: &Editor, r: Rect) {
+        let res = &ed.db_results;
+        let cell = p.fonts.cell();
+        let (x0, y0, wpx) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
+        p.out.push(Instance::fill(x0, y0, wpx, r.h as f32 * cell.h, BG));
+        p.out.push(Instance::fill(x0, y0, wpx, 1.0, LINE_NO));
+        let focused = ed.mode == Mode::List && ed.list_side == crate::editor::Side::Bottom;
+        let saved = p.cols;
+        p.cols = (r.x + r.w).saturating_sub(3);
+        // タブ
+        let mut x = r.x + 1;
+        let labels: Vec<String> = std::iter::once("出力".to_string()).chain(res.tabs.iter().enumerate().map(|(k, t)| crate::result_grid::tab_label(k, t))).collect();
+        for (k, l) in labels.iter().enumerate() {
+            let on = k == res.active;
+            let end = p.text(&format!(" {l} "), x, y0, if on && focused { FG } else if on { rgb(0xc8c8c8) } else { STATUS_FG });
+            if on {
+                p.out.push(Instance::fill(x as f32 * cell.w, y0 + cell.h - 2.0, (end - x) as f32 * cell.w, 2.0, if focused { GIT_MOD } else { STATUS_FG }));
+            }
+            x = end + 1;
+        }
+        p.out.push(Instance::fill(x0, y0 + cell.h - 1.0, wpx, 1.0, rgb(0x2a2a2a)));
+        p.cols = r.x + r.w;
+        match res.active_tab() {
+            None => {
+                // 出力: 新しいものを下に
+                let body = r.h.saturating_sub(1);
+                let end = res.log.len().saturating_sub(res.log_scroll);
+                let start = end.saturating_sub(body);
+                for (k, l) in res.log[start..end].iter().enumerate() {
+                    let y = y0 + (1 + k) as f32 * cell.h;
+                    let mut c = p.text(&format!(" [{}] ", l.time), r.x, y, LINE_NO);
+                    if !l.src.is_empty() {
+                        c = p.text(&format!("{}  ", l.src), c, y, STATUS_FG);
+                    }
+                    c = p.text(&l.text, c, y, if l.error && l.outcome.is_empty() { DIAG_ERROR } else { FG });
+                    if !l.outcome.is_empty() {
+                        p.text(&format!("   {}", l.outcome), c, y, if l.error { DIAG_ERROR } else { STATUS_FG });
+                    }
+                }
+                if res.log.is_empty() {
+                    p.text(" まだ何も流していません", r.x, y0 + cell.h, LINE_NO);
+                }
+            }
+            Some(t) => {
+                let mut y = y0 + cell.h;
+                let right = format!("{}   {}", t.range_label(), t.info);
+                if t.filterable {
+                    draw_filter_row(p, r, y, &t.where_, &t.order, res.editing.as_ref(), &right, &ed.preedit);
+                    y += cell.h;
+                } else {
+                    let rw = p.width(&right);
+                    p.text(&right, (r.x + r.w).saturating_sub(rw + 3), y, if t.error { DIAG_ERROR } else { STATUS_FG });
+                    y += cell.h;
+                }
+                if t.cols.is_empty() {
+                    p.text(&format!(" {}", t.info), r.x, y, if t.error { DIAG_ERROR } else if t.running { STATUS_FG } else { FG });
+                } else {
+                    let value = |k: usize, c: usize| t.rows[k][c].clone();
+                    let row_style = |k: usize| ((t.offset + k + 1).to_string(), None);
+                    let cell_bg = |_: usize, _: usize| None;
+                    let g = GridView {
+                        cols: &t.cols,
+                        types: &t.types,
+                        widths: &t.widths,
+                        marks: Vec::new(),
+                        sort: sort_of(&t.order),
+                        rows: t.rows.len(),
+                        value: &value,
+                        row_style: &row_style,
+                        cell_bg: &cell_bg,
+                        row: t.row,
+                        col: t.col,
+                        scroll: t.scroll,
+                        hscroll: t.hscroll,
+                        focused,
+                    };
+                    let top = ((y - y0) / cell.h) as usize;
+                    draw_grid(p, &g, Rect { x: r.x, y: r.y + top, w: r.w, h: r.h.saturating_sub(top) });
+                }
+            }
+        }
+        p.cols = saved;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

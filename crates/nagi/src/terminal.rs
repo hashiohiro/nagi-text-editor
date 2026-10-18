@@ -522,6 +522,124 @@ impl Editor {
     }
 }
 
+
+/// 描き方（view.rs の Painter で描く）
+pub(crate) mod draw {
+    #![allow(unused_imports)]
+    use super::*;
+    use crate::view::*;
+
+    /// ターミナル（下の欄）。1 行目に窓の並び、2 行目からシェルの画面。移っていればカーソル（四角）と IME の位置
+    pub(crate) fn draw_terminal(p: &mut Painter, ed: &Editor, r: Rect, focused: bool) {
+        let cell = p.fonts.cell();
+        let ts = &ed.terminals;
+        let saved = p.cols;
+        p.cols = r.x + r.w;
+        // 窓の並び（今の窓は明るく下線、＋で新しい窓）
+        let y0 = r.y as f32 * cell.h;
+        let mut x = r.x;
+        for (label, target) in crate::terminal::strip_items(ts) {
+            let on = target == Some(ts.active) && !ts.list.is_empty();
+            let end = p.text(&label, x, y0, if on { FG } else { STATUS_FG });
+            if on {
+                p.out.push(Instance::fill(x as f32 * cell.w, y0 + cell.h - 2.0, (end - x) as f32 * cell.w, 2.0, if focused { GIT_MOD } else { STATUS_FG }));
+            }
+            // 区切り: 罫線の文字は行の上下いっぱいに伸びて上のタブの線とつながるので、上下を空けた細い線にする
+            let h = (cell.h * 0.5).round();
+            p.out.push(Instance::fill((end as f32 + 0.5) * cell.w, y0 + (cell.h - h) / 2.0, 1.0, h, LINE_NO));
+            x = end + 1;
+        }
+        let r = Rect { x: r.x, y: r.y + 1, w: r.w, h: r.h.saturating_sub(1) };
+        // シェルを選んでいる
+        if let Some(sel) = ts.chooser {
+            p.text(" 新しい窓のシェル（j/k・数字で選んで Enter、Esc でやめる）", r.x, r.y as f32 * cell.h, STATUS_FG);
+            for (k, (label, cmd)) in crate::terminal::available_shells().iter().enumerate() {
+                let y = (r.y + 1 + k) as f32 * cell.h;
+                if k == sel {
+                    p.out.push(Instance::fill(r.x as f32 * cell.w, y, r.w as f32 * cell.w, cell.h, if focused { FG } else { MATCH_BG }));
+                }
+                let rev = k == sel && focused;
+                let c = p.text(&format!("  {} {label}", k + 1), r.x, y, if rev { BG } else { FG });
+                p.text(&format!("   {cmd}"), c, y, if rev { BG } else { LINE_NO });
+            }
+            p.cols = saved;
+            return;
+        }
+        let Some(t) = ts.current() else {
+            p.text(" 窓がありません（Enter で開く、c でシェルを選ぶ）", r.x, r.y as f32 * cell.h, STATUS_FG);
+            p.cols = saved;
+            return;
+        };
+        let x0 = r.x + 1;
+        t.term.with_screen(|s| {
+            let (rows, cols) = s.size();
+            let scrolled = s.scrollback() > 0;
+            for row in 0..rows.min(r.h as u16) {
+                let y = (r.y + row as usize) as f32 * cell.h;
+                let mut items: Vec<Item> = Vec::with_capacity(cols as usize);
+                for col in 0..cols {
+                    let Some(c) = s.cell(row, col) else { continue };
+                    if c.is_wide_continuation() {
+                        continue;
+                    }
+                    let (mut fg, mut bg) = (term_color(c.fgcolor(), FG), term_color(c.bgcolor(), BG));
+                    if c.inverse() {
+                        std::mem::swap(&mut fg, &mut bg);
+                    }
+                    // マウスで選んでいる範囲は反転
+                    if ts.selected(row, col) {
+                        fg = BG;
+                        bg = FG;
+                    }
+                    if c.dim() {
+                        fg = [fg[0] * 0.6, fg[1] * 0.6, fg[2] * 0.6, fg[3]];
+                    }
+                    let text = if c.has_contents() { c.contents().to_string() } else { " ".to_string() };
+                    let width = if c.is_wide() { 2 } else { 1 };
+                    let bg = (bg != BG).then_some(bg);
+                    items.push(Item { g: Cow::Owned(text), width, fg, bg, underline: c.underline() });
+                }
+                p.draw(&items, x0, y);
+            }
+            // カーソル（遡っている間と、シェルが隠しているときは出さない）
+            let (cr, cc) = s.cursor_position();
+            if focused && !scrolled && !s.hide_cursor() && (cr as usize) < r.h {
+                let y = (r.y + cr as usize) as f32 * cell.h;
+                let col = x0 + cc as usize;
+                p.out.push(Instance::fill(col as f32 * cell.w, y, cell.w, cell.h, CURSOR));
+                let ch = s.cell(cr, cc).map(|c| c.contents().to_string()).filter(|c| !c.is_empty()).unwrap_or_default();
+                if !ch.is_empty() {
+                    p.text(&ch, col, y, BG);
+                }
+                // IME の候補の窓はカーソルの位置へ（変換中の文字は下線で重ねる）
+                if !ed.preedit.is_empty() {
+                    let mut pre = p.items(&ed.preedit, FG);
+                    pre.iter_mut().for_each(|i| {
+                        i.underline = true;
+                        i.bg = Some(BG);
+                    });
+                    p.draw(&pre, col, y);
+                }
+                p.caret_at = Some((col, y));
+            }
+            if scrolled {
+                let tag = format!(" ↑ {} 行さかのぼっています（打つと戻る） ", s.scrollback());
+                let w = p.width(&tag);
+                let x = (r.x + r.w).saturating_sub(w + 1);
+                p.out.push(Instance::fill(x as f32 * cell.w, r.y as f32 * cell.h, w as f32 * cell.w, cell.h, MATCH_BG));
+                p.text(&tag, x, r.y as f32 * cell.h, FG);
+            }
+        });
+        if t.exited {
+            let y = (r.y + r.h.saturating_sub(1)) as f32 * cell.h;
+            p.out.push(Instance::fill(r.x as f32 * cell.w, y, r.w as f32 * cell.w, cell.h, MATCH_BG));
+            let back = if t.name.starts_with(crate::run_configs::RUN_PREFIX) { "Esc でエディタへ、" } else { "" };
+            p.text(&format!(" {} が終わりました。Enter で起動し直す（{back}Ctrl-\\ x で閉じる） ", t.name), r.x, y, FG);
+        }
+        p.cols = saved;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

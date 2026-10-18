@@ -532,6 +532,154 @@ impl Editor {
     }
 }
 
+
+/// 描き方（view.rs の Painter で描く）
+pub(crate) mod draw {
+    #![allow(unused_imports)]
+    use super::*;
+    use crate::view::*;
+
+    /// 履歴（窓の領域全体）。左にブランチ、中央にグラフ付きのコミット、右に選んだコミットの中身
+    pub(crate) fn draw_log_view(p: &mut Painter, l: &crate::log_view::LogView, r: Rect, preedit: &str) {
+        const LANES: [[f32; 4]; 5] = [rgb(0x87afd7), rgb(0xd7af87), rgb(0x87af87), rgb(0xd787af), rgb(0xafafd7)];
+        let cell = p.fonts.cell();
+        let (x0, y0) = (r.x as f32 * cell.w, r.y as f32 * cell.h);
+        p.out.push(Instance::fill(x0, y0, r.w as f32 * cell.w, r.h as f32 * cell.h, BG));
+        let bw = 20.min(r.w / 6);
+        let dw = 42.min(r.w / 3);
+        let cx = r.x + bw + 1;
+        let cw = r.w.saturating_sub(bw + dw + 2);
+        let dx = cx + cw + 1;
+        // 上の行: 絞り込みと件数
+        let n = l.visible.iter().filter(|&&i| l.rows[i].commit.is_some()).count();
+        let head = format!(
+            " {}{}   {} 件{}",
+            if l.filter_text.is_empty() { "/ で絞り込み".to_string() } else { format!("/{}", l.filter_text) },
+            l.path.as_ref().map_or(String::new(), |p| format!("   ファイル: {p}")),
+            n,
+            if l.loading { " …" } else { "" }
+        );
+        if let Some(f) = &l.filter {
+            let c = p.text(" /", r.x, y0, FG);
+            let end = draw_vim_field(p, f, c, y0, preedit);
+            p.text(&format!("   {n} 件"), end, y0, STATUS_FG);
+        } else {
+            p.text(&head, r.x, y0, STATUS_FG);
+        }
+        p.out.push(Instance::fill(x0, y0 + cell.h - 1.0, r.w as f32 * cell.w, 1.0, LINE_NO));
+        let body = r.h.saturating_sub(1);
+        // 左: ブランチ
+        let saved = p.cols;
+        p.cols = r.x + bw;
+        let mut y = y0 + cell.h;
+        let mut last_sec = "";
+        for (sec, name, cur) in &l.branches {
+            if y >= y0 + body as f32 * cell.h {
+                break;
+            }
+            if sec != last_sec {
+                p.text(&format!(" {sec}"), r.x, y, STATUS_FG);
+                y += cell.h;
+                last_sec = sec;
+            }
+            p.text(&format!(" {} {name}", if *cur { '*' } else { ' ' }), r.x, y, if *cur { FG } else { STATUS_FG });
+            y += cell.h;
+        }
+        p.cols = saved;
+        p.out.push(Instance::fill((r.x + bw) as f32 * cell.w + cell.w * 0.5, y0 + cell.h, 1.0, body as f32 * cell.h, LINE_NO));
+        // 中央: コミット
+        let saved = p.cols;
+        p.cols = cx + cw;
+        for (k, &i) in l.visible.iter().enumerate().skip(l.top).take(body) {
+            let row = &l.rows[i];
+            let y = y0 + (1 + k - l.top) as f32 * cell.h;
+            let sel = k == l.selected;
+            let focused = sel && !l.focus_files;
+            if focused {
+                p.out.push(Instance::fill(cx as f32 * cell.w, y, cw as f32 * cell.w, cell.h, FG));
+            } else if sel {
+                p.out.push(Instance::fill(cx as f32 * cell.w, y, cw as f32 * cell.w, cell.h, MATCH_BG));
+            }
+            let mut c = cx + 1;
+            for (j, ch) in crate::log_view::pretty_graph(&row.graph).chars().enumerate() {
+                let mut b = [0u8; 4];
+                let color = if focused { BG } else { LANES[(j / 2) % LANES.len()] };
+                c = p.text(ch.encode_utf8(&mut b), c, y, color);
+            }
+            if let Some(cm) = &row.commit {
+                let (fg, dim, refc) = if focused { (BG, BG, BG) } else { (FG, STATUS_FG, rgb(0xd7af87)) };
+                // 作者と日時は表示の幅で揃える（全角は 2 セル）
+                let pad = |p: &Painter, s: &str, w: usize| {
+                    let t: String = s.chars().scan(0, |acc, ch| {
+                        *acc += p.width(ch.encode_utf8(&mut [0u8; 4]));
+                        (*acc <= w).then_some(ch)
+                    }).collect();
+                    let tw = p.width(&t);
+                    format!("{t}{}", " ".repeat(w.saturating_sub(tw)))
+                };
+                let right = format!("{} {} {}", pad(p, &cm.author, 10), pad(p, &cm.date, 9), cm.short);
+                let rw = p.width(&right);
+                let mut c2 = c + 1;
+                if !cm.refs.is_empty() {
+                    c2 = p.text(&format!("{}  ", cm.refs), c2, y, refc);
+                }
+                let limit = (cx + cw).saturating_sub(rw + 1);
+                let saved2 = p.cols;
+                p.cols = limit.saturating_sub(1);
+                p.text(&cm.subject, c2, y, fg);
+                p.cols = saved2;
+                p.text(&right, limit, y, dim);
+            }
+        }
+        p.cols = saved;
+        p.out.push(Instance::fill((cx + cw) as f32 * cell.w + cell.w * 0.5, y0 + cell.h, 1.0, body as f32 * cell.h, LINE_NO));
+        // 右: 選んだコミットの中身
+        let saved = p.cols;
+        p.cols = r.x + r.w;
+        if let Some(d) = &l.detail {
+            let mut y = y0 + cell.h;
+            let line = |p: &mut Painter, y: &mut f32, s: &str, color: [f32; 4]| {
+                p.text(s, dx + 1, *y, color);
+                *y += cell.h;
+            };
+            line(p, &mut y, &format!("{}   {}   {}", &d.hash[..7.min(d.hash.len())], d.author, d.date), STATUS_FG);
+            line(p, &mut y, &format!("親 {}", d.parents.split(' ').map(|h| &h[..7.min(h.len())]).collect::<Vec<_>>().join(" ")), STATUS_FG);
+            y += cell.h * 0.5;
+            for (k, m) in d.message.lines().enumerate().take(8) {
+                line(p, &mut y, m, if k == 0 { rgb(0xe8e8e8) } else { STATUS_FG });
+            }
+            y += cell.h * 0.5;
+            line(p, &mut y, &format!("変えたファイル（{}）", d.files.len()), STATUS_FG);
+            let limit = y0 + r.h as f32 * cell.h;
+            for (k, (st, path)) in d.files.iter().enumerate() {
+                if y + cell.h > limit {
+                    break;
+                }
+                let sel = l.focus_files && k == l.file_sel;
+                if sel {
+                    p.out.push(Instance::fill(dx as f32 * cell.w, y, (r.x + r.w - dx) as f32 * cell.w, cell.h, FG));
+                }
+                let sc = if sel {
+                    BG
+                } else {
+                    match st {
+                        'A' => GIT_ADD,
+                        'D' => GIT_DEL,
+                        'M' => GIT_MOD,
+                        _ => rgb(0xd7af5f),
+                    }
+                };
+                let c = p.text(&format!("{st}"), dx + 1, y, sc);
+                p.text(&format!("  {path}"), c, y, if sel { BG } else { FG });
+                y += cell.h;
+            }
+        } else if !l.rows.is_empty() {
+            p.text("…", dx + 1, y0 + cell.h, STATUS_FG);
+        }
+        p.cols = saved;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

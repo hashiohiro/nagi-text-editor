@@ -3,16 +3,16 @@
 //! 1 行は「書記素ごとの部品（文字・文字色・背景色・下線）」の並びとして組み立ててから描く。
 //! 選択範囲・検索の一致・置換の予告表示・カーソル・IME の変換中の文字列は、どれもこの部品の差し替えで表す。
 
-use std::borrow::Cow;
+pub(crate) use std::borrow::Cow;
 
-use nagi_render::{Instance, Renderer};
-use nagi_text::Fonts;
-use unicode_segmentation::UnicodeSegmentation;
+pub(crate) use nagi_render::{Instance, Renderer};
+pub(crate) use nagi_text::Fonts;
+pub(crate) use unicode_segmentation::UnicodeSegmentation;
 
-use crate::editor::{Editor, GUTTER, Mode};
-use crate::panes::Rect;
+pub(crate) use crate::editor::{Editor, GUTTER, Mode};
+pub(crate) use crate::panes::Rect;
 
-const fn rgb(hex: u32) -> [f32; 4] {
+pub(crate) const fn rgb(hex: u32) -> [f32; 4] {
     [((hex >> 16) & 0xff) as f32 / 255.0, ((hex >> 8) & 0xff) as f32 / 255.0, (hex & 0xff) as f32 / 255.0, 1.0]
 }
 
@@ -20,13 +20,36 @@ const fn rgb(hex: u32) -> [f32; 4] {
 pub const BG: [f32; 4] = rgb(0x0c0c0c);
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
+// パネルごとの描き方（それぞれのファイルの draw）
+pub(crate) use crate::settings_dialog::draw::draw_settings_dialog;
+pub(crate) use crate::run_dialog::draw::draw_run_dialog;
+pub(crate) use crate::launcher::draw::draw_launcher;
+pub(crate) use crate::finder::draw::{draw_finder, finder_height};
+pub(crate) use crate::md_preview::draw::draw_md_preview;
+pub(crate) use crate::commit_panel::draw::draw_commit_panel;
+pub(crate) use crate::branches::draw::draw_branch_popup;
+pub(crate) use crate::log_view::draw::draw_log_view;
+pub(crate) use crate::diff_view::draw::draw_diff_view;
+pub(crate) use crate::blame::draw::draw_blame_popup;
+pub(crate) use crate::git_ui::draw::draw_hunk_popup;
+pub(crate) use crate::cmdline_complete::draw::draw_cmd_complete;
+pub(crate) use crate::complete::draw::draw_completion;
+pub(crate) use crate::tree_panel::draw::draw_tree;
+pub(crate) use crate::grep_panel::draw::draw_grep_panel;
+pub(crate) use crate::read_view::draw::draw_read_view;
+pub(crate) use crate::bottom_panel::draw::draw_bottom_panel;
+pub(crate) use crate::result_grid::draw::draw_db_results;
+pub(crate) use crate::db_table::draw::draw_db_table;
+pub(crate) use crate::db_panel::draw::draw_console_bar;
+pub(crate) use crate::terminal::draw::draw_terminal;
+pub(crate) use crate::right_panel::draw::draw_right_panel;
 
 /// 配色（設定の「配色」: 0 ダーク・1 ブラック・2 ダークグレー・3 ライト）と強調の色（0xRRGGBB）。設定を適用したときに入れる
-static THEME: AtomicU8 = AtomicU8::new(0);
-static ACCENT: AtomicU32 = AtomicU32::new(DEFAULT_ACCENT);
-const DEFAULT_ACCENT: u32 = 0x87afd7;
+pub(crate) static THEME: AtomicU8 = AtomicU8::new(0);
+pub(crate) static ACCENT: AtomicU32 = AtomicU32::new(DEFAULT_ACCENT);
+pub(crate) const DEFAULT_ACCENT: u32 = 0x87afd7;
 /// 欄のタブの名前をいつも出すか（設定の「欄のタブの名前」）
-static TAB_NAMES: AtomicBool = AtomicBool::new(false);
+pub(crate) static TAB_NAMES: AtomicBool = AtomicBool::new(false);
 
 /// 設定の外観（配色・強調の色・タブの名前）を描き方に入れる
 pub fn set_appearance(theme: &str, accent: &str, tab_names_always: bool) {
@@ -64,31 +87,31 @@ pub fn theme_color(c: [f32; 4]) -> [f32; 4] {
         _ => c,
     }
 }
-const FG: [f32; 4] = rgb(0xcccccc);
-const LINE_NO: [f32; 4] = rgb(0x4e4e4e);
-const TILDE: [f32; 4] = rgb(0x3a3a3a);
-const CURSOR: [f32; 4] = rgb(0xcccccc);
+pub(crate) const FG: [f32; 4] = rgb(0xcccccc);
+pub(crate) const LINE_NO: [f32; 4] = rgb(0x4e4e4e);
+pub(crate) const TILDE: [f32; 4] = rgb(0x3a3a3a);
+pub(crate) const CURSOR: [f32; 4] = rgb(0xcccccc);
 /// Visual で選んだ行末（空行など）にあるカーソル。選択の反転とも地の色とも見分けられる灰色
-const CURSOR_IN_SELECTION: [f32; 4] = rgb(0x6c6c6c);
-const STATUS_FG: [f32; 4] = rgb(0x8a8a8a);
+pub(crate) const CURSOR_IN_SELECTION: [f32; 4] = rgb(0x6c6c6c);
+pub(crate) const STATUS_FG: [f32; 4] = rgb(0x8a8a8a);
 /// git の変更マーカー（足した行・変えた行・消した位置）と、差分の地の色
-const GIT_ADD: [f32; 4] = rgb(0x87af87);
-const GIT_MOD: [f32; 4] = rgb(0x87afd7);
-const GIT_DEL: [f32; 4] = rgb(0xd75f5f);
-const DIFF_ADD_BG: [f32; 4] = rgb(0x16261a);
-const DIFF_DEL_BG: [f32; 4] = rgb(0x2c1a1a);
-const DIFF_WORD_BG: [f32; 4] = rgb(0x2c4a70);
-const DIFF_WORD_DEL_BG: [f32; 4] = rgb(0x6a2a2a);
+pub(crate) const GIT_ADD: [f32; 4] = rgb(0x87af87);
+pub(crate) const GIT_MOD: [f32; 4] = rgb(0x87afd7);
+pub(crate) const GIT_DEL: [f32; 4] = rgb(0xd75f5f);
+pub(crate) const DIFF_ADD_BG: [f32; 4] = rgb(0x16261a);
+pub(crate) const DIFF_DEL_BG: [f32; 4] = rgb(0x2c1a1a);
+pub(crate) const DIFF_WORD_BG: [f32; 4] = rgb(0x2c4a70);
+pub(crate) const DIFF_WORD_DEL_BG: [f32; 4] = rgb(0x6a2a2a);
 /// 診断のある行の行番号（エラーと警告）
-const DIAG_ERROR: [f32; 4] = rgb(0xd75f5f);
-const DIAG_WARN: [f32; 4] = rgb(0xd7af5f);
+pub(crate) const DIAG_ERROR: [f32; 4] = rgb(0xd75f5f);
+pub(crate) const DIAG_WARN: [f32; 4] = rgb(0xd7af5f);
 /// 検索の一致（今いるもの以外）の背景
-const MATCH_BG: [f32; 4] = rgb(0x3a3a3a);
+pub(crate) const MATCH_BG: [f32; 4] = rgb(0x3a3a3a);
 /// 強調の色（選んでいる欄・決めるボタン。配色の設定で描いた後に置き換わる）
-const ACCENT_FG: [f32; 4] = rgb(DEFAULT_ACCENT);
+pub(crate) const ACCENT_FG: [f32; 4] = rgb(DEFAULT_ACCENT);
 
 /// ハイライトの色（ターミナルの 256 色に近い、控えめな数色）
-fn hl_color(h: nagi_syntax::Hl) -> [f32; 4] {
+pub(crate) fn hl_color(h: nagi_syntax::Hl) -> [f32; 4] {
     use nagi_syntax::Hl;
     match h {
         Hl::Keyword => rgb(0x87afd7),
@@ -103,46 +126,46 @@ fn hl_color(h: nagi_syntax::Hl) -> [f32; 4] {
 }
 
 /// 1 書記素分の部品。文字は元の行を借りる（1 文字ごとに確保しない）
-struct Item<'a> {
-    g: Cow<'a, str>,
-    width: usize,
-    fg: [f32; 4],
-    bg: Option<[f32; 4]>,
-    underline: bool,
+pub(crate) struct Item<'a> {
+    pub(crate) g: Cow<'a, str>,
+    pub(crate) width: usize,
+    pub(crate) fg: [f32; 4],
+    pub(crate) bg: Option<[f32; 4]>,
+    pub(crate) underline: bool,
 }
 
 /// 描画先と、そのフレームの寸法
-struct Painter<'a> {
-    out: Vec<Instance>,
-    fonts: &'a mut Fonts,
-    r: &'a mut Renderer,
-    cols: usize,
+pub(crate) struct Painter<'a> {
+    pub(crate) out: Vec<Instance>,
+    pub(crate) fonts: &'a mut Fonts,
+    pub(crate) r: &'a mut Renderer,
+    pub(crate) cols: usize,
     /// ターミナルにはできない細さ: 縦棒カーソルと下線は数 px で描く
-    bar: f32,
-    underline: f32,
+    pub(crate) bar: f32,
+    pub(crate) underline: f32,
     /// 最後に描いた縦棒カーソル（列, y）。IME の候補の窓をそこに出す
-    caret_at: Option<(usize, f32)>,
+    pub(crate) caret_at: Option<(usize, f32)>,
     /// 描いたタブのアイコン（行, 列の始め, 終わり, 名前）。マウスを載せたら名前を出す
-    tab_hits: Vec<(usize, usize, usize, &'static str)>,
+    pub(crate) tab_hits: Vec<(usize, usize, usize, &'static str)>,
     /// 折り返し（設定）: 折り返す幅（0 なら折り返さない）と、使ってよい画面の行数。draw が使う
-    wrap_w: usize,
-    wrap_rows: usize,
+    pub(crate) wrap_w: usize,
+    pub(crate) wrap_rows: usize,
     /// 最後に draw で描き終えた行の y（折り返したときの行末のカーソル用）
-    end_y: f32,
+    pub(crate) end_y: f32,
 }
 
 impl Painter<'_> {
-    fn items<'s>(&self, s: &'s str, fg: [f32; 4]) -> Vec<Item<'s>> {
+    pub(crate) fn items<'s>(&self, s: &'s str, fg: [f32; 4]) -> Vec<Item<'s>> {
         s.graphemes(true).map(|g| Item { g: Cow::Borrowed(g), width: self.cell_width(g), fg, bg: None, underline: false }).collect()
     }
 
     /// 書記素 1 つのセル幅（タブは 4）
-    fn cell_width(&self, g: &str) -> usize {
+    pub(crate) fn cell_width(&self, g: &str) -> usize {
         if g == "\t" { 4 } else { self.fonts.width(g) }
     }
 
     /// 部品の並びを (col, y) から描く。戻り値は描き終えた列
-    fn draw(&mut self, items: &[Item<'_>], col: usize, y: f32) -> usize {
+    pub(crate) fn draw(&mut self, items: &[Item<'_>], col: usize, y: f32) -> usize {
         let cell = self.fonts.cell();
         let mut c = col;
         let mut y = y;
@@ -178,19 +201,19 @@ impl Painter<'_> {
         c
     }
 
-    fn text(&mut self, s: &str, col: usize, y: f32, fg: [f32; 4]) -> usize {
+    pub(crate) fn text(&mut self, s: &str, col: usize, y: f32, fg: [f32; 4]) -> usize {
         let items = self.items(s, fg);
         self.draw(&items, col, y)
     }
 
-    fn caret(&mut self, col: usize, y: f32) {
+    pub(crate) fn caret(&mut self, col: usize, y: f32) {
         self.caret_at = Some((col, y));
         let cell = self.fonts.cell();
         self.out.push(Instance::fill(col as f32 * cell.w, y, self.bar, cell.h, CURSOR));
     }
 
     /// 文字を `scale` 倍に縮めて px の位置 (x, y) から描く（アイコンの中の文字用）
-    fn small_text(&mut self, s: &str, x: f32, y: f32, scale: f32, color: [f32; 4]) {
+    pub(crate) fn small_text(&mut self, s: &str, x: f32, y: f32, scale: f32, color: [f32; 4]) {
         let cw = self.fonts.cell().w;
         let mut x = x;
         for g in s.graphemes(true) {
@@ -203,12 +226,12 @@ impl Painter<'_> {
         }
     }
 
-    fn width(&self, s: &str) -> usize {
+    pub(crate) fn width(&self, s: &str) -> usize {
         nagi_text::graphemes(self.fonts, s).map(|(_, _, w)| w).sum()
     }
 
     /// ステータスバーのメッセージ: 少し小さい字で (col, y) から（下に寄せる）。戻り値は描き終えた列（切り上げ）
-    fn msg_text(&mut self, s: &str, col: usize, y: f32, fg: [f32; 4]) -> usize {
+    pub(crate) fn msg_text(&mut self, s: &str, col: usize, y: f32, fg: [f32; 4]) -> usize {
         const S: f32 = 0.82;
         let cell = self.fonts.cell();
         let limit = self.cols as f32 * cell.w;
@@ -232,12 +255,12 @@ impl Painter<'_> {
 }
 
 /// ステータスバーの左: メッセージがあれば少し小さい字で、無ければ `fallback`（モードの名前など）をふつうの字で
-fn status_left(p: &mut Painter, message: &str, fallback: &str, y: f32, fg: [f32; 4]) -> usize {
+pub(crate) fn status_left(p: &mut Painter, message: &str, fallback: &str, y: f32, fg: [f32; 4]) -> usize {
     if message.is_empty() { p.text(fallback, 0, y, fg) } else { p.msg_text(message, 0, y, fg) }
 }
 
 /// ステータスバーの左: `small` ならメッセージとして少し小さい字で
-fn status_text(p: &mut Painter, s: &str, small: bool, y: f32, fg: [f32; 4]) -> usize {
+pub(crate) fn status_text(p: &mut Painter, s: &str, small: bool, y: f32, fg: [f32; 4]) -> usize {
     if small { p.msg_text(s, 0, y, fg) } else { p.text(s, 0, y, fg) }
 }
 
@@ -256,7 +279,7 @@ pub fn prefetch_ascii(fonts: &mut Fonts, r: &mut Renderer) {
 
 /// 右下の列番号。行の先頭からカーソルまでの表示幅を足すので、数 MB の行の奥では
 /// 代わりに byte 位置を出す（Vim も表示列と byte 位置が違うときは両方出す）
-fn ruler_col(ed: &Editor) -> String {
+pub(crate) fn ruler_col(ed: &Editor) -> String {
     const MAX: usize = 1 << 16;
     if ed.cursor.byte > MAX {
         return format!("{}-", ed.cursor.byte + 1);
@@ -265,11 +288,11 @@ fn ruler_col(ed: &Editor) -> String {
 }
 
 /// 1 行のうち取り出す byte 数。1 文字は最大 4 byte で、少なくとも 1 セル使うので、これで画面の幅を必ず埋められる
-fn line_budget(cols: usize) -> usize {
+pub(crate) fn line_budget(cols: usize) -> usize {
     cols * 4 + 16
 }
 
-fn screen_rows(fonts: &Fonts, r: &Renderer) -> usize {
+pub(crate) fn screen_rows(fonts: &Fonts, r: &Renderer) -> usize {
     ((r.size().1 as f32 / fonts.cell().h) as usize).saturating_sub(1).max(1)
 }
 
@@ -280,7 +303,7 @@ pub fn prefetch_around(ed: &Editor, fonts: &mut Fonts, r: &mut Renderer) {
     prefetch_lines(ed, fonts, r, ed.top.saturating_sub(rows), ed.top + 2 * rows + 1);
 }
 
-fn prefetch_lines(ed: &Editor, fonts: &mut Fonts, r: &mut Renderer, from: usize, to: usize) {
+pub(crate) fn prefetch_lines(ed: &Editor, fonts: &mut Fonts, r: &mut Renderer, from: usize, to: usize) {
     let keys = glyph_keys(ed, fonts, from, to);
     r.prefetch(fonts, &keys);
 }
@@ -294,7 +317,7 @@ pub fn rasterize_first_screen(ed: &Editor, fonts: &mut Fonts, height: u32) -> Ve
     fonts.rasterize_many(&keys)
 }
 
-fn glyph_keys(ed: &Editor, fonts: &mut Fonts, from: usize, to: usize) -> Vec<nagi_text::GlyphKey> {
+pub(crate) fn glyph_keys(ed: &Editor, fonts: &mut Fonts, from: usize, to: usize) -> Vec<nagi_text::GlyphKey> {
     let total = ed.buf.line_count();
     let mut keys = Vec::new();
     let mut lines: Vec<String> = (from.min(total)..to.min(total)).map(|l| ed.buf.line_head(l, line_budget(400)).0).collect();
@@ -311,24 +334,24 @@ fn glyph_keys(ed: &Editor, fonts: &mut Fonts, from: usize, to: usize) -> Vec<nag
 }
 
 /// 1 つの窓に描くもの。作業中の窓だけがカーソル・Visual・入力中の検索の強調を持つ
-struct Pane<'a> {
-    buf: &'a nagi_core::Buffer,
+pub(crate) struct Pane<'a> {
+    pub(crate) buf: &'a nagi_core::Buffer,
     /// 診断のある行（行 → エラーか）。行番号の色に使う
-    diags: std::collections::HashMap<usize, bool>,
+    pub(crate) diags: std::collections::HashMap<usize, bool>,
     /// 波線を引く診断（行, 列（文字）, エラーか）
-    squiggles: Vec<(usize, usize, bool)>,
+    pub(crate) squiggles: Vec<(usize, usize, bool)>,
     /// git の行頭の変更マーカー
-    marks: std::collections::HashMap<usize, crate::git_ui::Marker>,
-    folds: &'a crate::folds::Folds,
-    syntax: Option<&'a nagi_syntax::Syntax>,
-    cursor: nagi_core::Cursor,
-    top: usize,
-    frac: f32,
-    active: bool,
+    pub(crate) marks: std::collections::HashMap<usize, crate::git_ui::Marker>,
+    pub(crate) folds: &'a crate::folds::Folds,
+    pub(crate) syntax: Option<&'a nagi_syntax::Syntax>,
+    pub(crate) cursor: nagi_core::Cursor,
+    pub(crate) top: usize,
+    pub(crate) frac: f32,
+    pub(crate) active: bool,
 }
 
 /// 窓 1 つを `rect`（本文の行だけ。状態行は含まない）に描く
-fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
+pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
     let cell = p.fonts.cell();
     // 作業中の窓に blame を出しているときは、行番号の左にその欄を足す
     let gutter = if pane.active { ed.gutter() } else { GUTTER };
@@ -1072,7 +1095,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
 }
 
 /// 左のストライプ（マウスを左端に寄せている間だけ）。幅 2 セルの帯に「プロジェクト」「コミット」を縦に書く。出しているタブは反転
-fn draw_stripe_left(p: &mut Painter, rows: usize, shown: Option<crate::tree_panel::LeftTab>) {
+pub(crate) fn draw_stripe_left(p: &mut Painter, rows: usize, shown: Option<crate::tree_panel::LeftTab>) {
     let cell = p.fonts.cell();
     let w = 2.0 * cell.w;
     p.out.push(Instance::fill(0.0, 0.0, w, rows as f32 * cell.h, BG));
@@ -1094,7 +1117,7 @@ fn draw_stripe_left(p: &mut Painter, rows: usize, shown: Option<crate::tree_pane
 }
 
 /// 右のストライプ（マウスを右端に寄せている間だけ）。「データベース」「Maven」を縦に書く
-fn draw_stripe_right(p: &mut Painter, rows: usize, cols: usize, shown: Option<crate::right_panel::RightTab>) {
+pub(crate) fn draw_stripe_right(p: &mut Painter, rows: usize, cols: usize, shown: Option<crate::right_panel::RightTab>) {
     let cell = p.fonts.cell();
     let x0 = cols.saturating_sub(2);
     let w = 2.0 * cell.w;
@@ -1118,7 +1141,7 @@ fn draw_stripe_right(p: &mut Painter, rows: usize, cols: usize, shown: Option<cr
 }
 
 /// 下のストライプ（マウスを最下行に寄せている間だけ）。最下行のすぐ上に「検索」を出す
-fn draw_stripe_bottom(p: &mut Painter, rows: usize, cols: usize, ed: &Editor) {
+pub(crate) fn draw_stripe_bottom(p: &mut Painter, rows: usize, cols: usize, ed: &Editor) {
     let cell = p.fonts.cell();
     let y = (rows - 1) as f32 * cell.h;
     p.out.push(Instance::fill(0.0, y, cols as f32 * cell.w, cell.h, BG));
@@ -1136,7 +1159,7 @@ fn draw_stripe_bottom(p: &mut Painter, rows: usize, cols: usize, ed: &Editor) {
 }
 
 /// 出す・隠すのボタン。ふだんは薄い 1 文字、マウスを載せると明るくして名前を横に出す
-fn draw_toggle_buttons(p: &mut Painter, ed: &Editor, cols: usize) {
+pub(crate) fn draw_toggle_buttons(p: &mut Painter, ed: &Editor, cols: usize) {
     let cell = p.fonts.cell();
     for (b, row, col) in ed.toggle_buttons() {
         let hover = ed.hover_button == Some(b);
@@ -1164,7 +1187,7 @@ fn draw_toggle_buttons(p: &mut Painter, ed: &Editor, cols: usize) {
 }
 
 /// 縦の二重の山形（︽ ︾）をセル (x, y) に描く。`up` なら上向き
-fn draw_double_chevron(p: &mut Painter, x: f32, y: f32, up: bool, c: [f32; 4]) {
+pub(crate) fn draw_double_chevron(p: &mut Painter, x: f32, y: f32, up: bool, c: [f32; 4]) {
     let cell = p.fonts.cell();
     let px = (cell.h / 22.0).max(1.0).round();
     // 山の半幅（ドット数）と、2 つの山の間
@@ -1185,7 +1208,7 @@ fn draw_double_chevron(p: &mut Painter, x: f32, y: f32, up: bool, c: [f32; 4]) {
 }
 
 /// 左の欄の 1 行目: タブ（プロジェクト・コミット）。出しているタブは明るい字と下線
-fn draw_left_tabs(p: &mut Painter, r: Rect, active: crate::tree_panel::LeftTab, focused: bool, extra: &str) {
+pub(crate) fn draw_left_tabs(p: &mut Painter, r: Rect, active: crate::tree_panel::LeftTab, focused: bool, extra: &str) {
     use crate::tree_panel::LeftTab;
     let tabs: Vec<(TabIcon, &'static str, bool)> = crate::tree_panel::TABS
         .iter()
@@ -1196,7 +1219,7 @@ fn draw_left_tabs(p: &mut Painter, r: Rect, active: crate::tree_panel::LeftTab, 
 
 /// 左右の欄のタブのアイコン
 #[derive(Clone, Copy)]
-enum TabIcon {
+pub(crate) enum TabIcon {
     Project,
     Commit,
     Database,
@@ -1211,7 +1234,7 @@ enum TabIcon {
 }
 
 /// 左右の欄の 1 行目: タブをアイコンで並べ（出しているタブは明るく下線）、その横に出しているタブの名前
-fn draw_icon_tabs(p: &mut Painter, r: Rect, tabs: &[(TabIcon, &'static str, bool)], focused: bool, extra: &str) {
+pub(crate) fn draw_icon_tabs(p: &mut Painter, r: Rect, tabs: &[(TabIcon, &'static str, bool)], focused: bool, extra: &str) {
     let cell = p.fonts.cell();
     let y = r.y as f32 * cell.h;
     let tw = crate::tree_panel::TAB_W;
@@ -1246,7 +1269,7 @@ fn draw_icon_tabs(p: &mut Painter, r: Rect, tabs: &[(TabIcon, &'static str, bool
 }
 
 /// タブのアイコンを、中心の x・行の y に 1 色で描く（IntelliJ の新しい UI のような線のアイコン）
-fn draw_tab_icon(p: &mut Painter, icon: TabIcon, cx: f32, y: f32, c: [f32; 4]) {
+pub(crate) fn draw_tab_icon(p: &mut Painter, icon: TabIcon, cx: f32, y: f32, c: [f32; 4]) {
     let cell = p.fonts.cell();
     let s = (cell.h * 0.7).round().clamp(10.0, 30.0);
     let x = (cx - s / 2.0).round();
@@ -1354,264 +1377,8 @@ fn draw_tab_icon(p: &mut Painter, icon: TabIcon, cx: f32, y: f32, c: [f32; 4]) {
     }
 }
 
-/// 下の欄: 1 行目にタブ（Git・検索・問題・ログ・ターミナル・クエリの結果）、2 行目から選んでいるタブの中身
-fn draw_bottom_panel(p: &mut Painter, ed: &Editor, r: Rect) {
-    use crate::result_grid::BottomKind;
-    let cell = p.fonts.cell();
-    let (x0, y0, wpx) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
-    p.out.push(Instance::fill(x0, y0, wpx, r.h as f32 * cell.h, BG));
-    p.out.push(Instance::fill(x0, y0, wpx, 1.0, LINE_NO));
-    let focused = ed.bottom_focused();
-    // 左右の欄と同じく、タブはアイコンで並べ、出しているタブの名前を横に
-    let tabs: Vec<(TabIcon, &'static str, bool)> = ed
-        .bottom_tabs()
-        .into_iter()
-        .map(|(l, k)| {
-            let icon = match k {
-                BottomKind::Git => TabIcon::Git,
-                BottomKind::Grep => TabIcon::Search,
-                BottomKind::Problems => TabIcon::Problems,
-                BottomKind::Output => TabIcon::Output,
-                BottomKind::Terminal => TabIcon::Terminal,
-                BottomKind::Result => TabIcon::Result,
-            };
-            (icon, l, k == ed.bottom_kind)
-        })
-        .collect();
-    // 左端の 2 列は ▾ のボタン
-    let bx = crate::bottom_panel::BTAB_X;
-    draw_icon_tabs(p, Rect { x: r.x + bx, y: r.y, w: r.w.saturating_sub(bx), h: 1 }, &tabs, focused, "");
-    p.out.push(Instance::fill(x0, y0 + cell.h - 1.0, bx as f32 * cell.w, 1.0, LINE_NO));
-    let c = Rect { x: r.x, y: r.y + 1, w: r.w, h: r.h.saturating_sub(1) };
-    let empty = |p: &mut Painter, s: &str| {
-        p.text(s, c.x + 1, (c.y + 1) as f32 * cell.h, STATUS_FG);
-    };
-    match ed.bottom_kind {
-        BottomKind::Result => draw_db_results(p, ed, c),
-        BottomKind::Grep | BottomKind::Output => match &ed.grep {
-            Some(g) => draw_grep_panel(p, g, c, matches!(ed.mode, Mode::List | Mode::GrepPrompt)),
-            None if ed.bottom_kind == BottomKind::Grep => empty(p, "検索していません（:Grep 語、Ctrl+Shift+F）"),
-            None => empty(p, "コマンドの出力はありません（:Make、Maven のタブのゴール）"),
-        },
-        BottomKind::Problems => draw_problems(p, ed, c, focused),
-        BottomKind::Git => match &ed.log {
-            Some(l) if l.docked => draw_log_view(p, l, c, &ed.preedit),
-            _ => empty(p, "git のリポジトリではありません"),
-        },
-        BottomKind::Terminal => draw_terminal(p, ed, c, focused),
-    }
-}
-
-/// 問題（診断）の一覧。ファイルごとにまとめ、エラーは赤、警告は黄
-fn draw_problems(p: &mut Painter, ed: &Editor, r: Rect, focused: bool) {
-    use crate::bottom_panel::ProblemRow;
-    let cell = p.fonts.cell();
-    let rows = ed.problem_rows();
-    if rows.is_empty() {
-        p.text(" 問題はありません（:Make で集める）", r.x, r.y as f32 * cell.h, STATUS_FG);
-        return;
-    }
-    let root = ed.nav_root();
-    let saved = p.cols;
-    p.cols = r.x + r.w;
-    for (k, row) in rows.iter().enumerate().skip(ed.problems.scroll).take(r.h) {
-        let y = (r.y + k - ed.problems.scroll) as f32 * cell.h;
-        let sel = k == ed.problems.selected;
-        if sel {
-            p.out.push(Instance::fill(r.x as f32 * cell.w, y, r.w as f32 * cell.w, cell.h, if focused { FG } else { MATCH_BG }));
-        }
-        let rev = sel && focused;
-        match row {
-            ProblemRow::File(path, e, w) => {
-                let rel = path.strip_prefix(&root).map_or(path.display().to_string(), |x| x.display().to_string());
-                let c = p.text(&format!(" ▾ {rel}"), r.x, y, if rev { BG } else { FG });
-                let n = match (e, w) {
-                    (0, w) => format!("  警告 {w}"),
-                    (e, 0) => format!("  エラー {e}"),
-                    (e, w) => format!("  エラー {e}・警告 {w}"),
-                };
-                p.text(&n, c, y, if rev { BG } else { STATUS_FG });
-            }
-            ProblemRow::Item(i) => {
-                let d = &ed.diags[*i];
-                let c = p.text("     ● ", r.x, y, if rev { BG } else if d.error { DIAG_ERROR } else { DIAG_WARN });
-                let c = p.text(&d.msg, c, y, if rev { BG } else { FG });
-                p.text(&format!("  {}:{}", d.line + 1, d.col + 1), c, y, if rev { BG } else { LINE_NO });
-            }
-        }
-    }
-    p.cols = saved;
-}
-
-/// 右の欄（データベース・Maven）。1 行目はタブ、2 行目から木
-fn draw_right_panel(p: &mut Painter, ed: &Editor, r: Rect) {
-    use crate::right_panel::RightTab;
-    let cell = p.fonts.cell();
-    let (x0, y0, wpx) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
-    p.out.push(Instance::fill(x0, y0, wpx, r.h as f32 * cell.h, BG));
-    p.out.push(Instance::fill(x0 - cell.w * 0.5, y0, 1.0, r.h as f32 * cell.h, LINE_NO));
-    let focused = ed.right_focused();
-    let tab = ed.right_visible().unwrap_or_default();
-    // 左の欄と同じく、タブはいつも全部をアイコンで並べる
-    let tabs: Vec<(TabIcon, &'static str, bool)> = crate::right_panel::RTABS
-        .iter()
-        .map(|(l, t)| {
-            let icon = match t {
-                RightTab::Database => TabIcon::Database,
-                RightTab::Maven => TabIcon::Maven,
-                RightTab::Preview => TabIcon::Preview,
-            };
-            (icon, *l, *t == tab)
-        })
-        .collect();
-    draw_icon_tabs(p, r, &tabs, focused, "");
-    let saved = p.cols;
-    p.cols = r.x + r.w;
-    if tab == RightTab::Preview {
-        if let Some(pv) = &ed.md_preview {
-            draw_md_preview(p, pv, r, focused);
-        }
-        p.cols = saved;
-        return;
-    }
-    // (字下げ, 開け閉めの印, 種類の印と色, 本文, 補足, 本文の色)
-    let mut lines: Vec<(usize, &str, (char, [f32; 4]), String, String, [f32; 4])> = Vec::new();
-    let mut top = 1;
-    let (selected, scroll) = match tab {
-        // 上で描いて戻っている
-        RightTab::Preview => (0, 0),
-        RightTab::Maven => {
-            let Some(m) = &ed.maven else {
-                p.cols = saved;
-                return;
-            };
-            for row in &m.rows {
-                let (mark, color) = match &row.kind {
-                    crate::maven_panel::RowKind::Folder(k) => (if m.is_open(k) { "▾ " } else { "▸ " }, if row.depth == 0 || k.starts_with("p:") { FG } else { FINDER_MATCH }),
-                    crate::maven_panel::RowKind::Goal(..) => ("· ", FG),
-                    crate::maven_panel::RowKind::Leaf => ("  ", STATUS_FG),
-                };
-                lines.push((row.depth, mark, (' ', FG), row.label.clone(), row.note.clone(), color));
-            }
-            (m.selected, m.scroll)
-        }
-        RightTab::Database => {
-            let Some(d) = &ed.db else {
-                p.cols = saved;
-                return;
-            };
-            // 2 行目: 絞り込みの欄
-            let fy = y0 + cell.h;
-            let c = p.text(" / ", r.x, fy, LINE_NO);
-            match &d.filter {
-                Some(f) if focused => {
-                    draw_vim_field(p, f, c, fy, &ed.preedit);
-                }
-                _ if d.filter_text.is_empty() => {
-                    p.text("テーブルや列を絞り込み", c, fy, LINE_NO);
-                }
-                _ => {
-                    p.text(&d.filter_text, c, fy, FG);
-                }
-            }
-            p.out.push(Instance::fill(x0, fy + cell.h - 1.0, wpx, 1.0, rgb(0x2a2a2a)));
-            top = 2;
-            if d.sources.is_empty() {
-                p.text(" 接続先がありません。a（＋）で足す", r.x, y0 + 2.0 * cell.h, STATUS_FG);
-            }
-            for (k, row) in d.rows.iter().enumerate() {
-                use crate::db_panel::DbRow;
-                let (_, mark, text, note) = d.row_label(row);
-                let depth = d.depth(k);
-                let open = d.is_open(row);
-                let fold = if row.key().is_some() { if open { "▾ " } else { "▸ " } } else { "  " };
-                let icon = match mark {
-                    'T' => ('T', GIT_ADD),
-                    'V' => ('V', rgb(0xaf87d7)),
-                    'S' | 'R' => (mark, STATUS_FG),
-                    'K' => ('K', rgb(0xd7af5f)),
-                    'F' => ('F', FINDER_MATCH),
-                    'I' => ('I', STATUS_FG),
-                    '●' => ('●', GIT_ADD),
-                    '◌' => ('◌', GIT_MOD),
-                    '○' => ('○', STATUS_FG),
-                    _ => (' ', FG),
-                };
-                let color = match row {
-                    DbRow::Source(i) if d.conns[*i].error.is_some() => DIAG_ERROR,
-                    DbRow::Source(_) | DbRow::Schema(..) | DbRow::Column(..) => FG,
-                    DbRow::Info(_, _, s) if s.starts_with("誤り") => DIAG_ERROR,
-                    DbRow::Info(..) | DbRow::Group(..) | DbRow::Sub(..) | DbRow::Others(_) => STATUS_FG,
-                    _ => FG,
-                };
-                lines.push((depth, fold, icon, text, note, color));
-            }
-            (d.selected, d.scroll)
-        }
-    };
-    let body = r.h.saturating_sub(top + 1);
-    for (k, (depth, fold, (icon, icolor), text, note, color)) in lines.iter().enumerate().skip(scroll).take(body) {
-        let y = y0 + (top + k - scroll) as f32 * cell.h;
-        let sel = k == selected;
-        let reversed = sel && focused && ed.db.as_ref().is_none_or(|d| d.filter.is_none() || tab != RightTab::Database);
-        if reversed {
-            p.out.push(Instance::fill(x0, y, wpx, cell.h, FG));
-        } else if sel {
-            p.out.push(Instance::fill(x0, y, wpx, cell.h, MATCH_BG));
-        }
-        let mut c = p.text(&format!(" {}{fold}", "  ".repeat(*depth)), r.x, y, if reversed { BG } else { STATUS_FG });
-        if *icon != ' ' {
-            let mut b = [0u8; 4];
-            c = p.text(icon.encode_utf8(&mut b), c, y, if reversed { BG } else { *icolor });
-            c = p.text(" ", c, y, FG);
-        }
-        let c = p.text(text, c, y, if reversed { BG } else { *color });
-        if !note.is_empty() {
-            p.text(&format!("  {note}"), c, y, if reversed { BG } else { LINE_NO });
-        }
-    }
-    // 下の行: パスワード・接続先のフォーム・ドライバーの準備
-    if let (RightTab::Database, Some(d)) = (tab, &ed.db) {
-        if let Some((i, prompt)) = &d.password {
-            let y = y0 + (r.h - 1) as f32 * cell.h;
-            p.out.push(Instance::fill(x0, y, wpx, cell.h, rgb(0x1c1c1c)));
-            let user = &d.sources[*i].user;
-            let c = p.text(&format!(" {user} のパスワード: "), r.x, y, STATUS_FG);
-            let before = prompt.text[..prompt.cursor.min(prompt.text.len())].chars().count();
-            let after = prompt.text.chars().count() - before;
-            let x = p.text(&"●".repeat(before), c, y, FG);
-            p.text(&"●".repeat(after), x, y, FG);
-            p.caret(x, y);
-        } else if let Some(i) = d.setup_ask {
-            let lines = [
-                format!(" {} にはドライバーが要ります", d.sources[i].name),
-                format!(" Oracle Instant Client Basic Light（約 {} MB）", nagi_workers::drivers::ORACLE_CLIENT_SIZE_MB),
-                format!(" 置き場所: {}", nagi_workers::drivers::drivers_dir().join("oracle").display()),
-                format!(" {} に同意のうえ", nagi_workers::drivers::ORACLE_LICENSE),
-                " y でダウンロード ・ ほかのキーでやめる".to_string(),
-            ];
-            draw_panel_box(p, r, &lines, 0);
-        } else if let Some(f) = &d.form {
-            let mut lines = vec![" 接続先を足す".to_string()];
-            // 見出しは表示の幅（12 セル）でそろえる
-            let pad = |p: &Painter, l: &str| format!("{l}{}", " ".repeat(12usize.saturating_sub(p.width(l))));
-            for (k, (label, prompt)) in f.fields.iter().enumerate() {
-                let v = if k == 0 { format!("‹ {} ›", prompt.text()) } else if k == f.at { String::new() } else { prompt.text() };
-                lines.push(format!(" {}{}  {v}", pad(p, label), if k == f.at { "▸" } else { " " }));
-            }
-            lines.push(" Tab 次の欄 ・ 最後の欄で Enter 保存してつなぐ ・ Esc やめる".to_string());
-            let (bx, by) = draw_panel_box(p, r, &lines, f.at + 1);
-            if f.at > 0 {
-                let label_w = 1 + 12.max(p.width(f.fields[f.at].0)) + p.width("▸  ");
-                draw_vim_field(p, &f.fields[f.at].1, bx + label_w, by + (f.at + 1) as f32 * cell.h, &ed.preedit);
-            }
-        }
-    }
-    p.cols = saved;
-}
-
 /// 右の欄の下に枠を出す（`hl` 行目を強調）。枠の左端の列と上端の y を返す
-fn draw_panel_box(p: &mut Painter, r: Rect, lines: &[String], hl: usize) -> (usize, f32) {
+pub(crate) fn draw_panel_box(p: &mut Painter, r: Rect, lines: &[String], hl: usize) -> (usize, f32) {
     let cell = p.fonts.cell();
     let h = lines.len();
     let top = (r.y + r.h).saturating_sub(h + 1);
@@ -1629,27 +1396,27 @@ fn draw_panel_box(p: &mut Painter, r: Rect, lines: &[String], hl: usize) -> (usi
 }
 
 /// 表（結果のタブとテーブルの編集で共通）。左に行番号、上に列名と型の 2 行
-struct GridView<'a> {
-    cols: &'a [String],
-    types: &'a [String],
-    widths: &'a [usize],
+pub(crate) struct GridView<'a> {
+    pub(crate) cols: &'a [String],
+    pub(crate) types: &'a [String],
+    pub(crate) widths: &'a [usize],
     /// 列名の前の印（K / F）
-    marks: Vec<char>,
+    pub(crate) marks: Vec<char>,
     /// 並べ替えている列と向き
-    sort: Option<(String, bool)>,
-    rows: usize,
-    value: &'a dyn Fn(usize, usize) -> Option<String>,
+    pub(crate) sort: Option<(String, bool)>,
+    pub(crate) rows: usize,
+    pub(crate) value: &'a dyn Fn(usize, usize) -> Option<String>,
     /// 行の印（行番号や ＋）と、行の地の色
-    row_style: &'a dyn Fn(usize) -> (String, Option<[f32; 4]>),
-    cell_bg: &'a dyn Fn(usize, usize) -> Option<[f32; 4]>,
-    row: usize,
-    col: usize,
-    scroll: usize,
-    hscroll: usize,
-    focused: bool,
+    pub(crate) row_style: &'a dyn Fn(usize) -> (String, Option<[f32; 4]>),
+    pub(crate) cell_bg: &'a dyn Fn(usize, usize) -> Option<[f32; 4]>,
+    pub(crate) row: usize,
+    pub(crate) col: usize,
+    pub(crate) scroll: usize,
+    pub(crate) hscroll: usize,
+    pub(crate) focused: bool,
 }
 
-fn draw_grid(p: &mut Painter, g: &GridView, r: Rect) {
+pub(crate) fn draw_grid(p: &mut Painter, g: &GridView, r: Rect) {
     let cell = p.fonts.cell();
     let (x0, wpx) = (r.x as f32 * cell.w, r.w as f32 * cell.w);
     let saved = p.cols;
@@ -1718,7 +1485,7 @@ fn draw_grid(p: &mut Painter, g: &GridView, r: Rect) {
 }
 
 /// 並べ替えの指定（「COL ASC」）を読む
-fn sort_of(order: &str) -> Option<(String, bool)> {
+pub(crate) fn sort_of(order: &str) -> Option<(String, bool)> {
     let mut it = order.split_whitespace();
     let c = it.next()?.to_string();
     let asc = !it.next().is_some_and(|d| d.eq_ignore_ascii_case("desc"));
@@ -1726,7 +1493,7 @@ fn sort_of(order: &str) -> Option<(String, bool)> {
 }
 
 /// 絞り込みの行（WHERE と ORDER BY）。入力中ならカーソル
-fn draw_filter_row(p: &mut Painter, r: Rect, y: f32, where_: &str, order: &str, editing: Option<&(crate::result_grid::Field, crate::vim_field::VimField)>, right: &str, preedit: &str) {
+pub(crate) fn draw_filter_row(p: &mut Painter, r: Rect, y: f32, where_: &str, order: &str, editing: Option<&(crate::result_grid::Field, crate::vim_field::VimField)>, right: &str, preedit: &str) {
     use crate::result_grid::Field;
     let cell = p.fonts.cell();
     let mut c = p.text(" WHERE ", r.x, y, FINDER_MATCH);
@@ -1755,685 +1522,9 @@ fn draw_filter_row(p: &mut Painter, r: Rect, y: f32, where_: &str, order: &str, 
     p.text(right, (r.x + r.w).saturating_sub(rw + 3), y, STATUS_FG);
 }
 
-/// データベースの結果（下のパネル）。1 行目はタブ、出力なら記録、結果なら絞り込みの行と表
-fn draw_db_results(p: &mut Painter, ed: &Editor, r: Rect) {
-    let res = &ed.db_results;
-    let cell = p.fonts.cell();
-    let (x0, y0, wpx) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
-    p.out.push(Instance::fill(x0, y0, wpx, r.h as f32 * cell.h, BG));
-    p.out.push(Instance::fill(x0, y0, wpx, 1.0, LINE_NO));
-    let focused = ed.mode == Mode::List && ed.list_side == crate::editor::Side::Bottom;
-    let saved = p.cols;
-    p.cols = (r.x + r.w).saturating_sub(3);
-    // タブ
-    let mut x = r.x + 1;
-    let labels: Vec<String> = std::iter::once("出力".to_string()).chain(res.tabs.iter().enumerate().map(|(k, t)| crate::result_grid::tab_label(k, t))).collect();
-    for (k, l) in labels.iter().enumerate() {
-        let on = k == res.active;
-        let end = p.text(&format!(" {l} "), x, y0, if on && focused { FG } else if on { rgb(0xc8c8c8) } else { STATUS_FG });
-        if on {
-            p.out.push(Instance::fill(x as f32 * cell.w, y0 + cell.h - 2.0, (end - x) as f32 * cell.w, 2.0, if focused { GIT_MOD } else { STATUS_FG }));
-        }
-        x = end + 1;
-    }
-    p.out.push(Instance::fill(x0, y0 + cell.h - 1.0, wpx, 1.0, rgb(0x2a2a2a)));
-    p.cols = r.x + r.w;
-    match res.active_tab() {
-        None => {
-            // 出力: 新しいものを下に
-            let body = r.h.saturating_sub(1);
-            let end = res.log.len().saturating_sub(res.log_scroll);
-            let start = end.saturating_sub(body);
-            for (k, l) in res.log[start..end].iter().enumerate() {
-                let y = y0 + (1 + k) as f32 * cell.h;
-                let mut c = p.text(&format!(" [{}] ", l.time), r.x, y, LINE_NO);
-                if !l.src.is_empty() {
-                    c = p.text(&format!("{}  ", l.src), c, y, STATUS_FG);
-                }
-                c = p.text(&l.text, c, y, if l.error && l.outcome.is_empty() { DIAG_ERROR } else { FG });
-                if !l.outcome.is_empty() {
-                    p.text(&format!("   {}", l.outcome), c, y, if l.error { DIAG_ERROR } else { STATUS_FG });
-                }
-            }
-            if res.log.is_empty() {
-                p.text(" まだ何も流していません", r.x, y0 + cell.h, LINE_NO);
-            }
-        }
-        Some(t) => {
-            let mut y = y0 + cell.h;
-            let right = format!("{}   {}", t.range_label(), t.info);
-            if t.filterable {
-                draw_filter_row(p, r, y, &t.where_, &t.order, res.editing.as_ref(), &right, &ed.preedit);
-                y += cell.h;
-            } else {
-                let rw = p.width(&right);
-                p.text(&right, (r.x + r.w).saturating_sub(rw + 3), y, if t.error { DIAG_ERROR } else { STATUS_FG });
-                y += cell.h;
-            }
-            if t.cols.is_empty() {
-                p.text(&format!(" {}", t.info), r.x, y, if t.error { DIAG_ERROR } else if t.running { STATUS_FG } else { FG });
-            } else {
-                let value = |k: usize, c: usize| t.rows[k][c].clone();
-                let row_style = |k: usize| ((t.offset + k + 1).to_string(), None);
-                let cell_bg = |_: usize, _: usize| None;
-                let g = GridView {
-                    cols: &t.cols,
-                    types: &t.types,
-                    widths: &t.widths,
-                    marks: Vec::new(),
-                    sort: sort_of(&t.order),
-                    rows: t.rows.len(),
-                    value: &value,
-                    row_style: &row_style,
-                    cell_bg: &cell_bg,
-                    row: t.row,
-                    col: t.col,
-                    scroll: t.scroll,
-                    hscroll: t.hscroll,
-                    focused,
-                };
-                let top = ((y - y0) / cell.h) as usize;
-                draw_grid(p, &g, Rect { x: r.x, y: r.y + top, w: r.w, h: r.h.saturating_sub(top) });
-            }
-        }
-    }
-    p.cols = saved;
-}
-
-/// テーブルのデータの編集（窓の領域全体）
-fn draw_db_table(p: &mut Painter, ed: &Editor, te: &crate::db_table::TableEditor, r: Rect) {
-    use crate::db_table::RowState;
-    let cell = p.fonts.cell();
-    let (x0, y0, wpx) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
-    p.out.push(Instance::fill(x0, y0, wpx, r.h as f32 * cell.h, BG));
-    let saved = p.cols;
-    p.cols = r.x + r.w;
-    // 1 行目: 名前と接続先、件数
-    let src = ed.db.as_ref().map_or(String::new(), |d| d.sources[te.src].name.clone());
-    let c = p.text(&format!(" {}", crate::db_panel::qualified(&te.schema, &te.table)), r.x, y0, FG);
-    let c = p.text(&format!("（{src}）"), c, y0, STATUS_FG);
-    if te.pk().is_empty() && !te.colinfo.is_empty() {
-        p.text("  主キーが無いので読むだけ", c, y0, DIAG_WARN);
-    }
-    let right = format!("{}   {}{}", te.range_label(), if te.running { "読んでいます…" } else { &te.info }, if te.busy { "   送信しています…" } else { "" });
-    let rw = p.width(&right);
-    p.text(&right, (r.x + r.w).saturating_sub(rw + 1), y0, STATUS_FG);
-    // 2 行目: 絞り込み
-    let fy = y0 + cell.h;
-    draw_filter_row(p, r, fy, &te.where_, &te.order, te.filter_edit.as_ref(), "", &ed.preedit);
-    p.out.push(Instance::fill(x0, fy + cell.h - 1.0, wpx, 1.0, rgb(0x2a2a2a)));
-    let marks: Vec<char> = te.cols.iter().map(|n| te.colinfo.iter().find(|c| &c.name == n).map_or(' ', |c| if c.pk { 'K' } else if !c.fk.is_empty() { 'F' } else { ' ' })).collect();
-    let value = |d: usize, c: usize| te.value(d, c);
-    let row_style = |d: usize| match te.at(d) {
-        (RowState::Added, _) => ("＋".to_string(), Some(DIFF_ADD_BG)),
-        (RowState::Deleted, r) => ((te.offset + r + 1).to_string(), Some(DIFF_DEL_BG)),
-        (RowState::Normal, r) => ((te.offset + r + 1).to_string(), None),
-    };
-    let cell_bg = |d: usize, c: usize| te.modified(d, c).then_some(rgb(0x1f3550));
-    let g = GridView {
-        cols: &te.cols,
-        types: &te.types,
-        widths: &te.widths,
-        marks,
-        sort: sort_of(&te.order),
-        rows: te.len(),
-        value: &value,
-        row_style: &row_style,
-        cell_bg: &cell_bg,
-        row: te.row,
-        col: te.col,
-        scroll: te.scroll,
-        hscroll: te.hscroll,
-        focused: te.editing.is_none(),
-    };
-    draw_grid(p, &g, Rect { x: r.x, y: r.y + 2, w: r.w, h: r.h.saturating_sub(2) });
-    // 値の入力欄（選んだセルの上に）
-    if let Some(f) = &te.editing {
-        if te.row >= te.scroll {
-            let mut x = r.x + 7;
-            for c in te.hscroll..te.col {
-                x += te.widths[c] + 3;
-            }
-            let y = (r.y + 4 + te.row - te.scroll) as f32 * cell.h;
-            let w = (te.widths.get(te.col).copied().unwrap_or(10) + 2).max(p.width(&f.text()) + p.width(&ed.preedit) + 3);
-            p.out.push(Instance::fill((x - 1) as f32 * cell.w - 1.0, y - 1.0, w as f32 * cell.w + 2.0, cell.h + 2.0, FG));
-            p.out.push(Instance::fill((x - 1) as f32 * cell.w, y, w as f32 * cell.w, cell.h, rgb(0x1f3550)));
-            draw_vim_field(p, f, x, y, &ed.preedit);
-        }
-    }
-    // 送る前の確認（右下に SQL）
-    if let Some(stmts) = &te.preview {
-        let lines: Vec<String> = std::iter::once(format!(" 送信する変更（{} 件） — {src}", stmts.len())).chain(stmts.iter().map(|s| format!(" {s}"))).chain(std::iter::once(" y で送る ・ ほかのキーでやめる".to_string())).collect();
-        let w = lines.iter().map(|l| p.width(l)).max().unwrap_or(20).min(r.w.saturating_sub(4)) + 2;
-        let h = lines.len().min(r.h.saturating_sub(4));
-        let bx = (r.x + r.w).saturating_sub(w + 2);
-        let by = (r.y + r.h).saturating_sub(h + 1);
-        let (x, y) = (bx as f32 * cell.w, by as f32 * cell.h);
-        p.out.push(Instance::fill(x - 1.0, y - 1.0, w as f32 * cell.w + 2.0, h as f32 * cell.h + 2.0, STATUS_FG));
-        p.out.push(Instance::fill(x, y, w as f32 * cell.w, h as f32 * cell.h, rgb(0x141414)));
-        let lim = p.cols;
-        p.cols = bx + w;
-        for (k, l) in lines.iter().take(h).enumerate() {
-            let color = if k == 0 { FG } else if k + 1 == lines.len() { STATUS_FG } else { FINDER_MATCH };
-            p.text(l, bx, y + k as f32 * cell.h, color);
-        }
-        p.cols = lim;
-    }
-    p.cols = saved;
-}
-
-/// SQL コンソールの上の帯（▶ 実行・Tx・未コミット・コミット・ロールバック・接続先 › スキーマ）
-fn draw_console_bar(p: &mut Painter, ed: &Editor) {
-    let cell = p.fonts.cell();
-    let (x, w) = ed.windows_x();
-    let (x0, wpx) = (x as f32 * cell.w, w as f32 * cell.w);
-    p.out.push(Instance::fill(x0, 0.0, wpx, cell.h, BG));
-    p.out.push(Instance::fill(x0, cell.h - 1.0, wpx, 1.0, rgb(0x2a2a2a)));
-    let hover = ed.hover_bar;
-    for (label, bx, bw, item) in ed.console_bar(w) {
-        use crate::db_panel::BarItem;
-        let color = match item {
-            BarItem::Run | BarItem::Commit => GIT_ADD,
-            BarItem::Rollback => DIAG_ERROR,
-            BarItem::Pending => DIAG_WARN,
-            BarItem::Label => LINE_NO,
-            BarItem::Tx if label.contains("手動") => DIAG_WARN,
-            BarItem::Schema => FG,
-            BarItem::Tx => STATUS_FG,
-        };
-        if hover == Some(item) && item != BarItem::Label && item != BarItem::Pending {
-            p.out.push(Instance::fill((x + bx) as f32 * cell.w - 3.0, 1.0, bw as f32 * cell.w + 6.0, cell.h - 2.0, MATCH_BG));
-        }
-        p.text(&label, x + bx, 0.0, color);
-    }
-}
-
-/// コミットのパネル（左の欄の「コミット」タブ）。上から ブランチ、変えたファイル、メッセージの欄、amend、ボタン
-fn draw_commit_panel(p: &mut Painter, ed: &Editor, c: &crate::commit_panel::CommitPanel, r: Rect) {
-    use nagi_workers::git::FileState;
-    let cell = p.fonts.cell();
-    let (x0, y0, wpx) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
-    p.out.push(Instance::fill(x0, y0, wpx, r.h as f32 * cell.h, BG));
-    p.out.push(Instance::fill(((r.x + r.w) as f32 + 0.5) * cell.w, y0, 1.0, r.h as f32 * cell.h, LINE_NO));
-    let focused = ed.mode == Mode::List && ed.list_side == crate::editor::Side::Commit;
-    let editing = ed.mode == Mode::CommitMsg;
-    let l = crate::commit_panel::layout(r.h);
-    let row_y = |k: usize| y0 + k as f32 * cell.h;
-    let saved = p.cols;
-    p.cols = r.x + r.w;
-    draw_left_tabs(p, r, crate::tree_panel::LeftTab::Commit, focused || editing, "");
-    // ブランチと件数（動いている git があればその名前）
-    let info = format!(
-        " {}   変更 {}{}",
-        ed.git_branch_label().unwrap_or_default(),
-        c.items.len(),
-        c.busy_label.as_ref().map_or(String::new(), |b| format!("   {b}"))
-    );
-    p.text(&info, r.x, row_y(l.info), STATUS_FG);
-    if let Some((dest, list)) = &c.confirm_push {
-        // 送る前の確認（一覧の場所に出す）
-        p.text(&format!(" プッシュ: {dest}"), r.x, row_y(l.list), FG);
-        p.text(&format!(" 送るコミット {} 件", list.len()), r.x, row_y(l.list + 1), STATUS_FG);
-        for (k, s) in list.iter().take(l.list_h.saturating_sub(3)).enumerate() {
-            p.text(&format!("   {s}"), r.x, row_y(l.list + 2 + k), FG);
-        }
-        p.text(" Enter / y で送る   Esc でやめる", r.x, row_y(l.list + l.list_h - 1), FG);
-    } else {
-        // 一覧（見出しの行を含めて並べる）
-        let tracked = c.tracked();
-        let mut lines: Vec<Option<usize>> = vec![None];
-        lines.extend((0..tracked).map(Some));
-        if tracked < c.items.len() {
-            lines.push(None);
-            lines.extend((tracked..c.items.len()).map(Some));
-        }
-        for (k, li) in lines.iter().enumerate().skip(c.scroll).take(l.list_h) {
-            let y = row_y(l.list + k - c.scroll);
-            match li {
-                None => {
-                    let label = if k == 0 { format!(" ▾ 変更 ({tracked})") } else { format!(" ▾ 未追跡 ({})", c.items.len() - tracked) };
-                    p.text(&label, r.x, y, STATUS_FG);
-                }
-                Some(i) => {
-                    let it = &c.items[*i];
-                    let sel = *i == c.selected;
-                    let reversed = sel && focused;
-                    if reversed {
-                        p.out.push(Instance::fill(x0, y, wpx, cell.h, FG));
-                    } else if sel {
-                        p.out.push(Instance::fill(x0, y, wpx, cell.h, MATCH_BG));
-                    }
-                    let (fg, dim) = if reversed { (BG, BG) } else { (FG, STATUS_FG) };
-                    let state_color = if reversed {
-                        BG
-                    } else {
-                        match it.change.state {
-                            FileState::Added => GIT_ADD,
-                            FileState::Deleted | FileState::Conflicted => GIT_DEL,
-                            FileState::Untracked => STATUS_FG,
-                            FileState::Renamed => rgb(0xd7af5f),
-                            FileState::Modified => GIT_MOD,
-                        }
-                    };
-                    let (dir, name) = it.change.path.rsplit_once('/').map_or(("", it.change.path.as_str()), |(d, n)| (d, n));
-                    let mut c2 = p.text(&format!("   [{}] ", if it.checked { 'x' } else { ' ' }), r.x, y, fg);
-                    c2 = p.text(&it.change.state.letter().to_string(), c2, y, state_color);
-                    c2 = p.text(&format!(" {name}"), c2, y, fg);
-                    p.text(&format!("  {dir}"), c2, y, dim);
-                }
-            }
-        }
-        if c.items.is_empty() {
-            p.text("   変更はありません", r.x, row_y(l.list + 1), STATUS_FG);
-        }
-    }
-    // メッセージの欄
-    p.out.push(Instance::fill(x0, row_y(l.title) - cell.h * 0.5, wpx, 1.0, LINE_NO));
-    let checked = c.items.iter().filter(|i| i.checked).count();
-    p.text(&format!(" コミットメッセージ（{checked} ファイル）"), r.x, row_y(l.title), STATUS_FG);
-    let mx = r.x + 1;
-    let mw = r.w.saturating_sub(2);
-    let box_top = row_y(l.msg);
-    let (bx, bw, bh) = (mx as f32 * cell.w - 2.0, mw as f32 * cell.w + 4.0, l.msg_h as f32 * cell.h);
-    let border = if editing { FG } else { LINE_NO };
-    p.out.push(Instance::fill(bx, box_top - 1.0, bw, 1.0, border));
-    p.out.push(Instance::fill(bx, box_top + bh, bw, 1.0, border));
-    p.out.push(Instance::fill(bx, box_top - 1.0, 1.0, bh + 2.0, border));
-    p.out.push(Instance::fill(bx + bw - 1.0, box_top - 1.0, 1.0, bh + 2.0, border));
-    p.cols = mx + mw;
-    if c.msg.text().is_empty() && !editing {
-        p.text("c で書く（1 行目が件名）", mx, box_top, STATUS_FG);
-    }
-    let (cl, _) = c.cursor_pos();
-    let first = cl.saturating_sub(l.msg_h.saturating_sub(1));
-    let n = c.msg.ed.buf.line_count();
-    for k in first..(first + l.msg_h).min(n) {
-        let y = box_top + (k - first) as f32 * cell.h;
-        draw_vim_line(p, &c.msg, k, mx, y, &ed.preedit, editing);
-    }
-    p.cols = r.x + r.w;
-    // amend とボタン（右寄せ）
-    let ay = row_y(l.amend);
-    p.text(&format!(" [{}] 直前のコミットを直す（A）", if c.amend { 'x' } else { ' ' }), r.x, ay, STATUS_FG);
-    let by = row_y(l.buttons);
-    for (label, x, w, push) in crate::commit_panel::buttons(r.w) {
-        let bg = if push { MATCH_BG } else { FG };
-        p.out.push(Instance::fill((r.x + x) as f32 * cell.w, by, w as f32 * cell.w, cell.h, bg));
-        p.text(label, r.x + x, by, if push { FG } else { BG });
-    }
-    p.cols = saved;
-}
-
-/// ブランチのポップアップ（画面の上の中央。IntelliJ の Git Branches と同じ並び）
-fn draw_branch_popup(p: &mut Painter, b: &crate::branches::BranchPopup, rows: usize, cols: usize, preedit: &str) {
-    use crate::branches::Entry;
-    let cell = p.fonts.cell();
-    let w = 56.min(cols.saturating_sub(4));
-    let list_h = b.entries.len().min(rows.saturating_sub(8)).max(1);
-    let h = list_h + 1;
-    let x0 = (cols.saturating_sub(w)) / 2;
-    let top = 2;
-    let (x, y) = (x0 as f32 * cell.w, top as f32 * cell.h);
-    p.out.push(Instance::fill(x - 1.0, y - 1.0, w as f32 * cell.w + 2.0, h as f32 * cell.h + 2.0, STATUS_FG));
-    p.out.push(Instance::fill(x, y, w as f32 * cell.w, h as f32 * cell.h, rgb(0x141414)));
-    let saved = p.cols;
-    p.cols = x0 + w;
-    // 上の欄: 名前を打っているときはその欄、そうでなければ絞り込み
-    let (label, text) = match &b.naming {
-        Some((crate::branches::Naming::New(from), f)) => (format!(" 新しいブランチ{}: ", from.as_ref().map_or(String::new(), |f| format!("（{f} から）"))), Some(f)),
-        Some((crate::branches::Naming::Rename(old), f)) => (format!(" {old} の新しい名前: "), Some(f)),
-        None => (" / ".to_string(), None),
-    };
-    let c = p.text(&label, x0, y, STATUS_FG);
-    match text {
-        Some(f) => {
-            draw_vim_field(p, f, c, y, preedit);
-        }
-        None => {
-            field(p, &b.query.text, b.query.cursor, preedit, c, y, true);
-        }
-    }
-    p.out.push(Instance::fill(x, y + cell.h - 1.0, w as f32 * cell.w, 1.0, LINE_NO));
-    // 一覧（選んだ行が見えるように流す）
-    let scroll = (b.selected + 1).saturating_sub(list_h);
-    for (k, e) in b.entries.iter().enumerate().skip(scroll).take(list_h) {
-        let yy = y + (1 + k - scroll) as f32 * cell.h;
-        let sel = k == b.selected && b.naming.is_none();
-        if sel {
-            p.out.push(Instance::fill(x, yy, w as f32 * cell.w, cell.h, rgb(0x2c4a70)));
-        }
-        match e {
-            Entry::NewBranch => {
-                p.text(" ＋ 新しいブランチ…", x0, yy, FG);
-            }
-            Entry::Fetch => {
-                p.text(" ⟳ フェッチ", x0, yy, FG);
-            }
-            Entry::Header(t) => {
-                p.text(&format!(" {t}"), x0, yy, STATUS_FG);
-            }
-            Entry::Branch(i) => {
-                let br = &b.branches[*i];
-                let mark = if br.current { "●" } else { " " };
-                let c = p.text(&format!("   {mark} "), x0, yy, GIT_ADD);
-                let c = p.text(&br.name, c, yy, if br.current { rgb(0xe8e8e8) } else { FG });
-                if !br.track.is_empty() {
-                    let t = br.track.replace("ahead", "↑").replace("behind", "↓").replace(['[', ']'], "");
-                    p.text(&format!("  {t}"), c, yy, STATUS_FG);
-                }
-                if sel && b.ops.is_none() {
-                    p.text("›", x0 + w - 2, yy, FG);
-                }
-            }
-        }
-    }
-    p.cols = saved;
-    // 操作の一覧（選んだ行の右に）
-    if let Some((ops, osel)) = &b.ops {
-        let cur = b.current_name();
-        let labels: Vec<String> = ops.iter().map(|o| format!(" {} ", o.label(&cur))).collect();
-        let ow = labels.iter().map(|l| p.width(l)).max().unwrap_or(10);
-        let ox = (x0 + w + 1).min(cols.saturating_sub(ow + 1));
-        let oy = top + 1 + b.selected.saturating_sub(scroll);
-        let (fx, fy) = (ox as f32 * cell.w, oy as f32 * cell.h);
-        p.out.push(Instance::fill(fx - 1.0, fy - 1.0, ow as f32 * cell.w + 2.0, labels.len() as f32 * cell.h + 2.0, STATUS_FG));
-        p.out.push(Instance::fill(fx, fy, ow as f32 * cell.w, labels.len() as f32 * cell.h, rgb(0x1c1c1c)));
-        let saved = p.cols;
-        p.cols = ox + ow;
-        for (k, l) in labels.iter().enumerate() {
-            let yy = fy + k as f32 * cell.h;
-            if k == *osel {
-                p.out.push(Instance::fill(fx, yy, ow as f32 * cell.w, cell.h, rgb(0x2c4a70)));
-            }
-            p.text(l, ox, yy, FG);
-        }
-        p.cols = saved;
-    }
-}
-
-/// 履歴（窓の領域全体）。左にブランチ、中央にグラフ付きのコミット、右に選んだコミットの中身
-fn draw_log_view(p: &mut Painter, l: &crate::log_view::LogView, r: Rect, preedit: &str) {
-    const LANES: [[f32; 4]; 5] = [rgb(0x87afd7), rgb(0xd7af87), rgb(0x87af87), rgb(0xd787af), rgb(0xafafd7)];
-    let cell = p.fonts.cell();
-    let (x0, y0) = (r.x as f32 * cell.w, r.y as f32 * cell.h);
-    p.out.push(Instance::fill(x0, y0, r.w as f32 * cell.w, r.h as f32 * cell.h, BG));
-    let bw = 20.min(r.w / 6);
-    let dw = 42.min(r.w / 3);
-    let cx = r.x + bw + 1;
-    let cw = r.w.saturating_sub(bw + dw + 2);
-    let dx = cx + cw + 1;
-    // 上の行: 絞り込みと件数
-    let n = l.visible.iter().filter(|&&i| l.rows[i].commit.is_some()).count();
-    let head = format!(
-        " {}{}   {} 件{}",
-        if l.filter_text.is_empty() { "/ で絞り込み".to_string() } else { format!("/{}", l.filter_text) },
-        l.path.as_ref().map_or(String::new(), |p| format!("   ファイル: {p}")),
-        n,
-        if l.loading { " …" } else { "" }
-    );
-    if let Some(f) = &l.filter {
-        let c = p.text(" /", r.x, y0, FG);
-        let end = draw_vim_field(p, f, c, y0, preedit);
-        p.text(&format!("   {n} 件"), end, y0, STATUS_FG);
-    } else {
-        p.text(&head, r.x, y0, STATUS_FG);
-    }
-    p.out.push(Instance::fill(x0, y0 + cell.h - 1.0, r.w as f32 * cell.w, 1.0, LINE_NO));
-    let body = r.h.saturating_sub(1);
-    // 左: ブランチ
-    let saved = p.cols;
-    p.cols = r.x + bw;
-    let mut y = y0 + cell.h;
-    let mut last_sec = "";
-    for (sec, name, cur) in &l.branches {
-        if y >= y0 + body as f32 * cell.h {
-            break;
-        }
-        if sec != last_sec {
-            p.text(&format!(" {sec}"), r.x, y, STATUS_FG);
-            y += cell.h;
-            last_sec = sec;
-        }
-        p.text(&format!(" {} {name}", if *cur { '*' } else { ' ' }), r.x, y, if *cur { FG } else { STATUS_FG });
-        y += cell.h;
-    }
-    p.cols = saved;
-    p.out.push(Instance::fill((r.x + bw) as f32 * cell.w + cell.w * 0.5, y0 + cell.h, 1.0, body as f32 * cell.h, LINE_NO));
-    // 中央: コミット
-    let saved = p.cols;
-    p.cols = cx + cw;
-    for (k, &i) in l.visible.iter().enumerate().skip(l.top).take(body) {
-        let row = &l.rows[i];
-        let y = y0 + (1 + k - l.top) as f32 * cell.h;
-        let sel = k == l.selected;
-        let focused = sel && !l.focus_files;
-        if focused {
-            p.out.push(Instance::fill(cx as f32 * cell.w, y, cw as f32 * cell.w, cell.h, FG));
-        } else if sel {
-            p.out.push(Instance::fill(cx as f32 * cell.w, y, cw as f32 * cell.w, cell.h, MATCH_BG));
-        }
-        let mut c = cx + 1;
-        for (j, ch) in crate::log_view::pretty_graph(&row.graph).chars().enumerate() {
-            let mut b = [0u8; 4];
-            let color = if focused { BG } else { LANES[(j / 2) % LANES.len()] };
-            c = p.text(ch.encode_utf8(&mut b), c, y, color);
-        }
-        if let Some(cm) = &row.commit {
-            let (fg, dim, refc) = if focused { (BG, BG, BG) } else { (FG, STATUS_FG, rgb(0xd7af87)) };
-            // 作者と日時は表示の幅で揃える（全角は 2 セル）
-            let pad = |p: &Painter, s: &str, w: usize| {
-                let t: String = s.chars().scan(0, |acc, ch| {
-                    *acc += p.width(ch.encode_utf8(&mut [0u8; 4]));
-                    (*acc <= w).then_some(ch)
-                }).collect();
-                let tw = p.width(&t);
-                format!("{t}{}", " ".repeat(w.saturating_sub(tw)))
-            };
-            let right = format!("{} {} {}", pad(p, &cm.author, 10), pad(p, &cm.date, 9), cm.short);
-            let rw = p.width(&right);
-            let mut c2 = c + 1;
-            if !cm.refs.is_empty() {
-                c2 = p.text(&format!("{}  ", cm.refs), c2, y, refc);
-            }
-            let limit = (cx + cw).saturating_sub(rw + 1);
-            let saved2 = p.cols;
-            p.cols = limit.saturating_sub(1);
-            p.text(&cm.subject, c2, y, fg);
-            p.cols = saved2;
-            p.text(&right, limit, y, dim);
-        }
-    }
-    p.cols = saved;
-    p.out.push(Instance::fill((cx + cw) as f32 * cell.w + cell.w * 0.5, y0 + cell.h, 1.0, body as f32 * cell.h, LINE_NO));
-    // 右: 選んだコミットの中身
-    let saved = p.cols;
-    p.cols = r.x + r.w;
-    if let Some(d) = &l.detail {
-        let mut y = y0 + cell.h;
-        let line = |p: &mut Painter, y: &mut f32, s: &str, color: [f32; 4]| {
-            p.text(s, dx + 1, *y, color);
-            *y += cell.h;
-        };
-        line(p, &mut y, &format!("{}   {}   {}", &d.hash[..7.min(d.hash.len())], d.author, d.date), STATUS_FG);
-        line(p, &mut y, &format!("親 {}", d.parents.split(' ').map(|h| &h[..7.min(h.len())]).collect::<Vec<_>>().join(" ")), STATUS_FG);
-        y += cell.h * 0.5;
-        for (k, m) in d.message.lines().enumerate().take(8) {
-            line(p, &mut y, m, if k == 0 { rgb(0xe8e8e8) } else { STATUS_FG });
-        }
-        y += cell.h * 0.5;
-        line(p, &mut y, &format!("変えたファイル（{}）", d.files.len()), STATUS_FG);
-        let limit = y0 + r.h as f32 * cell.h;
-        for (k, (st, path)) in d.files.iter().enumerate() {
-            if y + cell.h > limit {
-                break;
-            }
-            let sel = l.focus_files && k == l.file_sel;
-            if sel {
-                p.out.push(Instance::fill(dx as f32 * cell.w, y, (r.x + r.w - dx) as f32 * cell.w, cell.h, FG));
-            }
-            let sc = if sel {
-                BG
-            } else {
-                match st {
-                    'A' => GIT_ADD,
-                    'D' => GIT_DEL,
-                    'M' => GIT_MOD,
-                    _ => rgb(0xd7af5f),
-                }
-            };
-            let c = p.text(&format!("{st}"), dx + 1, y, sc);
-            p.text(&format!("  {path}"), c, y, if sel { BG } else { FG });
-            y += cell.h;
-        }
-    } else if !l.rows.is_empty() {
-        p.text("…", dx + 1, y0 + cell.h, STATUS_FG);
-    }
-    p.cols = saved;
-}
-
-/// 左右並べの差分（窓の領域全体）。足した行は緑、消した行は赤、変えた行は青の地、対の行は変わった部分を濃く
-fn draw_diff_view(p: &mut Painter, d: &crate::diff_view::DiffView, r: Rect) {
-    use crate::diff_view::RowKind;
-    let cell = p.fonts.cell();
-    let (x0, y0) = (r.x as f32 * cell.w, r.y as f32 * cell.h);
-    p.out.push(Instance::fill(x0, y0, r.w as f32 * cell.w, r.h as f32 * cell.h, BG));
-    let half = r.w.saturating_sub(1) / 2;
-    let rx = r.x + half + 1;
-    p.text(&format!(" {}", d.left_title), r.x, y0, STATUS_FG);
-    p.text(&format!(" {}", d.right_title), rx, y0, FG);
-    p.out.push(Instance::fill(x0, y0 + cell.h - 1.0, r.w as f32 * cell.w, 1.0, LINE_NO));
-    let body = r.h.saturating_sub(1);
-    let mod_bg = rgb(0x17202e);
-    let fill_bg = rgb(0x141414);
-    for (k, row) in d.rows.iter().enumerate().skip(d.top).take(body) {
-        let y = y0 + (1 + k - d.top) as f32 * cell.h;
-        let (lbg, rbg) = match row.kind {
-            RowKind::Eq => (BG, BG),
-            RowKind::Add => (fill_bg, DIFF_ADD_BG),
-            RowKind::Del => (DIFF_DEL_BG, fill_bg),
-            RowKind::Mod => (mod_bg, mod_bg),
-        };
-        p.out.push(Instance::fill(x0, y, half as f32 * cell.w, cell.h, lbg));
-        p.out.push(Instance::fill(rx as f32 * cell.w, y, (r.w - half - 1) as f32 * cell.w, cell.h, rbg));
-        let spans = match (&row.left, &row.right, row.kind) {
-            (Some(l), Some(n), RowKind::Mod) => {
-                let (a, b) = nagi_core::linediff::changed_span(&l.1, &n.1);
-                (Some(a), Some(b))
-            }
-            _ => (None, None),
-        };
-        let cursor = k == d.cursor;
-        for (side, col, w, span, word) in [(&row.left, r.x, half, spans.0, DIFF_WORD_DEL_BG), (&row.right, rx, r.w - half - 1, spans.1, DIFF_WORD_BG)] {
-            let saved = p.cols;
-            p.cols = col + w;
-            if let Some((n, text)) = side {
-                let num = format!("{:>5} ", n + 1);
-                let c = if cursor {
-                    p.out.push(Instance::fill(col as f32 * cell.w, y, 5.0 * cell.w, cell.h, FG));
-                    p.text(&num, col, y, BG)
-                } else {
-                    p.text(&num, col, y, LINE_NO)
-                };
-                let mut items = Vec::new();
-                for (b, g) in text.grapheme_indices(true) {
-                    let width = p.cell_width(g);
-                    let hit = span.as_ref().is_some_and(|s| b >= s.start && b < s.end);
-                    items.push(Item { g: Cow::Borrowed(g), width, fg: FG, bg: if hit { Some(word) } else { None }, underline: false });
-                }
-                p.draw(&items, c, y);
-            } else if cursor {
-                p.out.push(Instance::fill(col as f32 * cell.w, y, 5.0 * cell.w, cell.h, MATCH_BG));
-            }
-            p.cols = saved;
-        }
-    }
-    p.out.push(Instance::fill((r.x + half) as f32 * cell.w + cell.w * 0.5, y0 + cell.h, 1.0, body as f32 * cell.h, LINE_NO));
-}
-
-/// blame: カーソルの行のコミットの詳しい内容（カーソルの行の下に枠で）
-fn draw_blame_popup(p: &mut Painter, ed: &Editor, rows: usize) {
-    let Some(c) = ed.blame_at_cursor() else { return };
-    if c.uncommitted() {
-        return;
-    }
-    let cell = p.fonts.cell();
-    let rect = ed.active_rect();
-    if ed.cursor.line < ed.top {
-        return;
-    }
-    let row = rect.y + (ed.cursor.line - ed.top) + 1;
-    let lines = [
-        format!(" {}   {}   {}", &c.hash[..7], c.author, crate::blame::relative_time(c.time, crate::blame::now_secs())),
-        format!(" {}", c.summary),
-        " :Gblame で閉じる".to_string(),
-    ];
-    let h = lines.len();
-    let top = if row + h <= rows { row } else { row.saturating_sub(h + 1) };
-    let x0 = rect.x + crate::blame::BLAME_W + 2;
-    let w = lines.iter().map(|l| p.width(l)).max().unwrap_or(10) + 2;
-    let w = w.min(rect.w.saturating_sub(crate::blame::BLAME_W + 3));
-    let (x, y) = (x0 as f32 * cell.w, top as f32 * cell.h);
-    p.out.push(Instance::fill(x - 1.0, y - 1.0, w as f32 * cell.w + 2.0, h as f32 * cell.h + 2.0, STATUS_FG));
-    p.out.push(Instance::fill(x, y, w as f32 * cell.w, h as f32 * cell.h, rgb(0x141414)));
-    let saved = p.cols;
-    p.cols = x0 + w;
-    for (k, l) in lines.iter().enumerate() {
-        let color = if k == 1 { rgb(0xe8e8e8) } else { STATUS_FG };
-        p.text(l, x0, y + k as f32 * cell.h, color);
-    }
-    p.cols = saved;
-}
-
-/// 行頭のマーカーから出る差分のポップアップ（変更のまとまりの下。古い行は赤、新しい行は緑の地、変わった部分を濃く）
-fn draw_hunk_popup(p: &mut Painter, ed: &Editor, rows: usize, cols: usize) {
-    const MAX_LINES: usize = 12;
-    let Some((old, new, h)) = ed.popup_lines() else { return };
-    let cell = p.fonts.cell();
-    let rect = ed.active_rect();
-    let last = if new.is_empty() { h.new.start.saturating_sub(1) } else { h.new.end - 1 };
-    if last < ed.top {
-        return;
-    }
-    let below = rect.y + (last - ed.top) + 1;
-    let x0 = rect.x + ed.gutter() - 1;
-    let w = rect.w.saturating_sub(ed.gutter()).min(110).max(40).min(cols.saturating_sub(x0));
-    let n_old = old.len().min(MAX_LINES);
-    let n_new = new.len().min(MAX_LINES);
-    let h_rows = 1 + n_old + n_new;
-    // 下に入らなければ、まとまりの上に出す
-    let top = if below + h_rows <= rows { below } else { (rect.y + h.new.start.saturating_sub(ed.top)).saturating_sub(h_rows) };
-    let (x, y0) = (x0 as f32 * cell.w, top as f32 * cell.h);
-    p.out.push(Instance::fill(x - 1.0, y0 - 1.0, w as f32 * cell.w + 2.0, h_rows as f32 * cell.h + 2.0, LINE_NO));
-    p.out.push(Instance::fill(x, y0, w as f32 * cell.w, h_rows as f32 * cell.h, rgb(0x141414)));
-    let saved = p.cols;
-    p.cols = x0 + w;
-    let total = ed.git.popup.map(|i| i + 1).unwrap_or(0);
-    let kind = match h.kind {
-        nagi_core::linediff::HunkKind::Add => format!("{} 行を足した", new.len()),
-        nagi_core::linediff::HunkKind::Del => format!("{} 行を消した", old.len()),
-        nagi_core::linediff::HunkKind::Mod => format!("{} 行を変えた", new.len().max(old.len())),
-    };
-    p.text(&format!(" 変更 {total}   {kind}     [c 前  ]c 次  u 戻す  s ステージ  Esc 閉じる"), x0, y0, STATUS_FG);
-    let mut y = y0 + cell.h;
-    // 対になる行は変わった部分を濃く塗る
-    for (i, l) in old.iter().take(n_old).enumerate() {
-        p.out.push(Instance::fill(x, y, w as f32 * cell.w, cell.h, DIFF_DEL_BG));
-        let span = new.get(i).map(|n| nagi_core::linediff::changed_span(l, n).0);
-        draw_diff_line(p, "−", l, span, DIFF_WORD_DEL_BG, GIT_DEL, x0, y);
-        y += cell.h;
-    }
-    for (i, l) in new.iter().take(n_new).enumerate() {
-        p.out.push(Instance::fill(x, y, w as f32 * cell.w, cell.h, DIFF_ADD_BG));
-        let span = old.get(i).map(|o| nagi_core::linediff::changed_span(o, l).1);
-        draw_diff_line(p, "+", l, span, DIFF_WORD_BG, GIT_ADD, x0, y);
-        y += cell.h;
-    }
-    p.cols = saved;
-}
-
 /// 差分の 1 行（先頭の印と、変わった部分の地）
 #[allow(clippy::too_many_arguments)]
-fn draw_diff_line(p: &mut Painter, sign: &str, text: &str, span: Option<std::ops::Range<usize>>, word_bg: [f32; 4], sign_color: [f32; 4], col: usize, y: f32) {
+pub(crate) fn draw_diff_line(p: &mut Painter, sign: &str, text: &str, span: Option<std::ops::Range<usize>>, word_bg: [f32; 4], sign_color: [f32; 4], col: usize, y: f32) {
     let lead = format!(" {sign} ");
     let mut items = p.items(&lead, sign_color);
     for (b, g) in text.grapheme_indices(true) {
@@ -2444,380 +1535,9 @@ fn draw_diff_line(p: &mut Painter, sign: &str, text: &str, span: Option<std::ops
     p.draw(&items, col, y);
 }
 
-/// `:` のコマンドラインの候補（最下行のすぐ上に最大 10 件。補う語の位置から）
-fn draw_cmd_complete(p: &mut Painter, ed: &Editor, c: &crate::cmdline_complete::CmdComplete, rows: usize, cols: usize) {
-    let max = crate::cmdline_complete::MAX_SHOWN.min(rows);
-    let cell = p.fonts.cell();
-    let n = c.items.len().min(max);
-    let first = c.sel.map_or(0, |s| s.saturating_sub(max - 1));
-    let shown: Vec<&(String, String)> = c.items.iter().skip(first).take(n).collect();
-    let name_w = shown.iter().map(|(a, _)| p.width(a)).max().unwrap_or(1);
-    let desc_w = shown.iter().map(|(_, d)| p.width(d)).max().unwrap_or(0);
-    let width = (name_w + desc_w + if desc_w > 0 { 5 } else { 2 }).min(cols);
-    let col = (1 + p.width(&ed.cmdline.text[..c.start.min(ed.cmdline.text.len())])).min(cols.saturating_sub(width));
-    let top = rows - n;
-    let mut hits = Vec::new();
-    for (k, (name, desc)) in shown.iter().enumerate() {
-        hits.push((top + k, col, col + width, first + k));
-        let y = (top + k) as f32 * cell.h;
-        let selected = c.sel == Some(first + k);
-        let (bg, fg, dim) = if selected { (FG, BG, BG) } else { (MATCH_BG, FG, STATUS_FG) };
-        p.out.push(Instance::fill(col as f32 * cell.w, y, width as f32 * cell.w, cell.h, bg));
-        let end = p.text(&format!(" {name}"), col, y, fg);
-        if !desc.is_empty() {
-            p.text(desc, end.max(col + name_w + 1) + 2, y, dim);
-        }
-    }
-    c.rows.set(hits);
-    // 件数が多いときは、残りの数を一覧の右上に
-    if c.items.len() > n {
-        let more = format!(" {}/{} ", c.sel.map_or(0, |s| s + 1), c.items.len());
-        let x = (col + width).saturating_sub(p.width(&more));
-        p.text(&more, x, (top as f32 - 1.0).max(0.0) * cell.h, STATUS_FG);
-    }
-}
-
-/// 補完の候補（カーソルの下に最大 10 件。下に余白が無ければ上に）。ターミナルの Vim の補完メニューと同じ形
-fn draw_completion(p: &mut Painter, ed: &Editor, c: &crate::complete::Completion, rows: usize, cols: usize) {
-    const MAX: usize = 10;
-    let cell = p.fonts.cell();
-    let rect = ed.active_rect();
-    let (sl, sb) = ed.buf.pos_of(c.start);
-    if sl < ed.top {
-        return;
-    }
-    // 折り返していれば、その行の中の画面の行と列
-    let Some((r, c0)) = ed.screen_pos(sl, sb) else { return };
-    let row = rect.y + r;
-    let col = (rect.x + ed.gutter() + c0).saturating_sub(1);
-    let n = c.items.len().min(MAX);
-    // 選んでいる候補が見える範囲
-    let first = c.sel.map_or(0, |s| s.saturating_sub(MAX - 1));
-    let notew = c.notes.iter().skip(first).take(n).map(|x| p.width(&x.1)).max().unwrap_or(0);
-    let width = c.items.iter().skip(first).take(n).map(|i| p.width(i)).max().unwrap_or(1) + 2 + if c.notes.is_empty() { 0 } else { notew + 5 };
-    let col = col.min(cols.saturating_sub(width));
-    let below = row + 1 + n <= rows;
-    let top = if below { row + 1 } else { row.saturating_sub(n) };
-    for (k, item) in c.items.iter().skip(first).take(n).enumerate() {
-        let y = (top + k) as f32 * cell.h;
-        let selected = c.sel == Some(first + k);
-        let (bg, fg) = if selected { (FG, BG) } else { (MATCH_BG, FG) };
-        p.out.push(Instance::fill(col as f32 * cell.w, y, width as f32 * cell.w, cell.h, bg));
-        match c.notes.get(first + k) {
-            Some((mark, note)) => {
-                let mut b = [0u8; 4];
-                let mc = match mark {
-                    'K' => rgb(0xd7af5f),
-                    'F' | 'T' | 'c' | 'I' | 'e' => FINDER_MATCH,
-                    'V' | 'f' => rgb(0xaf87d7),
-                    'm' => rgb(0xd7af87),
-                    'v' => STATUS_FG,
-                    _ => fg,
-                };
-                let x = p.text(" ", col, y, fg);
-                let x = p.text(mark.encode_utf8(&mut b), x, y, if selected { BG } else { mc });
-                p.text(&format!(" {item}"), x, y, fg);
-                let nw = p.width(note);
-                p.text(note, (col + width).saturating_sub(nw + 1), y, if selected { BG } else { STATUS_FG });
-            }
-            None => {
-                p.text(&format!(" {item}"), col, y, fg);
-            }
-        }
-    }
-}
-
-/// ファイルツリー。1 行目はタブと根の名前、2 行目から字下げした木（フォルダは青で `▸` `▾`）。右端に 1px の区切り線
-/// プロジェクトの木。字は白（フォルダもファイルも同じ）、git の状態で色分け: 追加は緑、変更は青、管理対象外は赤、
-/// 競合は黄。フォルダは管理されていなければ赤、管理されている変更を含めば青（IntelliJ と同じ）
-fn draw_tree(
-    p: &mut Painter,
-    t: &crate::tree_panel::TreePanel,
-    r: Rect,
-    focused: bool,
-    git: &std::collections::HashMap<std::path::PathBuf, nagi_workers::git::FileState>,
-    index: Option<&nagi_workers::index::Index>,
-) {
-    use nagi_workers::git::FileState;
-    let cell = p.fonts.cell();
-    let (x, y0, w) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
-    p.out.push(Instance::fill(x, y0, w, r.h as f32 * cell.h, BG));
-    p.out.push(Instance::fill(((r.x + r.w) as f32 + 0.5) * cell.w, y0, 1.0, r.h as f32 * cell.h, LINE_NO));
-    let saved = p.cols;
-    p.cols = r.x + r.w;
-    let name = t.root.file_name().map_or(t.root.display().to_string(), |n| n.to_string_lossy().into_owned());
-    // プロジェクトの名前は窓の題名に出す（タブの横には出さない）
-    let _ = name;
-    draw_left_tabs(p, r, crate::tree_panel::LeftTab::Project, focused, if t.loading() { "…" } else { "" });
-    for k in 0..r.h.saturating_sub(1) {
-        let Some(row) = t.rows.get(t.scroll + k) else { break };
-        let y = (r.y + 1 + k) as f32 * cell.h;
-        let selected = t.scroll + k == t.selected;
-        let reversed = selected && focused;
-        if reversed {
-            p.out.push(Instance::fill(x, y, w, cell.h, FG));
-        } else if selected {
-            p.out.push(Instance::fill(x, y, w, cell.h, MATCH_BG));
-        }
-        let mark = if row.dir { if t.is_expanded(&row.path) { "▾ " } else { "▸ " } } else { "  " };
-        let icon_col = r.x + row.depth * 2 + 2;
-        let state = git.get(&row.path).copied();
-        let fg = match state {
-            _ if reversed => BG,
-            Some(FileState::Added) => GIT_ADD,
-            Some(FileState::Modified | FileState::Renamed) => GIT_MOD,
-            Some(FileState::Untracked) => GIT_DEL,
-            Some(FileState::Conflicted) => DIAG_WARN,
-            Some(FileState::Deleted) => STATUS_FG,
-            None => FG,
-        };
-        let label = format!("{}{mark}", "  ".repeat(row.depth));
-        p.text(&label, r.x, y, if reversed { BG } else { STATUS_FG });
-        if icon_col + 3 < r.x + r.w {
-            draw_tree_icon(p, &tree_icon(row, index, &t.root), icon_col, y);
-        }
-        p.text(&row.name, icon_col + 2, y, fg);
-    }
-    p.cols = saved;
-}
-
-/// 木のアイコン
-enum TreeIcon {
-    /// フォルダ（色）
-    Folder([f32; 4]),
-    /// 種類の分かるファイル（文字・地の色・文字の色）
-    Badge(&'static str, [f32; 4], [f32; 4]),
-    /// ふつうのファイル（紙の形）
-    Page,
-}
-
-/// 行のアイコン（IntelliJ と同じ考え方: フォルダはソース・テスト・除外で色を変え、ファイルは種類の文字と色）
-fn tree_icon(row: &crate::tree_panel::Row, index: Option<&nagi_workers::index::Index>, root: &std::path::Path) -> TreeIcon {
-    let name = row.name.to_ascii_lowercase();
-    if row.dir {
-        let rel = row.path.strip_prefix(root).map(|r| r.to_string_lossy().replace('\\', "/").to_ascii_lowercase()).unwrap_or_default();
-        let color = if matches!(name.as_str(), "target" | "out" | "dist" | "build" | "node_modules" | "bin" | ".angular" | ".next") {
-            rgb(0xc98a4b)
-        } else if rel.ends_with("src/test/java") || rel.ends_with("src/test/kotlin") || matches!(name.as_str(), "test" | "tests" | "__tests__" | "e2e" | "cypress" | "spec") {
-            rgb(0x62b543)
-        } else if rel.ends_with("src/main/java") || rel.ends_with("src/main/kotlin") || (name == "src" && !row.path.join("main").is_dir()) {
-            rgb(0x548af7)
-        } else if rel.ends_with("src/main/resources") || rel.ends_with("src/test/resources") {
-            rgb(0xd9a343)
-        } else {
-            rgb(0x8c9aa6)
-        };
-        return TreeIcon::Folder(color);
-    }
-    let dark = BG;
-    let white = rgb(0xffffff);
-    let ext = name.rsplit_once('.').map_or("", |x| x.1);
-    let b = |l: &'static str, c: u32, light: bool| TreeIcon::Badge(l, rgb(c), if light { dark } else { white });
-    match (name.as_str(), ext) {
-        ("pom.xml", _) => b("m", 0xc71a36, false),
-        ("package.json", _) => b("n", 0xcb3837, false),
-        ("dockerfile", _) => b("D", 0x2496ed, false),
-        (".gitignore" | ".gitattributes", _) => b("G", 0xf05033, false),
-        (_, "java") => {
-            let rel = row.path.strip_prefix(root).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default();
-            match index.and_then(|i| i.file_type_kind(&rel)) {
-                Some(nagi_syntax::defs::DefKind::Interface) => b("I", 0x62b543, true),
-                Some(nagi_syntax::defs::DefKind::Enum) => b("E", 0xd9a343, true),
-                Some(nagi_syntax::defs::DefKind::Class) => b("C", 0x3592c4, false),
-                _ => b("J", 0xe76f00, false),
-            }
-        }
-        (_, "kt" | "kts") => b("K", 0xa97bff, false),
-        (_, "ts" | "mts" | "cts") => b("TS", 0x3178c6, false),
-        (_, "tsx") => b("TS", 0x61dafb, true),
-        (_, "js" | "mjs" | "cjs") => b("JS", 0xf1e05a, true),
-        (_, "jsx") => b("JS", 0x61dafb, true),
-        (_, "html" | "htm") => b("<>", 0xe44d26, false),
-        (_, "css") => b("#", 0x3d8fd1, false),
-        (_, "scss" | "sass") => b("S", 0xcd6799, false),
-        (_, "json" | "jsonc") => b("{}", 0xcbcb41, true),
-        (_, "md" | "markdown") => b("M", 0x519aba, false),
-        (_, "xml" | "xsd" | "wsdl") => b("<>", 0xe37933, false),
-        (_, "yml" | "yaml") => b("Y", 0xcb171e, false),
-        (_, "properties" | "ini" | "toml" | "conf" | "cfg" | "env") => b("P", 0x8c9aa6, true),
-        (_, "sql") => b("Q", 0xe38c00, true),
-        (_, "rs") => b("R", 0xdea584, true),
-        (_, "py") => b("Py", 0x3572a5, false),
-        (_, "sh" | "bash" | "bat" | "cmd" | "ps1") => b(">", 0x89e051, true),
-        (_, "png" | "jpg" | "jpeg" | "gif" | "svg" | "ico" | "webp") => b("◩", 0x62b543, true),
-        (_, "vim") => b("V", 0x199f4b, false),
-        _ => TreeIcon::Page,
-    }
-}
-
-/// アイコンを列 `col`・行の y に描く（2 列ぶん。中は 16px ほど）
-fn draw_tree_icon(p: &mut Painter, icon: &TreeIcon, col: usize, y: f32) {
-    let cell = p.fonts.cell();
-    let s = (cell.h * 0.62).round().clamp(10.0, 26.0);
-    let x = col as f32 * cell.w + ((2.0 * cell.w - s) / 2.0).max(0.0) - 2.0;
-    let y = y + ((cell.h - s) / 2.0).round();
-    let px = (s / 16.0).max(1.0).round();
-    match icon {
-        TreeIcon::Folder(c) => {
-            // つまみ（左上）と本体
-            p.out.push(Instance::fill(x, y + px, s * 0.45, px * 2.0, *c));
-            p.out.push(Instance::fill(x, y + px * 3.0, s, s - px * 4.0, *c));
-        }
-        TreeIcon::Badge(label, bg, fg) => {
-            p.out.push(Instance::fill(x, y, s, s, *bg));
-            let n = label.chars().count() as f32;
-            let scale = if n >= 2.0 { (s * 0.95 / (2.0 * cell.w)).min(0.5) } else { 0.62 };
-            let tw = cell.w * scale * n;
-            p.small_text(label, x + (s - tw) / 2.0, y + (s - cell.h * scale) / 2.0, scale, *fg);
-        }
-        TreeIcon::Page => {
-            // 紙の形（枠と、右上の折り返し）
-            let c = rgb(0x8c9aa6);
-            let (w, h) = (s * 0.75, s);
-            let x = x + (s - w) / 2.0;
-            p.out.push(Instance::fill(x, y, w - px * 3.0, px, c));
-            p.out.push(Instance::fill(x, y, px, h, c));
-            p.out.push(Instance::fill(x + w - px, y + px * 3.0, px, h - px * 3.0, c));
-            p.out.push(Instance::fill(x, y + h - px, w, px, c));
-            p.out.push(Instance::fill(x + w - px * 3.0, y, px, px * 3.0, c));
-            p.out.push(Instance::fill(x + w - px * 3.0, y + px * 3.0 - px, px * 3.0, px, c));
-        }
-    }
-}
-
-/// 全文検索のパネル。1 行目は見出し（検索語と件数）、2 行目から `path:行: 本文`（ripgrep の vimgrep と同じ形）
-fn draw_grep_panel(p: &mut Painter, g: &crate::grep_panel::GrepPanel, r: Rect, focused: bool) {
-    if let (Some(v), Some(_)) = (&g.view, &g.title) {
-        draw_read_view(p, g, v, r, focused);
-        return;
-    }
-    let cell = p.fonts.cell();
-    let (x, y0, w) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
-    p.out.push(Instance::fill(x, y0, w, r.h as f32 * cell.h, BG));
-    p.out.push(Instance::fill(x, y0, w, 1.0, LINE_NO));
-    let head = match (&g.error, &g.title) {
-        (Some(e), _) => format!("正規表現の誤り: {}", e.lines().last().unwrap_or("")),
-        (None, Some(t)) => format!("{t}   {} 件{}", g.hits.len(), if g.searching() { " …" } else { "" }),
-        (None, None) => format!(
-            "全文検索: {}{}   {} 件 / {} ファイル{}{}",
-            g.query.text,
-            if g.regex { "  [.*]" } else { "" },
-            g.hits.len(),
-            g.files(),
-            if g.hits.len() >= nagi_workers::grep::MAX_HITS { "（上限）" } else { "" },
-            if g.searching() { " …" } else { "" }
-        ),
-    };
-    let saved = p.cols;
-    p.cols = (r.x + r.w).saturating_sub(3);
-    p.text(&head, r.x, y0, STATUS_FG);
-    p.cols = saved;
-    for k in 0..r.h.saturating_sub(1) {
-        let Some(h) = g.hits.get(g.scroll + k) else { break };
-        let y = (r.y + 1 + k) as f32 * cell.h;
-        let selected = g.in_selection(g.scroll + k);
-        // 選んだ行は、パネルにいる（か検索語を打っている）ときは反転、そうでなければ控えめな地の色
-        let reversed = selected && focused;
-        if reversed {
-            p.out.push(Instance::fill(x, y, w, cell.h, FG));
-        } else if selected {
-            p.out.push(Instance::fill(x, y, w, cell.h, MATCH_BG));
-        }
-        let (fg, dim, accent) = if reversed { (BG, BG, BG) } else { (FG, STATUS_FG, FINDER_MATCH) };
-        // ファイルを持たない行（コマンドの出力）は本文だけ
-        let mut items = Vec::new();
-        let num = format!(":{}: ", h.line);
-        if !h.path.is_empty() {
-            items.extend(p.items(&h.path, dim));
-            items.extend(p.items(&num, dim));
-        }
-        for (b, gr) in h.text.grapheme_indices(true) {
-            let m = b >= h.range.0 && b < h.range.1;
-            let width = p.cell_width(gr);
-            items.push(Item { g: Cow::Borrowed(gr), width, fg: if m { accent } else { fg }, bg: None, underline: m && reversed });
-        }
-        p.draw(&items, r.x, y);
-    }
-}
-
-/// ログ: 読み取り専用の Vim の画面。1 行目は見出し（検索の入力中は検索語）、2 行目から本文。
-/// カーソルは四角、ビジュアルで選んだ所は反転（本文と同じ）。[ERROR]・error: の行は赤、[WARNING]・warning: の行は黄色
-fn draw_read_view(p: &mut Painter, g: &crate::grep_panel::GrepPanel, v: &crate::read_view::ReadView, r: Rect, focused: bool) {
-    let cell = p.fonts.cell();
-    let (x, y0, w) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
-    p.out.push(Instance::fill(x, y0, w, r.h as f32 * cell.h, BG));
-    p.out.push(Instance::fill(x, y0, w, 1.0, LINE_NO));
-    let ed = &v.ed;
-    let saved = p.cols;
-    p.cols = (r.x + r.w).saturating_sub(3);
-    match v.prompt() {
-        Some((lead, q)) => {
-            let end = p.text(&format!("{lead}{q}"), r.x, y0, FG);
-            p.caret(end, y0);
-        }
-        None => {
-            let mode = match ed.mode {
-                Mode::Visual { block: true, .. } => "   -- VISUAL BLOCK --",
-                Mode::Visual { line: true, .. } => "   -- VISUAL LINE --",
-                Mode::Visual { .. } => "   -- VISUAL --",
-                _ => "",
-            };
-            let head = format!(
-                "{}   {} 行{}   {}/{}{mode}",
-                g.title.as_deref().unwrap_or(""),
-                g.hits.len(),
-                if g.searching() { " …" } else { "" },
-                ed.cursor.line + 1,
-                ed.buf.line_count()
-            );
-            p.text(&head, r.x, y0, STATUS_FG);
-        }
-    }
-    p.cols = saved;
-    let n = g.hits.len();
-    for k in 0..r.h.saturating_sub(1) {
-        let line = ed.top + k;
-        if line >= n.max(1) || line >= ed.buf.line_count() {
-            break;
-        }
-        let y = (r.y + 1 + k) as f32 * cell.h;
-        let text = ed.buf.line(line);
-        let t = text.trim_start();
-        let base = if t.starts_with("[ERROR]") || t.starts_with("error") {
-            DIAG_ERROR
-        } else if t.starts_with("[WARNING]") || t.starts_with("[WARN]") || t.starts_with("warning") {
-            DIAG_WARN
-        } else {
-            FG
-        };
-        let vis = v.visual_in(line);
-        let cur = (focused && line == ed.cursor.line).then_some(ed.cursor.byte);
-        let mut items = Vec::new();
-        for (b, gr) in text.grapheme_indices(true) {
-            let width = p.cell_width(gr);
-            let sel = vis.is_some_and(|(s, e)| b >= s && b < e);
-            let (fg, bg) = if cur == Some(b) {
-                (BG, Some(if sel { CURSOR_IN_SELECTION } else { CURSOR }))
-            } else if sel {
-                (BG, Some(FG))
-            } else {
-                (base, None)
-            };
-            items.push(Item { g: Cow::Borrowed(gr), width, fg, bg, underline: false });
-        }
-        let end = p.draw(&items, r.x, y);
-        // 空の行・行末のカーソル
-        if cur.is_some_and(|c| c >= text.len()) {
-            p.out.push(Instance::fill(end as f32 * cell.w, y, cell.w, cell.h, if vis.is_some() { CURSOR_IN_SELECTION } else { CURSOR }));
-        } else if vis.is_some() && text.is_empty() {
-            p.out.push(Instance::fill(end as f32 * cell.w, y, cell.w, cell.h, FG));
-        }
-    }
-}
-
 /// 診断の波線を引く範囲（行の中の byte）。列の文字が語の一部ならその語、記号ならその字から空白の手前まで。
 /// 行頭の空白（列の情報の無い診断は列 0）なら、行の字のある部分全体
-fn squiggle_range(line: &str, col: usize) -> (usize, usize) {
+pub(crate) fn squiggle_range(line: &str, col: usize) -> (usize, usize) {
     let word = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
     let at = line.char_indices().nth(col).map_or(line.len(), |x| x.0);
     let ch = line[at..].chars().next();
@@ -2851,7 +1571,7 @@ fn squiggle_range(line: &str, col: usize) -> (usize, usize) {
 }
 
 /// 波線（x0〜x1、y はセルの下端）。小さな四角を三角波の形に並べる
-fn draw_squiggle(p: &mut Painter, x0: f32, x1: f32, bottom: f32, color: [f32; 4]) {
+pub(crate) fn draw_squiggle(p: &mut Painter, x0: f32, x1: f32, bottom: f32, color: [f32; 4]) {
     let cell = p.fonts.cell();
     let px = (cell.h / 16.0).max(1.0).round();
     let amp = px * 2.0;
@@ -2868,339 +1588,8 @@ fn draw_squiggle(p: &mut Painter, x0: f32, x1: f32, bottom: f32, color: [f32; 4]
     }
 }
 
-/// 設定の画面（画面の中央に重ねる）。上に絞り込み、左に分類、右に項目（名前と値）、下に説明とボタン
-fn draw_settings_dialog(p: &mut Painter, ed: &Editor, d: &crate::settings_dialog::SettingsDialog, cols: usize, rows: usize) {
-    use crate::settings::{CATEGORIES, SKind};
-    use crate::settings_dialog::{SButton, SFocus};
-    let cell = p.fonts.cell();
-    let w = cols.saturating_sub(6).clamp(40, 130).min(cols);
-    let h = rows.saturating_sub(2).clamp(12, 34).min(rows);
-    let (x0, y0) = dialog_frame(p, cols, rows, w, h);
-    let y = |r: usize| (y0 + r) as f32 * cell.h;
-    let saved = p.cols;
-    p.cols = x0 + w;
-    let mut buttons = Vec::new();
-    // 1 行目: 題と絞り込みの欄、保存先
-    let end = p.text(" 設定   ", x0, y(0), FG);
-    let fend = if d.focus == SFocus::Filter {
-        let e = p.text("🔍 ", end, y(0), FG);
-        draw_vim_field(p, &d.filter, e, y(0), &ed.preedit)
-    } else {
-        let t = d.filter.text();
-        p.text(&format!("🔍 {}", if t.is_empty() { "/ で絞り込み".to_string() } else { t }), end, y(0), STATUS_FG)
-    };
-    let scope = if d.project_scope { " 保存先: このプロジェクト（p で切り替え） " } else { " 保存先: 全体（p で切り替え） " };
-    let sw = p.width(scope);
-    let sx = (x0 + w).saturating_sub(sw + 1).max(fend + 2);
-    p.out.push(Instance::fill(sx as f32 * cell.w, y(0), sw as f32 * cell.w, cell.h, if d.project_scope { rgb(0x2c4a70) } else { MATCH_BG }));
-    p.text(scope, sx, y(0), FG);
-    buttons.push((y0, sx, sx + sw, SButton::Scope));
-    // 左: 分類
-    let lw = 16;
-    let mut cat_rows = Vec::new();
-    p.cols = x0 + lw;
-    let filtering = !d.filter.text().is_empty();
-    for (i, c) in CATEGORIES.iter().enumerate() {
-        let r = 2 + i;
-        let sel = i == d.cat && !filtering;
-        if sel {
-            p.out.push(Instance::fill(x0 as f32 * cell.w, y(r), lw as f32 * cell.w, cell.h, if d.focus == SFocus::Cats { FG } else { MATCH_BG }));
-        }
-        p.text(&format!(" {c}"), x0, y(r), if sel && d.focus == SFocus::Cats { BG } else if filtering { STATUS_FG } else { FG });
-        cat_rows.push((y0 + r, x0, x0 + lw, i));
-    }
-    p.out.push(Instance::fill((x0 + lw) as f32 * cell.w + cell.w * 0.5, y(1), 1.0, (h - 3) as f32 * cell.h, LINE_NO));
-    // 右: 項目
-    let rx = x0 + lw + 2;
-    let items = d.items();
-    let body = h.saturating_sub(6);
-    let top = d.selected.saturating_sub(body.saturating_sub(1));
-    let label_w = items.iter().map(|i| p.width(i.label)).max().unwrap_or(10).min(34) + 2;
-    let vx = rx + label_w;
-    let mut item_rows = Vec::new();
-    p.cols = x0 + w;
-    for (k, it) in items.iter().enumerate().skip(top).take(body) {
-        let r = 2 + k - top;
-        let sel = k == d.selected;
-        let focused = sel && matches!(d.focus, SFocus::Items | SFocus::Edit);
-        if focused {
-            p.out.push(Instance::fill(rx as f32 * cell.w - cell.w * 0.5, y(r), 2.0, cell.h, ACCENT_FG));
-        }
-        if sel {
-            p.out.push(Instance::fill(rx as f32 * cell.w, y(r), (x0 + w - rx - 1) as f32 * cell.w, cell.h, MATCH_BG));
-        }
-        let saved2 = p.cols;
-        p.cols = vx.saturating_sub(1);
-        p.text(it.label, rx, y(r), if focused { FG } else { rgb(0xb0b0b0) });
-        p.cols = saved2;
-        // 値（直している項目は入力欄）
-        let overridden = d.work.project.contains_key(it.key) && it.project;
-        let changed = d.work.global.contains_key(it.key) || overridden;
-        if sel && d.focus == SFocus::Edit {
-            if let Some(f) = &d.field {
-                draw_vim_field(p, f, vx, y(r), &ed.preedit);
-            }
-        } else {
-            let v = d.display(it);
-            let color = match it.kind {
-                SKind::Bool if d.work.bool(it.key) => GIT_ADD,
-                _ if changed => FG,
-                _ => STATUS_FG,
-            };
-            let shown = match it.kind {
-                SKind::Choice(_) if focused => format!("◀ {v} ▶"),
-                _ => v,
-            };
-            let end = p.text(&shown, vx, y(r), color);
-            if overridden {
-                p.text("  P", end, y(r), ACCENT_FG);
-            }
-        }
-        item_rows.push((y0 + r, k, vx));
-    }
-    if items.is_empty() {
-        p.text("合う項目がありません", rx, y(2), STATUS_FG);
-    }
-    // 説明（選んだ項目）
-    if let Some(it) = d.current() {
-        let mut desc = it.help.to_string();
-        if it.project {
-            desc = format!("{desc}{}プロジェクトごとに変えられる（p）", if desc.is_empty() { "" } else { "。" });
-        }
-        let def = match it.kind {
-            SKind::Choice(c) => c.iter().find(|x| x.0 == it.default).map_or(it.default, |x| x.1),
-            _ if it.default.is_empty() => "空",
-            _ => it.default,
-        };
-        // JDK は、使う java の場所も出す
-        let desc = if it.kind == SKind::Jdk {
-            let jdk = d.work.text(it.key).map(std::path::PathBuf::from).or_else(nagi_workers::jobs::java_home_fix).or_else(|| std::env::var_os("JAVA_HOME").map(std::path::PathBuf::from));
-            match jdk {
-                Some(j) => format!("java: {}", j.join("bin").join("java.exe").display()),
-                None => "java: 見つかりません（Enter でダウンロード）".into(),
-            }
-        } else if let SKind::Tool(id) = it.kind {
-            // 使うもの: 設定したもの、無ければ裏で調べた結果（WSL のプロジェクトなら WSL の中のもの）
-            let info = d.tool_info.lock().ok().and_then(|m| m.get(id).cloned());
-            let exe = nagi_workers::toolchains::def(id).map_or("", |t| t.exe);
-            match (d.work.text(it.key), info) {
-                (_, Some(i)) if i.starts_with("WSL") => i,
-                (Some(b), _) => format!("使う: {}", std::path::Path::new(&b).join(exe).display()),
-                (None, Some(i)) => i,
-                (None, None) => "調べています…".into(),
-            }
-        } else {
-            desc
-        };
-        p.text(&format!("{desc}{}既定: {def}   r で既定に戻す", if desc.is_empty() { "" } else { "   " }), rx, y(h - 3), STATUS_FG);
-    }
-    // 下: 案内とボタン
-    let help = match d.focus {
-        SFocus::Cats => "j/k 分類  Tab 項目へ  / 絞り込み  Ctrl+Enter 適用して閉じる  Esc 閉じる",
-        SFocus::Items => "j/k 選ぶ  Space・Enter 切り替え・直す  h/l 選択肢  Tab 分類へ  Ctrl+Enter OK",
-        SFocus::Edit => "Enter 決める  Esc ノーマル→やめる",
-        SFocus::Filter => "打って絞り込み  Enter・↓ 項目へ",
-        SFocus::Combo => "打って絞り込み  ↑↓ 選ぶ  Enter・クリック 決める  Esc やめる",
-    };
-    let by = h - 1;
-    buttons.extend(dialog_buttons(p, x0 + w, y0 + by, &[(" 取り消し ", SButton::Cancel), (" 適用 ", SButton::Apply), (" OK ", SButton::Ok)], SButton::Ok));
-    p.cols = x0 + w.saturating_sub(30);
-    p.text(help, x0 + 1, y(by), STATUS_FG);
-    // コンボボックス（フォントの一覧）: 選んでいる項目の下（入らなければ上）に重ねる
-    let mut combo_rows = Vec::new();
-    if let (Some(c), Some(&(irow, _, ivx))) = (&d.combo, item_rows.iter().find(|r| r.1 == d.selected)) {
-        let shown = c.shown();
-        let cw = 64.min((x0 + w).saturating_sub(ivx + 1)).max(20);
-        let list_h = shown.len().clamp(1, 12);
-        let total = list_h + 1;
-        let below = irow + 1 + total <= y0 + h - 2;
-        let top_row = if below { irow + 1 } else { irow.saturating_sub(total) };
-        let cy = |r: usize| (top_row + r) as f32 * cell.h;
-        p.out.push(Instance::fill(ivx as f32 * cell.w - 1.0, cy(0) - 1.0, cw as f32 * cell.w + 2.0, total as f32 * cell.h + 2.0, ACCENT_FG));
-        p.out.push(Instance::fill(ivx as f32 * cell.w, cy(0), cw as f32 * cell.w, total as f32 * cell.h, rgb(0x1c1c1c)));
-        p.cols = ivx + cw;
-        let e = p.text("🔍 ", ivx, cy(0), FG);
-        if c.filter.text().is_empty() && c.filter.is_insert() {
-            p.caret(e, cy(0));
-            p.text(&format!("打って絞り込み（{} 件）", shown.len()), e + 1, cy(0), LINE_NO);
-        } else {
-            draw_vim_field(p, &c.filter, e, cy(0), &ed.preedit);
-        }
-        let sel = c.sel.min(shown.len().saturating_sub(1));
-        let start = sel.saturating_sub(list_h.saturating_sub(1)).max(c.top.min(sel));
-        for (k, &i) in shown.iter().enumerate().skip(start).take(list_h) {
-            let r = 1 + k - start;
-            let on = k == sel;
-            if on {
-                p.out.push(Instance::fill(ivx as f32 * cell.w, cy(r), cw as f32 * cell.w, cell.h, ACCENT_FG));
-            }
-            let item = &c.items[i];
-            let end = p.text(&format!(" {}", item.label), ivx, cy(r), if on { BG } else { FG });
-            if !item.tag.is_empty() {
-                let tag = format!("{} ", item.tag);
-                let tag = tag.as_str();
-                let tx = (ivx + cw).saturating_sub(p.width(tag));
-                if tx > end {
-                    p.text(tag, tx, cy(r), if on { BG } else { STATUS_FG });
-                }
-            }
-            combo_rows.push((top_row + r, ivx, ivx + cw, i));
-        }
-        if shown.is_empty() {
-            p.text(" 合うフォントがありません", ivx, cy(1), STATUS_FG);
-        }
-    }
-    d.combo_rows.set(combo_rows);
-    p.cols = saved;
-    d.cat_rows.set(cat_rows);
-    *d.item_rows.borrow_mut() = item_rows;
-    d.buttons.set(buttons);
-}
-
-/// 実行の構成の画面（画面の中央に重ねる）。左に一覧（上に ＋ ⧉ −）、右に欄、下にコマンドの見本とボタン
-fn draw_run_dialog(p: &mut Painter, ed: &Editor, d: &crate::run_dialog::RunDialog, cols: usize, rows: usize) {
-    use crate::run_dialog::{DialogButton, Focus};
-    let cell = p.fonts.cell();
-    let w = cols.saturating_sub(6).clamp(40, 120).min(cols);
-    // 高さは中身に合わせる（一覧の数・欄の数とコマンドの見本の分）
-    let need = (d.configs.len() + 6).max(d.fields.len() + 13).max(16);
-    let h = need.min(30).min(rows.saturating_sub(2)).max(12.min(rows));
-    let (x0, y0) = dialog_frame(p, cols, rows, w, h);
-    let y = |r: usize| (y0 + r) as f32 * cell.h;
-    let saved = p.cols;
-    p.cols = x0 + w;
-    p.text(" 実行の構成", x0, y(0), FG);
-    let lw = (w / 3).clamp(22, 36);
-    let rx = x0 + lw + 2;
-    // 一覧と欄の間の線
-    p.out.push(Instance::fill((x0 + lw) as f32 * cell.w + cell.w * 0.5, y(1), 1.0, (h - 3) as f32 * cell.h, LINE_NO));
-    let mut buttons = Vec::new();
-    // 一覧の上: ＋ ⧉ −
-    let mut bx = x0 + 1;
-    for (label, b) in [("＋", DialogButton::Add), ("⧉", DialogButton::Copy), ("−", DialogButton::Delete)] {
-        let end = p.text(label, bx, y(1), STATUS_FG);
-        buttons.push((y0 + 1, bx, end, b));
-        bx = end + 2;
-    }
-    // 一覧
-    let list_focused = d.focus == Focus::List;
-    let body = h.saturating_sub(5);
-    let top = d.selected.saturating_sub(body.saturating_sub(1));
-    let mut list_rows = Vec::new();
-    p.cols = x0 + lw;
-    for (k, c) in d.configs.iter().enumerate().skip(top).take(body) {
-        let r = 2 + k - top;
-        let sel = k == d.selected;
-        if sel {
-            p.out.push(Instance::fill(x0 as f32 * cell.w, y(r), lw as f32 * cell.w, cell.h, if list_focused { FG } else { MATCH_BG }));
-        }
-        let (fg, dim) = if sel && list_focused { (BG, BG) } else { (FG, STATUS_FG) };
-        let mark = if Some(&c.name) == ed.run_selected.as_ref() { "● " } else { "  " };
-        let end = p.text(&format!(" {mark}{}", c.name), x0, y(r), fg);
-        let tag = if c.from == "IntelliJ" { format!("{}・IJ", c.kind_label()) } else { c.kind_label() };
-        let tw = p.width(&tag);
-        let tx = (x0 + lw).saturating_sub(tw + 1);
-        if tx > end {
-            p.text(&tag, tx, y(r), dim);
-        }
-        list_rows.push((y0 + r, x0, x0 + lw, k));
-    }
-    // 右: 欄
-    p.cols = x0 + w;
-    let mut field_rows = Vec::new();
-    let label_w = 14;
-    let fx = rx + label_w;
-    if let Some(c) = d.current() {
-        let mut r = 1;
-        let row = |p: &mut Painter, r: usize, label: &str, focused: bool| {
-            if focused {
-                p.out.push(Instance::fill(rx as f32 * cell.w - cell.w * 0.5, y(r), 2.0, cell.h, ACCENT_FG));
-            }
-            p.text(label, rx, y(r), if focused { FG } else { STATUS_FG });
-        };
-        // 名前
-        row(p, r, "名前", d.focus == Focus::Name);
-        if d.focus == Focus::Name {
-            draw_vim_field(p, &d.name, fx, y(r), &ed.preedit);
-        } else {
-            p.text(&d.name.text(), fx, y(r), FG);
-        }
-        field_rows.push((y0 + r, Focus::Name, fx));
-        r += 1;
-        // 種類（h/l で切り替え）
-        row(p, r, "種類", d.focus == Focus::Kind);
-        let kind = c.kind_label();
-        if d.focus == Focus::Kind {
-            let end = p.text(&format!("◀ {kind} ▶"), fx, y(r), FG);
-            p.text("   h/l で切り替え", end, y(r), STATUS_FG);
-        } else {
-            p.text(&kind, fx, y(r), FG);
-        }
-        field_rows.push((y0 + r, Focus::Kind, fx));
-        r += 1;
-        for (i, (_, label, f)) in d.fields.iter().enumerate() {
-            let focused = d.focus == Focus::Field(i);
-            row(p, r, label, focused);
-            if focused {
-                draw_vim_field(p, f, fx, y(r), &ed.preedit);
-            } else {
-                let t = f.text();
-                p.text(if t.is_empty() { "—" } else { &t }, fx, y(r), if t.is_empty() { LINE_NO } else { FG });
-            }
-            field_rows.push((y0 + r, Focus::Field(i), fx));
-            r += 1;
-        }
-        r += 1;
-        let place = match (c.from, &c.kind) {
-            (_, nagi_workers::runconfig::Kind::Unsupported { .. }) => "この種類は nagi では動かせません（種類を選び直せば nagi の構成になる）",
-            ("IntelliJ", _) => "保存先: IntelliJ の構成（直すと nagi の構成として .nagi/run.conf に保存）",
-            _ => "保存先: nagi（.nagi/run.conf）",
-        };
-        p.text(place, rx, y(r), STATUS_FG);
-        r += 1;
-        // コマンドの見本（長ければ折り返す。ボタンの行の手前まで）
-        p.text("コマンド: ", rx, y(r), STATUS_FG);
-        let cx = rx + 10;
-        let width = (x0 + w).saturating_sub(cx + 1).max(10);
-        let mut line = String::new();
-        let mut lw = 0;
-        for g in ed.run_dialog_preview().graphemes(true) {
-            let gw = p.width(g);
-            if lw + gw > width {
-                if r + 2 >= h {
-                    line.push('…');
-                    break;
-                }
-                p.text(&line, cx, y(r), rgb(0xa8a8a8));
-                r += 1;
-                line.clear();
-                lw = 0;
-            }
-            line.push_str(g);
-            lw += gw;
-        }
-        p.text(&line, cx, y(r), rgb(0xa8a8a8));
-    } else {
-        p.text("構成がありません。＋（a）で追加", rx, y(1), STATUS_FG);
-    }
-    // 下: 案内とボタン
-    let help = match d.focus {
-        Focus::List => "j/k 選ぶ  Enter 直す  a 追加  c 複製  d 削除  r 実行  Ctrl+Enter 保存  Esc 閉じる",
-        Focus::Kind => "h/l 種類を切り替え  Tab 次の欄  Esc 一覧へ  Ctrl+Enter 保存",
-        _ => "Tab・Enter 次の欄  ↑↓ 前後  Esc ノーマル→一覧  Ctrl+Enter 保存",
-    };
-    let by = h - 1;
-    buttons.extend(dialog_buttons(p, x0 + w, y0 + by, &[(" 取り消し ", DialogButton::Cancel), (" 保存 ", DialogButton::Save), (" 実行 ", DialogButton::Run)], DialogButton::Save));
-    p.cols = x0 + w.saturating_sub(30);
-    p.text(help, x0 + 1, y(by), STATUS_FG);
-    p.cols = saved;
-    d.list_rows.set(list_rows);
-    *d.field_rows.borrow_mut() = field_rows;
-    d.buttons.set(buttons);
-}
-
 /// ダイアログの地と枠（画面の真ん中に幅 `w`・高さ `h`）。左上の (列, 行)
-fn dialog_frame(p: &mut Painter, cols: usize, rows: usize, w: usize, h: usize) -> (usize, usize) {
+pub(crate) fn dialog_frame(p: &mut Painter, cols: usize, rows: usize, w: usize, h: usize) -> (usize, usize) {
     let cell = p.fonts.cell();
     let (x0, y0) = ((cols - w) / 2, (rows - h) / 2);
     let (x, y) = ((x0 as f32 - 0.5) * cell.w, (y0 as f32 - 0.5) * cell.h);
@@ -3211,7 +1600,7 @@ fn dialog_frame(p: &mut Painter, cols: usize, rows: usize, w: usize, h: usize) -
 }
 
 /// ダイアログの下のボタンを右から並べる（`right` 列の左まで、画面の `row` 行目）。`primary` は強調する。当たり判定を返す
-fn dialog_buttons<T: Copy + PartialEq>(p: &mut Painter, right: usize, row: usize, buttons: &[(&str, T)], primary: T) -> Vec<(usize, usize, usize, T)> {
+pub(crate) fn dialog_buttons<T: Copy + PartialEq>(p: &mut Painter, right: usize, row: usize, buttons: &[(&str, T)], primary: T) -> Vec<(usize, usize, usize, T)> {
     let cell = p.fonts.cell();
     let y = row as f32 * cell.h;
     let mut bx = right;
@@ -3227,286 +1616,8 @@ fn dialog_buttons<T: Copy + PartialEq>(p: &mut Painter, right: usize, row: usize
     hits
 }
 
-/// ファインダーの候補を出す高さ（画面の 4 割、少なくとも 8 行）
-fn finder_height(rows: usize) -> usize {
-    (rows * 2 / 5).max(8).min(rows)
-}
-
-/// ランチャー: 左に操作、中央に検索の欄と一覧（ピン留め → 最近）、右に選んだプロジェクトのプレビュー。画面全体を覆う
-fn draw_launcher(p: &mut Painter, l: &crate::launcher::Launcher, cols: usize, rows: usize, preedit: &str) {
-    const ORANGE: [f32; 4] = rgb(0xd7af87);
-    const GREEN: [f32; 4] = rgb(0x87af87);
-    let cell = p.fonts.cell();
-    let y = |r: usize| r as f32 * cell.h;
-    p.out.push(Instance::fill(0.0, 0.0, cols as f32 * cell.w, rows as f32 * cell.h, BG));
-    let saved = p.cols;
-    // 左: 名前と版・操作・読み込み元
-    let lw = 26.min(cols / 5).max(20);
-    let pw = if cols >= 170 { 56 } else if cols >= 110 { 42 } else { 0 };
-    p.cols = lw;
-    p.text("nagi", 3, y(1), FG);
-    p.text(env!("CARGO_PKG_VERSION"), 3, y(2), STATUS_FG);
-    // 左の操作（押せる。Ctrl のキーは入力中でもノーマルでも効くので、いつも同じ表示に）
-    let acts = crate::launcher::ACTIONS;
-    let mut map = Vec::new();
-    for (i, (k, label, ctrl)) in acts.iter().enumerate() {
-        let r = 4 + i * 2;
-        let key = ctrl.to_string();
-        let kw = p.width(&key);
-        p.out.push(Instance::fill(3.0 * cell.w, y(r), (kw + 2) as f32 * cell.w, cell.h, STATUS_FG));
-        p.text(&key, 4, y(r), BG);
-        p.text(label, 6 + kw, y(r), FG);
-        map.push((r, *k));
-    }
-    *l.act_map.borrow_mut() = (map, lw);
-    let mut r = 4 + acts.len() * 2 + 1;
-    p.text("読み込み元", 3, y(r), STATUS_FG);
-    r += 1;
-    for (name, n) in l.sources() {
-        let c = p.text("✓ ", 3, y(r), GREEN);
-        let c = p.text(&name, c, y(r), FG);
-        p.text(&format!("  {n}"), c, y(r), LINE_NO);
-        r += 1;
-    }
-    p.out.push(Instance::fill(lw as f32 * cell.w, 0.0, 1.0, (rows - 1) as f32 * cell.h, LINE_NO));
-    // 右: プレビュー
-    let px = cols.saturating_sub(pw);
-    if pw > 0 {
-        p.out.push(Instance::fill(px as f32 * cell.w - 1.0, 0.0, 1.0, (rows - 1) as f32 * cell.h, LINE_NO));
-        p.cols = cols;
-        if let Some(e) = l.selected_entry() {
-            let x = px + 2;
-            let mut r = 1;
-            let line = |p: &mut Painter, s: &str, fg: [f32; 4], r: &mut usize| {
-                if *r + 1 < rows {
-                    p.text(s, x, y(*r), fg);
-                }
-                *r += 1;
-            };
-            line(p, &e.name, FG, &mut r);
-            line(p, &e.path.display().to_string(), STATUS_FG, &mut r);
-            match l.previews.get(&e.path) {
-                _ if e.missing => line(p, "フォルダがありません", DIAG_ERROR, &mut r),
-                None => line(p, "読んでいます…", STATUS_FG, &mut r),
-                Some(pv) => {
-                    r += 1;
-                    line(p, &pv.kind, ACCENT_FG, &mut r);
-                    if !e.kind.is_empty() {
-                        let m = if pv.modules.is_empty() { String::new() } else { format!("  {}", pv.modules.join(" · ")) };
-                        line(p, &format!("{}{m}", e.kind), FG, &mut r);
-                    }
-                    r += 1;
-                    line(p, "git", STATUS_FG, &mut r);
-                    match &pv.git {
-                        Some((b, ahead, behind, ch, untracked)) => {
-                            let ab = if *ahead + *behind > 0 { format!("  ↑{ahead} ↓{behind}") } else { String::new() };
-                            let un = if *untracked > 0 { format!("  未追跡 {untracked}") } else { String::new() };
-                            line(p, &format!("⎇ {b}{ab}  変更 {}{un}", ch.len()), if ch.is_empty() { FG } else { ORANGE }, &mut r);
-                            for (c, path) in ch.iter().take(5) {
-                                line(p, &format!("  {c} {path}"), STATUS_FG, &mut r);
-                            }
-                            if ch.len() > 5 {
-                                line(p, &format!("  ほか {} 件", ch.len() - 5), STATUS_FG, &mut r);
-                            }
-                        }
-                        None => line(p, "git なし", STATUS_FG, &mut r),
-                    }
-                    if !pv.restore.is_empty() {
-                        r += 1;
-                        line(p, "開くと復元するファイル", STATUS_FG, &mut r);
-                        for (f, ln, cur) in pv.restore.iter().take(6) {
-                            let name = f.rsplit('/').next().unwrap_or(f);
-                            line(p, &format!("  {name}  {} 行目{}", ln + 1, if *cur { "  ← 前面" } else { "" }), FG, &mut r);
-                        }
-                    }
-                    if !pv.excludes.is_empty() {
-                        r += 1;
-                        line(p, "除外するフォルダ（索引・検索に入れない）", STATUS_FG, &mut r);
-                        line(p, &format!("  {}", pv.excludes.join(" · ")), STATUS_FG, &mut r);
-                    }
-                    if !pv.readme.is_empty() {
-                        r += 1;
-                        line(p, "README", STATUS_FG, &mut r);
-                        for t in &pv.readme {
-                            line(p, &format!("  {t}"), STATUS_FG, &mut r);
-                        }
-                    }
-                }
-            }
-        }
-    }
-    // 中央: 検索の欄と一覧
-    let cx = lw + 2;
-    let cr = if pw > 0 { px.saturating_sub(2) } else { cols };
-    p.cols = cr;
-    let cw = cr.saturating_sub(cx);
-    // 欄の枠（1px）
-    let (bx, bw) = (cx as f32 * cell.w - 4.0, cw as f32 * cell.w + 8.0);
-    for (yy, h) in [(y(1) - 3.0, 1.0), (y(2) + 2.0, 1.0)] {
-        p.out.push(Instance::fill(bx, yy, bw, h, LINE_NO));
-    }
-    p.out.push(Instance::fill(bx, y(1) - 3.0, 1.0, cell.h + 6.0, LINE_NO));
-    p.out.push(Instance::fill(bx + bw, y(1) - 3.0, 1.0, cell.h + 6.0, LINE_NO));
-    let c = p.text("> ", cx, y(1), STATUS_FG);
-    let ask_open = l.ask.is_some();
-    if !ask_open && l.field.is_insert() {
-        let t = l.field.text();
-        field(p, &t, l.field.cursor().1.min(t.len()), preedit, c, y(1), true);
-    } else {
-        draw_vim_line(p, &l.field, 0, c, y(1), "", !ask_open);
-    }
-    let info = format!("{}  {}/{} ", l.field.mode_label(), l.hits.len(), l.all.len());
-    p.text(&info, cr.saturating_sub(p.width(&info)), y(1), LINE_NO);
-    // 一覧（ピン留め → 最近）。列: 名前・どこで・種類・ブランチ・場所・いつ
-    let top = 4;
-    let bottom = rows.saturating_sub(2);
-    let mut map = Vec::new();
-    if l.loading.is_some() {
-        p.text("最近のプロジェクトを集めています…", cx, y(top), STATUS_FG);
-    } else if l.hits.is_empty() {
-        p.text(if l.all.is_empty() { "最近のプロジェクトはありません（o でフォルダを開く）" } else { "当たるものがありません" }, cx, y(top), STATUS_FG);
-    }
-    // 1 件 2 行（IntelliJ の Welcome と同じ）: 名前・どこで開いたか・いつ / 場所・種類・ブランチ
-    let cap = (bottom.saturating_sub(top + 3) / 2).max(1);
-    let start = if l.selected >= cap { l.selected + 1 - cap } else { 0 };
-    let home = std::env::var("USERPROFILE").unwrap_or_default();
-    let mut r = top;
-    let mut last_pin: Option<bool> = None;
-    for (k, &i) in l.hits.iter().enumerate().skip(start) {
-        let e = &l.all[i];
-        if last_pin != Some(e.pinned) {
-            if last_pin.is_some() {
-                r += 1;
-            }
-            if r + 2 >= bottom {
-                break;
-            }
-            p.text(if e.pinned { "ピン留め" } else { "最近" }, cx, y(r), STATUS_FG);
-            r += 1;
-            last_pin = Some(e.pinned);
-        }
-        if r + 2 > bottom {
-            break;
-        }
-        let sel = k == l.selected;
-        if sel {
-            p.out.push(Instance::fill(cx as f32 * cell.w - 4.0, y(r), cw as f32 * cell.w + 8.0, 2.0 * cell.h, FG));
-        }
-        let col = |c: [f32; 4]| if sel { BG } else { c };
-        let when = if e.missing { "見つかりません".to_string() } else { crate::launcher::ago(e.when) };
-        let from = e.from.trim_end_matches("Idea").to_string();
-        let right = format!("{from}   {when}");
-        let rw = p.width(&right);
-        let rx = cr.saturating_sub(rw + 1);
-        let name = clip_width(p, &e.name, rx.saturating_sub(cx + 4));
-        p.text(&format!("{}{name}", if e.pinned { "★ " } else { "  " }), cx, y(r), col(if e.missing { DIAG_ERROR } else { FG }));
-        let from_c = match from.as_str() {
-            "IntelliJ" => ACCENT_FG,
-            "WebStorm" => ORANGE,
-            "Eclipse" => GREEN,
-            _ => STATUS_FG,
-        };
-        let c = p.text(&from, rx, y(r), col(from_c));
-        p.text(&format!("   {when}"), c, y(r), col(if e.missing { DIAG_ERROR } else { STATUS_FG }));
-        // 2 行目: 場所（ホームは ~）・種類・ブランチ
-        let full = e.path.display().to_string();
-        let path = match full.strip_prefix(&home) {
-            Some(rest) if !home.is_empty() => format!("~{rest}"),
-            _ => full,
-        };
-        let mut extra = Vec::new();
-        if !e.kind.is_empty() {
-            extra.push(e.kind.clone());
-        }
-        if let Some(b) = &e.branch {
-            extra.push(format!("⎇ {b}"));
-        }
-        // 場所を先に。種類とブランチは残りの幅に入る分だけ
-        let room = cr.saturating_sub(cx + 3);
-        let path = clip_width(p, &path, room);
-        let end = p.text(&path, cx + 2, y(r + 1), col(STATUS_FG));
-        let ex = extra.join("   ");
-        let left = cr.saturating_sub(end + 4);
-        if left >= 8 {
-            let ex = clip_width(p, &ex, left);
-            let exw = p.width(&ex);
-            p.text(&ex, cr.saturating_sub(exw + 1), y(r + 1), col(if sel { BG } else { STATUS_FG }));
-        }
-        map.push((r, k));
-        map.push((r + 1, k));
-        r += 2;
-    }
-    *l.row_map.borrow_mut() = map;
-    // 最下行: 入力（o・g）・知らせ・キーの案内
-    p.cols = cols;
-    let by = y(rows - 1);
-    p.out.push(Instance::fill(0.0, by - 1.0, cols as f32 * cell.w, 1.0, LINE_NO));
-    if let Some((ask, f)) = &l.ask {
-        let lead = match ask {
-            crate::launcher::Ask::Clone => "git の URL: ",
-        };
-        let c = p.text(lead, 1, by, FG);
-        draw_vim_field(p, f, c, by, preedit);
-    } else if !l.message.is_empty() {
-        p.text(&l.message, 1, by, FG);
-    } else {
-        let mode = if l.field.is_insert() { "-- INSERT --" } else { "-- NORMAL --" };
-        let c = p.text(mode, 1, by, FG);
-        let help = if l.field.is_insert() { "Enter 開く   ↑↓ 選ぶ   左の操作は ^（Ctrl）のキーかクリック   Esc → j/k・p ピン留め・dd 外す" } else { "Enter 開く   j/k 選ぶ   p ピン留め   dd 外す   左の操作は ^（Ctrl）のキーかクリック   i 入力   Esc 閉じる" };
-        p.text(help, c + 3, by, STATUS_FG);
-    }
-    p.cols = saved;
-}
-
-/// Markdown のプレビュー（右の欄）。等幅のまま、見出しの罫・コードの地・表の罫線・引用の ▎
-fn draw_md_preview(p: &mut Painter, pv: &crate::md_preview::MdPreview, r: Rect, focused: bool) {
-    use nagi_syntax::markdown::Style;
-    const CODE_BG: [f32; 4] = rgb(0x1a1a1a);
-    let cell = p.fonts.cell();
-    let (x0, y0, wpx) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
-    let body = r.h.saturating_sub(1);
-    if pv.lines.is_empty() {
-        p.text(" （空の文書）", r.x, y0 + cell.h, STATUS_FG);
-        return;
-    }
-    for (k, l) in pv.lines.iter().enumerate().skip(pv.scroll).take(body) {
-        let y = y0 + (1 + k - pv.scroll) as f32 * cell.h;
-        if l.code {
-            p.out.push(Instance::fill(x0 + cell.w, y, wpx - 2.0 * cell.w, cell.h, CODE_BG));
-        }
-        if focused && k == pv.selected {
-            p.out.push(Instance::fill(x0, y, 2.0, cell.h, FG));
-        }
-        // 範囲ごとの色（無いところは地の色）
-        let color = |st: Style| match st {
-            Style::Plain => FG,
-            Style::Heading => rgb(0x87afd7),
-            Style::Strong => rgb(0xeeeeee),
-            Style::Emph => rgb(0xd7af87),
-            Style::Code => rgb(0xafaf87),
-            Style::Link => rgb(0x87afd7),
-            Style::Strike => rgb(0x6c6c6c),
-            Style::Dim => rgb(0x6c6c6c),
-            Style::Marker => rgb(0xd7875f),
-            Style::Hl(h) => hl_color(h),
-        };
-        let mut items: Vec<Item> = Vec::new();
-        let mut bi = 0;
-        for g in l.text.graphemes(true) {
-            let st = l.spans.iter().rev().find(|(rg, _)| rg.start <= bi && bi < rg.end).map(|x| x.1);
-            let width = p.cell_width(g);
-            let fg = st.map_or(FG, color);
-            let bg = if st == Some(Style::Code) && !l.code { Some(CODE_BG) } else { None };
-            let underline = st == Some(Style::Link);
-            items.push(Item { g: Cow::Borrowed(g), width, fg, bg, underline });
-            bi += g.len();
-        }
-        p.draw(&items, r.x + 1, y);
-    }
-}
-
 /// 表示の幅 `w` に収まるように切る（切ったら末尾に …）
-fn clip_width(p: &Painter, s: &str, w: usize) -> String {
+pub(crate) fn clip_width(p: &Painter, s: &str, w: usize) -> String {
     if p.width(s) <= w {
         return s.to_string();
     }
@@ -3522,42 +1633,11 @@ fn clip_width(p: &Painter, s: &str, w: usize) -> String {
 }
 
 /// 当たった文字の色（ハイライトのキーワードと同じ控えめな青）
-const FINDER_MATCH: [f32; 4] = ACCENT_FG;
-
-/// ファインダーの候補。最下行のすぐ上が一番良い候補で、上へ行くほど点数が下がる（fzf と同じ並び）
-fn draw_finder(p: &mut Painter, f: &crate::finder::Finder, rows: usize, cols: usize) {
-    let cell = p.fonts.cell();
-    let h = finder_height(rows);
-    let top = rows - h;
-    // 下の本文を隠し、上端に 1px の線を引く
-    p.out.push(Instance::fill(0.0, top as f32 * cell.h, cols as f32 * cell.w, h as f32 * cell.h, BG));
-    p.out.push(Instance::fill(0.0, top as f32 * cell.h, cols as f32 * cell.w, 1.0, LINE_NO));
-    let q = nagi_core::fuzzy::Query::new(&f.query.text);
-    for k in 0..h {
-        let Some(&(i, _)) = f.hits.get(f.scroll + k) else { break };
-        let text = &f.items[i as usize];
-        let y = (rows - 1 - k) as f32 * cell.h;
-        let selected = f.scroll + k == f.selected;
-        let hit: std::collections::HashSet<usize> = if q.is_empty() { Default::default() } else { q.positions(text).into_iter().collect() };
-        if selected {
-            p.out.push(Instance::fill(0.0, y, cols as f32 * cell.w, cell.h, FG));
-        }
-        let (fg, accent) = if selected { (BG, BG) } else { (FG, FINDER_MATCH) };
-        let mut items = p.items(if selected { "> " } else { "  " }, fg);
-        let mut ci = 0;
-        for g in text.graphemes(true) {
-            let m = hit.contains(&ci);
-            let width = p.cell_width(g);
-            items.push(Item { g: Cow::Borrowed(g), width, fg: if m { accent } else { fg }, bg: None, underline: m && selected });
-            ci += g.chars().count();
-        }
-        p.draw(&items, 0, y);
-    }
-}
+pub(crate) const FINDER_MATCH: [f32; 4] = ACCENT_FG;
 
 /// 最下行の入力欄（`:` `/` `?` `→`）。`active` なら縦棒カーソルと IME の変換中の文字列を出す
 /// 入力欄の文字（カーソルの位置に IME の変換中の文字を下線付きで入れ、縦棒を描く）。描いた最後の列を返す
-fn field(p: &mut Painter, text: &str, cursor: usize, preedit: &str, col: usize, y: f32, active: bool) -> usize {
+pub(crate) fn field(p: &mut Painter, text: &str, cursor: usize, preedit: &str, col: usize, y: f32, active: bool) -> usize {
     let cursor = cursor.min(text.len());
     let mut items = p.items(&text[..cursor], FG);
     let caret = col + items.iter().map(|i| i.width).sum::<usize>();
@@ -3578,7 +1658,7 @@ fn field(p: &mut Painter, text: &str, cursor: usize, preedit: &str, col: usize, 
 }
 
 /// Vim 風の入力欄の 1 行（Insert は縦棒と IME の変換中の文字、ノーマルは四角のカーソル、Visual は選んだ所の地）
-fn draw_vim_line(p: &mut Painter, f: &crate::vim_field::VimField, l: usize, col: usize, y: f32, preedit: &str, active: bool) -> usize {
+pub(crate) fn draw_vim_line(p: &mut Painter, f: &crate::vim_field::VimField, l: usize, col: usize, y: f32, preedit: &str, active: bool) -> usize {
     let cell = p.fonts.cell();
     let text = f.ed.buf.line(l);
     let (cl, cb) = f.cursor();
@@ -3622,11 +1702,11 @@ fn draw_vim_line(p: &mut Painter, f: &crate::vim_field::VimField, l: usize, col:
 }
 
 /// 1 行の Vim 風の入力欄
-fn draw_vim_field(p: &mut Painter, f: &crate::vim_field::VimField, col: usize, y: f32, preedit: &str) -> usize {
+pub(crate) fn draw_vim_field(p: &mut Painter, f: &crate::vim_field::VimField, col: usize, y: f32, preedit: &str) -> usize {
     draw_vim_line(p, f, 0, col, y, preedit, true)
 }
 
-fn prompt_line(p: &mut Painter, lead: &str, text: &str, cursor: usize, preedit: &str, y: f32, active: bool) {
+pub(crate) fn prompt_line(p: &mut Painter, lead: &str, text: &str, cursor: usize, preedit: &str, y: f32, active: bool) {
     let c = p.text(lead, 0, y, if active { FG } else { STATUS_FG });
     let mut items = p.items(&text[..cursor], FG);
     let caret = c + items.iter().map(|i| i.width).sum::<usize>();
@@ -3645,7 +1725,7 @@ fn prompt_line(p: &mut Painter, lead: &str, text: &str, cursor: usize, preedit: 
 }
 
 /// ターミナルの色（16 色は Windows Terminal の Campbell、16〜255 は xterm の 256 色）
-fn term_color(c: vt100::Color, default: [f32; 4]) -> [f32; 4] {
+pub(crate) fn term_color(c: vt100::Color, default: [f32; 4]) -> [f32; 4] {
     const BASE: [u32; 16] = [0x0c0c0c, 0xc50f1f, 0x13a10e, 0xc19c00, 0x0037da, 0x881798, 0x3a96dd, 0xcccccc, 0x767676, 0xe74856, 0x16c60c, 0xf9f1a5, 0x3b78ff, 0xb4009e, 0x61d6d6, 0xf2f2f2];
     match c {
         vt100::Color::Default => default,
@@ -3663,122 +1743,12 @@ fn term_color(c: vt100::Color, default: [f32; 4]) -> [f32; 4] {
     }
 }
 
-/// ターミナル（下の欄）。1 行目に窓の並び、2 行目からシェルの画面。移っていればカーソル（四角）と IME の位置
-fn draw_terminal(p: &mut Painter, ed: &Editor, r: Rect, focused: bool) {
-    let cell = p.fonts.cell();
-    let ts = &ed.terminals;
-    let saved = p.cols;
-    p.cols = r.x + r.w;
-    // 窓の並び（今の窓は明るく下線、＋で新しい窓）
-    let y0 = r.y as f32 * cell.h;
-    let mut x = r.x;
-    for (label, target) in crate::terminal::strip_items(ts) {
-        let on = target == Some(ts.active) && !ts.list.is_empty();
-        let end = p.text(&label, x, y0, if on { FG } else { STATUS_FG });
-        if on {
-            p.out.push(Instance::fill(x as f32 * cell.w, y0 + cell.h - 2.0, (end - x) as f32 * cell.w, 2.0, if focused { GIT_MOD } else { STATUS_FG }));
-        }
-        // 区切り: 罫線の文字は行の上下いっぱいに伸びて上のタブの線とつながるので、上下を空けた細い線にする
-        let h = (cell.h * 0.5).round();
-        p.out.push(Instance::fill((end as f32 + 0.5) * cell.w, y0 + (cell.h - h) / 2.0, 1.0, h, LINE_NO));
-        x = end + 1;
-    }
-    let r = Rect { x: r.x, y: r.y + 1, w: r.w, h: r.h.saturating_sub(1) };
-    // シェルを選んでいる
-    if let Some(sel) = ts.chooser {
-        p.text(" 新しい窓のシェル（j/k・数字で選んで Enter、Esc でやめる）", r.x, r.y as f32 * cell.h, STATUS_FG);
-        for (k, (label, cmd)) in crate::terminal::available_shells().iter().enumerate() {
-            let y = (r.y + 1 + k) as f32 * cell.h;
-            if k == sel {
-                p.out.push(Instance::fill(r.x as f32 * cell.w, y, r.w as f32 * cell.w, cell.h, if focused { FG } else { MATCH_BG }));
-            }
-            let rev = k == sel && focused;
-            let c = p.text(&format!("  {} {label}", k + 1), r.x, y, if rev { BG } else { FG });
-            p.text(&format!("   {cmd}"), c, y, if rev { BG } else { LINE_NO });
-        }
-        p.cols = saved;
-        return;
-    }
-    let Some(t) = ts.current() else {
-        p.text(" 窓がありません（Enter で開く、c でシェルを選ぶ）", r.x, r.y as f32 * cell.h, STATUS_FG);
-        p.cols = saved;
-        return;
-    };
-    let x0 = r.x + 1;
-    t.term.with_screen(|s| {
-        let (rows, cols) = s.size();
-        let scrolled = s.scrollback() > 0;
-        for row in 0..rows.min(r.h as u16) {
-            let y = (r.y + row as usize) as f32 * cell.h;
-            let mut items: Vec<Item> = Vec::with_capacity(cols as usize);
-            for col in 0..cols {
-                let Some(c) = s.cell(row, col) else { continue };
-                if c.is_wide_continuation() {
-                    continue;
-                }
-                let (mut fg, mut bg) = (term_color(c.fgcolor(), FG), term_color(c.bgcolor(), BG));
-                if c.inverse() {
-                    std::mem::swap(&mut fg, &mut bg);
-                }
-                // マウスで選んでいる範囲は反転
-                if ts.selected(row, col) {
-                    fg = BG;
-                    bg = FG;
-                }
-                if c.dim() {
-                    fg = [fg[0] * 0.6, fg[1] * 0.6, fg[2] * 0.6, fg[3]];
-                }
-                let text = if c.has_contents() { c.contents().to_string() } else { " ".to_string() };
-                let width = if c.is_wide() { 2 } else { 1 };
-                let bg = (bg != BG).then_some(bg);
-                items.push(Item { g: Cow::Owned(text), width, fg, bg, underline: c.underline() });
-            }
-            p.draw(&items, x0, y);
-        }
-        // カーソル（遡っている間と、シェルが隠しているときは出さない）
-        let (cr, cc) = s.cursor_position();
-        if focused && !scrolled && !s.hide_cursor() && (cr as usize) < r.h {
-            let y = (r.y + cr as usize) as f32 * cell.h;
-            let col = x0 + cc as usize;
-            p.out.push(Instance::fill(col as f32 * cell.w, y, cell.w, cell.h, CURSOR));
-            let ch = s.cell(cr, cc).map(|c| c.contents().to_string()).filter(|c| !c.is_empty()).unwrap_or_default();
-            if !ch.is_empty() {
-                p.text(&ch, col, y, BG);
-            }
-            // IME の候補の窓はカーソルの位置へ（変換中の文字は下線で重ねる）
-            if !ed.preedit.is_empty() {
-                let mut pre = p.items(&ed.preedit, FG);
-                pre.iter_mut().for_each(|i| {
-                    i.underline = true;
-                    i.bg = Some(BG);
-                });
-                p.draw(&pre, col, y);
-            }
-            p.caret_at = Some((col, y));
-        }
-        if scrolled {
-            let tag = format!(" ↑ {} 行さかのぼっています（打つと戻る） ", s.scrollback());
-            let w = p.width(&tag);
-            let x = (r.x + r.w).saturating_sub(w + 1);
-            p.out.push(Instance::fill(x as f32 * cell.w, r.y as f32 * cell.h, w as f32 * cell.w, cell.h, MATCH_BG));
-            p.text(&tag, x, r.y as f32 * cell.h, FG);
-        }
-    });
-    if t.exited {
-        let y = (r.y + r.h.saturating_sub(1)) as f32 * cell.h;
-        p.out.push(Instance::fill(r.x as f32 * cell.w, y, r.w as f32 * cell.w, cell.h, MATCH_BG));
-        let back = if t.name.starts_with(crate::run_configs::RUN_PREFIX) { "Esc でエディタへ、" } else { "" };
-        p.text(&format!(" {} が終わりました。Enter で起動し直す（{back}Ctrl-\\ x で閉じる） ", t.name), r.x, y, FG);
-    }
-    p.cols = saved;
-}
-
 #[cfg(test)]
 mod squiggle_tests {
     use super::*;
 
     #[test]
-    fn squiggle_ranges() {
+    pub(crate) fn squiggle_ranges() {
         let l = "    String name = foo.bar(1);";
         assert_eq!(&l[squiggle_range(l, 11).0..squiggle_range(l, 11).1], "name", "語の途中でも語全体");
         assert_eq!(&l[squiggle_range(l, 0).0..squiggle_range(l, 0).1], "String name = foo.bar(1);", "列 0 で空白なら行全体");

@@ -224,3 +224,85 @@ fn line_of(buf: &nagi_core::Buffer, abs: usize) -> usize {
     }
     lo
 }
+
+/// 描き方（view.rs の Painter で描く）
+pub(crate) mod draw {
+    #![allow(unused_imports)]
+    use super::*;
+    use crate::view::*;
+
+    /// ログ: 読み取り専用の Vim の画面。1 行目は見出し（検索の入力中は検索語）、2 行目から本文。
+    /// カーソルは四角、ビジュアルで選んだ所は反転（本文と同じ）。[ERROR]・error: の行は赤、[WARNING]・warning: の行は黄色
+    pub(crate) fn draw_read_view(p: &mut Painter, g: &crate::grep_panel::GrepPanel, v: &crate::read_view::ReadView, r: Rect, focused: bool) {
+        let cell = p.fonts.cell();
+        let (x, y0, w) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
+        p.out.push(Instance::fill(x, y0, w, r.h as f32 * cell.h, BG));
+        p.out.push(Instance::fill(x, y0, w, 1.0, LINE_NO));
+        let ed = &v.ed;
+        let saved = p.cols;
+        p.cols = (r.x + r.w).saturating_sub(3);
+        match v.prompt() {
+            Some((lead, q)) => {
+                let end = p.text(&format!("{lead}{q}"), r.x, y0, FG);
+                p.caret(end, y0);
+            }
+            None => {
+                let mode = match ed.mode {
+                    Mode::Visual { block: true, .. } => "   -- VISUAL BLOCK --",
+                    Mode::Visual { line: true, .. } => "   -- VISUAL LINE --",
+                    Mode::Visual { .. } => "   -- VISUAL --",
+                    _ => "",
+                };
+                let head = format!(
+                    "{}   {} 行{}   {}/{}{mode}",
+                    g.title.as_deref().unwrap_or(""),
+                    g.hits.len(),
+                    if g.searching() { " …" } else { "" },
+                    ed.cursor.line + 1,
+                    ed.buf.line_count()
+                );
+                p.text(&head, r.x, y0, STATUS_FG);
+            }
+        }
+        p.cols = saved;
+        let n = g.hits.len();
+        for k in 0..r.h.saturating_sub(1) {
+            let line = ed.top + k;
+            if line >= n.max(1) || line >= ed.buf.line_count() {
+                break;
+            }
+            let y = (r.y + 1 + k) as f32 * cell.h;
+            let text = ed.buf.line(line);
+            let t = text.trim_start();
+            let base = if t.starts_with("[ERROR]") || t.starts_with("error") {
+                DIAG_ERROR
+            } else if t.starts_with("[WARNING]") || t.starts_with("[WARN]") || t.starts_with("warning") {
+                DIAG_WARN
+            } else {
+                FG
+            };
+            let vis = v.visual_in(line);
+            let cur = (focused && line == ed.cursor.line).then_some(ed.cursor.byte);
+            let mut items = Vec::new();
+            for (b, gr) in text.grapheme_indices(true) {
+                let width = p.cell_width(gr);
+                let sel = vis.is_some_and(|(s, e)| b >= s && b < e);
+                let (fg, bg) = if cur == Some(b) {
+                    (BG, Some(if sel { CURSOR_IN_SELECTION } else { CURSOR }))
+                } else if sel {
+                    (BG, Some(FG))
+                } else {
+                    (base, None)
+                };
+                items.push(Item { g: Cow::Borrowed(gr), width, fg, bg, underline: false });
+            }
+            let end = p.draw(&items, r.x, y);
+            // 空の行・行末のカーソル
+            if cur.is_some_and(|c| c >= text.len()) {
+                p.out.push(Instance::fill(end as f32 * cell.w, y, cell.w, cell.h, if vis.is_some() { CURSOR_IN_SELECTION } else { CURSOR }));
+            } else if vis.is_some() && text.is_empty() {
+                p.out.push(Instance::fill(end as f32 * cell.w, y, cell.w, cell.h, FG));
+            }
+        }
+    }
+}

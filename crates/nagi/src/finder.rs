@@ -451,6 +451,50 @@ fn display_path(p: &Path, root: &Path) -> String {
     }
 }
 
+
+/// 描き方（view.rs の Painter で描く）
+pub(crate) mod draw {
+    #![allow(unused_imports)]
+    use super::*;
+    use crate::view::*;
+
+    /// ファインダーの候補を出す高さ（画面の 4 割、少なくとも 8 行）
+    pub(crate) fn finder_height(rows: usize) -> usize {
+        (rows * 2 / 5).max(8).min(rows)
+    }
+
+    /// ファインダーの候補。最下行のすぐ上が一番良い候補で、上へ行くほど点数が下がる（fzf と同じ並び）
+    pub(crate) fn draw_finder(p: &mut Painter, f: &crate::finder::Finder, rows: usize, cols: usize) {
+        let cell = p.fonts.cell();
+        let h = finder_height(rows);
+        let top = rows - h;
+        // 下の本文を隠し、上端に 1px の線を引く
+        p.out.push(Instance::fill(0.0, top as f32 * cell.h, cols as f32 * cell.w, h as f32 * cell.h, BG));
+        p.out.push(Instance::fill(0.0, top as f32 * cell.h, cols as f32 * cell.w, 1.0, LINE_NO));
+        let q = nagi_core::fuzzy::Query::new(&f.query.text);
+        for k in 0..h {
+            let Some(&(i, _)) = f.hits.get(f.scroll + k) else { break };
+            let text = &f.items[i as usize];
+            let y = (rows - 1 - k) as f32 * cell.h;
+            let selected = f.scroll + k == f.selected;
+            let hit: std::collections::HashSet<usize> = if q.is_empty() { Default::default() } else { q.positions(text).into_iter().collect() };
+            if selected {
+                p.out.push(Instance::fill(0.0, y, cols as f32 * cell.w, cell.h, FG));
+            }
+            let (fg, accent) = if selected { (BG, BG) } else { (FG, FINDER_MATCH) };
+            let mut items = p.items(if selected { "> " } else { "  " }, fg);
+            let mut ci = 0;
+            for g in text.graphemes(true) {
+                let m = hit.contains(&ci);
+                let width = p.cell_width(g);
+                items.push(Item { g: Cow::Borrowed(g), width, fg: if m { accent } else { fg }, bg: None, underline: m && selected });
+                ci += g.chars().count();
+            }
+            p.draw(&items, 0, y);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

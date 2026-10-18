@@ -207,6 +207,64 @@ impl Editor {
     }
 }
 
+
+/// 描き方（view.rs の Painter で描く）
+pub(crate) mod draw {
+    #![allow(unused_imports)]
+    use super::*;
+    use crate::view::*;
+
+    /// 補完の候補（カーソルの下に最大 10 件。下に余白が無ければ上に）。ターミナルの Vim の補完メニューと同じ形
+    pub(crate) fn draw_completion(p: &mut Painter, ed: &Editor, c: &crate::complete::Completion, rows: usize, cols: usize) {
+        const MAX: usize = 10;
+        let cell = p.fonts.cell();
+        let rect = ed.active_rect();
+        let (sl, sb) = ed.buf.pos_of(c.start);
+        if sl < ed.top {
+            return;
+        }
+        // 折り返していれば、その行の中の画面の行と列
+        let Some((r, c0)) = ed.screen_pos(sl, sb) else { return };
+        let row = rect.y + r;
+        let col = (rect.x + ed.gutter() + c0).saturating_sub(1);
+        let n = c.items.len().min(MAX);
+        // 選んでいる候補が見える範囲
+        let first = c.sel.map_or(0, |s| s.saturating_sub(MAX - 1));
+        let notew = c.notes.iter().skip(first).take(n).map(|x| p.width(&x.1)).max().unwrap_or(0);
+        let width = c.items.iter().skip(first).take(n).map(|i| p.width(i)).max().unwrap_or(1) + 2 + if c.notes.is_empty() { 0 } else { notew + 5 };
+        let col = col.min(cols.saturating_sub(width));
+        let below = row + 1 + n <= rows;
+        let top = if below { row + 1 } else { row.saturating_sub(n) };
+        for (k, item) in c.items.iter().skip(first).take(n).enumerate() {
+            let y = (top + k) as f32 * cell.h;
+            let selected = c.sel == Some(first + k);
+            let (bg, fg) = if selected { (FG, BG) } else { (MATCH_BG, FG) };
+            p.out.push(Instance::fill(col as f32 * cell.w, y, width as f32 * cell.w, cell.h, bg));
+            match c.notes.get(first + k) {
+                Some((mark, note)) => {
+                    let mut b = [0u8; 4];
+                    let mc = match mark {
+                        'K' => rgb(0xd7af5f),
+                        'F' | 'T' | 'c' | 'I' | 'e' => FINDER_MATCH,
+                        'V' | 'f' => rgb(0xaf87d7),
+                        'm' => rgb(0xd7af87),
+                        'v' => STATUS_FG,
+                        _ => fg,
+                    };
+                    let x = p.text(" ", col, y, fg);
+                    let x = p.text(mark.encode_utf8(&mut b), x, y, if selected { BG } else { mc });
+                    p.text(&format!(" {item}"), x, y, fg);
+                    let nw = p.width(note);
+                    p.text(note, (col + width).saturating_sub(nw + 1), y, if selected { BG } else { STATUS_FG });
+                }
+                None => {
+                    p.text(&format!(" {item}"), col, y, fg);
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

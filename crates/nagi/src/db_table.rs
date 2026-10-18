@@ -523,6 +523,96 @@ impl Editor {
     }
 }
 
+
+/// 描き方（view.rs の Painter で描く）
+pub(crate) mod draw {
+    #![allow(unused_imports)]
+    use super::*;
+    use crate::view::*;
+
+    /// テーブルのデータの編集（窓の領域全体）
+    pub(crate) fn draw_db_table(p: &mut Painter, ed: &Editor, te: &crate::db_table::TableEditor, r: Rect) {
+        use crate::db_table::RowState;
+        let cell = p.fonts.cell();
+        let (x0, y0, wpx) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
+        p.out.push(Instance::fill(x0, y0, wpx, r.h as f32 * cell.h, BG));
+        let saved = p.cols;
+        p.cols = r.x + r.w;
+        // 1 行目: 名前と接続先、件数
+        let src = ed.db.as_ref().map_or(String::new(), |d| d.sources[te.src].name.clone());
+        let c = p.text(&format!(" {}", crate::db_panel::qualified(&te.schema, &te.table)), r.x, y0, FG);
+        let c = p.text(&format!("（{src}）"), c, y0, STATUS_FG);
+        if te.pk().is_empty() && !te.colinfo.is_empty() {
+            p.text("  主キーが無いので読むだけ", c, y0, DIAG_WARN);
+        }
+        let right = format!("{}   {}{}", te.range_label(), if te.running { "読んでいます…" } else { &te.info }, if te.busy { "   送信しています…" } else { "" });
+        let rw = p.width(&right);
+        p.text(&right, (r.x + r.w).saturating_sub(rw + 1), y0, STATUS_FG);
+        // 2 行目: 絞り込み
+        let fy = y0 + cell.h;
+        draw_filter_row(p, r, fy, &te.where_, &te.order, te.filter_edit.as_ref(), "", &ed.preedit);
+        p.out.push(Instance::fill(x0, fy + cell.h - 1.0, wpx, 1.0, rgb(0x2a2a2a)));
+        let marks: Vec<char> = te.cols.iter().map(|n| te.colinfo.iter().find(|c| &c.name == n).map_or(' ', |c| if c.pk { 'K' } else if !c.fk.is_empty() { 'F' } else { ' ' })).collect();
+        let value = |d: usize, c: usize| te.value(d, c);
+        let row_style = |d: usize| match te.at(d) {
+            (RowState::Added, _) => ("＋".to_string(), Some(DIFF_ADD_BG)),
+            (RowState::Deleted, r) => ((te.offset + r + 1).to_string(), Some(DIFF_DEL_BG)),
+            (RowState::Normal, r) => ((te.offset + r + 1).to_string(), None),
+        };
+        let cell_bg = |d: usize, c: usize| te.modified(d, c).then_some(rgb(0x1f3550));
+        let g = GridView {
+            cols: &te.cols,
+            types: &te.types,
+            widths: &te.widths,
+            marks,
+            sort: sort_of(&te.order),
+            rows: te.len(),
+            value: &value,
+            row_style: &row_style,
+            cell_bg: &cell_bg,
+            row: te.row,
+            col: te.col,
+            scroll: te.scroll,
+            hscroll: te.hscroll,
+            focused: te.editing.is_none(),
+        };
+        draw_grid(p, &g, Rect { x: r.x, y: r.y + 2, w: r.w, h: r.h.saturating_sub(2) });
+        // 値の入力欄（選んだセルの上に）
+        if let Some(f) = &te.editing {
+            if te.row >= te.scroll {
+                let mut x = r.x + 7;
+                for c in te.hscroll..te.col {
+                    x += te.widths[c] + 3;
+                }
+                let y = (r.y + 4 + te.row - te.scroll) as f32 * cell.h;
+                let w = (te.widths.get(te.col).copied().unwrap_or(10) + 2).max(p.width(&f.text()) + p.width(&ed.preedit) + 3);
+                p.out.push(Instance::fill((x - 1) as f32 * cell.w - 1.0, y - 1.0, w as f32 * cell.w + 2.0, cell.h + 2.0, FG));
+                p.out.push(Instance::fill((x - 1) as f32 * cell.w, y, w as f32 * cell.w, cell.h, rgb(0x1f3550)));
+                draw_vim_field(p, f, x, y, &ed.preedit);
+            }
+        }
+        // 送る前の確認（右下に SQL）
+        if let Some(stmts) = &te.preview {
+            let lines: Vec<String> = std::iter::once(format!(" 送信する変更（{} 件） — {src}", stmts.len())).chain(stmts.iter().map(|s| format!(" {s}"))).chain(std::iter::once(" y で送る ・ ほかのキーでやめる".to_string())).collect();
+            let w = lines.iter().map(|l| p.width(l)).max().unwrap_or(20).min(r.w.saturating_sub(4)) + 2;
+            let h = lines.len().min(r.h.saturating_sub(4));
+            let bx = (r.x + r.w).saturating_sub(w + 2);
+            let by = (r.y + r.h).saturating_sub(h + 1);
+            let (x, y) = (bx as f32 * cell.w, by as f32 * cell.h);
+            p.out.push(Instance::fill(x - 1.0, y - 1.0, w as f32 * cell.w + 2.0, h as f32 * cell.h + 2.0, STATUS_FG));
+            p.out.push(Instance::fill(x, y, w as f32 * cell.w, h as f32 * cell.h, rgb(0x141414)));
+            let lim = p.cols;
+            p.cols = bx + w;
+            for (k, l) in lines.iter().take(h).enumerate() {
+                let color = if k == 0 { FG } else if k + 1 == lines.len() { STATUS_FG } else { FINDER_MATCH };
+                p.text(l, bx, y + k as f32 * cell.h, color);
+            }
+            p.cols = lim;
+        }
+        p.cols = saved;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -151,6 +151,61 @@ impl Editor {
     }
 }
 
+
+/// 描き方（view.rs の Painter で描く）
+pub(crate) mod draw {
+    #![allow(unused_imports)]
+    use super::*;
+    use crate::view::*;
+
+    /// Markdown のプレビュー（右の欄）。等幅のまま、見出しの罫・コードの地・表の罫線・引用の ▎
+    pub(crate) fn draw_md_preview(p: &mut Painter, pv: &crate::md_preview::MdPreview, r: Rect, focused: bool) {
+        use nagi_syntax::markdown::Style;
+        const CODE_BG: [f32; 4] = rgb(0x1a1a1a);
+        let cell = p.fonts.cell();
+        let (x0, y0, wpx) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
+        let body = r.h.saturating_sub(1);
+        if pv.lines.is_empty() {
+            p.text(" （空の文書）", r.x, y0 + cell.h, STATUS_FG);
+            return;
+        }
+        for (k, l) in pv.lines.iter().enumerate().skip(pv.scroll).take(body) {
+            let y = y0 + (1 + k - pv.scroll) as f32 * cell.h;
+            if l.code {
+                p.out.push(Instance::fill(x0 + cell.w, y, wpx - 2.0 * cell.w, cell.h, CODE_BG));
+            }
+            if focused && k == pv.selected {
+                p.out.push(Instance::fill(x0, y, 2.0, cell.h, FG));
+            }
+            // 範囲ごとの色（無いところは地の色）
+            let color = |st: Style| match st {
+                Style::Plain => FG,
+                Style::Heading => rgb(0x87afd7),
+                Style::Strong => rgb(0xeeeeee),
+                Style::Emph => rgb(0xd7af87),
+                Style::Code => rgb(0xafaf87),
+                Style::Link => rgb(0x87afd7),
+                Style::Strike => rgb(0x6c6c6c),
+                Style::Dim => rgb(0x6c6c6c),
+                Style::Marker => rgb(0xd7875f),
+                Style::Hl(h) => hl_color(h),
+            };
+            let mut items: Vec<Item> = Vec::new();
+            let mut bi = 0;
+            for g in l.text.graphemes(true) {
+                let st = l.spans.iter().rev().find(|(rg, _)| rg.start <= bi && bi < rg.end).map(|x| x.1);
+                let width = p.cell_width(g);
+                let fg = st.map_or(FG, color);
+                let bg = if st == Some(Style::Code) && !l.code { Some(CODE_BG) } else { None };
+                let underline = st == Some(Style::Link);
+                items.push(Item { g: Cow::Borrowed(g), width, fg, bg, underline });
+                bi += g.len();
+            }
+            p.draw(&items, r.x + 1, y);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

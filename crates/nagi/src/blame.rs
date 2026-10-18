@@ -195,6 +195,48 @@ impl Editor {
     }
 }
 
+
+/// 描き方（view.rs の Painter で描く）
+pub(crate) mod draw {
+    #![allow(unused_imports)]
+    use super::*;
+    use crate::view::*;
+
+    /// blame: カーソルの行のコミットの詳しい内容（カーソルの行の下に枠で）
+    pub(crate) fn draw_blame_popup(p: &mut Painter, ed: &Editor, rows: usize) {
+        let Some(c) = ed.blame_at_cursor() else { return };
+        if c.uncommitted() {
+            return;
+        }
+        let cell = p.fonts.cell();
+        let rect = ed.active_rect();
+        if ed.cursor.line < ed.top {
+            return;
+        }
+        let row = rect.y + (ed.cursor.line - ed.top) + 1;
+        let lines = [
+            format!(" {}   {}   {}", &c.hash[..7], c.author, crate::blame::relative_time(c.time, crate::blame::now_secs())),
+            format!(" {}", c.summary),
+            " :Gblame で閉じる".to_string(),
+        ];
+        let h = lines.len();
+        let top = if row + h <= rows { row } else { row.saturating_sub(h + 1) };
+        let x0 = rect.x + crate::blame::BLAME_W + 2;
+        let w = lines.iter().map(|l| p.width(l)).max().unwrap_or(10) + 2;
+        let w = w.min(rect.w.saturating_sub(crate::blame::BLAME_W + 3));
+        let (x, y) = (x0 as f32 * cell.w, top as f32 * cell.h);
+        p.out.push(Instance::fill(x - 1.0, y - 1.0, w as f32 * cell.w + 2.0, h as f32 * cell.h + 2.0, STATUS_FG));
+        p.out.push(Instance::fill(x, y, w as f32 * cell.w, h as f32 * cell.h, rgb(0x141414)));
+        let saved = p.cols;
+        p.cols = x0 + w;
+        for (k, l) in lines.iter().enumerate() {
+            let color = if k == 1 { rgb(0xe8e8e8) } else { STATUS_FG };
+            p.text(l, x0, y + k as f32 * cell.h, color);
+        }
+        p.cols = saved;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -164,3 +164,177 @@ impl Editor {
         }
     }
 }
+
+/// 描き方（view.rs の Painter で描く）
+pub(crate) mod draw {
+    #![allow(unused_imports)]
+    use super::*;
+    use crate::view::*;
+
+    /// 右の欄（データベース・Maven）。1 行目はタブ、2 行目から木
+    pub(crate) fn draw_right_panel(p: &mut Painter, ed: &Editor, r: Rect) {
+        use crate::right_panel::RightTab;
+        let cell = p.fonts.cell();
+        let (x0, y0, wpx) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
+        p.out.push(Instance::fill(x0, y0, wpx, r.h as f32 * cell.h, BG));
+        p.out.push(Instance::fill(x0 - cell.w * 0.5, y0, 1.0, r.h as f32 * cell.h, LINE_NO));
+        let focused = ed.right_focused();
+        let tab = ed.right_visible().unwrap_or_default();
+        // 左の欄と同じく、タブはいつも全部をアイコンで並べる
+        let tabs: Vec<(TabIcon, &'static str, bool)> = crate::right_panel::RTABS
+            .iter()
+            .map(|(l, t)| {
+                let icon = match t {
+                    RightTab::Database => TabIcon::Database,
+                    RightTab::Maven => TabIcon::Maven,
+                    RightTab::Preview => TabIcon::Preview,
+                };
+                (icon, *l, *t == tab)
+            })
+            .collect();
+        draw_icon_tabs(p, r, &tabs, focused, "");
+        let saved = p.cols;
+        p.cols = r.x + r.w;
+        if tab == RightTab::Preview {
+            if let Some(pv) = &ed.md_preview {
+                draw_md_preview(p, pv, r, focused);
+            }
+            p.cols = saved;
+            return;
+        }
+        // (字下げ, 開け閉めの印, 種類の印と色, 本文, 補足, 本文の色)
+        let mut lines: Vec<(usize, &str, (char, [f32; 4]), String, String, [f32; 4])> = Vec::new();
+        let mut top = 1;
+        let (selected, scroll) = match tab {
+            // 上で描いて戻っている
+            RightTab::Preview => (0, 0),
+            RightTab::Maven => {
+                let Some(m) = &ed.maven else {
+                    p.cols = saved;
+                    return;
+                };
+                for row in &m.rows {
+                    let (mark, color) = match &row.kind {
+                        crate::maven_panel::RowKind::Folder(k) => (if m.is_open(k) { "▾ " } else { "▸ " }, if row.depth == 0 || k.starts_with("p:") { FG } else { FINDER_MATCH }),
+                        crate::maven_panel::RowKind::Goal(..) => ("· ", FG),
+                        crate::maven_panel::RowKind::Leaf => ("  ", STATUS_FG),
+                    };
+                    lines.push((row.depth, mark, (' ', FG), row.label.clone(), row.note.clone(), color));
+                }
+                (m.selected, m.scroll)
+            }
+            RightTab::Database => {
+                let Some(d) = &ed.db else {
+                    p.cols = saved;
+                    return;
+                };
+                // 2 行目: 絞り込みの欄
+                let fy = y0 + cell.h;
+                let c = p.text(" / ", r.x, fy, LINE_NO);
+                match &d.filter {
+                    Some(f) if focused => {
+                        draw_vim_field(p, f, c, fy, &ed.preedit);
+                    }
+                    _ if d.filter_text.is_empty() => {
+                        p.text("テーブルや列を絞り込み", c, fy, LINE_NO);
+                    }
+                    _ => {
+                        p.text(&d.filter_text, c, fy, FG);
+                    }
+                }
+                p.out.push(Instance::fill(x0, fy + cell.h - 1.0, wpx, 1.0, rgb(0x2a2a2a)));
+                top = 2;
+                if d.sources.is_empty() {
+                    p.text(" 接続先がありません。a（＋）で足す", r.x, y0 + 2.0 * cell.h, STATUS_FG);
+                }
+                for (k, row) in d.rows.iter().enumerate() {
+                    use crate::db_panel::DbRow;
+                    let (_, mark, text, note) = d.row_label(row);
+                    let depth = d.depth(k);
+                    let open = d.is_open(row);
+                    let fold = if row.key().is_some() { if open { "▾ " } else { "▸ " } } else { "  " };
+                    let icon = match mark {
+                        'T' => ('T', GIT_ADD),
+                        'V' => ('V', rgb(0xaf87d7)),
+                        'S' | 'R' => (mark, STATUS_FG),
+                        'K' => ('K', rgb(0xd7af5f)),
+                        'F' => ('F', FINDER_MATCH),
+                        'I' => ('I', STATUS_FG),
+                        '●' => ('●', GIT_ADD),
+                        '◌' => ('◌', GIT_MOD),
+                        '○' => ('○', STATUS_FG),
+                        _ => (' ', FG),
+                    };
+                    let color = match row {
+                        DbRow::Source(i) if d.conns[*i].error.is_some() => DIAG_ERROR,
+                        DbRow::Source(_) | DbRow::Schema(..) | DbRow::Column(..) => FG,
+                        DbRow::Info(_, _, s) if s.starts_with("誤り") => DIAG_ERROR,
+                        DbRow::Info(..) | DbRow::Group(..) | DbRow::Sub(..) | DbRow::Others(_) => STATUS_FG,
+                        _ => FG,
+                    };
+                    lines.push((depth, fold, icon, text, note, color));
+                }
+                (d.selected, d.scroll)
+            }
+        };
+        let body = r.h.saturating_sub(top + 1);
+        for (k, (depth, fold, (icon, icolor), text, note, color)) in lines.iter().enumerate().skip(scroll).take(body) {
+            let y = y0 + (top + k - scroll) as f32 * cell.h;
+            let sel = k == selected;
+            let reversed = sel && focused && ed.db.as_ref().is_none_or(|d| d.filter.is_none() || tab != RightTab::Database);
+            if reversed {
+                p.out.push(Instance::fill(x0, y, wpx, cell.h, FG));
+            } else if sel {
+                p.out.push(Instance::fill(x0, y, wpx, cell.h, MATCH_BG));
+            }
+            let mut c = p.text(&format!(" {}{fold}", "  ".repeat(*depth)), r.x, y, if reversed { BG } else { STATUS_FG });
+            if *icon != ' ' {
+                let mut b = [0u8; 4];
+                c = p.text(icon.encode_utf8(&mut b), c, y, if reversed { BG } else { *icolor });
+                c = p.text(" ", c, y, FG);
+            }
+            let c = p.text(text, c, y, if reversed { BG } else { *color });
+            if !note.is_empty() {
+                p.text(&format!("  {note}"), c, y, if reversed { BG } else { LINE_NO });
+            }
+        }
+        // 下の行: パスワード・接続先のフォーム・ドライバーの準備
+        if let (RightTab::Database, Some(d)) = (tab, &ed.db) {
+            if let Some((i, prompt)) = &d.password {
+                let y = y0 + (r.h - 1) as f32 * cell.h;
+                p.out.push(Instance::fill(x0, y, wpx, cell.h, rgb(0x1c1c1c)));
+                let user = &d.sources[*i].user;
+                let c = p.text(&format!(" {user} のパスワード: "), r.x, y, STATUS_FG);
+                let before = prompt.text[..prompt.cursor.min(prompt.text.len())].chars().count();
+                let after = prompt.text.chars().count() - before;
+                let x = p.text(&"●".repeat(before), c, y, FG);
+                p.text(&"●".repeat(after), x, y, FG);
+                p.caret(x, y);
+            } else if let Some(i) = d.setup_ask {
+                let lines = [
+                    format!(" {} にはドライバーが要ります", d.sources[i].name),
+                    format!(" Oracle Instant Client Basic Light（約 {} MB）", nagi_workers::drivers::ORACLE_CLIENT_SIZE_MB),
+                    format!(" 置き場所: {}", nagi_workers::drivers::drivers_dir().join("oracle").display()),
+                    format!(" {} に同意のうえ", nagi_workers::drivers::ORACLE_LICENSE),
+                    " y でダウンロード ・ ほかのキーでやめる".to_string(),
+                ];
+                draw_panel_box(p, r, &lines, 0);
+            } else if let Some(f) = &d.form {
+                let mut lines = vec![" 接続先を足す".to_string()];
+                // 見出しは表示の幅（12 セル）でそろえる
+                let pad = |p: &Painter, l: &str| format!("{l}{}", " ".repeat(12usize.saturating_sub(p.width(l))));
+                for (k, (label, prompt)) in f.fields.iter().enumerate() {
+                    let v = if k == 0 { format!("‹ {} ›", prompt.text()) } else if k == f.at { String::new() } else { prompt.text() };
+                    lines.push(format!(" {}{}  {v}", pad(p, label), if k == f.at { "▸" } else { " " }));
+                }
+                lines.push(" Tab 次の欄 ・ 最後の欄で Enter 保存してつなぐ ・ Esc やめる".to_string());
+                let (bx, by) = draw_panel_box(p, r, &lines, f.at + 1);
+                if f.at > 0 {
+                    let label_w = 1 + 12.max(p.width(f.fields[f.at].0)) + p.width("▸  ");
+                    draw_vim_field(p, &f.fields[f.at].1, bx + label_w, by + (f.at + 1) as f32 * cell.h, &ed.preedit);
+                }
+            }
+        }
+        p.cols = saved;
+    }
+}

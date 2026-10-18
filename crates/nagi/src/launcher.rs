@@ -507,6 +507,240 @@ impl Editor {
     }
 }
 
+
+/// 描き方（view.rs の Painter で描く）
+pub(crate) mod draw {
+    #![allow(unused_imports)]
+    use super::*;
+    use crate::view::*;
+
+    /// ランチャー: 左に操作、中央に検索の欄と一覧（ピン留め → 最近）、右に選んだプロジェクトのプレビュー。画面全体を覆う
+    pub(crate) fn draw_launcher(p: &mut Painter, l: &crate::launcher::Launcher, cols: usize, rows: usize, preedit: &str) {
+        const ORANGE: [f32; 4] = rgb(0xd7af87);
+        const GREEN: [f32; 4] = rgb(0x87af87);
+        let cell = p.fonts.cell();
+        let y = |r: usize| r as f32 * cell.h;
+        p.out.push(Instance::fill(0.0, 0.0, cols as f32 * cell.w, rows as f32 * cell.h, BG));
+        let saved = p.cols;
+        // 左: 名前と版・操作・読み込み元
+        let lw = 26.min(cols / 5).max(20);
+        let pw = if cols >= 170 { 56 } else if cols >= 110 { 42 } else { 0 };
+        p.cols = lw;
+        p.text("nagi", 3, y(1), FG);
+        p.text(env!("CARGO_PKG_VERSION"), 3, y(2), STATUS_FG);
+        // 左の操作（押せる。Ctrl のキーは入力中でもノーマルでも効くので、いつも同じ表示に）
+        let acts = crate::launcher::ACTIONS;
+        let mut map = Vec::new();
+        for (i, (k, label, ctrl)) in acts.iter().enumerate() {
+            let r = 4 + i * 2;
+            let key = ctrl.to_string();
+            let kw = p.width(&key);
+            p.out.push(Instance::fill(3.0 * cell.w, y(r), (kw + 2) as f32 * cell.w, cell.h, STATUS_FG));
+            p.text(&key, 4, y(r), BG);
+            p.text(label, 6 + kw, y(r), FG);
+            map.push((r, *k));
+        }
+        *l.act_map.borrow_mut() = (map, lw);
+        let mut r = 4 + acts.len() * 2 + 1;
+        p.text("読み込み元", 3, y(r), STATUS_FG);
+        r += 1;
+        for (name, n) in l.sources() {
+            let c = p.text("✓ ", 3, y(r), GREEN);
+            let c = p.text(&name, c, y(r), FG);
+            p.text(&format!("  {n}"), c, y(r), LINE_NO);
+            r += 1;
+        }
+        p.out.push(Instance::fill(lw as f32 * cell.w, 0.0, 1.0, (rows - 1) as f32 * cell.h, LINE_NO));
+        // 右: プレビュー
+        let px = cols.saturating_sub(pw);
+        if pw > 0 {
+            p.out.push(Instance::fill(px as f32 * cell.w - 1.0, 0.0, 1.0, (rows - 1) as f32 * cell.h, LINE_NO));
+            p.cols = cols;
+            if let Some(e) = l.selected_entry() {
+                let x = px + 2;
+                let mut r = 1;
+                let line = |p: &mut Painter, s: &str, fg: [f32; 4], r: &mut usize| {
+                    if *r + 1 < rows {
+                        p.text(s, x, y(*r), fg);
+                    }
+                    *r += 1;
+                };
+                line(p, &e.name, FG, &mut r);
+                line(p, &e.path.display().to_string(), STATUS_FG, &mut r);
+                match l.previews.get(&e.path) {
+                    _ if e.missing => line(p, "フォルダがありません", DIAG_ERROR, &mut r),
+                    None => line(p, "読んでいます…", STATUS_FG, &mut r),
+                    Some(pv) => {
+                        r += 1;
+                        line(p, &pv.kind, ACCENT_FG, &mut r);
+                        if !e.kind.is_empty() {
+                            let m = if pv.modules.is_empty() { String::new() } else { format!("  {}", pv.modules.join(" · ")) };
+                            line(p, &format!("{}{m}", e.kind), FG, &mut r);
+                        }
+                        r += 1;
+                        line(p, "git", STATUS_FG, &mut r);
+                        match &pv.git {
+                            Some((b, ahead, behind, ch, untracked)) => {
+                                let ab = if *ahead + *behind > 0 { format!("  ↑{ahead} ↓{behind}") } else { String::new() };
+                                let un = if *untracked > 0 { format!("  未追跡 {untracked}") } else { String::new() };
+                                line(p, &format!("⎇ {b}{ab}  変更 {}{un}", ch.len()), if ch.is_empty() { FG } else { ORANGE }, &mut r);
+                                for (c, path) in ch.iter().take(5) {
+                                    line(p, &format!("  {c} {path}"), STATUS_FG, &mut r);
+                                }
+                                if ch.len() > 5 {
+                                    line(p, &format!("  ほか {} 件", ch.len() - 5), STATUS_FG, &mut r);
+                                }
+                            }
+                            None => line(p, "git なし", STATUS_FG, &mut r),
+                        }
+                        if !pv.restore.is_empty() {
+                            r += 1;
+                            line(p, "開くと復元するファイル", STATUS_FG, &mut r);
+                            for (f, ln, cur) in pv.restore.iter().take(6) {
+                                let name = f.rsplit('/').next().unwrap_or(f);
+                                line(p, &format!("  {name}  {} 行目{}", ln + 1, if *cur { "  ← 前面" } else { "" }), FG, &mut r);
+                            }
+                        }
+                        if !pv.excludes.is_empty() {
+                            r += 1;
+                            line(p, "除外するフォルダ（索引・検索に入れない）", STATUS_FG, &mut r);
+                            line(p, &format!("  {}", pv.excludes.join(" · ")), STATUS_FG, &mut r);
+                        }
+                        if !pv.readme.is_empty() {
+                            r += 1;
+                            line(p, "README", STATUS_FG, &mut r);
+                            for t in &pv.readme {
+                                line(p, &format!("  {t}"), STATUS_FG, &mut r);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // 中央: 検索の欄と一覧
+        let cx = lw + 2;
+        let cr = if pw > 0 { px.saturating_sub(2) } else { cols };
+        p.cols = cr;
+        let cw = cr.saturating_sub(cx);
+        // 欄の枠（1px）
+        let (bx, bw) = (cx as f32 * cell.w - 4.0, cw as f32 * cell.w + 8.0);
+        for (yy, h) in [(y(1) - 3.0, 1.0), (y(2) + 2.0, 1.0)] {
+            p.out.push(Instance::fill(bx, yy, bw, h, LINE_NO));
+        }
+        p.out.push(Instance::fill(bx, y(1) - 3.0, 1.0, cell.h + 6.0, LINE_NO));
+        p.out.push(Instance::fill(bx + bw, y(1) - 3.0, 1.0, cell.h + 6.0, LINE_NO));
+        let c = p.text("> ", cx, y(1), STATUS_FG);
+        let ask_open = l.ask.is_some();
+        if !ask_open && l.field.is_insert() {
+            let t = l.field.text();
+            field(p, &t, l.field.cursor().1.min(t.len()), preedit, c, y(1), true);
+        } else {
+            draw_vim_line(p, &l.field, 0, c, y(1), "", !ask_open);
+        }
+        let info = format!("{}  {}/{} ", l.field.mode_label(), l.hits.len(), l.all.len());
+        p.text(&info, cr.saturating_sub(p.width(&info)), y(1), LINE_NO);
+        // 一覧（ピン留め → 最近）。列: 名前・どこで・種類・ブランチ・場所・いつ
+        let top = 4;
+        let bottom = rows.saturating_sub(2);
+        let mut map = Vec::new();
+        if l.loading.is_some() {
+            p.text("最近のプロジェクトを集めています…", cx, y(top), STATUS_FG);
+        } else if l.hits.is_empty() {
+            p.text(if l.all.is_empty() { "最近のプロジェクトはありません（o でフォルダを開く）" } else { "当たるものがありません" }, cx, y(top), STATUS_FG);
+        }
+        // 1 件 2 行（IntelliJ の Welcome と同じ）: 名前・どこで開いたか・いつ / 場所・種類・ブランチ
+        let cap = (bottom.saturating_sub(top + 3) / 2).max(1);
+        let start = if l.selected >= cap { l.selected + 1 - cap } else { 0 };
+        let home = std::env::var("USERPROFILE").unwrap_or_default();
+        let mut r = top;
+        let mut last_pin: Option<bool> = None;
+        for (k, &i) in l.hits.iter().enumerate().skip(start) {
+            let e = &l.all[i];
+            if last_pin != Some(e.pinned) {
+                if last_pin.is_some() {
+                    r += 1;
+                }
+                if r + 2 >= bottom {
+                    break;
+                }
+                p.text(if e.pinned { "ピン留め" } else { "最近" }, cx, y(r), STATUS_FG);
+                r += 1;
+                last_pin = Some(e.pinned);
+            }
+            if r + 2 > bottom {
+                break;
+            }
+            let sel = k == l.selected;
+            if sel {
+                p.out.push(Instance::fill(cx as f32 * cell.w - 4.0, y(r), cw as f32 * cell.w + 8.0, 2.0 * cell.h, FG));
+            }
+            let col = |c: [f32; 4]| if sel { BG } else { c };
+            let when = if e.missing { "見つかりません".to_string() } else { crate::launcher::ago(e.when) };
+            let from = e.from.trim_end_matches("Idea").to_string();
+            let right = format!("{from}   {when}");
+            let rw = p.width(&right);
+            let rx = cr.saturating_sub(rw + 1);
+            let name = clip_width(p, &e.name, rx.saturating_sub(cx + 4));
+            p.text(&format!("{}{name}", if e.pinned { "★ " } else { "  " }), cx, y(r), col(if e.missing { DIAG_ERROR } else { FG }));
+            let from_c = match from.as_str() {
+                "IntelliJ" => ACCENT_FG,
+                "WebStorm" => ORANGE,
+                "Eclipse" => GREEN,
+                _ => STATUS_FG,
+            };
+            let c = p.text(&from, rx, y(r), col(from_c));
+            p.text(&format!("   {when}"), c, y(r), col(if e.missing { DIAG_ERROR } else { STATUS_FG }));
+            // 2 行目: 場所（ホームは ~）・種類・ブランチ
+            let full = e.path.display().to_string();
+            let path = match full.strip_prefix(&home) {
+                Some(rest) if !home.is_empty() => format!("~{rest}"),
+                _ => full,
+            };
+            let mut extra = Vec::new();
+            if !e.kind.is_empty() {
+                extra.push(e.kind.clone());
+            }
+            if let Some(b) = &e.branch {
+                extra.push(format!("⎇ {b}"));
+            }
+            // 場所を先に。種類とブランチは残りの幅に入る分だけ
+            let room = cr.saturating_sub(cx + 3);
+            let path = clip_width(p, &path, room);
+            let end = p.text(&path, cx + 2, y(r + 1), col(STATUS_FG));
+            let ex = extra.join("   ");
+            let left = cr.saturating_sub(end + 4);
+            if left >= 8 {
+                let ex = clip_width(p, &ex, left);
+                let exw = p.width(&ex);
+                p.text(&ex, cr.saturating_sub(exw + 1), y(r + 1), col(if sel { BG } else { STATUS_FG }));
+            }
+            map.push((r, k));
+            map.push((r + 1, k));
+            r += 2;
+        }
+        *l.row_map.borrow_mut() = map;
+        // 最下行: 入力（o・g）・知らせ・キーの案内
+        p.cols = cols;
+        let by = y(rows - 1);
+        p.out.push(Instance::fill(0.0, by - 1.0, cols as f32 * cell.w, 1.0, LINE_NO));
+        if let Some((ask, f)) = &l.ask {
+            let lead = match ask {
+                crate::launcher::Ask::Clone => "git の URL: ",
+            };
+            let c = p.text(lead, 1, by, FG);
+            draw_vim_field(p, f, c, by, preedit);
+        } else if !l.message.is_empty() {
+            p.text(&l.message, 1, by, FG);
+        } else {
+            let mode = if l.field.is_insert() { "-- INSERT --" } else { "-- NORMAL --" };
+            let c = p.text(mode, 1, by, FG);
+            let help = if l.field.is_insert() { "Enter 開く   ↑↓ 選ぶ   左の操作は ^（Ctrl）のキーかクリック   Esc → j/k・p ピン留め・dd 外す" } else { "Enter 開く   j/k 選ぶ   p ピン留め   dd 外す   左の操作は ^（Ctrl）のキーかクリック   i 入力   Esc 閉じる" };
+            p.text(help, c + 3, by, STATUS_FG);
+        }
+        p.cols = saved;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

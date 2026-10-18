@@ -221,6 +221,73 @@ impl Editor {
     }
 }
 
+
+/// 描き方（view.rs の Painter で描く）
+pub(crate) mod draw {
+    #![allow(unused_imports)]
+    use super::*;
+    use crate::view::*;
+
+    /// 左右並べの差分（窓の領域全体）。足した行は緑、消した行は赤、変えた行は青の地、対の行は変わった部分を濃く
+    pub(crate) fn draw_diff_view(p: &mut Painter, d: &crate::diff_view::DiffView, r: Rect) {
+        use crate::diff_view::RowKind;
+        let cell = p.fonts.cell();
+        let (x0, y0) = (r.x as f32 * cell.w, r.y as f32 * cell.h);
+        p.out.push(Instance::fill(x0, y0, r.w as f32 * cell.w, r.h as f32 * cell.h, BG));
+        let half = r.w.saturating_sub(1) / 2;
+        let rx = r.x + half + 1;
+        p.text(&format!(" {}", d.left_title), r.x, y0, STATUS_FG);
+        p.text(&format!(" {}", d.right_title), rx, y0, FG);
+        p.out.push(Instance::fill(x0, y0 + cell.h - 1.0, r.w as f32 * cell.w, 1.0, LINE_NO));
+        let body = r.h.saturating_sub(1);
+        let mod_bg = rgb(0x17202e);
+        let fill_bg = rgb(0x141414);
+        for (k, row) in d.rows.iter().enumerate().skip(d.top).take(body) {
+            let y = y0 + (1 + k - d.top) as f32 * cell.h;
+            let (lbg, rbg) = match row.kind {
+                RowKind::Eq => (BG, BG),
+                RowKind::Add => (fill_bg, DIFF_ADD_BG),
+                RowKind::Del => (DIFF_DEL_BG, fill_bg),
+                RowKind::Mod => (mod_bg, mod_bg),
+            };
+            p.out.push(Instance::fill(x0, y, half as f32 * cell.w, cell.h, lbg));
+            p.out.push(Instance::fill(rx as f32 * cell.w, y, (r.w - half - 1) as f32 * cell.w, cell.h, rbg));
+            let spans = match (&row.left, &row.right, row.kind) {
+                (Some(l), Some(n), RowKind::Mod) => {
+                    let (a, b) = nagi_core::linediff::changed_span(&l.1, &n.1);
+                    (Some(a), Some(b))
+                }
+                _ => (None, None),
+            };
+            let cursor = k == d.cursor;
+            for (side, col, w, span, word) in [(&row.left, r.x, half, spans.0, DIFF_WORD_DEL_BG), (&row.right, rx, r.w - half - 1, spans.1, DIFF_WORD_BG)] {
+                let saved = p.cols;
+                p.cols = col + w;
+                if let Some((n, text)) = side {
+                    let num = format!("{:>5} ", n + 1);
+                    let c = if cursor {
+                        p.out.push(Instance::fill(col as f32 * cell.w, y, 5.0 * cell.w, cell.h, FG));
+                        p.text(&num, col, y, BG)
+                    } else {
+                        p.text(&num, col, y, LINE_NO)
+                    };
+                    let mut items = Vec::new();
+                    for (b, g) in text.grapheme_indices(true) {
+                        let width = p.cell_width(g);
+                        let hit = span.as_ref().is_some_and(|s| b >= s.start && b < s.end);
+                        items.push(Item { g: Cow::Borrowed(g), width, fg: FG, bg: if hit { Some(word) } else { None }, underline: false });
+                    }
+                    p.draw(&items, c, y);
+                } else if cursor {
+                    p.out.push(Instance::fill(col as f32 * cell.w, y, 5.0 * cell.w, cell.h, MATCH_BG));
+                }
+                p.cols = saved;
+            }
+        }
+        p.out.push(Instance::fill((r.x + half) as f32 * cell.w + cell.w * 0.5, y0 + cell.h, 1.0, body as f32 * cell.h, LINE_NO));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

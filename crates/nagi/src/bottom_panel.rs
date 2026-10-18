@@ -255,6 +255,103 @@ impl Editor {
     }
 }
 
+
+/// 描き方（view.rs の Painter で描く）
+pub(crate) mod draw {
+    #![allow(unused_imports)]
+    use super::*;
+    use crate::view::*;
+
+    /// 下の欄: 1 行目にタブ（Git・検索・問題・ログ・ターミナル・クエリの結果）、2 行目から選んでいるタブの中身
+    pub(crate) fn draw_bottom_panel(p: &mut Painter, ed: &Editor, r: Rect) {
+        use crate::result_grid::BottomKind;
+        let cell = p.fonts.cell();
+        let (x0, y0, wpx) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
+        p.out.push(Instance::fill(x0, y0, wpx, r.h as f32 * cell.h, BG));
+        p.out.push(Instance::fill(x0, y0, wpx, 1.0, LINE_NO));
+        let focused = ed.bottom_focused();
+        // 左右の欄と同じく、タブはアイコンで並べ、出しているタブの名前を横に
+        let tabs: Vec<(TabIcon, &'static str, bool)> = ed
+            .bottom_tabs()
+            .into_iter()
+            .map(|(l, k)| {
+                let icon = match k {
+                    BottomKind::Git => TabIcon::Git,
+                    BottomKind::Grep => TabIcon::Search,
+                    BottomKind::Problems => TabIcon::Problems,
+                    BottomKind::Output => TabIcon::Output,
+                    BottomKind::Terminal => TabIcon::Terminal,
+                    BottomKind::Result => TabIcon::Result,
+                };
+                (icon, l, k == ed.bottom_kind)
+            })
+            .collect();
+        // 左端の 2 列は ▾ のボタン
+        let bx = crate::bottom_panel::BTAB_X;
+        draw_icon_tabs(p, Rect { x: r.x + bx, y: r.y, w: r.w.saturating_sub(bx), h: 1 }, &tabs, focused, "");
+        p.out.push(Instance::fill(x0, y0 + cell.h - 1.0, bx as f32 * cell.w, 1.0, LINE_NO));
+        let c = Rect { x: r.x, y: r.y + 1, w: r.w, h: r.h.saturating_sub(1) };
+        let empty = |p: &mut Painter, s: &str| {
+            p.text(s, c.x + 1, (c.y + 1) as f32 * cell.h, STATUS_FG);
+        };
+        match ed.bottom_kind {
+            BottomKind::Result => draw_db_results(p, ed, c),
+            BottomKind::Grep | BottomKind::Output => match &ed.grep {
+                Some(g) => draw_grep_panel(p, g, c, matches!(ed.mode, Mode::List | Mode::GrepPrompt)),
+                None if ed.bottom_kind == BottomKind::Grep => empty(p, "検索していません（:Grep 語、Ctrl+Shift+F）"),
+                None => empty(p, "コマンドの出力はありません（:Make、Maven のタブのゴール）"),
+            },
+            BottomKind::Problems => draw_problems(p, ed, c, focused),
+            BottomKind::Git => match &ed.log {
+                Some(l) if l.docked => draw_log_view(p, l, c, &ed.preedit),
+                _ => empty(p, "git のリポジトリではありません"),
+            },
+            BottomKind::Terminal => draw_terminal(p, ed, c, focused),
+        }
+    }
+
+    /// 問題（診断）の一覧。ファイルごとにまとめ、エラーは赤、警告は黄
+    pub(crate) fn draw_problems(p: &mut Painter, ed: &Editor, r: Rect, focused: bool) {
+        use crate::bottom_panel::ProblemRow;
+        let cell = p.fonts.cell();
+        let rows = ed.problem_rows();
+        if rows.is_empty() {
+            p.text(" 問題はありません（:Make で集める）", r.x, r.y as f32 * cell.h, STATUS_FG);
+            return;
+        }
+        let root = ed.nav_root();
+        let saved = p.cols;
+        p.cols = r.x + r.w;
+        for (k, row) in rows.iter().enumerate().skip(ed.problems.scroll).take(r.h) {
+            let y = (r.y + k - ed.problems.scroll) as f32 * cell.h;
+            let sel = k == ed.problems.selected;
+            if sel {
+                p.out.push(Instance::fill(r.x as f32 * cell.w, y, r.w as f32 * cell.w, cell.h, if focused { FG } else { MATCH_BG }));
+            }
+            let rev = sel && focused;
+            match row {
+                ProblemRow::File(path, e, w) => {
+                    let rel = path.strip_prefix(&root).map_or(path.display().to_string(), |x| x.display().to_string());
+                    let c = p.text(&format!(" ▾ {rel}"), r.x, y, if rev { BG } else { FG });
+                    let n = match (e, w) {
+                        (0, w) => format!("  警告 {w}"),
+                        (e, 0) => format!("  エラー {e}"),
+                        (e, w) => format!("  エラー {e}・警告 {w}"),
+                    };
+                    p.text(&n, c, y, if rev { BG } else { STATUS_FG });
+                }
+                ProblemRow::Item(i) => {
+                    let d = &ed.diags[*i];
+                    let c = p.text("     ● ", r.x, y, if rev { BG } else if d.error { DIAG_ERROR } else { DIAG_WARN });
+                    let c = p.text(&d.msg, c, y, if rev { BG } else { FG });
+                    p.text(&format!("  {}:{}", d.line + 1, d.col + 1), c, y, if rev { BG } else { LINE_NO });
+                }
+            }
+        }
+        p.cols = saved;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -756,6 +756,203 @@ impl Editor {
     }
 }
 
+
+/// 描き方（view.rs の Painter で描く）
+pub(crate) mod draw {
+    #![allow(unused_imports)]
+    use super::*;
+    use crate::view::*;
+
+    /// 設定の画面（画面の中央に重ねる）。上に絞り込み、左に分類、右に項目（名前と値）、下に説明とボタン
+    pub(crate) fn draw_settings_dialog(p: &mut Painter, ed: &Editor, d: &crate::settings_dialog::SettingsDialog, cols: usize, rows: usize) {
+        use crate::settings::{CATEGORIES, SKind};
+        use crate::settings_dialog::{SButton, SFocus};
+        let cell = p.fonts.cell();
+        let w = cols.saturating_sub(6).clamp(40, 130).min(cols);
+        let h = rows.saturating_sub(2).clamp(12, 34).min(rows);
+        let (x0, y0) = dialog_frame(p, cols, rows, w, h);
+        let y = |r: usize| (y0 + r) as f32 * cell.h;
+        let saved = p.cols;
+        p.cols = x0 + w;
+        let mut buttons = Vec::new();
+        // 1 行目: 題と絞り込みの欄、保存先
+        let end = p.text(" 設定   ", x0, y(0), FG);
+        let fend = if d.focus == SFocus::Filter {
+            let e = p.text("🔍 ", end, y(0), FG);
+            draw_vim_field(p, &d.filter, e, y(0), &ed.preedit)
+        } else {
+            let t = d.filter.text();
+            p.text(&format!("🔍 {}", if t.is_empty() { "/ で絞り込み".to_string() } else { t }), end, y(0), STATUS_FG)
+        };
+        let scope = if d.project_scope { " 保存先: このプロジェクト（p で切り替え） " } else { " 保存先: 全体（p で切り替え） " };
+        let sw = p.width(scope);
+        let sx = (x0 + w).saturating_sub(sw + 1).max(fend + 2);
+        p.out.push(Instance::fill(sx as f32 * cell.w, y(0), sw as f32 * cell.w, cell.h, if d.project_scope { rgb(0x2c4a70) } else { MATCH_BG }));
+        p.text(scope, sx, y(0), FG);
+        buttons.push((y0, sx, sx + sw, SButton::Scope));
+        // 左: 分類
+        let lw = 16;
+        let mut cat_rows = Vec::new();
+        p.cols = x0 + lw;
+        let filtering = !d.filter.text().is_empty();
+        for (i, c) in CATEGORIES.iter().enumerate() {
+            let r = 2 + i;
+            let sel = i == d.cat && !filtering;
+            if sel {
+                p.out.push(Instance::fill(x0 as f32 * cell.w, y(r), lw as f32 * cell.w, cell.h, if d.focus == SFocus::Cats { FG } else { MATCH_BG }));
+            }
+            p.text(&format!(" {c}"), x0, y(r), if sel && d.focus == SFocus::Cats { BG } else if filtering { STATUS_FG } else { FG });
+            cat_rows.push((y0 + r, x0, x0 + lw, i));
+        }
+        p.out.push(Instance::fill((x0 + lw) as f32 * cell.w + cell.w * 0.5, y(1), 1.0, (h - 3) as f32 * cell.h, LINE_NO));
+        // 右: 項目
+        let rx = x0 + lw + 2;
+        let items = d.items();
+        let body = h.saturating_sub(6);
+        let top = d.selected.saturating_sub(body.saturating_sub(1));
+        let label_w = items.iter().map(|i| p.width(i.label)).max().unwrap_or(10).min(34) + 2;
+        let vx = rx + label_w;
+        let mut item_rows = Vec::new();
+        p.cols = x0 + w;
+        for (k, it) in items.iter().enumerate().skip(top).take(body) {
+            let r = 2 + k - top;
+            let sel = k == d.selected;
+            let focused = sel && matches!(d.focus, SFocus::Items | SFocus::Edit);
+            if focused {
+                p.out.push(Instance::fill(rx as f32 * cell.w - cell.w * 0.5, y(r), 2.0, cell.h, ACCENT_FG));
+            }
+            if sel {
+                p.out.push(Instance::fill(rx as f32 * cell.w, y(r), (x0 + w - rx - 1) as f32 * cell.w, cell.h, MATCH_BG));
+            }
+            let saved2 = p.cols;
+            p.cols = vx.saturating_sub(1);
+            p.text(it.label, rx, y(r), if focused { FG } else { rgb(0xb0b0b0) });
+            p.cols = saved2;
+            // 値（直している項目は入力欄）
+            let overridden = d.work.project.contains_key(it.key) && it.project;
+            let changed = d.work.global.contains_key(it.key) || overridden;
+            if sel && d.focus == SFocus::Edit {
+                if let Some(f) = &d.field {
+                    draw_vim_field(p, f, vx, y(r), &ed.preedit);
+                }
+            } else {
+                let v = d.display(it);
+                let color = match it.kind {
+                    SKind::Bool if d.work.bool(it.key) => GIT_ADD,
+                    _ if changed => FG,
+                    _ => STATUS_FG,
+                };
+                let shown = match it.kind {
+                    SKind::Choice(_) if focused => format!("◀ {v} ▶"),
+                    _ => v,
+                };
+                let end = p.text(&shown, vx, y(r), color);
+                if overridden {
+                    p.text("  P", end, y(r), ACCENT_FG);
+                }
+            }
+            item_rows.push((y0 + r, k, vx));
+        }
+        if items.is_empty() {
+            p.text("合う項目がありません", rx, y(2), STATUS_FG);
+        }
+        // 説明（選んだ項目）
+        if let Some(it) = d.current() {
+            let mut desc = it.help.to_string();
+            if it.project {
+                desc = format!("{desc}{}プロジェクトごとに変えられる（p）", if desc.is_empty() { "" } else { "。" });
+            }
+            let def = match it.kind {
+                SKind::Choice(c) => c.iter().find(|x| x.0 == it.default).map_or(it.default, |x| x.1),
+                _ if it.default.is_empty() => "空",
+                _ => it.default,
+            };
+            // JDK は、使う java の場所も出す
+            let desc = if it.kind == SKind::Jdk {
+                let jdk = d.work.text(it.key).map(std::path::PathBuf::from).or_else(nagi_workers::jobs::java_home_fix).or_else(|| std::env::var_os("JAVA_HOME").map(std::path::PathBuf::from));
+                match jdk {
+                    Some(j) => format!("java: {}", j.join("bin").join("java.exe").display()),
+                    None => "java: 見つかりません（Enter でダウンロード）".into(),
+                }
+            } else if let SKind::Tool(id) = it.kind {
+                // 使うもの: 設定したもの、無ければ裏で調べた結果（WSL のプロジェクトなら WSL の中のもの）
+                let info = d.tool_info.lock().ok().and_then(|m| m.get(id).cloned());
+                let exe = nagi_workers::toolchains::def(id).map_or("", |t| t.exe);
+                match (d.work.text(it.key), info) {
+                    (_, Some(i)) if i.starts_with("WSL") => i,
+                    (Some(b), _) => format!("使う: {}", std::path::Path::new(&b).join(exe).display()),
+                    (None, Some(i)) => i,
+                    (None, None) => "調べています…".into(),
+                }
+            } else {
+                desc
+            };
+            p.text(&format!("{desc}{}既定: {def}   r で既定に戻す", if desc.is_empty() { "" } else { "   " }), rx, y(h - 3), STATUS_FG);
+        }
+        // 下: 案内とボタン
+        let help = match d.focus {
+            SFocus::Cats => "j/k 分類  Tab 項目へ  / 絞り込み  Ctrl+Enter 適用して閉じる  Esc 閉じる",
+            SFocus::Items => "j/k 選ぶ  Space・Enter 切り替え・直す  h/l 選択肢  Tab 分類へ  Ctrl+Enter OK",
+            SFocus::Edit => "Enter 決める  Esc ノーマル→やめる",
+            SFocus::Filter => "打って絞り込み  Enter・↓ 項目へ",
+            SFocus::Combo => "打って絞り込み  ↑↓ 選ぶ  Enter・クリック 決める  Esc やめる",
+        };
+        let by = h - 1;
+        buttons.extend(dialog_buttons(p, x0 + w, y0 + by, &[(" 取り消し ", SButton::Cancel), (" 適用 ", SButton::Apply), (" OK ", SButton::Ok)], SButton::Ok));
+        p.cols = x0 + w.saturating_sub(30);
+        p.text(help, x0 + 1, y(by), STATUS_FG);
+        // コンボボックス（フォントの一覧）: 選んでいる項目の下（入らなければ上）に重ねる
+        let mut combo_rows = Vec::new();
+        if let (Some(c), Some(&(irow, _, ivx))) = (&d.combo, item_rows.iter().find(|r| r.1 == d.selected)) {
+            let shown = c.shown();
+            let cw = 64.min((x0 + w).saturating_sub(ivx + 1)).max(20);
+            let list_h = shown.len().clamp(1, 12);
+            let total = list_h + 1;
+            let below = irow + 1 + total <= y0 + h - 2;
+            let top_row = if below { irow + 1 } else { irow.saturating_sub(total) };
+            let cy = |r: usize| (top_row + r) as f32 * cell.h;
+            p.out.push(Instance::fill(ivx as f32 * cell.w - 1.0, cy(0) - 1.0, cw as f32 * cell.w + 2.0, total as f32 * cell.h + 2.0, ACCENT_FG));
+            p.out.push(Instance::fill(ivx as f32 * cell.w, cy(0), cw as f32 * cell.w, total as f32 * cell.h, rgb(0x1c1c1c)));
+            p.cols = ivx + cw;
+            let e = p.text("🔍 ", ivx, cy(0), FG);
+            if c.filter.text().is_empty() && c.filter.is_insert() {
+                p.caret(e, cy(0));
+                p.text(&format!("打って絞り込み（{} 件）", shown.len()), e + 1, cy(0), LINE_NO);
+            } else {
+                draw_vim_field(p, &c.filter, e, cy(0), &ed.preedit);
+            }
+            let sel = c.sel.min(shown.len().saturating_sub(1));
+            let start = sel.saturating_sub(list_h.saturating_sub(1)).max(c.top.min(sel));
+            for (k, &i) in shown.iter().enumerate().skip(start).take(list_h) {
+                let r = 1 + k - start;
+                let on = k == sel;
+                if on {
+                    p.out.push(Instance::fill(ivx as f32 * cell.w, cy(r), cw as f32 * cell.w, cell.h, ACCENT_FG));
+                }
+                let item = &c.items[i];
+                let end = p.text(&format!(" {}", item.label), ivx, cy(r), if on { BG } else { FG });
+                if !item.tag.is_empty() {
+                    let tag = format!("{} ", item.tag);
+                    let tag = tag.as_str();
+                    let tx = (ivx + cw).saturating_sub(p.width(tag));
+                    if tx > end {
+                        p.text(tag, tx, cy(r), if on { BG } else { STATUS_FG });
+                    }
+                }
+                combo_rows.push((top_row + r, ivx, ivx + cw, i));
+            }
+            if shown.is_empty() {
+                p.text(" 合うフォントがありません", ivx, cy(1), STATUS_FG);
+            }
+        }
+        d.combo_rows.set(combo_rows);
+        p.cols = saved;
+        d.cat_rows.set(cat_rows);
+        *d.item_rows.borrow_mut() = item_rows;
+        d.buttons.set(buttons);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

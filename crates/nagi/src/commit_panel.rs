@@ -461,6 +461,130 @@ impl Editor {
     }
 }
 
+
+/// 描き方（view.rs の Painter で描く）
+pub(crate) mod draw {
+    #![allow(unused_imports)]
+    use super::*;
+    use crate::view::*;
+
+    /// コミットのパネル（左の欄の「コミット」タブ）。上から ブランチ、変えたファイル、メッセージの欄、amend、ボタン
+    pub(crate) fn draw_commit_panel(p: &mut Painter, ed: &Editor, c: &crate::commit_panel::CommitPanel, r: Rect) {
+        use nagi_workers::git::FileState;
+        let cell = p.fonts.cell();
+        let (x0, y0, wpx) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
+        p.out.push(Instance::fill(x0, y0, wpx, r.h as f32 * cell.h, BG));
+        p.out.push(Instance::fill(((r.x + r.w) as f32 + 0.5) * cell.w, y0, 1.0, r.h as f32 * cell.h, LINE_NO));
+        let focused = ed.mode == Mode::List && ed.list_side == crate::editor::Side::Commit;
+        let editing = ed.mode == Mode::CommitMsg;
+        let l = crate::commit_panel::layout(r.h);
+        let row_y = |k: usize| y0 + k as f32 * cell.h;
+        let saved = p.cols;
+        p.cols = r.x + r.w;
+        draw_left_tabs(p, r, crate::tree_panel::LeftTab::Commit, focused || editing, "");
+        // ブランチと件数（動いている git があればその名前）
+        let info = format!(
+            " {}   変更 {}{}",
+            ed.git_branch_label().unwrap_or_default(),
+            c.items.len(),
+            c.busy_label.as_ref().map_or(String::new(), |b| format!("   {b}"))
+        );
+        p.text(&info, r.x, row_y(l.info), STATUS_FG);
+        if let Some((dest, list)) = &c.confirm_push {
+            // 送る前の確認（一覧の場所に出す）
+            p.text(&format!(" プッシュ: {dest}"), r.x, row_y(l.list), FG);
+            p.text(&format!(" 送るコミット {} 件", list.len()), r.x, row_y(l.list + 1), STATUS_FG);
+            for (k, s) in list.iter().take(l.list_h.saturating_sub(3)).enumerate() {
+                p.text(&format!("   {s}"), r.x, row_y(l.list + 2 + k), FG);
+            }
+            p.text(" Enter / y で送る   Esc でやめる", r.x, row_y(l.list + l.list_h - 1), FG);
+        } else {
+            // 一覧（見出しの行を含めて並べる）
+            let tracked = c.tracked();
+            let mut lines: Vec<Option<usize>> = vec![None];
+            lines.extend((0..tracked).map(Some));
+            if tracked < c.items.len() {
+                lines.push(None);
+                lines.extend((tracked..c.items.len()).map(Some));
+            }
+            for (k, li) in lines.iter().enumerate().skip(c.scroll).take(l.list_h) {
+                let y = row_y(l.list + k - c.scroll);
+                match li {
+                    None => {
+                        let label = if k == 0 { format!(" ▾ 変更 ({tracked})") } else { format!(" ▾ 未追跡 ({})", c.items.len() - tracked) };
+                        p.text(&label, r.x, y, STATUS_FG);
+                    }
+                    Some(i) => {
+                        let it = &c.items[*i];
+                        let sel = *i == c.selected;
+                        let reversed = sel && focused;
+                        if reversed {
+                            p.out.push(Instance::fill(x0, y, wpx, cell.h, FG));
+                        } else if sel {
+                            p.out.push(Instance::fill(x0, y, wpx, cell.h, MATCH_BG));
+                        }
+                        let (fg, dim) = if reversed { (BG, BG) } else { (FG, STATUS_FG) };
+                        let state_color = if reversed {
+                            BG
+                        } else {
+                            match it.change.state {
+                                FileState::Added => GIT_ADD,
+                                FileState::Deleted | FileState::Conflicted => GIT_DEL,
+                                FileState::Untracked => STATUS_FG,
+                                FileState::Renamed => rgb(0xd7af5f),
+                                FileState::Modified => GIT_MOD,
+                            }
+                        };
+                        let (dir, name) = it.change.path.rsplit_once('/').map_or(("", it.change.path.as_str()), |(d, n)| (d, n));
+                        let mut c2 = p.text(&format!("   [{}] ", if it.checked { 'x' } else { ' ' }), r.x, y, fg);
+                        c2 = p.text(&it.change.state.letter().to_string(), c2, y, state_color);
+                        c2 = p.text(&format!(" {name}"), c2, y, fg);
+                        p.text(&format!("  {dir}"), c2, y, dim);
+                    }
+                }
+            }
+            if c.items.is_empty() {
+                p.text("   変更はありません", r.x, row_y(l.list + 1), STATUS_FG);
+            }
+        }
+        // メッセージの欄
+        p.out.push(Instance::fill(x0, row_y(l.title) - cell.h * 0.5, wpx, 1.0, LINE_NO));
+        let checked = c.items.iter().filter(|i| i.checked).count();
+        p.text(&format!(" コミットメッセージ（{checked} ファイル）"), r.x, row_y(l.title), STATUS_FG);
+        let mx = r.x + 1;
+        let mw = r.w.saturating_sub(2);
+        let box_top = row_y(l.msg);
+        let (bx, bw, bh) = (mx as f32 * cell.w - 2.0, mw as f32 * cell.w + 4.0, l.msg_h as f32 * cell.h);
+        let border = if editing { FG } else { LINE_NO };
+        p.out.push(Instance::fill(bx, box_top - 1.0, bw, 1.0, border));
+        p.out.push(Instance::fill(bx, box_top + bh, bw, 1.0, border));
+        p.out.push(Instance::fill(bx, box_top - 1.0, 1.0, bh + 2.0, border));
+        p.out.push(Instance::fill(bx + bw - 1.0, box_top - 1.0, 1.0, bh + 2.0, border));
+        p.cols = mx + mw;
+        if c.msg.text().is_empty() && !editing {
+            p.text("c で書く（1 行目が件名）", mx, box_top, STATUS_FG);
+        }
+        let (cl, _) = c.cursor_pos();
+        let first = cl.saturating_sub(l.msg_h.saturating_sub(1));
+        let n = c.msg.ed.buf.line_count();
+        for k in first..(first + l.msg_h).min(n) {
+            let y = box_top + (k - first) as f32 * cell.h;
+            draw_vim_line(p, &c.msg, k, mx, y, &ed.preedit, editing);
+        }
+        p.cols = r.x + r.w;
+        // amend とボタン（右寄せ）
+        let ay = row_y(l.amend);
+        p.text(&format!(" [{}] 直前のコミットを直す（A）", if c.amend { 'x' } else { ' ' }), r.x, ay, STATUS_FG);
+        let by = row_y(l.buttons);
+        for (label, x, w, push) in crate::commit_panel::buttons(r.w) {
+            let bg = if push { MATCH_BG } else { FG };
+            p.out.push(Instance::fill((r.x + x) as f32 * cell.w, by, w as f32 * cell.w, cell.h, bg));
+            p.text(label, r.x + x, by, if push { FG } else { BG });
+        }
+        p.cols = saved;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

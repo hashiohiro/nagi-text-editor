@@ -534,6 +534,69 @@ impl Editor {
     }
 }
 
+
+/// 描き方（view.rs の Painter で描く）
+pub(crate) mod draw {
+    #![allow(unused_imports)]
+    use super::*;
+    use crate::view::*;
+
+    /// 全文検索のパネル。1 行目は見出し（検索語と件数）、2 行目から `path:行: 本文`（ripgrep の vimgrep と同じ形）
+    pub(crate) fn draw_grep_panel(p: &mut Painter, g: &crate::grep_panel::GrepPanel, r: Rect, focused: bool) {
+        if let (Some(v), Some(_)) = (&g.view, &g.title) {
+            draw_read_view(p, g, v, r, focused);
+            return;
+        }
+        let cell = p.fonts.cell();
+        let (x, y0, w) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
+        p.out.push(Instance::fill(x, y0, w, r.h as f32 * cell.h, BG));
+        p.out.push(Instance::fill(x, y0, w, 1.0, LINE_NO));
+        let head = match (&g.error, &g.title) {
+            (Some(e), _) => format!("正規表現の誤り: {}", e.lines().last().unwrap_or("")),
+            (None, Some(t)) => format!("{t}   {} 件{}", g.hits.len(), if g.searching() { " …" } else { "" }),
+            (None, None) => format!(
+                "全文検索: {}{}   {} 件 / {} ファイル{}{}",
+                g.query.text,
+                if g.regex { "  [.*]" } else { "" },
+                g.hits.len(),
+                g.files(),
+                if g.hits.len() >= nagi_workers::grep::MAX_HITS { "（上限）" } else { "" },
+                if g.searching() { " …" } else { "" }
+            ),
+        };
+        let saved = p.cols;
+        p.cols = (r.x + r.w).saturating_sub(3);
+        p.text(&head, r.x, y0, STATUS_FG);
+        p.cols = saved;
+        for k in 0..r.h.saturating_sub(1) {
+            let Some(h) = g.hits.get(g.scroll + k) else { break };
+            let y = (r.y + 1 + k) as f32 * cell.h;
+            let selected = g.in_selection(g.scroll + k);
+            // 選んだ行は、パネルにいる（か検索語を打っている）ときは反転、そうでなければ控えめな地の色
+            let reversed = selected && focused;
+            if reversed {
+                p.out.push(Instance::fill(x, y, w, cell.h, FG));
+            } else if selected {
+                p.out.push(Instance::fill(x, y, w, cell.h, MATCH_BG));
+            }
+            let (fg, dim, accent) = if reversed { (BG, BG, BG) } else { (FG, STATUS_FG, FINDER_MATCH) };
+            // ファイルを持たない行（コマンドの出力）は本文だけ
+            let mut items = Vec::new();
+            let num = format!(":{}: ", h.line);
+            if !h.path.is_empty() {
+                items.extend(p.items(&h.path, dim));
+                items.extend(p.items(&num, dim));
+            }
+            for (b, gr) in h.text.grapheme_indices(true) {
+                let m = b >= h.range.0 && b < h.range.1;
+                let width = p.cell_width(gr);
+                items.push(Item { g: Cow::Borrowed(gr), width, fg: if m { accent } else { fg }, bg: None, underline: m && reversed });
+            }
+            p.draw(&items, r.x, y);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

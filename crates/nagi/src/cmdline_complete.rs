@@ -328,6 +328,47 @@ impl Editor {
     }
 }
 
+
+/// 描き方（view.rs の Painter で描く）
+pub(crate) mod draw {
+    #![allow(unused_imports)]
+    use super::*;
+    use crate::view::*;
+
+    /// `:` のコマンドラインの候補（最下行のすぐ上に最大 10 件。補う語の位置から）
+    pub(crate) fn draw_cmd_complete(p: &mut Painter, ed: &Editor, c: &crate::cmdline_complete::CmdComplete, rows: usize, cols: usize) {
+        let max = crate::cmdline_complete::MAX_SHOWN.min(rows);
+        let cell = p.fonts.cell();
+        let n = c.items.len().min(max);
+        let first = c.sel.map_or(0, |s| s.saturating_sub(max - 1));
+        let shown: Vec<&(String, String)> = c.items.iter().skip(first).take(n).collect();
+        let name_w = shown.iter().map(|(a, _)| p.width(a)).max().unwrap_or(1);
+        let desc_w = shown.iter().map(|(_, d)| p.width(d)).max().unwrap_or(0);
+        let width = (name_w + desc_w + if desc_w > 0 { 5 } else { 2 }).min(cols);
+        let col = (1 + p.width(&ed.cmdline.text[..c.start.min(ed.cmdline.text.len())])).min(cols.saturating_sub(width));
+        let top = rows - n;
+        let mut hits = Vec::new();
+        for (k, (name, desc)) in shown.iter().enumerate() {
+            hits.push((top + k, col, col + width, first + k));
+            let y = (top + k) as f32 * cell.h;
+            let selected = c.sel == Some(first + k);
+            let (bg, fg, dim) = if selected { (FG, BG, BG) } else { (MATCH_BG, FG, STATUS_FG) };
+            p.out.push(Instance::fill(col as f32 * cell.w, y, width as f32 * cell.w, cell.h, bg));
+            let end = p.text(&format!(" {name}"), col, y, fg);
+            if !desc.is_empty() {
+                p.text(desc, end.max(col + name_w + 1) + 2, y, dim);
+            }
+        }
+        c.rows.set(hits);
+        // 件数が多いときは、残りの数を一覧の右上に
+        if c.items.len() > n {
+            let more = format!(" {}/{} ", c.sel.map_or(0, |s| s + 1), c.items.len());
+            let x = (col + width).saturating_sub(p.width(&more));
+            p.text(&more, x, (top as f32 - 1.0).max(0.0) * cell.h, STATUS_FG);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
