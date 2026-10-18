@@ -750,12 +750,9 @@ impl App {
         let edge = if ed.stripe == Some(editor::Side::Left) { STRIPE_W as f64 } else { 1.0 };
         let rows = ed.screen.1;
         let cols = ed.screen.0 as f64;
-        let redge = if ed.stripe == Some(editor::Side::Right) { STRIPE_W as f64 } else { 1.0 };
-        // 左のストライプは出さない（左の欄の 1 行目にタブがあるため）
-        let _ = edge;
-        let want = if col >= cols - redge && row < ed.windows_rows() {
-            Some(editor::Side::Right)
-        } else if row >= rows && ed.status_rows() == 1 {
+        // 左右のストライプは出さない（欄の 1 行目にタブがあり、隠した欄は端の » « のボタンで出すため）
+        let _ = (edge, cols);
+        let want = if row >= rows && ed.status_rows() == 1 {
             Some(editor::Side::Bottom)
         } else if ed.stripe == Some(editor::Side::Bottom) && row + 1 == rows && col < 60.0 {
             Some(editor::Side::Bottom)
