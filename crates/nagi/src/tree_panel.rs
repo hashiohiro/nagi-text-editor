@@ -468,6 +468,29 @@ mod tests {
         panic!("ツリーが読み終わらない");
     }
 
+    /// 木を操作した後に本文をクリックすると、本文の操作に戻る（カーソルが出て、キーが本文へ行く）
+    #[test]
+    fn click_text_after_tree_returns_to_editor() {
+        let dir = std::env::temp_dir().join(format!("nagi-tree-click-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::write(dir.join("a.txt"), "one\ntwo\nthree\n").unwrap();
+        let mut buf = Buffer::open(&dir.join("a.txt")).unwrap();
+        buf.path = Some(dir.join("a.txt"));
+        let mut e = Editor::new(buf, None);
+        e.set_screen(120, 40);
+        e.open_tree();
+        e.tree_click(1, 1);
+        assert_eq!(e.mode, Mode::List);
+        // 本文の 2 行目をクリック
+        let r = e.active_rect();
+        e.click(1, r.x + e.gutter() + 1);
+        assert_eq!(e.mode, Mode::Normal, "本文に戻る");
+        assert_eq!(e.cursor.line, 1);
+        e.key(nagi_vim::Key::Char('j'));
+        assert_eq!(e.cursor.line, 2, "キーは本文へ");
+    }
+
     /// 開いているファイルが変わると、木をそこまで展開して選ぶ（木にいる間は動かさない）
     #[test]
     fn follows_open_file() {

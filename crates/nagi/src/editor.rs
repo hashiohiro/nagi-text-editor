@@ -1653,11 +1653,20 @@ impl Editor {
         Cursor { line, byte, want_col: display_col(&text, byte, false) }
     }
 
+    /// パネル（木・検索の結果・右の欄など）にいたら本文の操作に戻る（本文をクリックしたとき）
+    fn leave_panel(&mut self) {
+        if self.mode == Mode::List {
+            self.mode = Mode::Normal;
+            self.pending_keys.clear();
+        }
+    }
+
     /// マウスのクリック: 画面上の (行, セル列) へカーソルを移す
     pub fn click(&mut self, row: usize, col: usize) {
         if self.has_prompt() {
             return;
         }
+        self.leave_panel();
         if matches!(self.mode, Mode::Visual { .. }) {
             self.mode = Mode::Normal;
         }
@@ -1673,6 +1682,7 @@ impl Editor {
         if self.has_prompt() {
             return;
         }
+        self.leave_panel();
         if self.mode == Mode::Insert {
             self.key(Key::Esc);
         }
@@ -1689,6 +1699,7 @@ impl Editor {
         if self.has_prompt() {
             return;
         }
+        self.leave_panel();
         if self.mode == Mode::Insert {
             self.key(Key::Esc);
         }
