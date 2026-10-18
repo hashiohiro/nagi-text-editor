@@ -6,17 +6,20 @@ project search, git, a terminal panel, run configurations, and database consoles
 
 - Single executable (`nagi.exe`). No installer.
 - Vim keybindings (reads your `.ideavimrc`).
-- Languages built in: Rust, TypeScript/TSX, JavaScript, Java, Kotlin, Python, Bash, Batch, PowerShell,
-  INI, JSON, YAML, Vim script, CSS, SCSS, HTML, Markdown.
-- Languages downloaded on first use (from the `grammars-v1` release, verified by SHA-256):
-  C, C++, Go, C#, PHP, Ruby, Lua, Scala, Swift, Dart, Zig, Haskell, Elixir, R, SQL, TOML, XML,
-  Makefile, CMake, Dockerfile, Groovy. Use `:GrammarInstall all` to fetch them in advance.
+- Syntax highlighting and go-to-definition for 39 languages:
+
+  | | Languages |
+  |---|---|
+  | Built in (work offline) | JSON, YAML, INI, XML, Batch, PowerShell, Bash, Markdown |
+  | Downloaded automatically the first time you open such a file (a few hundred KB each, verified by SHA-256) | Rust, TypeScript, TSX, JavaScript, Java, Kotlin, Python, Vim script, CSS, HTML, SCSS, C, C++, Go, C#, PHP, Ruby, Lua, Scala, Swift, Dart, Zig, Haskell, Elixir, R, SQL, TOML, Makefile, CMake, Dockerfile, Groovy |
+
+  Once downloaded, a grammar works offline. `:GrammarInstall all` fetches all of them in advance.
 - Toolchains (JDK, Python, Node.js, Go, .NET, Rust, clang, CMake, Zig, Dart, PHP) can be picked
   or downloaded per project in Settings (`Ctrl+Alt+S`). Projects in WSL use the tools installed in WSL.
 
 ## Download
 
-Get `nagi.exe` from the [latest release](https://github.com/hashiohiro/nagi-text-editor/releases/latest).
+Get `nagi-<version>-windows-x64.zip` from the [latest release](https://github.com/hashiohiro/nagi-text-editor/releases/latest) and run `nagi.exe` inside.
 Windows 10/11 x64.
 
 ## Build
@@ -25,7 +28,8 @@ Windows 10/11 x64.
 cargo build --release
 ```
 
-Requires the MSVC toolchain. The downloadable grammars are built with `grammars/build.sh`.
+Requires the MSVC toolchain. The downloadable grammars are built with `grammars/build.sh` (run it before
+`cargo test`; tests load the grammars from `target/grammars/dist`).
 
 ## License
 

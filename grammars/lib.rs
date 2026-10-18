@@ -14,6 +14,15 @@ macro_rules! grammar {
     };
 }
 
+grammar!("rust", tree_sitter_rust::LANGUAGE);
+grammar!("typescript", tree_sitter_typescript::LANGUAGE_TYPESCRIPT);
+grammar!("tsx", tree_sitter_typescript::LANGUAGE_TSX);
+grammar!("javascript", tree_sitter_javascript::LANGUAGE);
+grammar!("java", tree_sitter_java::LANGUAGE);
+grammar!("kotlin", tree_sitter_kotlin_ng::LANGUAGE);
+grammar!("python", tree_sitter_python::LANGUAGE);
+grammar!("css", tree_sitter_css::LANGUAGE);
+grammar!("html", tree_sitter_html::LANGUAGE);
 grammar!("c", tree_sitter_c::LANGUAGE);
 grammar!("cpp", tree_sitter_cpp::LANGUAGE);
 grammar!("go", tree_sitter_go::LANGUAGE);
@@ -48,3 +57,24 @@ pub extern "C" fn nagi_grammar() -> *const () {
     // SAFETY: 同上
     unsafe { tree_sitter_dockerfile() }
 }
+
+/// 古い形式のバインディング（LANGUAGE の定数が無い）の文法は、C の関数をそのまま返す
+macro_rules! raw_grammar {
+    ($feature:literal, $krate:ident, $func:ident) => {
+        #[cfg(feature = $feature)]
+        extern crate $krate;
+        #[cfg(feature = $feature)]
+        unsafe extern "C" {
+            fn $func() -> *const ();
+        }
+        #[cfg(feature = $feature)]
+        #[unsafe(no_mangle)]
+        pub extern "C" fn nagi_grammar() -> *const () {
+            // SAFETY: 同上
+            unsafe { $func() }
+        }
+    };
+}
+
+raw_grammar!("vim", tree_sitter_vim, tree_sitter_vim);
+raw_grammar!("scss", tree_sitter_scss, tree_sitter_scss);

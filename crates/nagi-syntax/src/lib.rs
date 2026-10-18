@@ -101,12 +101,6 @@ const ALL: [Lang; 38] = [
     Lang::Groovy,
 ];
 
-// tree-sitter-vim 0.4.0 は古い形式のバインディング（Language を値で返す宣言）なので使わず、
-// 同じクレートがビルドする C の関数を新しい形式（LanguageFn）で呼ぶ
-unsafe extern "C" {
-    fn tree_sitter_vim() -> *const ();
-}
-const VIM_LANGUAGE: tree_sitter_language::LanguageFn = unsafe { tree_sitter_language::LanguageFn::from_raw(tree_sitter_vim) };
 
 
 impl Lang {
@@ -256,11 +250,21 @@ impl Lang {
             Lang::R => "r",
             Lang::Sql => "sql",
             Lang::Toml => "toml",
-            Lang::Xml => "xml",
             Lang::Make => "make",
             Lang::CMake => "cmake",
             Lang::Dockerfile => "dockerfile",
             Lang::Groovy => "groovy",
+            Lang::Rust => "rust",
+            Lang::TypeScript => "typescript",
+            Lang::Tsx => "tsx",
+            Lang::JavaScript => "javascript",
+            Lang::Java => "java",
+            Lang::Kotlin => "kotlin",
+            Lang::Python => "python",
+            Lang::Vim => "vim",
+            Lang::Css => "css",
+            Lang::Html => "html",
+            Lang::Scss => "scss",
             _ => return None,
         })
     }
@@ -276,23 +280,13 @@ impl Lang {
             return grammar::load(id);
         }
         Some(match self {
-            Lang::Rust => tree_sitter_rust::LANGUAGE.into(),
-            Lang::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
-            Lang::Tsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
-            Lang::JavaScript => tree_sitter_javascript::LANGUAGE.into(),
-            Lang::Java => tree_sitter_java::LANGUAGE.into(),
-            Lang::Kotlin => tree_sitter_kotlin_ng::LANGUAGE.into(),
-            Lang::Python => tree_sitter_python::LANGUAGE.into(),
             Lang::Bash => tree_sitter_bash::LANGUAGE.into(),
             Lang::Batch => tree_sitter_batch::LANGUAGE.into(),
             Lang::PowerShell => tree_sitter_powershell::LANGUAGE.into(),
             Lang::Ini => tree_sitter_ini::LANGUAGE.into(),
             Lang::Json => tree_sitter_json::LANGUAGE.into(),
             Lang::Yaml => tree_sitter_yaml::LANGUAGE.into(),
-            Lang::Vim => VIM_LANGUAGE.into(),
-            Lang::Css => tree_sitter_css::LANGUAGE.into(),
-            Lang::Scss => tree_sitter_scss::language(),
-            Lang::Html => tree_sitter_html::LANGUAGE.into(),
+            Lang::Xml => tree_sitter_xml::LANGUAGE_XML.into(),
             _ => unreachable!("ダウンロードする文法は grammar_id で返した"),
         })
     }
@@ -300,25 +294,23 @@ impl Lang {
     /// ハイライトのクエリ。TypeScript は JavaScript のクエリに TS 固有分を足して使う（grammar の想定どおり）
     fn highlights_source(self) -> String {
         match self {
-            Lang::TypeScript => format!("{}\n{}", tree_sitter_javascript::HIGHLIGHT_QUERY, tree_sitter_typescript::HIGHLIGHTS_QUERY),
-            // TSX は JSX の要素（タグ・属性）の規則も足す
-            Lang::Tsx => format!("{}\n{}\n{}", tree_sitter_javascript::HIGHLIGHT_QUERY, tree_sitter_javascript::JSX_HIGHLIGHT_QUERY, tree_sitter_typescript::HIGHLIGHTS_QUERY),
-            Lang::JavaScript => format!("{}\n{}", tree_sitter_javascript::HIGHLIGHT_QUERY, tree_sitter_javascript::JSX_HIGHLIGHT_QUERY),
-            Lang::Java => tree_sitter_java::HIGHLIGHTS_QUERY.to_string(),
-            Lang::Rust => tree_sitter_rust::HIGHLIGHTS_QUERY.to_string(),
+            Lang::Rust => include_str!("../queries/rust/highlights.scm").to_string(),
+            Lang::TypeScript => include_str!("../queries/typescript/highlights.scm").to_string(),
+            Lang::Tsx => include_str!("../queries/tsx/highlights.scm").to_string(),
+            Lang::JavaScript => include_str!("../queries/javascript/highlights.scm").to_string(),
+            Lang::Java => include_str!("../queries/java/highlights.scm").to_string(),
             Lang::Kotlin => include_str!("../queries/kotlin/highlights.scm").to_string(),
-            Lang::Python => tree_sitter_python::HIGHLIGHTS_QUERY.to_string(),
+            Lang::Python => include_str!("../queries/python/highlights.scm").to_string(),
+            Lang::Vim => include_str!("../queries/vim/highlights.scm").to_string(),
+            Lang::Css => include_str!("../queries/css/highlights.scm").to_string(),
+            Lang::Html => include_str!("../queries/html/highlights.scm").to_string(),
+            Lang::Scss => include_str!("../queries/scss/highlights.scm").to_string(),
             Lang::Bash => tree_sitter_bash::HIGHLIGHT_QUERY.to_string(),
             Lang::Batch => tree_sitter_batch::HIGHLIGHTS_QUERY.to_string(),
             Lang::PowerShell => tree_sitter_powershell::HIGHLIGHTS_QUERY.to_string(),
             Lang::Ini => tree_sitter_ini::HIGHLIGHTS_QUERY.to_string(),
             Lang::Json => tree_sitter_json::HIGHLIGHTS_QUERY.to_string(),
             Lang::Yaml => tree_sitter_yaml::HIGHLIGHTS_QUERY.to_string(),
-            Lang::Vim => tree_sitter_vim::HIGHLIGHTS_QUERY.to_string(),
-            Lang::Css => tree_sitter_css::HIGHLIGHTS_QUERY.to_string(),
-            // SCSS は CSS のクエリに SCSS 固有分を足す（nvim-treesitter と同じ）
-            Lang::Scss => format!("{}\n{}", tree_sitter_css::HIGHLIGHTS_QUERY, tree_sitter_scss::HIGHLIGHTS_QUERY),
-            Lang::Html => tree_sitter_html::HIGHLIGHTS_QUERY.to_string(),
             Lang::C => include_str!("../queries/c/highlights.scm").to_string(),
             Lang::Cpp => include_str!("../queries/cpp/highlights.scm").to_string(),
             Lang::Go => include_str!("../queries/go/highlights.scm").to_string(),

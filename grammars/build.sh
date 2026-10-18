@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # 文法の DLL を作り、GitHub のリリースに置く zip と、nagi に埋め込む SHA-256 の表を書く。
 #
-#   grammars/build.sh            21 個すべて
+#   grammars/build.sh            すべて
 #   grammars/build.sh c go       指定したものだけ
 #   ZIP_ONLY=1 grammars/build.sh  DLL は作り直さず、zip（DLL とライセンス表記）だけ作り直す（SHA-256 は変わらない）
 #
@@ -11,8 +11,8 @@
 #   crates/nagi-syntax/grammars.lock        <id> <DLL の SHA-256> <zip の大きさ>（nagi はこれと合う DLL だけを読む）
 #
 # 置き方（文法を作り直したら、リリースの名前の版 grammars-vN を上げて nagi-syntax/src/grammar.rs の RELEASE も変える）:
-#   gh release create grammars-v1 target/grammars/dist/grammar-*.zip --repo hashiohiro/nagi-text-editor --latest=false --title "Grammars v1"
-#   （zip だけ作り直したら gh release upload grammars-v1 target/grammars/dist/grammar-*.zip --clobber --repo hashiohiro/nagi-text-editor）
+#   gh release create grammars-v2 target/grammars/dist/grammar-*.zip --repo hashiohiro/nagi-text-editor --latest=false --title "Grammars v2"
+#   （zip だけ作り直したら gh release upload grammars-v2 target/grammars/dist/grammar-*.zip --clobber --repo hashiohiro/nagi-text-editor）
 set -euo pipefail
 cd "$(dirname "$0")/.."
 # Windows の cargo.exe（WSL から使う）。CARGO で指定、無ければ PATH、無ければ %USERPROFILE%\.cargo\bin
@@ -20,7 +20,7 @@ if [ -z "${CARGO:-}" ]; then
   CARGO="$(command -v cargo.exe || true)"
   [ -n "$CARGO" ] || CARGO="$(wslpath "$(cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\r')")/.cargo/bin/cargo.exe"
 fi
-ALL="c cpp go csharp php ruby lua scala swift dart zig haskell elixir r sql toml xml make cmake dockerfile groovy"
+ALL="c cpp go csharp php ruby lua scala swift dart zig haskell elixir r sql toml make cmake dockerfile groovy rust typescript tsx javascript java kotlin python vim css html scss"
 IDS="${*:-$ALL}"
 DIST=target/grammars/dist
 mkdir -p "$DIST"
@@ -38,7 +38,7 @@ for id in $IDS; do
   rm -f "$DIST/grammar-$id.zip"
   python3 -c "import zipfile,sys; z=zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_DEFLATED,compresslevel=9); z.write(sys.argv[2],sys.argv[3]); z.write(sys.argv[4],'THIRD_PARTY_LICENSES.txt'); z.close()" "$DIST/grammar-$id.zip" "$DIST/grammar-$id.dll" "grammar-$id.dll" "$DIST/grammar-$id.LICENSES.txt"
 done
-# 表はいつも 21 個すべてを書く（作っていないものは dist にある前のもの）
+# 表はいつも すべてを書く（作っていないものは dist にある前のもの）
 {
   echo "# 文法の DLL の SHA-256 と、リリースの zip の大きさ（grammars/build.sh が書く。手で直さない）"
   for id in $ALL; do

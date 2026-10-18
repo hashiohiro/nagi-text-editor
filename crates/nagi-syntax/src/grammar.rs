@@ -13,7 +13,7 @@ use std::sync::Mutex;
 use tree_sitter::Language;
 
 /// 文法を置くリリース（文法を作り直したら版を上げる。古い nagi は古い版を取りにいく）
-pub const RELEASE: &str = "grammars-v1";
+pub const RELEASE: &str = "grammars-v2";
 /// 文法を置くリポジトリ（nagi 本体と同じ。リリースを分けて置く）
 pub const REPO: &str = "hashiohiro/nagi-text-editor";
 
@@ -29,14 +29,10 @@ pub fn expected(id: &str) -> Option<(&'static str, u64)> {
     })
 }
 
-/// 置き場所（NAGI_GRAMMARS_DIR があればそこ）
+/// 置き場所（NAGI_GRAMMARS_DIR があればそこ。cargo test・cargo run では .cargo/config.toml が target/grammars/dist にする）
 pub fn dir() -> PathBuf {
     if let Some(d) = std::env::var_os("NAGI_GRAMMARS_DIR") {
         return PathBuf::from(d);
-    }
-    // 試験では、grammars/build.sh が作ったもの
-    if cfg!(test) {
-        return PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/grammars/dist");
     }
     std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("nagi").join("grammars").join(RELEASE)
 }
@@ -134,7 +130,7 @@ mod tests {
         let (sha, size) = expected("c").unwrap();
         assert_eq!(sha.len(), 64);
         assert!(size > 10_000);
-        assert!(expected("rust").is_none(), "Rust は exe に入っている");
+        assert!(expected("json").is_none(), "JSON は exe に入っている");
         assert_eq!(zip_url("go"), format!("https://github.com/{REPO}/releases/download/{RELEASE}/grammar-go.zip"));
         assert_eq!(sha256_hex(b"abc").unwrap(), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
     }

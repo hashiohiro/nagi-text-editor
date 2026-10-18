@@ -9,24 +9,14 @@ publish.workspace = true
 nagi-core.workspace = true
 tree-sitter = "=0.27.1"
 tree-sitter-language = "0.1.9"
-tree-sitter-typescript = "=0.23.2"
-tree-sitter-javascript = "=0.25.0"
-tree-sitter-java = "=0.23.5"
-tree-sitter-kotlin-ng = "=1.1.0"
-tree-sitter-python = "=0.25.0"
 tree-sitter-bash = "=0.25.1"
 tree-sitter-batch = "=0.11.1"
 tree-sitter-powershell = "=0.26.4"
 tree-sitter-ini = "=1.4.0"
 tree-sitter-json = "=0.24.8"
 tree-sitter-yaml = "=0.7.2"
-tree-sitter-vim = "=0.4.0"
-tree-sitter-rust = "=0.24.2"
-tree-sitter-css = "=0.25.0"
-tree-sitter-html = "=0.23.2"
-# ほかの言語（C・Go・C# など 21）の文法は exe に入れず、使うときにダウンロードする（grammar.rs・grammars/）
+tree-sitter-xml = "=0.7.0"
+# ほかの言語（Rust・Java・TypeScript・C など 31）の文法は exe に入れず、使うときにダウンロードする（grammar.rs・grammars/）
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_LibraryLoader"] }
-# 本家 1.0.0 はビルドの台本が gcc の -Wno-unused-parameter を MSVC にも渡して失敗する。MSVC を直したフォーク（文法は同じ）
-tree-sitter-scss = { package = "cortexkit-tree-sitter-scss", version = "=1.0.1" }
 # Markdown（ハイライトとプレビュー。tree-sitter の文法は 2 つに分かれていて注入が要るので、こちらで元の位置を取る）
 pulldown-cmark = { version = "0.13.0", default-features = false }

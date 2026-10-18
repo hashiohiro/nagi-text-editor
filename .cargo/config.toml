@@ -2,3 +2,8 @@
 # 入れていない PC（Visual C++ 再頒布可能パッケージが無い）でも、exe 1 つで動く
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
+
+# cargo test・cargo run のときは、grammars/build.sh が作った文法の DLL を使う（Rust・Java などの試験に要る。
+# 先に grammars/build.sh を流しておく）。配った exe には関係しない（%LOCALAPPDATA%\nagi\grammars に取ってくる）
+[env]
+NAGI_GRAMMARS_DIR = { value = "target/grammars/dist", relative = true }

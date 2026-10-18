@@ -16,6 +16,17 @@ path = "lib.rs"
 
 [dependencies]
 tree-sitter-language = "0.1.9"
+tree-sitter-rust = { version = "=0.24.2", optional = true }
+tree-sitter-typescript = { version = "=0.23.2", optional = true }
+tree-sitter-javascript = { version = "=0.25.0", optional = true }
+tree-sitter-java = { version = "=0.23.5", optional = true }
+tree-sitter-kotlin-ng = { version = "=1.1.0", optional = true }
+tree-sitter-python = { version = "=0.25.0", optional = true }
+tree-sitter-vim = { version = "=0.4.0", optional = true }
+tree-sitter-css = { version = "=0.25.0", optional = true }
+tree-sitter-html = { version = "=0.23.2", optional = true }
+# 本家 1.0.0 はビルドの台本が gcc の -Wno-unused-parameter を MSVC にも渡して失敗する。MSVC を直したフォーク（文法は同じ）
+tree-sitter-scss = { package = "cortexkit-tree-sitter-scss", version = "=1.0.1", optional = true }
 tree-sitter-c = { version = "=0.24.2", optional = true }
 tree-sitter-cpp = { version = "=0.23.4", optional = true }
 tree-sitter-go = { version = "=0.25.0", optional = true }
@@ -40,6 +51,17 @@ tree-sitter-groovy = { version = "=0.1.2", optional = true }
 
 # 1 つの DLL に 1 つの文法（--features c など）
 [features]
+rust = ["dep:tree-sitter-rust"]
+typescript = ["dep:tree-sitter-typescript"]
+tsx = ["dep:tree-sitter-typescript"]
+javascript = ["dep:tree-sitter-javascript"]
+java = ["dep:tree-sitter-java"]
+kotlin = ["dep:tree-sitter-kotlin-ng"]
+python = ["dep:tree-sitter-python"]
+vim = ["dep:tree-sitter-vim"]
+css = ["dep:tree-sitter-css"]
+html = ["dep:tree-sitter-html"]
+scss = ["dep:tree-sitter-scss"]
 c = ["dep:tree-sitter-c"]
 cpp = ["dep:tree-sitter-cpp"]
 go = ["dep:tree-sitter-go"]
