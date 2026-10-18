@@ -165,10 +165,21 @@ struct Press {
     selected: bool,
 }
 
-fn title_for(path: Option<&std::path::Path>) -> String {
-    match path {
-        Some(p) => format!("nagi — {}", p.display()),
-        None => "nagi".into(),
+/// 窓の題名: 「nagi — プロジェクト名 — プロジェクトの中のパス」（プロジェクトの外ならフルパス）
+fn title_for(path: Option<&std::path::Path>, root: Option<&std::path::Path>) -> String {
+    let project = root.and_then(|r| r.file_name()).map(|n| n.to_string_lossy().into_owned());
+    let file = path.map(|p| {
+        let abs = std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf());
+        match root.and_then(|r| abs.strip_prefix(r).ok()) {
+            Some(rel) => rel.display().to_string(),
+            None => abs.display().to_string(),
+        }
+    });
+    match (project, file) {
+        (Some(pr), Some(f)) => format!("nagi — {pr} — {f}"),
+        (Some(pr), None) => format!("nagi — {pr}"),
+        (None, Some(f)) => format!("nagi — {f}"),
+        (None, None) => "nagi".into(),
     }
 }
 
@@ -179,7 +190,8 @@ struct App {
     /// 開いている「名前を付けて保存」のダイアログ
     save_dialog: Option<std::sync::mpsc::Receiver<Option<std::path::PathBuf>>>,
     /// 題名に出しているパス（バッファを切り替えたら題名を変える）
-    title_path: Option<std::path::PathBuf>,
+    /// 題名に出しているもの（ファイル, プロジェクトの根）
+    title_path: (Option<std::path::PathBuf>, Option<std::path::PathBuf>),
     opts: Opts,
     pending: Option<Pending>,
     window: Option<Arc<Window>>,
@@ -218,7 +230,7 @@ struct App {
 impl App {
     fn startup(&mut self, el: &ActiveEventLoop) {
         let attrs = Window::default_attributes()
-            .with_title(title_for(None))
+            .with_title(title_for(None, None))
             .with_visible(false)
             // タイトルバーも暗くして、ターミナルと見分けがつかないようにする
             .with_theme(Some(winit::window::Theme::Dark))
@@ -237,8 +249,9 @@ impl App {
         let (buf, partial) = p.file.recv().unwrap();
         self.rc = p.rc.recv().unwrap();
         let mut fonts = Fonts::new(chain, (FONT_PX * self.scale).round() as f32);
-        window.set_title(&title_for(buf.path.as_deref()));
-        self.title_path = buf.path.clone();
+        // 題名は最初の描画で（プロジェクトの根が決まってから）付ける
+        window.set_title(&title_for(buf.path.as_deref(), None));
+        self.title_path = (None, None);
         self.ed = Some(Editor::new(buf, None));
         self.apply_rc();
         // 構文解析は裏で行い、終わったらイベントループを起こして色を付ける（大きなファイルでも表示を待たせない）
@@ -381,10 +394,11 @@ impl App {
         }
         clock::mark_once("first frame built");
         // バッファを切り替えたら題名も変える
-        if self.title_path.as_ref() != ed.buf.path.as_ref() {
-            self.title_path = ed.buf.path.clone();
+        let key = (ed.buf.path.clone(), Some(ed.nav_root()));
+        if self.title_path != key {
+            self.title_path = key;
             if let Some(w) = &self.window {
-                w.set_title(&title_for(self.title_path.as_deref()));
+                w.set_title(&title_for(self.title_path.0.as_deref(), self.title_path.1.as_deref()));
             }
         }
         let t3 = Instant::now();
@@ -669,9 +683,9 @@ impl App {
         let rows = ed.screen.1;
         let cols = ed.screen.0 as f64;
         let redge = if ed.stripe == Some(editor::Side::Right) { STRIPE_W as f64 } else { 1.0 };
-        let want = if col < edge && row < ed.windows_rows() {
-            Some(editor::Side::Left)
-        } else if col >= cols - redge && row < ed.windows_rows() {
+        // 左のストライプは出さない（左の欄の 1 行目にタブがあるため）
+        let _ = edge;
+        let want = if col >= cols - redge && row < ed.windows_rows() {
             Some(editor::Side::Right)
         } else if row >= rows && ed.status_rows() == 1 {
             Some(editor::Side::Bottom)
@@ -1347,7 +1361,7 @@ fn main() {
         replay: Default::default(),
         replay_deadline: None,
         prefetched_top: None,
-        title_path: None,
+        title_path: (None, None),
         save_dialog: None,
     };
     event_loop.run_app(&mut app).unwrap();

@@ -2190,7 +2190,9 @@ fn draw_tree(
     let saved = p.cols;
     p.cols = r.x + r.w;
     let name = t.root.file_name().map_or(t.root.display().to_string(), |n| n.to_string_lossy().into_owned());
-    draw_left_tabs(p, r, crate::tree_panel::LeftTab::Project, focused, &format!("{name}/{}", if t.loading() { " …" } else { "" }));
+    // プロジェクトの名前は窓の題名に出す（タブの横には出さない）
+    let _ = name;
+    draw_left_tabs(p, r, crate::tree_panel::LeftTab::Project, focused, if t.loading() { "…" } else { "" });
     for k in 0..r.h.saturating_sub(1) {
         let Some(row) = t.rows.get(t.scroll + k) else { break };
         let y = (r.y + 1 + k) as f32 * cell.h;
@@ -2825,7 +2827,10 @@ fn draw_terminal(p: &mut Painter, ed: &Editor, r: Rect, focused: bool) {
         if on {
             p.out.push(Instance::fill(x as f32 * cell.w, y0 + cell.h - 2.0, (end - x) as f32 * cell.w, 2.0, if focused { GIT_MOD } else { STATUS_FG }));
         }
-        x = p.text("│", end, y0, LINE_NO);
+        // 区切り: 罫線の文字は行の上下いっぱいに伸びて上のタブの線とつながるので、上下を空けた細い線にする
+        let h = (cell.h * 0.5).round();
+        p.out.push(Instance::fill((end as f32 + 0.5) * cell.w, y0 + (cell.h - h) / 2.0, 1.0, h, LINE_NO));
+        x = end + 1;
     }
     let r = Rect { x: r.x, y: r.y + 1, w: r.w, h: r.h.saturating_sub(1) };
     // シェルを選んでいる
