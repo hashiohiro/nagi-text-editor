@@ -7,7 +7,7 @@
 //! - ツリーで読み込んだフォルダの中身が変わったら、そのフォルダを読み直す。
 
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::Sender;
 
 use nagi_core::{Buffer, History};
 use nagi_workers::watch::{Change, Watcher};
@@ -16,14 +16,15 @@ use crate::buffers::Slot;
 use crate::editor::Editor;
 
 /// 裏で読み直したバッファの受け渡し
+/// 裏で読み直したバッファの受け口（読めなかったものは None）
 pub struct Reloads {
-    tx: Sender<(PathBuf, Buffer)>,
-    rx: Receiver<(PathBuf, Buffer)>,
+    tx: Sender<Option<(PathBuf, Buffer)>>,
+    rx: nagi_core::task::Task<Option<(PathBuf, Buffer)>>,
 }
 
 impl Default for Reloads {
     fn default() -> Self {
-        let (tx, rx) = channel();
+        let (tx, rx) = nagi_core::task::manual();
         Self { tx, rx }
     }
 }
@@ -36,7 +37,7 @@ fn same(a: &Path, b: &Path) -> bool {
 impl Editor {
     /// 見張りを始める（App が waker を入れた後に呼ぶ）。今のバッファのファイルと設定ファイルを見張る
     pub fn start_watch(&mut self, rc_files: &[PathBuf]) {
-        let waker = self.waker.clone().unwrap_or_else(|| std::sync::Arc::new(|| {}));
+        let waker = self.waker();
         let Some(mut w) = Watcher::new(waker) else { return };
         if let Some(p) = &self.buf.path {
             w.watch_file(p);
@@ -114,17 +115,7 @@ impl Editor {
                         self.message = format!("W12: \"{name}\" が外部で変更されました。バッファにも変更があります（:e! で読み直す）");
                     } else {
                         // 裏で読み直し、届いたら差し替える
-                        let tx = self.reloads.tx.clone();
-                        let waker = self.waker.clone();
-                        let _ = std::thread::Builder::new().name("reload".into()).spawn(move || {
-                            if let Ok(b) = Buffer::open(&p) {
-                                if tx.send((p, b)).is_ok() {
-                                    if let Some(w) = waker {
-                                        w();
-                                    }
-                                }
-                            }
-                        });
+                        nagi_core::task::spawn_to("reload", self.reloads.tx.clone(), self.waker(), move || Buffer::open(&p).ok().map(|b| (p, b)));
                     }
                     redraw = true;
                 }
@@ -140,7 +131,7 @@ impl Editor {
                 Change::Dir(d) => redraw |= self.tree_reload_dir(&d),
             }
         }
-        while let Ok((p, b)) = self.reloads.rx.try_recv() {
+        while let Ok(Some((p, b))) = self.reloads.rx.try_recv() {
             redraw |= self.apply_reload(&p, b);
         }
         (redraw, reload_rc)

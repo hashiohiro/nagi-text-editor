@@ -52,7 +52,7 @@ impl Editor {
             self.message = format!("（試験）{name} の文法のダウンロード");
             return;
         }
-        let waker = self.waker.clone().unwrap_or_else(|| std::sync::Arc::new(|| {}));
+        let waker = self.waker();
         self.grammar_downloads.push((id.to_string(), nagi_workers::grammars::download(id, waker)));
         let kb = nagi_syntax::grammar::expected(id).map_or(0, |e| e.1 / 1024);
         self.message = format!("{name} の文法をダウンロードしています（色分け・定義へ移動に使う。{kb}KB）…");

@@ -140,17 +140,10 @@ impl Prompt {
 /// 一致を数えた対象（バッファの版, 検索語, 正規表現か）
 type SearchKey = (u64, String, bool);
 
-/// 裏で全件を数えている検索。落とすと（検索語が変わると）数えるのをやめる
+/// 裏で全件を数えている検索。落とすと（検索語が変わると）数えるのをやめる（Task を捨てると取り消し）
 struct CountJob {
     key: SearchKey,
-    rx: std::sync::mpsc::Receiver<Vec<(usize, usize)>>,
-    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
-}
-
-impl Drop for CountJob {
-    fn drop(&mut self) {
-        self.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
-    }
+    rx: nagi_core::task::Task<Vec<(usize, usize)>>,
 }
 
 /// 先頭部分だけを表示している間の最下行
@@ -220,7 +213,7 @@ pub struct Editor {
     /// 構文木（対応言語のときだけ）
     pub syntax: Option<nagi_syntax::Syntax>,
     /// 大きなファイルの全体（先頭部分だけを先に表示している間。届いたら `poll_load` で差し替える）
-    loading: Option<std::sync::mpsc::Receiver<Buffer>>,
+    loading: Option<nagi_core::task::Task<Buffer>>,
     /// 裏で解析中の構文木（届いたら `poll_syntax` で受け取る）
     pub(crate) pending_syntax: Option<nagi_core::task::Task<nagi_syntax::Syntax>>,
     /// 裏の解析が終わったときに UI スレッドを起こす（App が入れる）
@@ -385,6 +378,37 @@ pub struct Editor {
 }
 
 impl Editor {
+    /// 裏の処理から届いたものを全部受け取る（UI が起こされたとき）。どれかが変われば true。
+    /// 裏の処理を足したら、その受け取りをここに 1 行足す（ADR 0016 の 1）
+    pub fn poll_background(&mut self) -> bool {
+        let mut changed = false;
+        if self.poll_load() {
+            crate::clock::mark_once("file: full buffer swapped in");
+            changed = true;
+        }
+        for poll in [
+            Self::poll_search,
+            Self::poll_finder,
+            Self::poll_launcher,
+            Self::poll_grep,
+            Self::poll_tree,
+            Self::poll_index,
+            Self::poll_make,
+            Self::poll_jdk_download,
+            Self::poll_grammars,
+            Self::poll_cmd_files,
+            Self::poll_git,
+            Self::poll_commit,
+            Self::poll_blame,
+            Self::poll_log,
+            Self::poll_branches,
+            Self::poll_db,
+        ] {
+            changed |= poll(self);
+        }
+        changed
+    }
+
     /// UI を起こす関数（裏の処理に渡す。UI の無い試験では何もしない）
     pub(crate) fn waker(&self) -> nagi_core::task::Waker {
         self.waker.clone().unwrap_or_else(nagi_core::task::no_waker)
@@ -512,15 +536,9 @@ impl Editor {
 
     /// 先頭部分だけを表示しているバッファの、全体が `rx` に届くのを待つ。届いたらイベントループを起こす
     pub fn wait_full_buffer(&mut self, rx: std::sync::mpsc::Receiver<Buffer>) {
-        let (tx, rx2) = std::sync::mpsc::channel();
-        let waker = self.waker.clone();
-        std::thread::spawn(move || {
+        let rx2 = nagi_core::task::spawn("full-buffer", self.waker(), move |ctx| {
             if let Ok(b) = rx.recv() {
-                if tx.send(b).is_ok() {
-                    if let Some(w) = waker {
-                        w();
-                    }
-                }
+                ctx.send(b);
             }
         });
         self.loading = Some(rx2);
@@ -1079,19 +1097,14 @@ impl Editor {
         }
         // 裏では今の内容の複製（rope の複製は O(1)）を数える
         let snap = self.buf.snapshot();
-        let (tx, rx) = std::sync::mpsc::channel();
-        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let (pattern, regex, waker, stop) = (key.1.clone(), key.2, self.waker.clone(), cancel.clone());
-        std::thread::spawn(move || {
-            let Some(ms) = find_matches_cancellable(&snap, &pattern, regex, &stop) else { return };
-            if tx.send(ms).is_ok() {
-                if let Some(w) = waker {
-                    w();
-                }
+        let (pattern, regex) = (key.1.clone(), key.2);
+        let rx = nagi_core::task::spawn("search-count", self.waker(), move |ctx| {
+            if let Some(ms) = find_matches_cancellable(&snap, &pattern, regex, &ctx.cancel_flag()) {
+                ctx.send(ms);
             }
         });
         // 前の検索語の数えは、ここで落とすと止まる
-        self.search.job = Some(CountJob { key, rx, cancel });
+        self.search.job = Some(CountJob { key, rx });
     }
 
     /// 裏で数えていた全件が届いていれば受け取る。受け取ったら true（描き直す）

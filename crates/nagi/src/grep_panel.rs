@@ -188,7 +188,7 @@ impl Editor {
     }
 
     fn restart_grep(&mut self) {
-        let waker = self.waker.clone().unwrap_or_else(|| std::sync::Arc::new(|| {}));
+        let waker = self.waker();
         let Some(g) = &mut self.grep else { return };
         g.job = None;
         g.hits.clear();

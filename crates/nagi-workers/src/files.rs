@@ -1,9 +1,8 @@
 //! プロジェクトのファイル一覧（ファジーファインダー用）。`.gitignore` などに従い、複数のスレッドで並べて集める。
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::atomic::Ordering;
+use std::sync::mpsc::Sender;
 
 use crate::Waker;
 
@@ -12,14 +11,8 @@ const BATCH: usize = 256;
 
 /// 集めている途中の一覧。落とすと集めるのをやめる
 pub struct FileWalk {
-    pub rx: Receiver<Vec<String>>,
-    cancel: Arc<AtomicBool>,
-}
-
-impl Drop for FileWalk {
-    fn drop(&mut self) {
-        self.cancel.store(true, Ordering::Relaxed);
-    }
+    /// 集めたもの（送り口が閉じたら集め終えた）。捨てると集めるのをやめる
+    pub rx: nagi_core::task::Task<Vec<String>>,
 }
 
 struct Batch {
@@ -44,12 +37,9 @@ impl Drop for Batch {
 
 /// `root` 以下のファイルを集める。パスは `root` からの相対で、区切りは `/`
 pub fn walk(root: &Path, waker: Waker) -> FileWalk {
-    let (tx, rx) = channel();
-    let cancel = Arc::new(AtomicBool::new(false));
     let root = root.to_path_buf();
-    let stop = cancel.clone();
-    let _ = std::thread::Builder::new().name("files".into()).spawn(move || {
-        let done = waker.clone();
+    let rx = nagi_core::task::spawn("files", waker, move |ctx| {
+        let (tx, waker, stop) = (ctx.sender(), ctx.waker(), ctx.cancel_flag());
         let walker = walker(&root).build_parallel();
         walker.run(|| {
             let mut b = Batch { buf: Vec::with_capacity(BATCH), tx: tx.clone(), waker: waker.clone() };
@@ -71,11 +61,10 @@ pub fn walk(root: &Path, waker: Waker) -> FileWalk {
                 ignore::WalkState::Continue
             })
         });
-        // 送り口をすべて閉じてから起こす（受け取る側が「集め終えた」と分かるように）
+        // 送り口を閉じて起こすのは task が行う（受け取る側が「集め終えた」と分かる）
         drop(tx);
-        done();
     });
-    FileWalk { rx, cancel }
+    FileWalk { rx }
 }
 
 /// フォルダの中身（ファイルツリー用）。(名前, フォルダか) をフォルダ・名前の順に並べる。`.gitignore` に従い、`.git` は出さない
@@ -83,7 +72,7 @@ pub type DirList = (PathBuf, Vec<(String, bool)>);
 
 /// `dir` の中身を裏のスレッドで読み、`tx` に送って UI を起こす
 pub fn list_dir(dir: PathBuf, tx: Sender<DirList>, waker: Waker) {
-    let _ = std::thread::Builder::new().name("list-dir".into()).spawn(move || {
+    nagi_core::task::spawn_to("list-dir", tx, waker, move || {
         let mut out: Vec<(String, bool)> = ignore::WalkBuilder::new(&dir)
             .max_depth(Some(1))
             .hidden(false)
@@ -95,9 +84,7 @@ pub fn list_dir(dir: PathBuf, tx: Sender<DirList>, waker: Waker) {
             .map(|e| (e.file_name().to_string_lossy().into_owned(), e.file_type().is_some_and(|t| t.is_dir())))
             .collect();
         out.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.to_lowercase().cmp(&b.0.to_lowercase())));
-        if tx.send((dir, out)).is_ok() {
-            waker();
-        }
+        (dir, out)
     });
 }
 
@@ -141,7 +128,7 @@ mod tests {
         std::fs::write(dir.join("src/a.rs"), "").unwrap();
         std::fs::write(dir.join("src/sub/b.rs"), "").unwrap();
         std::fs::write(dir.join("target/c.rs"), "").unwrap();
-        let w = walk(&dir, Arc::new(|| {}));
+        let w = walk(&dir, nagi_core::task::no_waker());
         let mut all: Vec<String> = w.rx.iter().flatten().collect();
         all.sort();
         assert_eq!(all, vec!["src/a.rs", "src/sub/b.rs"]);

@@ -6,7 +6,7 @@
 use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 
 use crate::Waker;
@@ -18,7 +18,7 @@ pub enum JobMsg {
 }
 
 pub struct Job {
-    pub rx: Receiver<JobMsg>,
+    pub rx: nagi_core::task::Task<JobMsg>,
     child: Arc<Mutex<Option<Child>>>,
 }
 
@@ -130,12 +130,12 @@ pub fn run_env(command: &str, cwd: &Path, env: &[(String, String)], waker: Waker
     cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
     crate::sys::no_window(&mut cmd);
     let mut child = cmd.spawn()?;
-    let (tx, rx) = channel();
     let out = child.stdout.take();
     let err = child.stderr.take();
     let child = Arc::new(Mutex::new(Some(child)));
     let c2 = child.clone();
-    let _ = std::thread::Builder::new().name("job".into()).spawn(move || {
+    let rx = nagi_core::task::spawn("job", waker, move |ctx| {
+        let (tx, waker) = (ctx.sender(), ctx.waker());
         let mut pumps = Vec::new();
         if let Some(o) = out {
             pumps.push(pump(o, tx.clone(), waker.clone()));
@@ -147,8 +147,7 @@ pub fn run_env(command: &str, cwd: &Path, env: &[(String, String)], waker: Waker
             let _ = p.join();
         }
         let code = c2.lock().ok().and_then(|mut c| c.as_mut().and_then(|ch| ch.wait().ok())).and_then(|s| s.code());
-        let _ = tx.send(JobMsg::Done(code));
-        waker();
+        ctx.send(JobMsg::Done(code));
     });
     Ok(Job { rx, child })
 }

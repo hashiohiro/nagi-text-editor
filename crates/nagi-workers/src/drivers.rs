@@ -6,7 +6,6 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::mpsc::{Receiver, channel};
 use std::sync::Mutex;
 
 use crate::Waker;
@@ -73,7 +72,7 @@ pub enum DlMsg {
 }
 
 pub struct Download {
-    pub rx: Receiver<DlMsg>,
+    pub rx: nagi_core::task::Task<DlMsg>,
 }
 
 /// 届いた知らせをまとめたもの
@@ -122,12 +121,10 @@ pub fn download_zip(url: &str, expect: u64, dest: &Path, waker: Waker) -> Downlo
 
 /// zip をダウンロードして `dest` に展開し、`find` で目当てのフォルダを探す（裏のスレッド）。`what` は見つからないときの知らせ用
 pub fn download_and_extract(url: &str, expect: u64, dest: &Path, find: Box<dyn Fn(&Path) -> Option<PathBuf> + Send>, what: &str, waker: Waker) -> Download {
-    let (tx, rx) = channel();
     let (url, dest, what) = (url.to_string(), dest.to_path_buf(), what.to_string());
-    let _ = std::thread::Builder::new().name("download".into()).spawn(move || {
+    let rx = nagi_core::task::spawn("download", waker, move |ctx| {
         let send = |m: DlMsg| {
-            let _ = tx.send(m);
-            waker();
+            ctx.send(m);
         };
         let run = || -> Result<PathBuf, String> {
             std::fs::create_dir_all(&dest).map_err(|e| format!("{} を作れません: {e}", dest.display()))?;

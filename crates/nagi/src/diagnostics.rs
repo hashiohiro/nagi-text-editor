@@ -252,7 +252,7 @@ impl Editor {
 
     /// コマンドを `root` で動かし、診断（`output` なら出力の全行）を下のパネルに出す
     pub(crate) fn run_job(&mut self, cmd: &str, root: &Path, title: &str, output: bool) {
-        let waker = self.waker.clone().unwrap_or_else(|| std::sync::Arc::new(|| {}));
+        let waker = self.waker();
         // Maven・Gradle で JAVA_HOME が使えなければ（古い JRE を指したままなど）、見つけた JDK をこのコマンドのときだけ使う
         let java = ["mvn", "gradle"].iter().any(|t| cmd.split_whitespace().next().is_some_and(|w| w.to_ascii_lowercase().starts_with(t)));
         let fix = if java { nagi_workers::jobs::java_home_fix() } else { None };

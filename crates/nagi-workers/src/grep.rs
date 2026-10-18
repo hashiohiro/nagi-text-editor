@@ -3,8 +3,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, channel};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use grep_matcher::Matcher;
 use grep_regex::RegexMatcherBuilder;
@@ -33,26 +32,17 @@ pub struct Hit {
 
 /// 探している途中の検索。落とすと探すのをやめる
 pub struct GrepJob {
-    pub rx: Receiver<Vec<Hit>>,
-    cancel: Arc<AtomicBool>,
-}
-
-impl Drop for GrepJob {
-    fn drop(&mut self) {
-        self.cancel.store(true, Ordering::Relaxed);
-    }
+    /// 見つけたもの（送り口が閉じたら探し終えた）。捨てると探すのをやめる
+    pub rx: nagi_core::task::Task<Vec<Hit>>,
 }
 
 /// `root` 以下で `pattern` を探す。大文字小文字は区別しない。`regex` でなければ文字どおりに探す。
 /// パターンが正しくなければ Err（正規表現の誤り）
 pub fn search(root: &Path, pattern: &str, regex: bool, waker: Waker) -> Result<GrepJob, String> {
     let matcher = RegexMatcherBuilder::new().case_insensitive(true).fixed_strings(!regex).build(pattern).map_err(|e| e.to_string())?;
-    let (tx, rx) = channel();
-    let cancel = Arc::new(AtomicBool::new(false));
-    let stop = cancel.clone();
     let root: PathBuf = root.to_path_buf();
-    let _ = std::thread::Builder::new().name("grep".into()).spawn(move || {
-        let done = waker.clone();
+    let rx = nagi_core::task::spawn("grep", waker, move |ctx| {
+        let (tx, waker, stop) = (ctx.sender(), ctx.waker(), ctx.cancel_flag());
         let count = Arc::new(AtomicUsize::new(0));
         let walker = crate::files::walker(&root).build_parallel();
         walker.run(|| {
@@ -100,11 +90,10 @@ pub fn search(root: &Path, pattern: &str, regex: bool, waker: Waker) -> Result<G
                 ignore::WalkState::Continue
             })
         });
-        // 送り口をすべて閉じてから起こす（受け取る側が「終わった」と分かるように）
+        // 送り口を閉じて起こすのは task が行う（受け取る側が「終わった」と分かる）
         drop(tx);
-        done();
     });
-    Ok(GrepJob { rx, cancel })
+    Ok(GrepJob { rx })
 }
 
 #[cfg(test)]

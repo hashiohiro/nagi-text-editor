@@ -6,7 +6,6 @@
 
 use std::ops::Range;
 use std::path::Path;
-use std::sync::mpsc::Receiver;
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -282,7 +281,7 @@ pub struct Syntax {
     /// 編集を反映したが、まだ再解析していない（木の位置だけずらしてある）
     stale: bool,
     /// 裏で走っている再解析と、その解析を始めた後の編集（届いた木にも反映する）
-    job: Option<(Receiver<(Parser, Option<Tree>, Duration)>, Vec<InputEdit>)>,
+    job: Option<(nagi_core::task::Task<(Parser, Option<Tree>, Duration)>, Vec<InputEdit>)>,
     /// 直前の解析にかかった時間。短ければその場で、長ければ裏で再解析する
     last_parse: Duration,
     /// 裏の再解析が終わったときに UI スレッドを起こす
@@ -358,19 +357,14 @@ impl Syntax {
 
     fn spawn_parse(&mut self, buf: &Buffer) {
         let Some(mut parser) = self.parser.take() else { return };
-        let (old, snap, waker) = (self.tree.clone(), buf.snapshot(), self.waker.clone());
-        let (tx, rx) = std::sync::mpsc::channel();
+        let (old, snap) = (self.tree.clone(), buf.snapshot());
         self.stale = false;
-        self.job = Some((rx, Vec::new()));
-        std::thread::spawn(move || {
+        let rx = nagi_core::task::spawn("reparse", self.waker.clone().unwrap_or_else(nagi_core::task::no_waker), move |ctx| {
             let t = Instant::now();
             let tree = parse_with(&mut parser, &snap, old.as_ref());
-            if tx.send((parser, tree, t.elapsed())).is_ok() {
-                if let Some(w) = waker {
-                    w();
-                }
-            }
+            ctx.send((parser, tree, t.elapsed()));
         });
+        self.job = Some((rx, Vec::new()));
     }
 
     /// 裏の再解析が終わっていれば受け取る

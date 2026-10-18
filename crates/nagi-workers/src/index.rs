@@ -6,7 +6,6 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex};
 use std::time::UNIX_EPOCH;
 
@@ -211,10 +210,10 @@ pub enum Progress {
 }
 
 /// 索引を作る（保存したものがあれば、変わったファイルだけ解析し直す）
-pub fn build(root: &Path, waker: Waker) -> Receiver<Progress> {
-    let (tx, rx) = channel();
+pub fn build(root: &Path, waker: Waker) -> nagi_core::task::Task<Progress> {
     let root = root.to_path_buf();
-    let _ = std::thread::Builder::new().name("index".into()).spawn(move || {
+    nagi_core::task::spawn("index", waker, move |ctx| {
+        let (tx, waker) = (ctx.sender(), ctx.waker());
         let cached = load_cache(&root);
         // 対応する言語のファイルを集める
         let mut paths = Vec::new();
@@ -273,10 +272,8 @@ pub fn build(root: &Path, waker: Waker) -> Receiver<Progress> {
         if changed {
             idx.save();
         }
-        let _ = tx.send(Progress::Done(Box::new(idx)));
-        waker();
-    });
-    rx
+        ctx.send(Progress::Done(Box::new(idx)));
+    })
 }
 
 /// ファイルの import 文（Java は完全な名前、TS / JS は (取り込む名前, モジュールの指定)）
@@ -1349,7 +1346,7 @@ mod tests {
         std::fs::write(dir.join("src/A.java"), "class A { void run() {} }\n").unwrap();
         std::fs::write(dir.join("src/b.ts"), "export function helper() {}\nexport class B {}\n").unwrap();
         std::fs::write(dir.join("readme.md"), "# x\n").unwrap();
-        let wait = |rx: Receiver<Progress>| loop {
+        let wait = |rx: nagi_core::task::Task<Progress>| loop {
             if let Ok(Progress::Done(i)) = rx.recv() {
                 return i;
             }

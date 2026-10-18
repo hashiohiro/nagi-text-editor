@@ -244,7 +244,7 @@ impl Editor {
             "home" => std::env::var_os("USERPROFILE").map(std::path::PathBuf::from).unwrap_or_else(|| self.nav_root()),
             _ => self.nav_root(),
         };
-        let waker = self.waker.clone().unwrap_or_else(|| std::sync::Arc::new(|| {}));
+        let waker = self.waker();
         match Term::spawn(cmd, &cwd, rows, cols, waker) {
             Ok(term) => {
                 self.terminals.list.push(TermView { term, name: name.to_string(), cmd: cmd.to_string(), exited: false });

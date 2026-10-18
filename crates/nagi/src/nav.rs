@@ -7,7 +7,7 @@
 //! - 索引は起動後に裏で作り、保存したファイルは 1 つずつ索引し直す
 
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::Sender;
 
 use nagi_syntax::defs::DefKind;
 use nagi_workers::index::{Entry, Index, Progress};
@@ -19,11 +19,11 @@ use crate::finder::Source;
 #[derive(Default)]
 pub struct IndexState {
     pub index: Option<Index>,
-    building: Option<Receiver<Progress>>,
+    building: Option<nagi_core::task::Task<Progress>>,
     /// 作っている途中 (解析したファイル, 解析が要るファイル)
     pub progress: Option<(usize, usize)>,
     /// 保存したファイルの索引し直し
-    reindex: Option<(Sender<(String, (u64, u64), Vec<Entry>)>, Receiver<(String, (u64, u64), Vec<Entry>)>)>,
+    reindex: Option<(Sender<Option<(String, (u64, u64), Vec<Entry>)>>, nagi_core::task::Task<Option<(String, (u64, u64), Vec<Entry>)>>)>,
 }
 
 /// 識別子に使える文字か
@@ -52,7 +52,7 @@ impl Editor {
             return;
         }
         let root = self.project_root();
-        let waker = self.waker.clone().unwrap_or_else(|| std::sync::Arc::new(|| {}));
+        let waker = self.waker();
         self.nav.building = Some(nagi_workers::index::build(&root, waker));
         self.nav.progress = Some((0, 0));
     }
@@ -76,7 +76,7 @@ impl Editor {
         }
         let mut updated = false;
         if let (Some((_, rx)), Some(idx)) = (&self.nav.reindex, &mut self.nav.index) {
-            while let Ok((rel, st, defs)) = rx.try_recv() {
+            for (rel, st, defs) in rx.drain().into_iter().flatten() {
                 idx.replace_file(&rel, st, defs);
                 updated = true;
             }
@@ -85,7 +85,7 @@ impl Editor {
             // 保存は裏で（UI スレッドでファイルを書かない）。中身は今の索引の写し
             if let Some(idx) = &self.nav.index {
                 let snapshot = idx.snapshot();
-                let _ = std::thread::Builder::new().name("index-save".into()).spawn(move || snapshot.save());
+                nagi_core::task::detach("index-save", move || snapshot.save());
             }
         }
         changed
@@ -100,18 +100,10 @@ impl Editor {
             return;
         }
         let rel = rel.to_string_lossy().replace('\\', "/");
-        let (tx, _) = self.nav.reindex.get_or_insert_with(channel);
-        let tx = tx.clone();
-        let waker = self.waker.clone();
-        let _ = std::thread::Builder::new().name("reindex".into()).spawn(move || {
+        let tx = self.nav.reindex.get_or_insert_with(nagi_core::task::manual).0.clone();
+        nagi_core::task::spawn_to("reindex", tx, self.waker(), move || {
             let mut p = nagi_syntax::defs::DefParser::default();
-            if let Some((st, defs)) = nagi_workers::index::index_file(&abs, &mut p) {
-                if tx.send((rel, st, defs)).is_ok() {
-                    if let Some(w) = waker {
-                        w();
-                    }
-                }
-            }
+            nagi_workers::index::index_file(&abs, &mut p).map(|(st, defs)| (rel, st, defs))
         });
     }
 

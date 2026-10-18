@@ -65,6 +65,7 @@ impl<M> Ctx<M> {
 pub struct Task<M> {
     rx: Receiver<M>,
     cancel: Arc<AtomicBool>,
+    finished: Arc<AtomicBool>,
 }
 
 impl<M> Task<M> {
@@ -83,6 +84,11 @@ impl<M> Task<M> {
         self.rx.recv()
     }
 
+    /// 処理が終わるまで、届くものを順に（待つ）
+    pub fn iter(&self) -> std::sync::mpsc::Iter<'_, M> {
+        self.rx.iter()
+    }
+
     /// 終わるまで待って 1 つ受け取る（試験用）
     pub fn recv_timeout(&self, d: std::time::Duration) -> Option<M> {
         self.rx.recv_timeout(d).ok()
@@ -90,6 +96,11 @@ impl<M> Task<M> {
 
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::Relaxed);
+    }
+
+    /// 処理が終わったか（届いたものを読み残していても true）
+    pub fn finished(&self) -> bool {
+        self.finished.load(Ordering::Relaxed)
     }
 }
 
@@ -103,15 +114,36 @@ impl<M> Drop for Task<M> {
 pub fn spawn<M: Send + 'static>(name: &str, waker: Waker, f: impl FnOnce(&Ctx<M>) + Send + 'static) -> Task<M> {
     let (tx, rx) = channel();
     let cancel = Arc::new(AtomicBool::new(false));
+    let finished = Arc::new(AtomicBool::new(false));
+    let fin = finished.clone();
     let ctx = Ctx { tx, waker, cancel: cancel.clone() };
-    let _ = std::thread::Builder::new().name(name.into()).spawn(move || f(&ctx));
-    Task { rx, cancel }
+    let spawned = std::thread::Builder::new().name(name.into()).spawn(move || {
+        f(&ctx);
+        // 送り口を閉じてから起こす（受け取る側は「届き終えた」= Disconnected・finished で分かる）
+        let waker = ctx.waker.clone();
+        drop(ctx);
+        fin.store(true, Ordering::Relaxed);
+        waker();
+    });
+    if spawned.is_err() {
+        finished.store(true, Ordering::Relaxed);
+    }
+    Task { rx, cancel, finished }
 }
 
 /// スレッドを作らず、手で送る口と組にした Task（試験で結果の届き方を真似る・別の仕組みの結果を Task として持つ）
 pub fn manual<M>() -> (Sender<M>, Task<M>) {
     let (tx, rx) = channel();
-    (tx, Task { rx, cancel: Arc::new(AtomicBool::new(false)) })
+    (tx, Task { rx, cancel: Arc::new(AtomicBool::new(false)), finished: Arc::new(AtomicBool::new(false)) })
+}
+
+/// 多くの処理が 1 つの受け口へ送る形（manual で作った口へ）: `f` の結果を `tx` へ送って UI を起こす
+pub fn spawn_to<M: Send + 'static>(name: &str, tx: Sender<M>, waker: Waker, f: impl FnOnce() -> M + Send + 'static) {
+    let _ = std::thread::Builder::new().name(name.into()).spawn(move || {
+        if tx.send(f()).is_ok() {
+            waker();
+        }
+    });
 }
 
 /// 結果を待たない後始末（保存・書き出し）を裏で動かす
@@ -136,7 +168,11 @@ mod tests {
         });
         assert_eq!(t.recv_timeout(Duration::from_secs(5)), Some(1));
         assert_eq!(t.recv_timeout(Duration::from_secs(5)), Some(2));
-        assert_eq!(woke.load(Ordering::Relaxed), 2, "送るたびに UI を起こす");
+        while !t.finished() {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(woke.load(Ordering::Relaxed), 3, "送るたびと、終わったときに UI を起こす");
+        assert!(matches!(t.try_recv(), Err(TryRecvError::Disconnected)), "終われば送り口が閉じる");
         // 捨てると取り消しの合図が立つ
         let (tx, rx) = channel();
         let t = spawn("t2", no_waker(), move |ctx: &Ctx<()>| {

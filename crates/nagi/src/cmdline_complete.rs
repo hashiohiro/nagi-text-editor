@@ -174,7 +174,7 @@ impl Editor {
         let wants_files = text.split_once(' ').is_some_and(|(n, _)| FILE_ARG.contains(&n.trim_start_matches(|c: char| !c.is_ascii_alphabetic())));
         let root = self.finder_root();
         if wants_files && !self.file_cache.contains_key(&root) && self.cmd_files.is_none() {
-            let waker = self.waker.clone().unwrap_or_else(|| std::sync::Arc::new(|| {}));
+            let waker = self.waker();
             self.cmd_files = Some((root, nagi_workers::files::walk(&self.finder_root(), waker), Vec::new()));
         }
         self.cmd_complete = self.cmd_candidates(&text);

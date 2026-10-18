@@ -620,7 +620,7 @@ impl Editor {
     }
 
     fn db_connect(&mut self, i: usize, pass: String) {
-        let waker = self.waker.clone().unwrap_or_else(|| std::sync::Arc::new(|| {}));
+        let waker = self.waker();
         let Some(p) = &mut self.db else { return };
         let s = p.sources[i].clone();
         p.conns[i] = Conn::default();
@@ -941,7 +941,7 @@ impl Editor {
     pub(crate) fn db_confirm_key(&mut self, key: Key) -> bool {
         if let Some(i) = self.db.as_mut().and_then(|p| p.setup_ask.take()) {
             if key == Key::Char('y') {
-                let waker = self.waker.clone().unwrap_or_else(|| std::sync::Arc::new(|| {}));
+                let waker = self.waker();
                 let p = self.db.as_mut().unwrap();
                 p.download = Some((i, drivers::download_oracle(waker), "ダウンロードを始めます…".into()));
                 p.expanded.insert(format!("s{i}"));

@@ -29,7 +29,7 @@ pub fn refresh() {
     if cfg!(test) {
         return;
     }
-    std::thread::spawn(|| {
+    nagi_core::task::detach("jumplist", || {
         let entries = crate::project_open::recent_entries();
         let pinned: Vec<(String, PathBuf)> = entries.iter().filter(|e| e.pinned && !e.missing).map(|e| (e.name.clone(), e.path.clone())).collect();
         let n = crate::settings::Settings::load(None).int("other.jumplist_count") as usize;

@@ -258,7 +258,7 @@ impl SettingsDialog {
         m.insert(id.to_string(), Err(String::new()));
         let (rs, id) = (self.releases.clone(), id.to_string());
         let waker = self.waker.clone();
-        let _ = std::thread::Builder::new().name("releases".into()).spawn(move || {
+        nagi_core::task::detach("releases", move || {
             let r = nagi_workers::toolchains::releases(&id);
             if let Ok(mut m) = rs.lock() {
                 m.insert(id, r.map_err(|e| if e.is_empty() { "調べられません".into() } else { e }));
@@ -322,7 +322,7 @@ fn tool_items(id: &str, releases: &Releases) -> Vec<ComboItem> {
 fn probe_tools(root: &std::path::Path, info: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>, waker: nagi_workers::Waker) {
     use nagi_workers::toolchains::{self, TOOLS};
     let wsl = nagi_workers::wsl::split_unc(root).map(|(d, _)| d);
-    let _ = std::thread::Builder::new().name("probe-tools".into()).spawn(move || {
+    nagi_core::task::detach("probe-tools", move || {
         if let Some(d) = &wsl {
             for (id, path, ver) in toolchains::wsl_report(d) {
                 let cmd = toolchains::def(id).map_or("", |t| t.wsl);
@@ -380,7 +380,7 @@ impl Editor {
             self.message = format!("（試験）{label} {what} のダウンロード");
             return;
         }
-        let waker = self.waker.clone().unwrap_or_else(|| std::sync::Arc::new(|| {}));
+        let waker = self.waker();
         self.tool_download = Some((id.to_string(), nagi_workers::toolchains::download(id, release, waker)));
         self.message = format!("{label} {what} をダウンロードします…");
     }
@@ -395,7 +395,7 @@ impl Editor {
             self.message = format!("（試験）JDK {version} のダウンロード");
             return;
         }
-        let waker = self.waker.clone().unwrap_or_else(|| std::sync::Arc::new(|| {}));
+        let waker = self.waker();
         self.jdk_download = Some((version, nagi_workers::jdk::download_temurin(version, waker)));
         self.message = format!("Eclipse Temurin {version} をダウンロードしています（約 200MB。~\\.jdks に置く）");
     }
@@ -488,10 +488,10 @@ impl Editor {
             buttons: Default::default(),
             tool_info: Default::default(),
             releases: Default::default(),
-            waker: self.waker.clone().unwrap_or_else(|| std::sync::Arc::new(|| {})),
+            waker: self.waker(),
         };
         if !cfg!(test) {
-            let waker = self.waker.clone().unwrap_or_else(|| std::sync::Arc::new(|| {}));
+            let waker = self.waker();
             probe_tools(&self.nav_root(), d.tool_info.clone(), waker);
         }
         self.settings_dialog = Some(d);

@@ -4,7 +4,6 @@
 //! 上書きの確認はダイアログ自身が出す（FOS_OVERWRITEPROMPT）。
 
 use std::path::PathBuf;
-use std::sync::mpsc::{Receiver, channel};
 
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize};
@@ -36,18 +35,13 @@ fn pick(owner: isize, dir: Option<PathBuf>, name: Option<String>) -> Option<Path
 }
 
 /// ダイアログを出す。選んだパス（取り消したら None）が届いたら `waker` で UI を起こす
-pub fn open(owner: isize, dir: Option<PathBuf>, name: Option<String>, waker: Option<std::sync::Arc<dyn Fn() + Send + Sync>>) -> Receiver<Option<PathBuf>> {
-    let (tx, rx) = channel();
-    let _ = std::thread::Builder::new().name("save-dialog".into()).spawn(move || {
+pub fn open(owner: isize, dir: Option<PathBuf>, name: Option<String>, waker: Option<std::sync::Arc<dyn Fn() + Send + Sync>>) -> nagi_core::task::Task<Option<PathBuf>> {
+    nagi_core::task::spawn("save-dialog", waker.unwrap_or_else(nagi_core::task::no_waker), move |ctx| {
         let ok = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok() };
         let r = pick(owner, dir, name);
         if ok {
             unsafe { CoUninitialize() };
         }
-        let _ = tx.send(r);
-        if let Some(w) = waker {
-            w();
-        }
-    });
-    rx
+        ctx.send(r);
+    })
 }

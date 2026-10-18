@@ -7,7 +7,6 @@
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::mpsc::channel;
 
 use crate::Waker;
 use crate::drivers::{DlMsg, Download, download_and_extract};
@@ -337,12 +336,10 @@ pub fn resolve(id: &str) -> Result<(String, String), String> {
 
 /// 版 `release`（None ならいちばん新しいもの）をダウンロードして `tools\<種類>-<版>` に置く（裏のスレッド）。Done で bin のフォルダ
 pub fn download(id: &str, release: Option<Release>, waker: Waker) -> Download {
-    let (tx, rx) = channel();
     let id = id.to_string();
-    let _ = std::thread::Builder::new().name("tool-download".into()).spawn(move || {
+    let rx = nagi_core::task::spawn("tool-download", waker, move |ctx| {
         let send = |m: DlMsg| {
-            let _ = tx.send(m);
-            waker();
+            ctx.send(m);
         };
         if id == "rust" {
             let ch = release.map_or("stable".to_string(), |r| r.version);
@@ -366,7 +363,7 @@ pub fn download(id: &str, release: Option<Release>, waker: Waker) -> Download {
             return;
         }
         let exe = t.exe;
-        let inner = download_and_extract(&url, 0, &dest, Box::new(move |d: &Path| find_exe(d, exe, 3)), exe, std::sync::Arc::new(|| {}));
+        let inner = download_and_extract(&url, 0, &dest, Box::new(move |d: &Path| find_exe(d, exe, 3)), exe, nagi_core::task::no_waker());
         // 進み具合をそのまま渡す
         while let Ok(m) = inner.rx.recv() {
             let done = matches!(m, DlMsg::Done(_));

@@ -237,7 +237,7 @@ const STRIPE_W: usize = 2;
 
 struct App {
     /// 開いている「名前を付けて保存」のダイアログ
-    save_dialog: Option<std::sync::mpsc::Receiver<Option<std::path::PathBuf>>>,
+    save_dialog: Option<nagi_core::task::Task<Option<std::path::PathBuf>>>,
     /// 題名に出しているパス（バッファを切り替えたら題名を変える）
     /// 題名に出しているもの（ファイル, プロジェクトの根）
     title_path: (Option<std::path::PathBuf>, Option<std::path::PathBuf>),
@@ -1334,25 +1334,7 @@ impl ApplicationHandler for App {
     /// 裏の処理（構文解析か、検索の全件数え）が終わった。描き直すと受け取る
     fn user_event(&mut self, _el: &ActiveEventLoop, _event: ()) {
         if let Some(ed) = &mut self.ed {
-            if ed.poll_load() {
-                clock::mark_once("file: full buffer swapped in");
-            }
-            ed.poll_search();
-            ed.poll_finder();
-            ed.poll_launcher();
-            ed.poll_grep();
-            ed.poll_tree();
-            ed.poll_index();
-            ed.poll_make();
-            ed.poll_jdk_download();
-            ed.poll_grammars();
-            ed.poll_cmd_files();
-            ed.poll_git();
-            ed.poll_commit();
-            ed.poll_blame();
-            ed.poll_log();
-            ed.poll_branches();
-            ed.poll_db();
+            ed.poll_background();
         }
         // ダイアログで選んだ名前で保存する（ダイアログが上書きを確かめている）
         if let Some(r) = self.save_dialog.as_ref().and_then(|rx| rx.try_recv().ok()) {

@@ -187,7 +187,7 @@ pub fn remember_recent(path: &Path) {
     }
     let Some(file) = recent_file() else { return };
     let Ok(abs) = std::path::absolute(path) else { return };
-    let _ = std::thread::Builder::new().name("recent".into()).spawn(move || {
+    nagi_core::task::detach("recent", move || {
         let old = std::fs::read_to_string(&file).unwrap_or_default();
         let me = abs.to_string_lossy().into_owned();
         let mut lines = vec![me.clone()];
@@ -238,7 +238,7 @@ impl Editor {
                     f.items = list.clone();
                     f.fresh = Some(Vec::new());
                 }
-                let waker = self.waker.clone().unwrap_or_else(|| std::sync::Arc::new(|| {}));
+                let waker = self.waker();
                 f.walk = Some(nagi_workers::files::walk(&root, waker));
             }
             Source::Buffers => {

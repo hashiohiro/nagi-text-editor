@@ -182,7 +182,7 @@ impl Editor {
     }
 
     fn waker_or_noop(&self) -> nagi_workers::Waker {
-        self.waker.clone().unwrap_or_else(|| std::sync::Arc::new(|| {}))
+        self.waker()
     }
 
     /// 左の欄に出しているタブ（両方開いていれば、最後に選んだ方）

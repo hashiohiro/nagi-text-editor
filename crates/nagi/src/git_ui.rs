@@ -6,7 +6,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::sync::mpsc::{Receiver, Sender, channel};
+use std::sync::mpsc::Sender;
 
 use nagi_core::linediff::{Hunk, HunkKind, diff_lines, split_lines};
 use nagi_workers::git::{FileState, Status};
@@ -20,13 +20,13 @@ const MAX_DIFF_BYTES: usize = 2 << 20;
 pub struct GitState {
     pub root: Option<PathBuf>,
     pub status: Option<Status>,
-    status_rx: Option<Receiver<Result<Status, String>>>,
+    status_rx: Option<nagi_core::task::Task<Result<Status, String>>>,
     /// 管理されているファイルのあるフォルダ（根からの相対パス、/ 区切り）。木で管理対象外のフォルダを赤にする
     pub tracked_dirs: Option<HashSet<String>>,
-    tracked_rx: Option<Receiver<HashSet<String>>>,
+    tracked_rx: Option<nagi_core::task::Task<HashSet<String>>>,
     /// HEAD の版の中身（絶対パス → 中身。HEAD に無ければ None）
     heads: HashMap<PathBuf, Option<Arc<String>>>,
-    head_chan: Option<(Sender<(PathBuf, Option<String>)>, Receiver<(PathBuf, Option<String>)>)>,
+    head_chan: Option<(Sender<(PathBuf, Option<String>)>, nagi_core::task::Task<(PathBuf, Option<String>)>)>,
     pending: HashSet<PathBuf>,
     /// 計算した差分（絶対パス → (バッファの版, まとまり)）
     hunks: HashMap<PathBuf, (u64, Vec<Hunk>)>,
@@ -48,10 +48,6 @@ fn abs(p: &Path) -> PathBuf {
 }
 
 impl Editor {
-    fn git_waker(&self) -> Arc<dyn Fn() + Send + Sync> {
-        self.waker.clone().unwrap_or_else(|| Arc::new(|| {}))
-    }
-
     /// 作業ツリーの根を決めて、status と今のファイルの HEAD の版を取りに行く（App が表示の後に呼ぶ）
     pub fn start_git(&mut self) {
         let base = self.buf.path.as_deref().map(abs).or_else(|| std::env::current_dir().ok());
@@ -77,14 +73,13 @@ impl Editor {
 
     pub(crate) fn refresh_status(&mut self) {
         let Some(root) = self.git.root.clone() else { return };
-        let (tx, rx) = channel();
-        let waker = self.git_waker();
-        let (ttx, trx) = channel();
-        let _ = std::thread::Builder::new().name("git-status".into()).spawn(move || {
-            if tx.send(nagi_workers::git::status(&root)).is_ok() {
-                waker();
-            }
-            // 管理されているファイルのフォルダ（木の色分け用）
+        let r2 = root.clone();
+        let rx = nagi_core::task::spawn("git-status", self.waker(), move |ctx| {
+            ctx.send(nagi_workers::git::status(&root));
+        });
+        // 管理されているファイルのフォルダ（木の色分け用）
+        let trx = nagi_core::task::spawn("git-tracked", self.waker(), move |ctx| {
+            let root = r2;
             if let Ok(out) = nagi_workers::git::git(&root, &["ls-files", "-z"]) {
                 let mut dirs = HashSet::new();
                 for f in String::from_utf8_lossy(&out).split('\0') {
@@ -96,9 +91,7 @@ impl Editor {
                         }
                     }
                 }
-                if ttx.send(dirs).is_ok() {
-                    waker();
-                }
+                ctx.send(dirs);
             }
         });
         self.git.status_rx = Some(rx);
@@ -113,15 +106,8 @@ impl Editor {
         }
         let Ok(rel) = path.strip_prefix(&root) else { return };
         let rel = rel.to_string_lossy().replace('\\', "/");
-        let (tx, _) = self.git.head_chan.get_or_insert_with(channel);
-        let tx = tx.clone();
-        let waker = self.git_waker();
-        let _ = std::thread::Builder::new().name("git-head".into()).spawn(move || {
-            let blob = nagi_workers::git::head_blob(&root, &rel);
-            if tx.send((path, blob)).is_ok() {
-                waker();
-            }
-        });
+        let tx = self.git.head_chan.get_or_insert_with(nagi_core::task::manual).0.clone();
+        nagi_core::task::spawn_to("git-head", tx, self.waker(), move || (path, nagi_workers::git::head_blob(&root, &rel)));
     }
 
     /// 裏で取った status と HEAD の版を受け取る。変わったら true
