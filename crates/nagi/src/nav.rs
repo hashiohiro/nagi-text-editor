@@ -46,6 +46,11 @@ impl Editor {
 
     /// 索引を作り始める（App が表示の後に呼ぶ）
     pub fn start_index(&mut self) {
+        // 設定の「定義の索引を作る」がオフなら作らない
+        if !self.settings.bool("project.index") {
+            self.nav.index = None;
+            return;
+        }
         let root = self.project_root();
         let waker = self.waker.clone().unwrap_or_else(|| std::sync::Arc::new(|| {}));
         self.nav.building = Some(nagi_workers::index::build(&root, waker));

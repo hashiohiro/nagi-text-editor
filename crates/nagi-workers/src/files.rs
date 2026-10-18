@@ -88,7 +88,7 @@ pub fn list_dir(dir: PathBuf, tx: Sender<DirList>, waker: Waker) {
             .max_depth(Some(1))
             .hidden(false)
             .require_git(false)
-            .filter_entry(|e| e.file_name() != ".git")
+            .filter_entry(|e| e.file_name() != ".git" && !excluded_name(e))
             .build()
             .filter_map(Result::ok)
             .filter(|e| e.depth() == 1)
@@ -111,10 +111,20 @@ pub fn walker(root: &Path) -> ignore::WalkBuilder {
     let ex = crate::project::detect(root).excludes;
     let mut b = ignore::WalkBuilder::new(root);
     b.hidden(true).git_ignore(true).git_global(true).git_exclude(true).require_git(false);
-    if !ex.is_empty() {
-        b.filter_entry(move |e| !ex.iter().any(|x| e.path() == x));
+    let names = !crate::config::get().exclude.is_empty();
+    if !ex.is_empty() || names {
+        b.filter_entry(move |e| !ex.iter().any(|x| e.path() == x) && !excluded_name(e));
     }
     b
+}
+
+/// 設定の「除外するフォルダ」の名前のフォルダか
+fn excluded_name(e: &ignore::DirEntry) -> bool {
+    if !e.file_type().is_some_and(|t| t.is_dir()) {
+        return false;
+    }
+    let name = e.file_name().to_string_lossy();
+    crate::config::get().exclude.iter().any(|x| x.eq_ignore_ascii_case(&name))
 }
 
 #[cfg(test)]

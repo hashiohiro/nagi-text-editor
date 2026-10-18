@@ -22,11 +22,13 @@ pub struct Config {
     pub browser: Option<String>,
     /// ターミナルのシェルを UTF-8 で始めるか
     pub terminal_utf8: bool,
+    /// 検索・ツリー・索引から外すフォルダの名前
+    pub exclude: Vec<String>,
 }
 
 impl Default for Config {
     fn default() -> Self {
-        Config { mvn: None, use_wrapper: true, mvn_options: String::new(), jdk: None, git: None, git_wsl: true, browser: None, terminal_utf8: true }
+        Config { mvn: None, use_wrapper: true, mvn_options: String::new(), jdk: None, git: None, git_wsl: true, browser: None, terminal_utf8: true, exclude: Vec::new() }
     }
 }
 

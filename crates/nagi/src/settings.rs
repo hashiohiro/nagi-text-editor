@@ -294,6 +294,7 @@ impl crate::editor::Editor {
             git_wsl: s.bool("git.wsl"),
             browser: s.text("tools.browser"),
             terminal_utf8: s.bool("terminal.utf8"),
+            exclude: s.list("project.exclude"),
         });
         // 追加の PATH とドライバーの置き場所は、nagi の環境変数に（nagi から起動するものに引き継がれる）。試験では変えない
         if !cfg!(test) {

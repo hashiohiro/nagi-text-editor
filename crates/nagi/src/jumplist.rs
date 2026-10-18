@@ -16,8 +16,6 @@ use windows::Win32::UI::Shell::{DestinationList, EnumerableObjectCollection, ICu
 use windows::core::{HSTRING, Interface, PWSTR};
 
 const APP_ID: &str = "Nagi.Editor";
-/// 最近のプロジェクトの数（ピン留めは別）
-const RECENT: usize = 10;
 
 /// 起動の初め（窓を作る前）に呼ぶ
 pub fn set_app_id() {
@@ -34,7 +32,8 @@ pub fn refresh() {
     std::thread::spawn(|| {
         let entries = crate::project_open::recent_entries();
         let pinned: Vec<(String, PathBuf)> = entries.iter().filter(|e| e.pinned && !e.missing).map(|e| (e.name.clone(), e.path.clone())).collect();
-        let recent: Vec<(String, PathBuf)> = entries.iter().filter(|e| !e.pinned && !e.missing).take(RECENT).map(|e| (e.name.clone(), e.path.clone())).collect();
+        let n = crate::settings::Settings::load(None).int("other.jumplist_count") as usize;
+        let recent: Vec<(String, PathBuf)> = entries.iter().filter(|e| !e.pinned && !e.missing).take(n).map(|e| (e.name.clone(), e.path.clone())).collect();
         unsafe {
             let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
             if let Err(e) = build(&pinned, &recent) {

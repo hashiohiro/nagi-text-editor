@@ -346,8 +346,15 @@ impl App {
                 ed.open_project(dir);
                 clock::mark("project opened");
             } else if self.opts.file.is_none() {
-                // 引数なしで起動したら、ランチャー（最近のプロジェクトから選ぶ）
-                ed.open_launcher();
+                // 引数なしで起動したら、設定の「起動時」: ランチャー（既定）・前回のプロジェクト・空のバッファ
+                match ed.settings.get("project.startup").as_str() {
+                    "last" => match project_open::recent_entries().into_iter().find(|e| !e.missing) {
+                        Some(e) => ed.open_project(e.path),
+                        None => ed.open_launcher(),
+                    },
+                    "empty" => {}
+                    _ => ed.open_launcher(),
+                }
             }
             // タスクバーのジャンプリスト（最近のプロジェクト）
             jumplist::refresh();
@@ -1476,7 +1483,9 @@ fn route_stderr_to_log() {
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join("nagi.log");
     // 大きくなったら 1 つ前の分として残して作り直す
-    if std::fs::metadata(&path).is_ok_and(|m| m.len() > 1 << 20) {
+    // 設定の「ログの上限」を超えていたら古いものに回す
+    let max = settings::Settings::load(None).int("other.log_max_kb") as u64 * 1024;
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() > max) {
         let _ = std::fs::rename(&path, dir.join("nagi.old.log"));
     }
     let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&path) else { return };

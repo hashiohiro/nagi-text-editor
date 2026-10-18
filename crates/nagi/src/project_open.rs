@@ -114,8 +114,11 @@ pub(crate) fn recent_entries() -> Vec<Entry> {
     for (p, t) in read_list("projects.txt") {
         raw.push((p, "Nagi".into(), t.parse().unwrap_or(0)));
     }
-    for r in project::recent_projects() {
-        raw.push((r.path, r.from, r.when));
+    // 設定の「最近のプロジェクトに IntelliJ などの履歴を混ぜる」
+    if crate::settings::Settings::load(None).bool("project.recent_ide") {
+        for r in project::recent_projects() {
+            raw.push((r.path, r.from, r.when));
+        }
     }
     let mut out: Vec<Entry> = Vec::new();
     for (path, from, when) in raw {
