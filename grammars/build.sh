@@ -11,8 +11,8 @@
 #   crates/nagi-syntax/grammars.lock        <id> <DLL の SHA-256> <zip の大きさ>（nagi はこれと合う DLL だけを読む）
 #
 # 置き方（文法を作り直したら、リリースの名前の版 grammars-vN を上げて nagi-syntax/src/grammar.rs の RELEASE も変える）:
-#   gh release create grammars-v1 target/grammars/dist/grammar-*.zip --repo hashiohiro/nagi-grammars --title "Grammars v1"
-#   （zip だけ作り直したら gh release upload grammars-v1 target/grammars/dist/grammar-*.zip --clobber --repo hashiohiro/nagi-grammars）
+#   gh release create grammars-v1 target/grammars/dist/grammar-*.zip --repo hashiohiro/nagi-text-editor --latest=false --title "Grammars v1"
+#   （zip だけ作り直したら gh release upload grammars-v1 target/grammars/dist/grammar-*.zip --clobber --repo hashiohiro/nagi-text-editor）
 set -euo pipefail
 cd "$(dirname "$0")/.."
 CARGO="${CARGO:-/mnt/c/Users/hashi/.cargo/bin/cargo.exe}"

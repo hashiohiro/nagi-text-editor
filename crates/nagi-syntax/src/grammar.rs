@@ -14,8 +14,8 @@ use tree_sitter::Language;
 
 /// 文法を置くリリース（文法を作り直したら版を上げる。古い nagi は古い版を取りにいく）
 pub const RELEASE: &str = "grammars-v1";
-/// 文法だけを置く公開のリポジトリ（nagi のソースのリポジトリは非公開なので、ログインなしで取れるようにここに置く）
-pub const REPO: &str = "hashiohiro/nagi-grammars";
+/// 文法を置くリポジトリ（nagi 本体と同じ。リリースを分けて置く）
+pub const REPO: &str = "hashiohiro/nagi-text-editor";
 
 /// 文法の DLL の SHA-256 と、zip の大きさ（grammars/build.sh が書く）
 const LOCK: &str = include_str!("../grammars.lock");
