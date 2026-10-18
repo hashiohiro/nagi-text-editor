@@ -136,6 +136,13 @@ const SNAP_AFTER: Duration = Duration::from_millis(120);
 /// `--replay` で 1 打ずつ流す間隔（速く打つ人の打鍵間隔くらい。詰めすぎるとフレームの待ちが毎回乗る）
 const REPLAY_EVERY: Duration = Duration::from_millis(30);
 /// `--replay` の間隔。`NAGI_REPLAY_MS` で変えられる（打鍵の間隔で速さが変わるかを調べる用）
+/// 移動のキーの押しっぱなし: 繰り返し始めるまで・繰り返しの間隔・速める間隔と、速めるまで
+/// （Windows の最速は 約 500ms・約 33ms ごと）
+const REPEAT_DELAY: Duration = Duration::from_millis(250);
+const REPEAT_EVERY: Duration = Duration::from_millis(25);
+const REPEAT_FAST: Duration = Duration::from_millis(16);
+const REPEAT_FAST_AFTER: Duration = Duration::from_millis(1200);
+
 fn replay_every() -> Duration {
     std::env::var("NAGI_REPLAY_MS").ok().and_then(|v| v.parse().ok()).map_or(REPLAY_EVERY, Duration::from_millis)
 }
@@ -220,6 +227,8 @@ struct App {
     /// 直前のクリック（時刻, 画面上のセル, 連続回数）。ダブル・トリプルクリックの判定用
     last_click: Option<(Instant, (usize, usize), u32)>,
     autoscroll_deadline: Option<Instant>,
+    /// 押しっぱなしの移動のキー（OS の繰り返しより速く、自分で繰り返す）: (物理キー, 流すキー, 押した時刻, 次に流す時刻)
+    held: Option<(winit::keyboard::PhysicalKey, Vec<VKey>, Instant, Instant)>,
     /// ドラッグしている区切り
     sep_drag: Option<resize::Sep>,
     /// ターミナルの中で範囲を選んでいる（左ボタンを押したまま）
@@ -453,6 +462,13 @@ impl App {
 
     fn on_key(&mut self, ev: KeyEvent, el: &ActiveEventLoop) {
         if ev.state != ElementState::Pressed {
+            if self.held.as_ref().is_some_and(|h| h.0 == ev.physical_key) {
+                self.held = None;
+            }
+            return;
+        }
+        // 押しっぱなしの移動のキーは自分で繰り返すので、OS の繰り返しは捨てる
+        if ev.repeat && self.held.as_ref().is_some_and(|h| h.0 == ev.physical_key) {
             return;
         }
         if std::env::var_os("NAGI_DEBUG_IME").is_some() {
@@ -506,7 +522,37 @@ impl App {
             el.exit();
             return;
         }
+        // 移動のキーを押し始めたら、自分で繰り返す（ほかのキーを押したら止める。OS と同じ）
+        self.held = None;
+        if !ev.repeat && self.repeatable(&keys) {
+            let now = Instant::now();
+            self.held = Some((ev.physical_key, keys.clone(), now, now + REPEAT_DELAY));
+        }
         self.handle_keys(keys, el);
+    }
+
+    /// 自分で繰り返す移動のキーか（本文・ビジュアル・一覧で、数や演算子の途中でないとき）
+    fn repeatable(&self, keys: &[VKey]) -> bool {
+        let Some(ed) = &self.ed else { return false };
+        let mode_ok = matches!(ed.mode, Mode::Normal | Mode::Visual { .. } | Mode::List | Mode::Log) && !ed.in_text_field();
+        let key_ok = matches!(keys, [VKey::Char('h' | 'j' | 'k' | 'l' | 'w' | 'b' | 'e' | 'W' | 'B' | 'E') | VKey::Up | VKey::Down | VKey::Left | VKey::Right]);
+        mode_ok && key_ok && ed.pending_keys.is_empty() && ed.preedit.is_empty() && self.matcher.pending().is_empty()
+    }
+
+    /// 押しっぱなしの繰り返しの 1 回
+    fn on_held(&mut self, el: &ActiveEventLoop) {
+        let Some((_, keys, since, next)) = self.held.clone() else { return };
+        if !self.repeatable(&keys) {
+            self.held = None;
+            return;
+        }
+        self.handle_keys(keys, el);
+        // 長く押すほど少し速く。遅れても溜めて一度に流さない
+        let every = if since.elapsed() > REPEAT_FAST_AFTER { REPEAT_FAST } else { REPEAT_EVERY };
+        let now = Instant::now();
+        if let Some(h) = &mut self.held {
+            h.3 = (next + every).max(now);
+        }
     }
 
     /// 1 回のキー入力を処理して描き、かかった時間を記録する
@@ -1203,6 +1249,9 @@ impl ApplicationHandler for App {
             if self.autoscroll_deadline.is_some_and(|d| now >= d) {
                 self.on_autoscroll();
             }
+            if self.held.as_ref().is_some_and(|h| now >= h.3) {
+                self.on_held(el);
+            }
             if self.replay_deadline.is_some_and(|d| now >= d) {
                 self.replay_deadline = None;
                 if let Some(k) = self.replay.pop_front() {
@@ -1229,7 +1278,7 @@ impl ApplicationHandler for App {
                 }
             }
         }
-        let deadline = [self.map_deadline, self.snap_deadline, self.autoscroll_deadline, self.replay_deadline].into_iter().flatten().min();
+        let deadline = [self.map_deadline, self.snap_deadline, self.autoscroll_deadline, self.replay_deadline, self.held.as_ref().map(|h| h.3)].into_iter().flatten().min();
         el.set_control_flow(if self.scroll_anim.is_some() {
             ControlFlow::Poll
         } else {
@@ -1259,6 +1308,8 @@ impl ApplicationHandler for App {
                 self.set_scale(scale_factor);
             }
             WindowEvent::ModifiersChanged(m) => self.modifiers = m.state(),
+            // 離したのが届かないことがあるので、ほかの窓へ移ったら繰り返しを止める
+            WindowEvent::Focused(false) => self.held = None,
             WindowEvent::KeyboardInput { event, .. } => self.on_key(event, el),
             WindowEvent::Ime(ime) => self.on_ime(ime),
             WindowEvent::CursorMoved { position, .. } => {
@@ -1430,6 +1481,7 @@ fn main() {
         term_select: false,
         cursor_icon: winit::window::CursorIcon::Default,
         autoscroll_deadline: None,
+        held: None,
         stats: stats::Stats::default(),
         replay: Default::default(),
         replay_deadline: None,
