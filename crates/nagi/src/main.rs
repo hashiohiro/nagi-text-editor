@@ -8,6 +8,12 @@
 //!
 //! 起動は並列（architecture.md §6.4）: GPU・フォント・ファイル読込を別スレッドで進め、
 //! メインスレッドはその間にイベントループと非表示のウィンドウを作る。最初のフレームを描いてから表示する。
+//!
+//! 画面のアプリとして作る（起動してもコンソールの窓を開かない）。書き出す先（標準エラー）がつながっていなければ、
+//! 記録（落ちたときの理由・調べ物用の出力）は `%LOCALAPPDATA%\nagi\nagi.log` に書く。
+
+// 試験の実行ファイルは結果を書き出すので、コンソールのアプリのまま
+#![cfg_attr(not(test), windows_subsystem = "windows")]
 
 mod angular;
 mod autoread;
@@ -1271,7 +1277,32 @@ impl ApplicationHandler for App {
     }
 }
 
+/// 標準エラーがつながっていなければ（エクスプローラーやショートカットから起動したとき）、ログのファイルへ向ける。
+/// ターミナルや他のプログラムからつないで起動したときは、そのまま（--startup-report などはそこへ出る）
+fn route_stderr_to_log() {
+    use windows::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, SetStdHandle};
+    let connected = unsafe { GetStdHandle(STD_ERROR_HANDLE) }.is_ok_and(|h| !h.is_invalid() && !h.0.is_null());
+    if connected {
+        return;
+    }
+    let Some(dir) = std::env::var_os("LOCALAPPDATA").map(|d| std::path::PathBuf::from(d).join("nagi")) else { return };
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("nagi.log");
+    // 大きくなったら 1 つ前の分として残して作り直す
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() > 1 << 20) {
+        let _ = std::fs::rename(&path, dir.join("nagi.old.log"));
+    }
+    let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&path) else { return };
+    use std::io::Write;
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let _ = writeln!(file, "--- 起動 {now}（UNIX 秒）pid {}", std::process::id());
+    use std::os::windows::io::IntoRawHandle;
+    let h = windows::Win32::Foundation::HANDLE(file.into_raw_handle());
+    let _ = unsafe { SetStdHandle(STD_ERROR_HANDLE, h) };
+}
+
 fn main() {
+    route_stderr_to_log();
     clock::mark("main");
     let opts = Opts::parse();
     let spawn = |name: &str| std::thread::Builder::new().name(name.into());
