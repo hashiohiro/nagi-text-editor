@@ -245,9 +245,9 @@ fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
             (s, pane.buf.line_start(ln), cut)
         })
         .collect();
-    let md = ed.markdown_spans(pane.buf);
+    let md = ed.custom_spans(pane.buf);
     let spans = match pane.syntax {
-        // Markdown: 文章全体を解析した覚えから、見えている範囲だけ
+        // Markdown・Sass: 文章全体を解析した覚えから、見えている範囲だけ
         _ if md.is_some() => md.as_ref().unwrap().iter().filter(|(r, _)| r.end > view_start && r.start < view_end).cloned().collect(),
         // 長い行があるとき（と折りたたみで行が飛ぶとき）は、行ごとに見えている部分だけを問い合わせる
         Some(syn) if heads.iter().any(|h| h.2) || !pane.folds.is_empty() => heads.iter().flat_map(|(s, abs, _)| syn.highlight(pane.buf, *abs..*abs + s.len())).collect(),
@@ -683,7 +683,15 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             "{keys}   {}{}   {}{},{} ",
             name,
             if ed.buf.dirty { " [+]" } else { "" },
-            ed.syntax.as_ref().map_or(String::new(), |s| format!("{}   ", s.lang.name())),
+            ed.syntax.as_ref().map(|s| s.lang.name()).or_else(|| {
+                // tree-sitter を使わない言語
+                let ext = ed.buf.path.as_deref()?.extension()?.to_string_lossy().to_ascii_lowercase();
+                match ext.as_str() {
+                    "md" | "markdown" | "mdx" => Some("Markdown"),
+                    "sass" => Some("Sass"),
+                    _ => None,
+                }
+            }).map_or(String::new(), |n| format!("{n}   ")),
             ed.cursor.line + 1,
             ruler_col(ed)
         )

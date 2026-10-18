@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 
 pub mod defs;
 pub mod markdown;
+pub mod sass;
 
 use nagi_core::{Buffer, EditLog};
 use tree_sitter::{InputEdit, Language, Node, Parser, Point, Query, QueryCursor, StreamingIterator, Tree};
@@ -32,9 +33,11 @@ pub enum Lang {
     Json,
     Yaml,
     Vim,
+    Css,
+    Scss,
 }
 
-const ALL: [Lang; 14] = [
+const ALL: [Lang; 16] = [
     Lang::Rust,
     Lang::TypeScript,
     Lang::Tsx,
@@ -49,6 +52,8 @@ const ALL: [Lang; 14] = [
     Lang::Json,
     Lang::Yaml,
     Lang::Vim,
+    Lang::Css,
+    Lang::Scss,
 ];
 
 // tree-sitter-vim 0.4.0 は古い形式のバインディング（Language を値で返す宣言）なので使わず、
@@ -84,6 +89,8 @@ impl Lang {
             "java" => Lang::Java,
             "kt" | "kts" => Lang::Kotlin,
             "rs" => Lang::Rust,
+            "css" => Lang::Css,
+            "scss" => Lang::Scss,
             _ => return None,
         })
     }
@@ -104,6 +111,8 @@ impl Lang {
             Lang::Json => "JSON",
             Lang::Yaml => "YAML",
             Lang::Vim => "Vim",
+            Lang::Css => "CSS",
+            Lang::Scss => "SCSS",
         }
     }
 
@@ -116,6 +125,10 @@ impl Lang {
     /// tree-sitter 本家の grammar は先に書かれたものを優先する
     fn last_wins(self) -> bool {
         matches!(self, Lang::Yaml | Lang::Vim | Lang::Ini)
+    }
+
+    fn is_css(self) -> bool {
+        matches!(self, Lang::Css | Lang::Scss)
     }
 
     /// シェル（$変数 を色分けする）
@@ -139,6 +152,8 @@ impl Lang {
             Lang::Json => tree_sitter_json::LANGUAGE.into(),
             Lang::Yaml => tree_sitter_yaml::LANGUAGE.into(),
             Lang::Vim => VIM_LANGUAGE.into(),
+            Lang::Css => tree_sitter_css::LANGUAGE.into(),
+            Lang::Scss => tree_sitter_scss::language(),
         }
     }
 
@@ -160,6 +175,9 @@ impl Lang {
             Lang::Json => tree_sitter_json::HIGHLIGHTS_QUERY.to_string(),
             Lang::Yaml => tree_sitter_yaml::HIGHLIGHTS_QUERY.to_string(),
             Lang::Vim => tree_sitter_vim::HIGHLIGHTS_QUERY.to_string(),
+            Lang::Css => tree_sitter_css::HIGHLIGHTS_QUERY.to_string(),
+            // SCSS は CSS のクエリに SCSS 固有分を足す（nvim-treesitter と同じ）
+            Lang::Scss => format!("{}\n{}", tree_sitter_css::HIGHLIGHTS_QUERY, tree_sitter_scss::HIGHLIGHTS_QUERY),
         }
     }
 
@@ -188,6 +206,10 @@ fn classify(capture: &str, lang: Lang) -> Option<Hl> {
     Some(match head {
         // 設定・データの言語ではキーを、シェルでは $変数 を色分けする（プログラミング言語では地の色のまま）
         "property" | "field" | "tag" if lang.is_data() => Hl::Keyword,
+        // CSS: プロパティ（color: など）は属性の色、タグ（div）は青、$変数・--変数は型の色、@規則はキーワード
+        "property" if lang.is_css() => Hl::Attribute,
+        "tag" | "mixin" | "include" | "extend" | "use" | "forward" | "for" | "while" | "each" | "if" | "else" | "return" | "warn" | "error" | "debug" if lang.is_css() => Hl::Keyword,
+        "variable" if lang.is_css() => Hl::Type,
         // JSON はキーを string.special.key として取り出す
         _ if lang.is_data() && capture.split('.').any(|p| p == "key") => Hl::Keyword,
         "variable" if lang.is_shell() && !capture.contains("builtin") => Hl::Type,
@@ -756,6 +778,24 @@ mod tests {
         assert!(k.contains(&("Item".into(), Hl::Type)), "{k:?}");
         assert_eq!(Lang::detect(Path::new("a/App.tsx")), Some(Lang::Tsx));
         assert_eq!(Lang::detect(Path::new("a/App.jsx")), Some(Lang::JavaScript));
+    }
+
+    #[test]
+    fn css_and_scss() {
+        let k = kinds(Lang::Css, "/* c */\n@media (max-width: 600px) {\n  .box > a:hover { color: #fff; margin: 0 4px; font-family: \"Noto\"; }\n}\n:root { --gap: 8px; }\n");
+        assert!(k.iter().any(|(t, h)| t.starts_with("/* c") && *h == Hl::Comment), "{k:?}");
+        assert!(k.contains(&("color".into(), Hl::Attribute)), "{k:?}");
+        assert!(k.contains(&("a".into(), Hl::Keyword)), "{k:?}");
+        assert!(k.iter().any(|(t, h)| t.contains("4") && *h == Hl::Number), "{k:?}");
+        assert!(k.iter().any(|(t, h)| t.contains("Noto") && *h == Hl::String), "{k:?}");
+        assert!(k.iter().any(|(t, h)| t.contains("@media") && *h == Hl::Keyword), "{k:?}");
+        let k = kinds(Lang::Scss, "$main: #333;\n@mixin round($r) { border-radius: $r; }\n.card {\n  @include round(4px);\n  &:hover { color: darken($main, 10%); }\n}\n");
+        assert!(k.iter().any(|(t, h)| t == "$main" && *h == Hl::Type), "{k:?}");
+        assert!(k.iter().any(|(t, h)| t.contains("@mixin") && *h == Hl::Keyword), "{k:?}");
+        assert!(k.iter().any(|(t, h)| t.contains("@include") && *h == Hl::Keyword), "{k:?}");
+        assert!(k.contains(&("border-radius".into(), Hl::Attribute)), "{k:?}");
+        assert_eq!(Lang::detect(Path::new("a/site.scss")), Some(Lang::Scss));
+        assert_eq!(Lang::detect(Path::new("a/site.css")), Some(Lang::Css));
     }
 
     #[test]

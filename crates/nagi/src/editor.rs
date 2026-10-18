@@ -533,18 +533,23 @@ impl Editor {
         }
     }
 
-    /// Markdown のファイルなら、文章全体のハイライト（版が変わったときだけ解析し直す）
-    pub(crate) fn markdown_spans(&self, buf: &Buffer) -> Option<std::rc::Rc<Vec<(std::ops::Range<usize>, nagi_syntax::Hl)>>> {
+    /// tree-sitter を使わない言語（Markdown・Sass）なら、文章全体のハイライト（版が変わったときだけ解析し直す）
+    pub(crate) fn custom_spans(&self, buf: &Buffer) -> Option<std::rc::Rc<Vec<(std::ops::Range<usize>, nagi_syntax::Hl)>>> {
         let path = buf.path.as_deref()?;
         let ext = path.extension()?.to_string_lossy().to_ascii_lowercase();
-        if !matches!(ext.as_str(), "md" | "markdown" | "mdx") || buf.len_bytes() > 4 << 20 {
+        let f: fn(&str) -> Vec<(std::ops::Range<usize>, nagi_syntax::Hl)> = match ext.as_str() {
+            "md" | "markdown" | "mdx" => nagi_syntax::markdown::highlight,
+            "sass" => nagi_syntax::sass::highlight,
+            _ => return None,
+        };
+        if buf.len_bytes() > 4 << 20 {
             return None;
         }
         let mut cache = self.md_cache.borrow_mut();
         if let Some((_, _, s)) = cache.iter().find(|(p, v, _)| p == path && *v == buf.version) {
             return Some(s.clone());
         }
-        let spans = std::rc::Rc::new(nagi_syntax::markdown::highlight(&buf.text()));
+        let spans = std::rc::Rc::new(f(&buf.text()));
         cache.retain(|(p, _, _)| p != path);
         cache.push((path.to_path_buf(), buf.version, spans.clone()));
         if cache.len() > 8 {
