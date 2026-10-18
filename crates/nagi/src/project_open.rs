@@ -51,6 +51,7 @@ fn remember_project(root: &Path) {
     v.insert(0, (root.to_path_buf(), now_ms().to_string()));
     v.truncate(100);
     write_list("projects.txt", &v);
+    crate::jumplist::refresh();
     // 外していたものを開き直したら、一覧に戻す
     let mut h = read_list("hidden-projects.txt");
     if h.iter().any(|(p, _)| same(p, root)) {

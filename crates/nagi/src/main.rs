@@ -17,6 +17,7 @@
 
 mod angular;
 mod dialogs;
+mod jumplist;
 mod autoread;
 mod bottom_panel;
 mod terminal;
@@ -253,6 +254,14 @@ impl App {
             // タイトルバーも暗くして、ターミナルと見分けがつかないようにする
             .with_theme(Some(winit::window::Theme::Dark))
             .with_inner_size(winit::dpi::LogicalSize::new(1100.0, 720.0));
+        // exe に埋め込んだアイコン（build.rs。ID 1）を窓とタスクバーに
+        let attrs = {
+            use winit::platform::windows::{IconExtWindows, WindowAttributesExtWindows};
+            match winit::window::Icon::from_resource(1, None) {
+                Ok(icon) => attrs.with_window_icon(Some(icon.clone())).with_taskbar_icon(Some(icon)),
+                Err(_) => attrs,
+            }
+        };
         let window = Arc::new(el.create_window(attrs).unwrap());
         clock::mark("window created (hidden)");
         self.scale = window.scale_factor();
@@ -326,6 +335,8 @@ impl App {
                 // 引数なしで起動したら、ランチャー（最近のプロジェクトから選ぶ）
                 ed.open_launcher();
             }
+            // タスクバーのジャンプリスト（最近のプロジェクト）
+            jumplist::refresh();
             // 定義の索引も表示の後に裏で作る（保存したものがあれば差分だけ）
             ed.start_index();
             // git の状態（行頭の変更マーカーと状態行のブランチ）
@@ -1310,6 +1321,17 @@ impl ApplicationHandler for App {
             WindowEvent::ModifiersChanged(m) => self.modifiers = m.state(),
             // 離したのが届かないことがあるので、ほかの窓へ移ったら繰り返しを止める
             WindowEvent::Focused(false) => self.held = None,
+            // エクスプローラーから落としたもの: フォルダはプロジェクトとして、ファイルはそのまま開く
+            WindowEvent::DroppedFile(path) => {
+                if let Some(ed) = &mut self.ed {
+                    ed.open_dropped(path);
+                }
+                self.sync_ime();
+                self.draw();
+                if let Some(w) = &self.window {
+                    w.focus_window();
+                }
+            }
             WindowEvent::KeyboardInput { event, .. } => self.on_key(event, el),
             WindowEvent::Ime(ime) => self.on_ime(ime),
             WindowEvent::CursorMoved { position, .. } => {
@@ -1395,6 +1417,8 @@ fn route_stderr_to_log() {
 
 fn main() {
     route_stderr_to_log();
+    // タスクバーのボタンとジャンプリストを nagi のものとしてまとめる（窓を作る前に）
+    jumplist::set_app_id();
     clock::mark("main");
     let opts = Opts::parse();
     let spawn = |name: &str| std::thread::Builder::new().name(name.into());

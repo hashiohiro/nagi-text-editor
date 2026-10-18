@@ -280,6 +280,25 @@ impl Editor {
         false
     }
 
+    /// エクスプローラーから落としたもの: フォルダはプロジェクトとして開き、ファイルは開く（ランチャーなら閉じて）
+    pub(crate) fn open_dropped(&mut self, path: PathBuf) {
+        if path.is_dir() {
+            if self.launcher.is_some() {
+                self.close_launcher_to(path);
+            } else {
+                self.open_project(path);
+            }
+            return;
+        }
+        if self.launcher.is_some() {
+            self.launcher = None;
+        }
+        if !matches!(self.mode, Mode::Normal) {
+            self.mode = Mode::Normal;
+        }
+        self.edit_file(path);
+    }
+
     fn close_launcher_to(&mut self, dir: PathBuf) {
         self.launcher = None;
         self.mode = Mode::Normal;
@@ -558,5 +577,26 @@ mod tests {
         assert_eq!(e.mode, Mode::Normal);
         assert!(e.launcher.is_none());
         assert_eq!(ago(crate::project_open::now_ms() - 180_000), "3 分前");
+    }
+
+    /// エクスプローラーから落とした: ファイルはランチャーを閉じて開く、フォルダはプロジェクトとして開く
+    #[test]
+    fn dropped_file_and_folder() {
+        let dir = std::env::temp_dir().join(format!("nagi-drop-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("proj/.git")).unwrap();
+        std::fs::write(dir.join("a.txt"), "dropped\n").unwrap();
+        let mut e = Editor::new(Buffer::from_str(""), None);
+        e.set_screen(120, 40);
+        e.open_launcher();
+        e.open_dropped(dir.join("a.txt"));
+        assert!(e.launcher.is_none());
+        assert_eq!(e.mode, Mode::Normal);
+        assert_eq!(e.buf.line(0), "dropped");
+        e.open_launcher();
+        e.open_dropped(dir.join("proj"));
+        assert!(e.launcher.is_none());
+        assert_ne!(e.mode, Mode::Launcher, "ランチャーから開いたときと同じく、ツリーへ");
+        assert!(e.git.root.as_ref().is_some_and(|r| r.ends_with("proj")) || e.message.contains("proj"), "{}", e.message);
     }
 }
