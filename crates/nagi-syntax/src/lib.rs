@@ -36,9 +36,30 @@ pub enum Lang {
     Css,
     Scss,
     Html,
+    C,
+    Cpp,
+    Go,
+    CSharp,
+    Php,
+    Ruby,
+    Lua,
+    Scala,
+    Swift,
+    Dart,
+    Zig,
+    Haskell,
+    Elixir,
+    R,
+    Sql,
+    Toml,
+    Xml,
+    Make,
+    CMake,
+    Dockerfile,
+    Groovy,
 }
 
-const ALL: [Lang; 17] = [
+const ALL: [Lang; 38] = [
     Lang::Rust,
     Lang::TypeScript,
     Lang::Tsx,
@@ -56,6 +77,27 @@ const ALL: [Lang; 17] = [
     Lang::Css,
     Lang::Scss,
     Lang::Html,
+    Lang::C,
+    Lang::Cpp,
+    Lang::Go,
+    Lang::CSharp,
+    Lang::Php,
+    Lang::Ruby,
+    Lang::Lua,
+    Lang::Scala,
+    Lang::Swift,
+    Lang::Dart,
+    Lang::Zig,
+    Lang::Haskell,
+    Lang::Elixir,
+    Lang::R,
+    Lang::Sql,
+    Lang::Toml,
+    Lang::Xml,
+    Lang::Make,
+    Lang::CMake,
+    Lang::Dockerfile,
+    Lang::Groovy,
 ];
 
 // tree-sitter-vim 0.4.0 は古い形式のバインディング（Language を値で返す宣言）なので使わず、
@@ -65,6 +107,14 @@ unsafe extern "C" {
 }
 const VIM_LANGUAGE: tree_sitter_language::LanguageFn = unsafe { tree_sitter_language::LanguageFn::from_raw(tree_sitter_vim) };
 
+// tree-sitter-dockerfile 0.2.0 も古い形式。同じく C の関数を新しい形式で呼ぶ
+// （Rust からはクレートの中身を使わないので、extern crate でリンクさせる）
+extern crate tree_sitter_dockerfile;
+unsafe extern "C" {
+    fn tree_sitter_dockerfile() -> *const ();
+}
+const DOCKERFILE_LANGUAGE: tree_sitter_language::LanguageFn = unsafe { tree_sitter_language::LanguageFn::from_raw(tree_sitter_dockerfile) };
+
 impl Lang {
     pub fn detect(path: &Path) -> Option<Lang> {
         // 拡張子ではなくファイル名で決まるもの
@@ -73,6 +123,12 @@ impl Lang {
             ".vimrc" | "_vimrc" | ".ideavimrc" | "_ideavimrc" | ".gvimrc" | "nagi.vim" => return Some(Lang::Vim),
             ".bashrc" | ".bash_profile" | ".profile" | ".zshrc" => return Some(Lang::Bash),
             ".gitconfig" | ".editorconfig" | ".npmrc" => return Some(Lang::Ini),
+            "makefile" | "gnumakefile" => return Some(Lang::Make),
+            "cmakelists.txt" => return Some(Lang::CMake),
+            "dockerfile" | "containerfile" => return Some(Lang::Dockerfile),
+            "gemfile" | "rakefile" | "podfile" | "vagrantfile" => return Some(Lang::Ruby),
+            "jenkinsfile" => return Some(Lang::Groovy),
+            _ if name.starts_with("dockerfile.") => return Some(Lang::Dockerfile),
             _ => {}
         }
         let ext = path.extension()?.to_str()?.to_ascii_lowercase();
@@ -94,6 +150,27 @@ impl Lang {
             "css" => Lang::Css,
             "scss" => Lang::Scss,
             "html" | "htm" | "xhtml" => Lang::Html,
+            "c" => Lang::C,
+            "h" | "cpp" | "cc" | "cxx" | "c++" | "hpp" | "hh" | "hxx" | "h++" | "ino" | "ipp" | "tpp" => Lang::Cpp,
+            "go" => Lang::Go,
+            "cs" | "csx" => Lang::CSharp,
+            "php" | "phtml" | "php8" => Lang::Php,
+            "rb" | "rake" | "gemspec" | "ru" => Lang::Ruby,
+            "lua" => Lang::Lua,
+            "scala" | "sc" | "sbt" => Lang::Scala,
+            "swift" => Lang::Swift,
+            "dart" => Lang::Dart,
+            "zig" | "zon" => Lang::Zig,
+            "hs" | "lhs" => Lang::Haskell,
+            "ex" | "exs" | "heex" => Lang::Elixir,
+            "r" => Lang::R,
+            "sql" | "ddl" | "dml" => Lang::Sql,
+            "toml" => Lang::Toml,
+            "xml" | "xsd" | "xsl" | "xslt" | "svg" | "csproj" | "fsproj" | "vbproj" | "props" | "targets" | "fxml" | "plist" | "xaml" | "wsdl" => Lang::Xml,
+            "mk" | "mak" => Lang::Make,
+            "cmake" => Lang::CMake,
+            "dockerfile" => Lang::Dockerfile,
+            "groovy" | "gradle" | "gvy" | "gy" => Lang::Groovy,
             _ => return None,
         })
     }
@@ -117,6 +194,27 @@ impl Lang {
             Lang::Css => "CSS",
             Lang::Scss => "SCSS",
             Lang::Html => "HTML",
+            Lang::C => "C",
+            Lang::Cpp => "C++",
+            Lang::Go => "Go",
+            Lang::CSharp => "C#",
+            Lang::Php => "PHP",
+            Lang::Ruby => "Ruby",
+            Lang::Lua => "Lua",
+            Lang::Scala => "Scala",
+            Lang::Swift => "Swift",
+            Lang::Dart => "Dart",
+            Lang::Zig => "Zig",
+            Lang::Haskell => "Haskell",
+            Lang::Elixir => "Elixir",
+            Lang::R => "R",
+            Lang::Sql => "SQL",
+            Lang::Toml => "TOML",
+            Lang::Xml => "XML",
+            Lang::Make => "Makefile",
+            Lang::CMake => "CMake",
+            Lang::Dockerfile => "Dockerfile",
+            Lang::Groovy => "Groovy",
         }
     }
 
@@ -159,6 +257,27 @@ impl Lang {
             Lang::Css => tree_sitter_css::LANGUAGE.into(),
             Lang::Scss => tree_sitter_scss::language(),
             Lang::Html => tree_sitter_html::LANGUAGE.into(),
+            Lang::C => tree_sitter_c::LANGUAGE.into(),
+            Lang::Cpp => tree_sitter_cpp::LANGUAGE.into(),
+            Lang::Go => tree_sitter_go::LANGUAGE.into(),
+            Lang::CSharp => tree_sitter_c_sharp::LANGUAGE.into(),
+            Lang::Php => tree_sitter_php::LANGUAGE_PHP.into(),
+            Lang::Ruby => tree_sitter_ruby::LANGUAGE.into(),
+            Lang::Lua => tree_sitter_lua::LANGUAGE.into(),
+            Lang::Scala => tree_sitter_scala::LANGUAGE.into(),
+            Lang::Swift => tree_sitter_swift::LANGUAGE.into(),
+            Lang::Dart => tree_sitter_dart::LANGUAGE.into(),
+            Lang::Zig => tree_sitter_zig::LANGUAGE.into(),
+            Lang::Haskell => tree_sitter_haskell::LANGUAGE.into(),
+            Lang::Elixir => tree_sitter_elixir::LANGUAGE.into(),
+            Lang::R => tree_sitter_r::LANGUAGE.into(),
+            Lang::Sql => tree_sitter_sequel::LANGUAGE.into(),
+            Lang::Toml => tree_sitter_toml_ng::LANGUAGE.into(),
+            Lang::Xml => tree_sitter_xml::LANGUAGE_XML.into(),
+            Lang::Make => tree_sitter_make::LANGUAGE.into(),
+            Lang::CMake => tree_sitter_cmake::LANGUAGE.into(),
+            Lang::Dockerfile => DOCKERFILE_LANGUAGE.into(),
+            Lang::Groovy => tree_sitter_groovy::LANGUAGE.into(),
         }
     }
 
@@ -184,6 +303,27 @@ impl Lang {
             // SCSS は CSS のクエリに SCSS 固有分を足す（nvim-treesitter と同じ）
             Lang::Scss => format!("{}\n{}", tree_sitter_css::HIGHLIGHTS_QUERY, tree_sitter_scss::HIGHLIGHTS_QUERY),
             Lang::Html => tree_sitter_html::HIGHLIGHTS_QUERY.to_string(),
+            Lang::C => tree_sitter_c::HIGHLIGHT_QUERY.to_string(),
+            Lang::Cpp => format!("{}\n{}", tree_sitter_c::HIGHLIGHT_QUERY, tree_sitter_cpp::HIGHLIGHT_QUERY),
+            Lang::Go => tree_sitter_go::HIGHLIGHTS_QUERY.to_string(),
+            Lang::CSharp => tree_sitter_c_sharp::HIGHLIGHTS_QUERY.to_string(),
+            Lang::Php => tree_sitter_php::HIGHLIGHTS_QUERY.to_string(),
+            Lang::Ruby => tree_sitter_ruby::HIGHLIGHTS_QUERY.to_string(),
+            Lang::Lua => tree_sitter_lua::HIGHLIGHTS_QUERY.to_string(),
+            Lang::Scala => tree_sitter_scala::HIGHLIGHTS_QUERY.to_string(),
+            Lang::Swift => tree_sitter_swift::HIGHLIGHTS_QUERY.to_string(),
+            Lang::Dart => tree_sitter_dart::HIGHLIGHTS_QUERY.to_string(),
+            Lang::Zig => tree_sitter_zig::HIGHLIGHTS_QUERY.to_string(),
+            Lang::Haskell => tree_sitter_haskell::HIGHLIGHTS_QUERY.to_string(),
+            Lang::Elixir => tree_sitter_elixir::HIGHLIGHTS_QUERY.to_string(),
+            Lang::R => tree_sitter_r::HIGHLIGHTS_QUERY.to_string(),
+            Lang::Sql => tree_sitter_sequel::HIGHLIGHTS_QUERY.to_string(),
+            Lang::Toml => tree_sitter_toml_ng::HIGHLIGHTS_QUERY.to_string(),
+            Lang::Xml => tree_sitter_xml::XML_HIGHLIGHT_QUERY.to_string(),
+            Lang::Make => tree_sitter_make::HIGHLIGHTS_QUERY.to_string(),
+            Lang::CMake => tree_sitter_cmake::HIGHLIGHTS_QUERY.to_string(),
+            Lang::Dockerfile => include_str!("../queries/dockerfile/highlights.scm").to_string(),
+            Lang::Groovy => include_str!("../queries/groovy/highlights.scm").to_string(),
         }
     }
 
@@ -1170,5 +1310,12 @@ mod tests {
         let k: Vec<_> = s.highlight(&buf, 0..buf.len_bytes()).into_iter().map(|(_, h)| h).collect();
         assert_eq!(k.first(), Some(&Hl::Comment));
         assert!(!s.has_error());
+    }
+
+    /// どの言語も、文法と色分けの規則が組み合わさる（規則の誤りで色が付かなくならないように）
+    #[test]
+    fn all_highlight_queries_compile() {
+        let bad: Vec<String> = ALL.iter().filter_map(|l| l.highlights().as_ref().err().map(|e| format!("{}: {e}", l.name()))).collect();
+        assert!(bad.is_empty(), "{bad:#?}");
     }
 }

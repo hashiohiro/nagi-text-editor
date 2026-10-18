@@ -60,15 +60,15 @@ impl DefKind {
 /// 節の種類から定義の種類（言語をまたいで名前で見分ける）
 fn def_kind(kind: &str) -> Option<DefKind> {
     Some(match kind {
-        "function_declaration" | "function_item" | "function_definition" | "generator_function_declaration" | "function_signature" | "function_signature_item" | "macro_definition" => DefKind::Function,
-        "method_declaration" | "method_definition" | "method_signature" | "abstract_method_signature" | "constructor_declaration" | "compact_constructor_declaration" | "annotation_type_element_declaration" => DefKind::Method,
-        "class_declaration" | "abstract_class_declaration" | "class_definition" | "struct_item" | "record_declaration" | "object_declaration" | "companion_object" | "union_item" | "class" => DefKind::Class,
-        "interface_declaration" | "trait_item" | "annotation_type_declaration" => DefKind::Interface,
-        "type_alias_declaration" | "type_item" | "associated_type" => DefKind::Type,
-        "enum_declaration" | "enum_item" => DefKind::Enum,
-        "enum_constant" | "enum_variant" | "const_item" | "static_item" => DefKind::Constant,
+        "function_declaration" | "function_item" | "function_definition" | "generator_function_declaration" | "function_signature" | "function_signature_item" | "macro_definition" | "preproc_function_def" => DefKind::Function,
+        "method_declaration" | "method_definition" | "method_signature" | "abstract_method_signature" | "constructor_declaration" | "compact_constructor_declaration" | "annotation_type_element_declaration" | "method" | "singleton_method" => DefKind::Method,
+        "class_declaration" | "abstract_class_declaration" | "class_definition" | "struct_item" | "record_declaration" | "object_declaration" | "companion_object" | "union_item" | "class" | "struct_specifier" | "class_specifier" | "union_specifier" | "struct_declaration" | "object_definition" | "mixin_declaration" => DefKind::Class,
+        "interface_declaration" | "trait_item" | "annotation_type_declaration" | "trait_declaration" | "trait_definition" | "protocol_declaration" => DefKind::Interface,
+        "type_alias_declaration" | "type_item" | "associated_type" | "type_definition" | "type_spec" | "delegate_declaration" | "data_type" => DefKind::Type,
+        "enum_declaration" | "enum_item" | "enum_specifier" => DefKind::Enum,
+        "enum_constant" | "enum_variant" | "const_item" | "static_item" | "enumerator" | "preproc_def" | "const_spec" | "enum_member_declaration" => DefKind::Constant,
         "field_declaration" | "public_field_definition" | "property_signature" => DefKind::Field,
-        "mod_item" | "module" | "internal_module" | "module_declaration" => DefKind::Module,
+        "mod_item" | "module" | "internal_module" | "module_declaration" | "namespace_definition" | "namespace_declaration" => DefKind::Module,
         "variable_declarator" => DefKind::Variable,
         _ => return None,
     })
@@ -176,7 +176,11 @@ fn def_from(name: Node, kind: DefKind, text: &dyn Fn(Range<usize>) -> String) ->
 
 fn push_def(n: Node, text: &dyn Fn(Range<usize>) -> String, out: &mut Vec<Def>) {
     let k = n.kind();
-    // Kotlin のプロパティ（val / var）
+    // Kotlin のプロパティ（val / var）。C# のプロパティは名前の欄を持つ
+    if k == "property_declaration" && n.child_by_field_name("name").is_some() {
+        out.push(def_from(n.child_by_field_name("name").unwrap(), DefKind::Field, text));
+        return;
+    }
     if k == "property_declaration" {
         if !inside_function(n) {
             let mut c = n.walk();
@@ -198,8 +202,15 @@ fn push_def(n: Node, text: &dyn Fn(Range<usize>) -> String, out: &mut Vec<Def>) 
         return;
     }
     let Some(mut kind) = def_kind(k) else { return };
-    // Rust の field_declaration と Java の field_declaration は形が違う（Java は declarator の中に名前）
-    if k == "field_declaration" && n.child_by_field_name("name").is_none() {
+    // C・C++ の struct・class・union・enum は、本体のあるものだけ（struct foo x; の使う側は定義ではない）
+    if matches!(k, "struct_specifier" | "class_specifier" | "union_specifier" | "enum_specifier") && n.child_by_field_name("body").is_none() {
+        return;
+    }
+    // C・C++ の関数・typedef・メンバーは、宣言子の中に名前（int *f(void) → f）
+    if n.child_by_field_name("name").is_none() && matches!(k, "function_definition" | "type_definition" | "field_declaration") {
+        if let Some(name) = n.child_by_field_name("declarator").and_then(declarator_name) {
+            out.push(def_from(name, if k == "field_declaration" { DefKind::Field } else { kind }, text));
+        }
         return;
     }
     if k == "variable_declarator" {
@@ -221,6 +232,18 @@ fn push_def(n: Node, text: &dyn Fn(Range<usize>) -> String, out: &mut Vec<Def>) 
         return;
     }
     out.push(def_from(name, kind, text));
+}
+
+/// C・C++ の宣言子から名前（関数の宣言子・ポインタ・参照・配列をたどる。A::f なら f）
+fn declarator_name(mut d: Node) -> Option<Node> {
+    for _ in 0..8 {
+        match d.kind() {
+            "identifier" | "field_identifier" | "type_identifier" | "destructor_name" | "operator_name" => return Some(d),
+            "qualified_identifier" => d = d.child_by_field_name("name")?,
+            _ => d = d.child_by_field_name("declarator")?,
+        }
+    }
+    None
 }
 
 /// import / use の中か（取り込んだ名前は束縛として扱わず、定義のあるファイルへ跳ぶ）
@@ -752,5 +775,39 @@ mod tests {
         let rs = "fn f(a: u8) -> u8 {\n    let b = a;\n    b\n}\n";
         assert_eq!(local(Lang::Rust, rs, "a;", 0).as_deref(), Some("fn f(a: u8) -> u8 {"));
         assert_eq!(local(Lang::Rust, rs, "b\n}", 0).as_deref(), Some("    let b = a;"));
+    }
+
+    /// 新しく足した言語の定義（定義へ移動・索引・アウトライン）
+    #[test]
+    fn more_languages() {
+        let c = "#define MAX 10\nstruct point { int x; int y; };\ntypedef struct point Point;\nstatic int *add(int a, int b) { struct point p; return 0; }\nenum color { RED, GREEN };\n";
+        let d = defs(Lang::C, c);
+        for want in [("MAX", DefKind::Constant), ("point", DefKind::Class), ("x", DefKind::Field), ("Point", DefKind::Type), ("add", DefKind::Function), ("color", DefKind::Enum), ("RED", DefKind::Constant)] {
+            assert!(d.contains(&(want.0.to_string(), want.1)), "C: {want:?} が無い: {d:?}");
+        }
+        assert_eq!(d.iter().filter(|x| x.0 == "point").count(), 1, "使う側の struct point は定義ではない");
+        let cpp = "namespace app { class Shop { public: void buy(); }; void Shop::buy() {} }\n";
+        let d = defs(Lang::Cpp, cpp);
+        assert!(d.contains(&("app".into(), DefKind::Module)) && d.contains(&("Shop".into(), DefKind::Class)) && d.iter().any(|x| x.0 == "buy"), "{d:?}");
+        let go = "package main\ntype User struct { Name string }\nfunc (u *User) Hello() string { return u.Name }\nfunc main() {}\nconst Max = 1\n";
+        let d = defs(Lang::Go, go);
+        for want in ["User", "Hello", "main", "Max"] {
+            assert!(d.iter().any(|x| x.0 == want), "Go: {want} が無い: {d:?}");
+        }
+        let cs = "namespace Shop { public class Order { public int Id { get; set; } public void Pay() {} } interface IRepo {} enum State { New } }\n";
+        let d = defs(Lang::CSharp, cs);
+        for want in ["Shop", "Order", "Id", "Pay", "IRepo", "State", "New"] {
+            assert!(d.iter().any(|x| x.0 == want), "C#: {want} が無い: {d:?}");
+        }
+        let rb = "module Shop\n  class Order\n    def pay; end\n    def self.find; end\n  end\nend\n";
+        let d = defs(Lang::Ruby, rb);
+        for want in ["Shop", "Order", "pay", "find"] {
+            assert!(d.iter().any(|x| x.0 == want), "Ruby: {want} が無い: {d:?}");
+        }
+        let php = "<?php\nclass Order { public function pay() {} }\nfunction helper() {}\ninterface Repo {}\n";
+        let d = defs(Lang::Php, php);
+        for want in ["Order", "pay", "helper", "Repo"] {
+            assert!(d.iter().any(|x| x.0 == want), "PHP: {want} が無い: {d:?}");
+        }
     }
 }
