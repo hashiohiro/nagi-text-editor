@@ -146,6 +146,10 @@ pub fn parse_line(line: &str, root: &Path) -> Option<Diag> {
         let l: usize = c.name("l")?.as_str().parse().ok()?;
         let col: usize = c.name("c").and_then(|m| m.as_str().parse().ok()).unwrap_or(1);
         let msg = c.name("m").map_or("", |m| m.as_str()).trim().to_string();
+        // gcc・clang の note は前の診断の補足（数えない）
+        if c.name("s").is_some_and(|s| s.as_str() == "note") {
+            return None;
+        }
         let error = match c.name("s").map(|s| s.as_str().to_ascii_lowercase()) {
             Some(s) => s == "error" || s == "e",
             // 種類の書かれていない行（eslint の unix）は本文の [Warning/…] で見分ける
@@ -505,6 +509,7 @@ mod tests {
         assert_eq!(one("PHP Parse error:  syntax error, unexpected end of file in C:\\work\\p\\a.php on line 4"), Some(("a.php".into(), 4, 1, true)));
         assert_eq!(one("a.rb:3: syntax error, unexpected end-of-input"), Some(("a.rb".into(), 3, 1, true)));
         assert_eq!(one("src/main.zig:3:5: error: use of undeclared identifier 'x'"), Some(("main.zig".into(), 3, 5, true)));
+        assert_eq!(one("bad.c:5:12: note: each undeclared identifier is reported only once"), None, "note は数えない");
         assert_eq!(one("  --> src/main.rs:3:21"), None, "rustc の位置の行は 1 行の形としては読まない");
         // 複数行: rustc
         let mut p = Pending::default();

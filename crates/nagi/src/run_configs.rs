@@ -48,6 +48,13 @@ impl Editor {
     /// `:Run [名前]`: 名前が無ければ選んでいる構成（無ければ選ぶ一覧）
     pub(crate) fn run_command(&mut self, arg: &str) {
         let v = self.load_run_configs();
+        if v.is_empty() && arg.is_empty() {
+            // 構成が無くても、開いているファイルが動かせればそれを動かす（IntelliJ の Ctrl+Shift+F10）
+            if let Some(c) = self.current_file_config() {
+                self.run_config(c);
+                return;
+            }
+        }
         if v.is_empty() {
             // 構成が無ければ、追加の行だけの一覧を出す
             self.open_run_chooser();
@@ -65,7 +72,16 @@ impl Editor {
     /// 構成を選ぶ一覧（Alt+Shift+F10）。選ぶと実行する。最後の行は「構成を追加・編集」
     pub(crate) fn open_run_chooser(&mut self) {
         self.run_list = self.load_run_configs();
+        if let Some(c) = self.current_file_config() {
+            self.run_list.push(c);
+        }
         self.open_finder(crate::finder::Source::RunConfigs);
+    }
+
+    /// 開いているファイルをそのまま動かす構成（Python・Node.js・PHP・Ruby・Go）
+    fn current_file_config(&self) -> Option<RunConfig> {
+        let f = std::path::absolute(self.buf.path.as_ref()?).ok()?;
+        runconfig::for_file(&f, &self.nav_root())
     }
 
     /// 一覧の 1 行（名前・種類・どこの構成か。選んでいるものに ●）。最後に「構成を追加・編集」
@@ -73,7 +89,11 @@ impl Editor {
         let mut v: Vec<String> = self
             .run_list
             .iter()
-            .map(|c| format!("{}{}   {}{}", if Some(&c.name) == self.run_selected.as_ref() { "● " } else { "  " }, c.name, c.kind_label(), if c.from == "nagi" { "（.nagi/run.conf）" } else { "" }))
+            .map(|c| format!("{}{}   {}{}", if Some(&c.name) == self.run_selected.as_ref() { "● " } else { "  " }, c.name, c.kind_label(), match c.from {
+                "nagi" => "（.nagi/run.conf）",
+                "file" => "（保存しない）",
+                _ => "",
+            }))
             .collect();
         v.push(ADD_ITEM.to_string());
         v
@@ -298,5 +318,24 @@ mod tests {
         assert_eq!(e.run_selected.as_deref(), Some("テスト"));
         assert!(std::fs::read_to_string(dir.join(".nagi/run.conf")).unwrap().ends_with("あいさつ = echo nagi-run-ok\nテスト = echo t\n"));
         assert!(e.load_run_configs().iter().any(|c| c.name == "テスト"));
+    }
+
+    /// 構成が無くても、開いている Python などのファイルは一覧に出て動かせる
+    #[test]
+    fn current_file() {
+        let dir = std::env::temp_dir().join(format!("nagi-runfile-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::create_dir_all(dir.join("app")).unwrap();
+        std::fs::write(dir.join("app/main.py"), "print('hi')\n").unwrap();
+        let mut e = Editor::new(Buffer::open(&dir.join("app/main.py")).unwrap(), None);
+        e.buf.path = Some(dir.join("app/main.py"));
+        e.set_screen(120, 40);
+        e.open_run_chooser();
+        let items = e.run_list_items();
+        assert!(items[0].contains("今のファイル: main.py") && items[0].contains("Python"), "{items:?}");
+        let c = e.run_list[0].clone();
+        let Ok(Launch::Command { cmd, .. }) = runconfig::launch(&c, &dir) else { panic!() };
+        assert_eq!(cmd, "python -u app/main.py");
     }
 }

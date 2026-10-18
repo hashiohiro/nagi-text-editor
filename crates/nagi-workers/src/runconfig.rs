@@ -17,7 +17,8 @@
 //!
 //! 見出しの前の `名前 = コマンド` の 1 行はシェルの構成（手で書く短い形）。nagi の構成は、同じ名前の IntelliJ の構成より先に出る
 //! （GUI で IntelliJ の構成を直すと、nagi の構成として保存し、IntelliJ のファイルは書き換えない）。
-//! 種類ごとのコマンドへの直し方は `launch`（Maven・Spring Boot・アプリケーション・npm・Gradle・シェル・URL）。
+//! 種類ごとのコマンドへの直し方は `launch`（Maven・Spring Boot・アプリケーション・npm・Gradle・シェル・URL と、
+//! 言語のツール: Cargo・Go・.NET・Python・Node.js・PHP・Ruby・Make・CMake）。WSL のプロジェクトでは WSL の中のツールで動かす。
 
 use std::path::{Path, PathBuf};
 
@@ -37,6 +38,8 @@ pub enum Kind {
     Shell { command: String, workdir: Option<String> },
     /// ブラウザで開く（JavaScript のデバッグの構成）
     Url { url: String },
+    /// 言語のツールで動かす（`tool` は TOOLS の 1 つ目。対象はツールごとに、Cargo ならサブコマンド、Python ならスクリプト）
+    Tool { tool: String, target: String, args: String, env: Vec<(String, String)>, workdir: Option<String> },
     /// 動かし方が分からない種類（IntelliJ の型の名前）
     Unsupported { type_name: String },
 }
@@ -60,6 +63,7 @@ impl RunConfig {
             Kind::Gradle { .. } => "Gradle".into(),
             Kind::Shell { .. } => "シェル".into(),
             Kind::Url { .. } => "ブラウザ".into(),
+            Kind::Tool { tool, .. } => tool_def(tool).map_or(tool.clone(), |t| t.1.to_string()),
             Kind::Unsupported { type_name } => format!("未対応: {type_name}"),
         }
     }
@@ -112,7 +116,16 @@ pub fn load(root: &Path, workspace_xmls: &[String]) -> (Vec<RunConfig>, Option<S
 }
 
 /// 種類（.nagi/run.conf の type の値, 画面に出す名前）
-pub const KINDS: [(&str, &str); 7] = [
+pub const KINDS: [(&str, &str); 16] = [
+    ("python", "Python"),
+    ("cargo", "Cargo"),
+    ("go", "Go"),
+    ("dotnet", ".NET"),
+    ("node", "Node.js"),
+    ("php", "PHP"),
+    ("ruby", "Ruby"),
+    ("make", "Make"),
+    ("cmake", "CMake"),
     ("shell", "シェル"),
     ("maven", "Maven"),
     ("spring-boot", "Spring Boot"),
@@ -121,6 +134,23 @@ pub const KINDS: [(&str, &str); 7] = [
     ("gradle", "Gradle"),
     ("url", "ブラウザ"),
 ];
+
+/// 言語のツール（type の値, 画面の名前, 対象の欄の名前, 対象の既定値, 対象が無いと動かせないか）
+pub const TOOLS: [(&str, &str, &str, &str, bool); 9] = [
+    ("python", "Python", "スクリプト（-m 名前 でモジュール）", "", true),
+    ("cargo", "Cargo", "コマンド（run・test・build など）", "run", false),
+    ("go", "Go", "パッケージかファイル", ".", false),
+    ("dotnet", ".NET", "プロジェクト（.csproj。空ならフォルダのもの）", "", false),
+    ("node", "Node.js", "スクリプト", "", true),
+    ("php", "PHP", "スクリプト", "", true),
+    ("ruby", "Ruby", "スクリプト", "", true),
+    ("make", "Make", "ターゲット", "", false),
+    ("cmake", "CMake", "ターゲット（空なら全部）", "", false),
+];
+
+fn tool_def(id: &str) -> Option<&'static (&'static str, &'static str, &'static str, &'static str, bool)> {
+    TOOLS.iter().find(|t| t.0 == id)
+}
 
 impl Kind {
     /// 種類の値（KINDS の 1 つ目。未対応は None）
@@ -133,6 +163,7 @@ impl Kind {
             Kind::Npm { .. } => "npm",
             Kind::Gradle { .. } => "gradle",
             Kind::Url { .. } => "url",
+            Kind::Tool { tool, .. } => return tool_def(tool).map(|t| t.0),
             Kind::Unsupported { .. } => return None,
         })
     }
@@ -146,6 +177,7 @@ impl Kind {
             "npm" => Kind::Npm { package_json: None, command: String::new(), scripts: Vec::new(), args: String::new(), env: Vec::new() },
             "gradle" => Kind::Gradle { tasks: Vec::new(), args: String::new() },
             "url" => Kind::Url { url: String::new() },
+            t if tool_def(t).is_some() => Kind::Tool { tool: t.to_string(), target: tool_def(t).unwrap().3.to_string(), args: String::new(), env: Vec::new(), workdir: None },
             _ => Kind::Shell { command: String::new(), workdir: None },
         };
         if let Kind::Npm { command, .. } = &mut k {
@@ -186,6 +218,12 @@ impl Kind {
             ],
             Kind::Gradle { tasks, args } => vec![("tasks", "タスク", tasks.join(" ")), ("args", "引数", args.clone())],
             Kind::Url { url } => vec![("url", "URL", url.clone())],
+            Kind::Tool { tool, target, args, env, workdir } => vec![
+                ("target", tool_def(tool).map_or("対象", |t| t.2), target.clone()),
+                ("args", "引数", args.clone()),
+                ("env", "環境変数", env_text(env)),
+                ("dir", "作業フォルダ", opt(workdir)),
+            ],
             Kind::Unsupported { .. } => Vec::new(),
         }
     }
@@ -197,7 +235,10 @@ impl Kind {
         let words = || v.split_whitespace().map(String::from).collect::<Vec<_>>();
         match (self, key) {
             (Kind::Shell { command, .. }, "command") => *command = v,
-            (Kind::Shell { workdir, .. } | Kind::Maven { workdir, .. }, "dir") => *workdir = opt(),
+            (Kind::Shell { workdir, .. } | Kind::Maven { workdir, .. } | Kind::Tool { workdir, .. }, "dir") => *workdir = opt(),
+            (Kind::Tool { target, .. }, "target") => *target = v,
+            (Kind::Tool { args, .. }, "args") => *args = v,
+            (Kind::Tool { env, .. }, "env") => *env = parse_env(&v),
             (Kind::Maven { goals, .. }, "goals") => *goals = words(),
             (Kind::Maven { profiles, .. }, "profiles") => {
                 *profiles = v.split([',', ' ']).map(str::trim).filter(|p| !p.is_empty()).map(|p| match p.strip_prefix('!') {
@@ -274,7 +315,7 @@ pub fn parse_conf(s: &str) -> Vec<RunConfig> {
 
 /// nagi の構成を `.nagi/run.conf` の文字に（どれも節の形。空の欄は書かない）
 pub fn to_conf(configs: &[RunConfig]) -> String {
-    let mut s = String::from("# nagi の実行の構成（実行の構成の画面で直せる。手で書いてもよい）\n# [名前] の後に type = shell・maven・spring-boot・application・npm・gradle・url と、その種類の項目\n");
+    let mut s = String::from("# nagi の実行の構成（実行の構成の画面で直せる。手で書いてもよい）\n# [名前] の後に type = shell・maven・spring-boot・application・npm・gradle・url・python・cargo・go・dotnet・node・php・ruby・make・cmake と、その種類の項目\n");
     for c in configs {
         let Some(id) = c.kind.id() else { continue };
         s.push_str(&format!("\n[{}]\ntype = {id}\n", c.name));
@@ -421,12 +462,109 @@ fn parse_kind(ty: &str, head: &str, body: &str) -> Kind {
             };
             Kind::Shell { command, workdir: option(body, "SCRIPT_WORKING_DIRECTORY").filter(|w| !w.is_empty()) }
         }
+        // Python: スクリプトかモジュール
+        "PythonConfigurationType" => {
+            let module = option(body, "MODULE_MODE").as_deref() == Some("true");
+            let script = s("SCRIPT_NAME");
+            let script = script.strip_prefix("$PROJECT_DIR$/").unwrap_or(&script).to_string();
+            tool("python", if module { format!("-m {script}") } else { script }, s("PARAMETERS"), envs(body), option(body, "WORKING_DIRECTORY").filter(|w| !w.is_empty()))
+        }
+        // RustRover・IntelliJ Rust: command に「run --package x」
+        "CargoCommandRunConfiguration" => tool("cargo", s("command"), String::new(), envs(body), None),
+        // GoLand: パッケージかファイル
+        "GoApplicationRunConfiguration" => {
+            let t = if option(body, "kind").as_deref() == Some("FILE") || attr(tags(body, "kind").next().unwrap_or(""), "value").as_deref() == Some("FILE") {
+                tags(body, "filePath").next().and_then(|t| attr(t, "value")).unwrap_or_default()
+            } else {
+                tags(body, "package").next().and_then(|t| attr(t, "value")).unwrap_or_else(|| ".".into())
+            };
+            let t = t.strip_prefix("$PROJECT_DIR$/").unwrap_or(&t).to_string();
+            tool("go", t, tags(body, "parameters").next().and_then(|t| attr(t, "value")).unwrap_or_default(), envs(body), None)
+        }
+        "RubyRunConfigurationType" => {
+            let sp = s("SCRIPT_PATH");
+            tool("ruby", sp.strip_prefix("$PROJECT_DIR$/").unwrap_or(&sp).to_string(), s("SCRIPT_ARGS"), envs(body), option(body, "WORK DIR").filter(|w| !w.is_empty()))
+        }
         "JavascriptDebugType" => match attr(head, "uri") {
             Some(url) => Kind::Url { url },
             None => Kind::Unsupported { type_name: ty.to_string() },
         },
         _ => Kind::Unsupported { type_name: ty.to_string() },
     }
+}
+
+/// 開いているファイルをそのまま動かす構成（IntelliJ の「現在のファイル」）。動かし方の分からない拡張子は None
+pub fn for_file(file: &Path, root: &Path) -> Option<RunConfig> {
+    let ext = file.extension()?.to_str()?.to_ascii_lowercase();
+    let t = match ext.as_str() {
+        "py" | "pyw" => "python",
+        "js" | "mjs" | "cjs" => "node",
+        "php" => "php",
+        "rb" => "ruby",
+        "go" => "go",
+        _ => return None,
+    };
+    let rel = file.strip_prefix(root).map_or_else(|_| file.display().to_string(), |r| r.to_string_lossy().replace('\\', "/"));
+    let name = format!("今のファイル: {}", file.file_name()?.to_string_lossy());
+    Some(RunConfig { name, kind: tool(t, rel, String::new(), Vec::new(), None), from: "file" })
+}
+
+fn tool(t: &str, target: String, args: String, env: Vec<(String, String)>, workdir: Option<String>) -> Kind {
+    Kind::Tool { tool: t.into(), target, args, env, workdir }
+}
+
+/// 空白を含む引数は "" で囲む（もう囲んであればそのまま）
+fn quote(s: &str) -> String {
+    let s = s.trim();
+    if s.contains(' ') && !s.starts_with('"') { format!("\"{s}\"") } else { s.to_string() }
+}
+
+/// 言語のツールのコマンド（WSL のプロジェクトでは Linux のコマンド名・パス）
+fn tool_command(tool: &str, target: &str, args: &str, cwd: &Path, wsl: bool) -> Result<String, String> {
+    let (t, a) = (target.trim(), args.trim());
+    let def = tool_def(tool).ok_or_else(|| format!("知らないツールです: {tool}"))?;
+    if def.4 && t.is_empty() {
+        return Err(format!("{}が空です", def.2.split('（').next().unwrap_or(def.2)));
+    }
+    let tail = |c: String| if a.is_empty() { c } else { format!("{c} {a}") };
+    Ok(match tool {
+        "python" => {
+            // 仮想環境（.venv・venv）があればその Python。-u で出力を溜めずに出す
+            let venv = [".venv", "venv"].iter().find_map(|v| {
+                let p = if wsl { cwd.join(v).join("bin").join("python") } else { cwd.join(v).join("Scripts").join("python.exe") };
+                p.is_file().then(|| if wsl { format!("{v}/bin/python") } else { format!("{v}\\Scripts\\python.exe") })
+            });
+            let py = venv.unwrap_or_else(|| if wsl { "python3".into() } else { "python".into() });
+            let t = match t.strip_prefix("-m ") {
+                Some(m) => format!("-m {}", m.trim()),
+                None => quote(t),
+            };
+            tail(format!("{py} -u {t}"))
+        }
+        "cargo" => {
+            let sub = if t.is_empty() { "run" } else { t };
+            // run・test・bench の引数はプログラムへ（-- の後）
+            let first = sub.split_whitespace().next().unwrap_or("");
+            if !a.is_empty() && matches!(first, "run" | "r" | "test" | "t" | "bench") && !sub.contains(" -- ") { format!("cargo {sub} -- {a}") } else { tail(format!("cargo {sub}")) }
+        }
+        "go" => tail(format!("go run {}", if t.is_empty() { "." } else { t })),
+        "dotnet" => {
+            let p = if t.is_empty() { String::new() } else { format!(" --project {}", quote(t)) };
+            if a.is_empty() { format!("dotnet run{p}") } else { format!("dotnet run{p} -- {a}") }
+        }
+        "node" => tail(format!("node {}", quote(t))),
+        "php" => tail(format!("php {}", quote(t))),
+        "ruby" => {
+            let bundle = if cwd.join("Gemfile").is_file() { "bundle exec " } else { "" };
+            tail(format!("{bundle}ruby {}", quote(t)))
+        }
+        "make" => tail(format!("make {t}").trim().to_string()),
+        "cmake" => {
+            let target = if t.is_empty() { String::new() } else { format!(" --target {t}") };
+            tail(format!("cmake -S . -B build && cmake --build build{target}"))
+        }
+        _ => unreachable!(),
+    })
 }
 
 /// `$PROJECT_DIR$` などを置き換えたパス
@@ -517,6 +655,11 @@ pub fn launch(cfg: &RunConfig, root: &Path) -> Result<Launch, String> {
             cmd(command.clone(), workdir.as_deref().map_or(root.to_path_buf(), |w| expand(w, root)), Vec::new())
         }
         Kind::Url { url } => Ok(Launch::Open(url.clone())),
+        Kind::Tool { tool, target, args, env, workdir } => {
+            let cwd = workdir.as_deref().map_or(root.to_path_buf(), |w| expand(w, root));
+            let wsl = crate::wsl::split_unc(root).is_some();
+            cmd(tool_command(tool, target, args, &cwd, wsl)?, cwd, env.clone())
+        }
         Kind::Unsupported { type_name } => Err(format!("この種類の構成はまだ動かせません（{type_name}）")),
     }
 }
@@ -641,5 +784,55 @@ mod tests {
         let mixed = parse_conf("dev = npm run dev  # 開発\n[docs]\ntype = url\nurl = http://localhost:4200/#/top\n");
         assert_eq!(mixed[0].kind, Kind::Shell { command: "npm run dev".into(), workdir: None });
         assert_eq!(mixed[1].kind, Kind::Url { url: "http://localhost:4200/#/top".into() });
+    }
+
+    /// 言語のツールの構成（コマンド・IntelliJ の Python・Go・Cargo・往復）
+    #[test]
+    fn tools() {
+        let dir = std::env::temp_dir().join(format!("nagi-runtool-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".venv/Scripts")).unwrap();
+        let run = |k: Kind| match launch(&RunConfig { name: "x".into(), kind: k, from: "nagi" }, &dir) {
+            Ok(Launch::Command { cmd, .. }) => cmd,
+            Ok(o) => panic!("{o:?}"),
+            Err(e) => format!("Err: {e}"),
+        };
+        let t = |name: &str, target: &str, args: &str| tool(name, target.into(), args.into(), Vec::new(), None);
+        assert_eq!(run(t("python", "app/main.py", "--port 80")), "python -u app/main.py --port 80");
+        assert_eq!(run(t("python", "-m  http.server", "")), "python -u -m http.server");
+        assert!(run(t("python", "", "")).starts_with("Err: スクリプト"));
+        std::fs::write(dir.join(".venv/Scripts/python.exe"), "").unwrap();
+        assert_eq!(run(t("python", "my app.py", "")), r#".venv\Scripts\python.exe -u "my app.py""#);
+        assert_eq!(run(t("cargo", "run", "a b")), "cargo run -- a b");
+        assert_eq!(run(t("cargo", "build --release", "")), "cargo build --release");
+        assert_eq!(run(t("go", ".", "")), "go run .");
+        assert_eq!(run(t("dotnet", "src/App/App.csproj", "x")), "dotnet run --project src/App/App.csproj -- x");
+        assert_eq!(run(t("cmake", "app", "")), "cmake -S . -B build && cmake --build build --target app");
+        assert_eq!(run(t("make", "", "")), "make");
+        std::fs::write(dir.join("Gemfile"), "").unwrap();
+        assert_eq!(run(t("ruby", "bin/app.rb", "")), "bundle exec ruby bin/app.rb");
+        // IntelliJ（PyCharm・GoLand・RustRover）の構成
+        let xml = r#"<component name="RunManager">
+  <configuration name="main" type="PythonConfigurationType" factoryName="Python">
+    <option name="SCRIPT_NAME" value="$PROJECT_DIR$/main.py" />
+    <option name="PARAMETERS" value="-v" />
+    <envs><env name="PYTHONUNBUFFERED" value="1" /></envs>
+  </configuration>
+  <configuration name="srv" type="GoApplicationRunConfiguration" factoryName="Go Application">
+    <kind value="PACKAGE" />
+    <package value="example.com/srv/cmd/srv" />
+  </configuration>
+  <configuration name="test" type="CargoCommandRunConfiguration" factoryName="Cargo Command">
+    <option name="command" value="test --package nagi" />
+  </configuration>
+</component>"#;
+        let v = parse_xml(xml);
+        assert_eq!(v[0].kind, Kind::Tool { tool: "python".into(), target: "main.py".into(), args: "-v".into(), env: vec![("PYTHONUNBUFFERED".into(), "1".into())], workdir: None });
+        assert_eq!(v[1].kind, t("go", "example.com/srv/cmd/srv", ""));
+        assert_eq!(v[2].kind, t("cargo", "test --package nagi", ""));
+        assert_eq!(v[2].kind_label(), "Cargo");
+        let back = parse_conf(&to_conf(&v));
+        assert_eq!(back.iter().map(|c| c.kind.clone()).collect::<Vec<_>>(), v.iter().map(|c| c.kind.clone()).collect::<Vec<_>>());
+        assert_eq!(Kind::new("go"), t("go", ".", ""));
     }
 }
