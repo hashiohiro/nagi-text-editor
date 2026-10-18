@@ -1564,6 +1564,7 @@ impl Editor {
             "Idea" | "IntelliJ" => self.open_in_intellij(),
             "Make" | "make" => self.make(arg),
             "GrammarInstall" => self.grammar_install_command(arg),
+            "Licenses" | "License" => self.open_licenses(),
             "GitHunk" => self.open_hunk_popup(),
             "Git" | "G" | "Gcommit" => self.open_commit_panel(),
             "Gdiff" | "Gd" => self.diff_current(),

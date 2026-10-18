@@ -28,6 +28,8 @@ pub fn download(id: &str, waker: Waker) -> Download {
             if std::fs::rename(&f, &target).is_err() {
                 std::fs::copy(&f, &target).ok()?;
             }
+            // 文法の著作権表示とライセンス文も隣に置く（:Licenses で見せる）
+            let _ = std::fs::copy(d.join("THIRD_PARTY_LICENSES.txt"), grammar::dir().join(format!("grammar-{id2}.LICENSES.txt")));
         }
         let _ = std::fs::remove_dir_all(d);
         ok.then_some(target)

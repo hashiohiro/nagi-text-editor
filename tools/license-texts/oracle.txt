@@ -1,0 +1,12 @@
+(The crate package does not include a license file. The following is taken from the crate's source and README.)
+
+Copyright (c) 2017-2023 Kubo Takehiro <kubo@jiubao.org>. All rights reserved.
+
+Rust-oracle is under the terms of:
+
+1. the Universal Permissive License v 1.0 or at your option, any later version (http://oss.oracle.com/licenses/upl); and/or
+2. the Apache License v 2.0 (http://www.apache.org/licenses/LICENSE-2.0).
+
+Some of doc comments were copied from ODPI-C documentation verbatim. Oracle and/or its affiliates hold the copyright of the parts.
+
+The full texts of both licenses are included in the ODPI-C license (odpi/LICENSE.txt) listed in this file.

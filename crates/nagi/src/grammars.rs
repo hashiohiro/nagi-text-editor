@@ -10,7 +10,38 @@ fn downloadable() -> Vec<(Lang, &'static str)> {
     Lang::all().iter().filter_map(|l| Some((*l, l.grammar_id()?))).collect()
 }
 
+/// nagi.exe に入っているもの（クレート・Rust の標準ライブラリ）の著作権表示とライセンス文（tools/licenses.py が作る）
+const LICENSES: &str = include_str!("../../../THIRD_PARTY_LICENSES.txt");
+
 impl Editor {
+    /// `:Licenses`: nagi.exe と、ダウンロードした文法のライセンス表記を開く
+    pub(crate) fn open_licenses(&mut self) {
+        let mut text = LICENSES.to_string();
+        let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(nagi_syntax::grammar::dir())
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.to_string_lossy().ends_with(".LICENSES.txt"))
+            .collect();
+        files.sort();
+        for f in files {
+            if let Ok(t) = std::fs::read_to_string(&f) {
+                text.push_str(&format!("\n\n{}\n(downloaded grammar: {})\n\n{t}", "#".repeat(78), f.display()));
+            }
+        }
+        let dir = std::env::var_os("LOCALAPPDATA").map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir).join("nagi");
+        let path = dir.join("THIRD_PARTY_LICENSES.txt");
+        let _ = std::fs::create_dir_all(&dir);
+        if std::fs::read_to_string(&path).ok().as_deref() != Some(text.as_str()) {
+            if let Err(e) = std::fs::write(&path, &text) {
+                self.message = format!("{}: {e}", path.display());
+                return;
+            }
+        }
+        self.edit_file(path);
+    }
+
     /// `id` の文法をダウンロードし始める（もうダウンロードしているなら何もしない）
     pub(crate) fn install_grammar(&mut self, id: &str) {
         if self.grammar_downloads.iter().any(|(x, _)| x == id) {

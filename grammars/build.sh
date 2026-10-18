@@ -3,6 +3,7 @@
 #
 #   grammars/build.sh            21 個すべて
 #   grammars/build.sh c go       指定したものだけ
+#   ZIP_ONLY=1 grammars/build.sh  DLL は作り直さず、zip（DLL とライセンス表記）だけ作り直す（SHA-256 は変わらない）
 #
 # 出来るもの:
 #   target/grammars/dist/grammar-<id>.dll   試験で使う（NAGI_GRAMMARS_DIR）
@@ -11,6 +12,7 @@
 #
 # 置き方（文法を作り直したら、リリースの名前の版 grammars-vN を上げて nagi-syntax/src/grammar.rs の RELEASE も変える）:
 #   gh release create grammars-v1 target/grammars/dist/grammar-*.zip --repo hashiohiro/nagi-grammars --title "Grammars v1"
+#   （zip だけ作り直したら gh release upload grammars-v1 target/grammars/dist/grammar-*.zip --clobber --repo hashiohiro/nagi-grammars）
 set -euo pipefail
 cd "$(dirname "$0")/.."
 CARGO="${CARGO:-/mnt/c/Users/hashi/.cargo/bin/cargo.exe}"
@@ -20,13 +22,17 @@ DIST=target/grammars/dist
 mkdir -p "$DIST"
 for id in $IDS; do
   echo "== $id"
-  for try in 1 2 3; do
-    if "$CARGO" build -q --release --manifest-path grammars/Cargo.toml --features "$id" --target-dir target/grammars/build; then break; fi
-    sleep 2
-  done
-  cp target/grammars/build/release/nagi_grammar.dll "$DIST/grammar-$id.dll"
+  if [ -z "${ZIP_ONLY:-}" ]; then
+    for try in 1 2 3; do
+      if "$CARGO" build -q --release --manifest-path grammars/Cargo.toml --features "$id" --target-dir target/grammars/build; then break; fi
+      sleep 2
+    done
+    cp target/grammars/build/release/nagi_grammar.dll "$DIST/grammar-$id.dll"
+  fi
+  # 文法（MIT など）の著作権表示とライセンス文を DLL に添える
+  python3 tools/licenses.py grammar "$id" "$DIST/grammar-$id.LICENSES.txt" > /dev/null
   rm -f "$DIST/grammar-$id.zip"
-  python3 -c "import zipfile,sys; z=zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_DEFLATED,compresslevel=9); z.write(sys.argv[2],sys.argv[3]); z.close()" "$DIST/grammar-$id.zip" "$DIST/grammar-$id.dll" "grammar-$id.dll"
+  python3 -c "import zipfile,sys; z=zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_DEFLATED,compresslevel=9); z.write(sys.argv[2],sys.argv[3]); z.write(sys.argv[4],'THIRD_PARTY_LICENSES.txt'); z.close()" "$DIST/grammar-$id.zip" "$DIST/grammar-$id.dll" "grammar-$id.dll" "$DIST/grammar-$id.LICENSES.txt"
 done
 # 表はいつも 21 個すべてを書く（作っていないものは dist にある前のもの）
 {
