@@ -122,6 +122,11 @@ struct Painter<'a> {
     caret_at: Option<(usize, f32)>,
     /// 描いたタブのアイコン（行, 列の始め, 終わり, 名前）。マウスを載せたら名前を出す
     tab_hits: Vec<(usize, usize, usize, &'static str)>,
+    /// 折り返し（設定）: 折り返す幅（0 なら折り返さない）と、使ってよい画面の行数。draw が使う
+    wrap_w: usize,
+    wrap_rows: usize,
+    /// 最後に draw で描き終えた行の y（折り返したときの行末のカーソル用）
+    end_y: f32,
 }
 
 impl Painter<'_> {
@@ -138,7 +143,18 @@ impl Painter<'_> {
     fn draw(&mut self, items: &[Item<'_>], col: usize, y: f32) -> usize {
         let cell = self.fonts.cell();
         let mut c = col;
+        let mut y = y;
+        let mut row = 1;
         for it in items {
+            // 折り返す（設定）: 幅を超えたら次の行の頭へ
+            if self.wrap_w > 0 && c + it.width > col + self.wrap_w {
+                if row >= self.wrap_rows {
+                    break;
+                }
+                row += 1;
+                c = col;
+                y += cell.h;
+            }
             if c + it.width > self.cols {
                 break;
             }
@@ -156,6 +172,7 @@ impl Painter<'_> {
             }
             c += it.width;
         }
+        self.end_y = y;
         c
     }
 
@@ -336,7 +353,8 @@ fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
     let view_start = pane.buf.line_start(shown.first().copied().unwrap_or(pane.top).min(total));
     let view_end = pane.buf.line_start(shown.last().map_or(pane.top, |l| l + 1).min(total));
     // 行は画面に入る分だけ取り出す（折り返さないので、それより右は見えない。数 MB の 1 行でも毎回全体を作らない）
-    let budget = line_budget(rect.w);
+    // 折り返すときは、画面に入るだけの行ぶん
+    let budget = if ed.settings.bool("editor.wrap") { line_budget(rect.w * drawn) } else { line_budget(rect.w) };
     let heads: Vec<(String, usize, bool)> = shown
         .iter()
         .map(|&ln| {
@@ -375,14 +393,31 @@ fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
     // 行単位の Visual は、選んでいる行の範囲にしておく（1 文字ごとに位置を引き直さない）
     let visual_lines = visual.map(|(vs, ve, _)| (pane.buf.pos_of(vs).0, pane.buf.pos_of(ve.saturating_sub(1).max(vs)).0));
     let replacing = pane.active && ed.mode == Mode::Replace && !ed.query.text.is_empty();
+    // 折り返し（設定）: 本文の幅で折り返す。1 行が使う画面の行を数えながら並べる
+    let wrapw = if ed.settings.bool("editor.wrap") { rect.w.saturating_sub(gutter) } else { 0 };
 
-    for row in 0..drawn {
-        let y = (rect.y as f32 + row as f32 - frac) * cell.h;
-        let Some(&ln) = shown.get(row) else {
+    let mut vrow = 0usize;
+    let mut next = 0usize;
+    while vrow < drawn {
+        let i = next;
+        next += 1;
+        let y = (rect.y as f32 + vrow as f32 - frac) * cell.h;
+        let Some(&ln) = shown.get(i) else {
             // ファイル末尾より後ろは Vim と同じく ~
             p.text("~", rect.x, y, TILDE);
+            vrow += 1;
             continue;
         };
+        let folded = pane.folds.outer_at(ln).is_some_and(|f| f.0 == ln);
+        let line_rows = if wrapw > 0 && !folded {
+            let extra = if pane.active && ln == pane.cursor.line && ed.mode == Mode::Insert { p.width(&ed.preedit) } else { 0 };
+            (p.width(&heads[i].0) + extra + 1).div_ceil(wrapw).max(1).min(drawn - vrow)
+        } else {
+            1
+        };
+        vrow += line_rows;
+        p.wrap_w = wrapw;
+        p.wrap_rows = line_rows;
         // 診断のある行は行番号の色で示す（エラーは赤、警告は黄色）
         let num_color = match pane.diags.get(&ln) {
             Some(true) => DIAG_ERROR,
@@ -430,7 +465,7 @@ fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
         if let Some((s, e)) = pane.folds.outer_at(ln).filter(|f| f.0 == ln) {
             let x = (rect.x + gutter) as f32 * cell.w;
             p.out.push(Instance::fill(x, y, (rect.w.saturating_sub(gutter)) as f32 * cell.w, cell.h, MATCH_BG));
-            let label = format!("+--{:>3} 行: {}", e - s + 1, heads[row].0.trim());
+            let label = format!("+--{:>3} 行: {}", e - s + 1, heads[i].0.trim());
             let saved = p.cols;
             p.cols = rect.x + rect.w;
             let end = p.text(&label, rect.x + gutter, y, STATUS_FG);
@@ -441,15 +476,27 @@ fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
             }
             continue;
         }
-        let (line, abs, cut) = &heads[row];
+        let (line, abs, cut) = &heads[i];
         let (line, abs, cut) = (line.as_str(), *abs, *cut);
         // 診断の波線（エラーは赤、警告は黄色。IntelliJ と同じく語の下に）
         for &(_, col, error) in pane.squiggles.iter().filter(|s| s.0 == ln) {
             let (a, b) = squiggle_range(line, col);
             if b > a {
-                let x0 = (rect.x + gutter + nagi_core::display_col(line, a, false)) as f32 * cell.w;
-                let x1 = (rect.x + gutter + nagi_core::display_col(line, b, false)) as f32 * cell.w;
-                draw_squiggle(p, x0, x1, y + cell.h, if error { DIAG_ERROR } else { DIAG_WARN });
+                let (da, db) = (nagi_core::display_col(line, a, false), nagi_core::display_col(line, b, false));
+                let color = if error { DIAG_ERROR } else { DIAG_WARN };
+                if wrapw == 0 {
+                    draw_squiggle(p, (rect.x + gutter + da) as f32 * cell.w, (rect.x + gutter + db) as f32 * cell.w, y + cell.h, color);
+                } else {
+                    // 折り返した行ごとに分けて引く
+                    let mut s0 = da;
+                    while s0 < db {
+                        let r = s0 / wrapw;
+                        let e0 = db.min((r + 1) * wrapw);
+                        let base = rect.x + gutter;
+                        draw_squiggle(p, (base + s0 - r * wrapw) as f32 * cell.w, (base + e0 - r * wrapw) as f32 * cell.w, y + (r + 1) as f32 * cell.h, color);
+                        s0 = e0;
+                    }
+                }
             }
         }
         // byte ごとの文字色。外側のキャプチャの後に内側が来るので、後から塗ったものが勝つ
@@ -543,7 +590,10 @@ fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
             let before: usize = items[..at].iter().map(|i| i.width).sum();
             items.splice(at..at, pre);
             p.draw(&items, rect.x + gutter, y);
-            p.caret(rect.x + gutter + before + caret_in_pre, y);
+            // 折り返していれば、縦棒もその行へ
+            let off = before + caret_in_pre;
+            let (cc, cy) = if wrapw > 0 { (rect.x + gutter + off % wrapw, y + (off / wrapw) as f32 * cell.h) } else { (rect.x + gutter + off, y) };
+            p.caret(cc, cy);
         } else {
             // ブロックカーソル（文字を反転）。空行や行末では 1 セルの塗り
             // 選択の中では反転をもう一度反転して元の色に戻す（ターミナルの Vim と同じ見え方。行単位の Visual でも位置が分かる）
@@ -562,13 +612,17 @@ fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
                     // 切った行でカーソルが見えている部分より右にあるときは描かない
                     if !cut {
                         let color = if eol_selected { CURSOR_IN_SELECTION } else { CURSOR };
-                        p.out.push(Instance::fill(c as f32 * cell.w, y, cell.w, cell.h, color));
+                        // 折り返していて、行末が幅いっぱいなら次の行の頭
+                        let (cx, cy) = if wrapw > 0 && c >= rect.x + gutter + wrapw { (rect.x + gutter, p.end_y + cell.h) } else { (c, p.end_y) };
+                        p.out.push(Instance::fill(cx as f32 * cell.w, cy, cell.w, cell.h, color));
                     }
                 }
             }
         }
     }
 
+    p.wrap_w = 0;
+    p.wrap_rows = 1;
     let t_lines = t0.elapsed();
     if debug {
         eprintln!("build matches={:?} highlight={:?} lines={:?} n_matches={}", t_matches, t_hl - t_matches, t_lines - t_hl, all_matches.len());
@@ -590,7 +644,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     ed.sync_terminal();
     let bar = (cell.w / 6.0).round().max(2.0);
     let underline = (cell.h / 16.0).round().max(1.0);
-    let mut p = Painter { out: Vec::with_capacity(cols * rows + 64), fonts, r, cols, bar, underline, caret_at: None, tab_hits: Vec::new() };
+    let mut p = Painter { out: Vec::with_capacity(cols * rows + 64), fonts, r, cols, bar, underline, caret_at: None, tab_hits: Vec::new(), wrap_w: 0, wrap_rows: 1, end_y: 0.0 };
     if let (Some(r), Some(t)) = (ed.tree_rect(), &mut ed.tree) {
         let h = r.h.saturating_sub(1).max(1);
         if t.selected < t.scroll {
@@ -2461,9 +2515,10 @@ fn draw_completion(p: &mut Painter, ed: &Editor, c: &crate::complete::Completion
     if sl < ed.top {
         return;
     }
-    let row = rect.y + (sl - ed.top);
-    let line = ed.buf.line_head(sl, sb + 4).0;
-    let col = (rect.x + ed.gutter() + nagi_core::display_col(&line, sb.min(line.len()), false)).saturating_sub(1);
+    // 折り返していれば、その行の中の画面の行と列
+    let Some((r, c0)) = ed.screen_pos(sl, sb) else { return };
+    let row = rect.y + r;
+    let col = (rect.x + ed.gutter() + c0).saturating_sub(1);
     let n = c.items.len().min(MAX);
     // 選んでいる候補が見える範囲
     let first = c.sel.map_or(0, |s| s.saturating_sub(MAX - 1));

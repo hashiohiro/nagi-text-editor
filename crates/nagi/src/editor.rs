@@ -1802,6 +1802,23 @@ impl Editor {
 
     /// 画面上の (行, セル列) にあたるカーソル位置。行は表示中のスクロール位置から数える
     pub fn pos_at(&self, row: usize, col: usize) -> Cursor {
+        // 折り返している: 上の行から使う画面の行を数えて、押した行とその中の位置を求める
+        if let Some(w) = self.wrap_width().filter(|_| self.folds.is_empty()) {
+            let n = self.buf.line_count();
+            let (mut r, mut ln) = (0, self.top.min(n.saturating_sub(1)));
+            loop {
+                let lr = self.line_rows(ln, w);
+                if row < r + lr || ln + 1 >= n {
+                    let seg = row.saturating_sub(r).min(lr - 1);
+                    let text = self.buf.line(ln);
+                    let c = seg * w + col.saturating_sub(self.gutter()).min(w.saturating_sub(1));
+                    let byte = if self.mode == Mode::Insert && c >= display_col(&text, text.len(), false) { text.len() } else { byte_at_col(&text, c, false) };
+                    return Cursor { line: ln, byte, want_col: display_col(&text, byte, false) };
+                }
+                r += lr;
+                ln += 1;
+            }
+        }
         let line = if self.folds.is_empty() {
             (self.top + row).min(self.buf.line_count().saturating_sub(1))
         } else {
@@ -1949,6 +1966,13 @@ impl Editor {
             self.top = self.cursor.line;
         } else if self.cursor.line >= self.top + rows {
             self.top = self.cursor.line + 1 - rows;
+        }
+        // 折り返していれば、カーソルの行（の終わり）まで画面に入るように上の行を送る
+        if let Some(w) = self.wrap_width() {
+            while self.top < self.cursor.line && (self.top..=self.cursor.line).map(|l| self.line_rows(l, w)).sum::<usize>() > rows {
+                self.top += 1;
+                self.frac = 0.0;
+            }
         }
     }
 }
