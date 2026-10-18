@@ -42,7 +42,18 @@ pub struct Pending {
     /// rustc・clang などの見出し（エラーか, 本文）。次の --> の行で位置が分かる
     header: Option<(bool, String)>,
     /// Python の File "x.py", line N（次の XxxError: の行で本文が分かる）
-    py: Option<(String, usize)>,
+    py: Option<PyAt>,
+}
+
+/// Python の File の行の後: 元の行（先頭の空白を削って字下げして出る）と、その下の ^ の行
+#[derive(Default)]
+struct PyAt {
+    file: String,
+    line: usize,
+    /// 出力の中の元の行の字下げ
+    src_indent: Option<usize>,
+    /// 元の行の中の ^ の位置（削った空白は含まない）
+    col: Option<usize>,
 }
 
 /// 複数行で出る診断を読む（rustc の見出しと --> の行、Python の File の行と XxxError の行）
@@ -66,12 +77,32 @@ pub fn parse_multi(p: &mut Pending, line: &str, root: &Path) -> Option<Diag> {
         return Some(Diag { path: diag_path(&c[1], root), line: l.saturating_sub(1), col: col.saturating_sub(1), error, msg });
     }
     if let Some(c) = py_at.captures(line) {
-        p.py = Some((c[1].to_string(), c[2].parse().unwrap_or(1)));
+        p.py = Some(PyAt { file: c[1].to_string(), line: c[2].parse().unwrap_or(1), ..Default::default() });
         return None;
     }
     if let Some(c) = py_err.captures(line) {
-        let (f, l) = p.py.take()?;
-        return Some(Diag { path: diag_path(&f, root), line: l.saturating_sub(1), col: 0, error: !c[1].ends_with("Warning"), msg: format!("{}: {}", &c[1], &c[2]) });
+        let at = p.py.take()?;
+        let path = diag_path(&at.file, root);
+        let line = at.line.saturating_sub(1);
+        // ^ の位置に、ファイルの行の削られた字下げを足す（読めなければ ^ の位置のまま）
+        let col = at.col.map_or(0, |c| {
+            let indent = std::fs::read_to_string(&path).ok().and_then(|t| t.lines().nth(line).map(|l| l.chars().take_while(|c| c.is_whitespace()).count()));
+            c + indent.unwrap_or(0)
+        });
+        return Some(Diag { path, line, col, error: !c[1].ends_with("Warning"), msg: format!("{}: {}", &c[1], &c[2]) });
+    }
+    // File の行の後の元の行と ^ の行（3.11 からは ~~~^^^ の形も）
+    if let Some(at) = p.py.as_mut().filter(|a| a.col.is_none()) {
+        let indent = line.chars().take_while(|c| *c == ' ').count();
+        let body = line.trim();
+        match at.src_indent {
+            None if !body.is_empty() => at.src_indent = Some(indent),
+            Some(si) if !body.is_empty() && body.chars().all(|c| matches!(c, '^' | '~')) => {
+                let mark = line.chars().position(|c| c == '^').unwrap_or(indent);
+                at.col = Some(mark.saturating_sub(si));
+            }
+            _ => {}
+        }
     }
     None
 }
@@ -512,7 +543,21 @@ mod tests {
         // 複数行: Python
         assert!(parse_multi(&mut p, r#"  File "C:\work\p\a.py", line 2"#, root).is_none());
         let d = parse_multi(&mut p, "SyntaxError: invalid syntax", root).unwrap();
-        assert_eq!((d.path.file_name().unwrap().to_str().unwrap(), d.line + 1, d.msg.as_str()), ("a.py", 2, "SyntaxError: invalid syntax"));
+        assert_eq!((d.path.file_name().unwrap().to_str().unwrap(), d.line + 1, d.col, d.msg.as_str()), ("a.py", 2, 0, "SyntaxError: invalid syntax"));
+        // ^ の位置から列（ファイルの行の字下げを足す）
+        let py = std::env::temp_dir().join(format!("nagi-py-{}.py", std::process::id()));
+        std::fs::write(&py, "def f():\n    x = (1 +\n").unwrap();
+        assert!(parse_multi(&mut p, &format!(r#"  File "{}", line 2"#, py.display()), root).is_none());
+        assert!(parse_multi(&mut p, "    x = (1 +", root).is_none());
+        assert!(parse_multi(&mut p, "        ^", root).is_none());
+        let d = parse_multi(&mut p, "SyntaxError: '(' was never closed", root).unwrap();
+        assert_eq!((d.line + 1, d.col + 1), (2, 9));
+        // 3.11 からの ~~~^^^ の形は ^ の始まりを指す
+        assert!(parse_multi(&mut p, &format!(r#"  File "{}", line 2"#, py.display()), root).is_none());
+        assert!(parse_multi(&mut p, "    x = (1 +", root).is_none());
+        assert!(parse_multi(&mut p, "    ~~~~^^^", root).is_none());
+        assert_eq!(parse_multi(&mut p, "ZeroDivisionError: division by zero", root).unwrap().col + 1, 9);
+        let _ = std::fs::remove_file(&py);
         // 見分け方
         let dir = std::env::temp_dir().join(format!("nagi-detect-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
