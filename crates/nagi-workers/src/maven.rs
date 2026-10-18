@@ -117,15 +117,20 @@ pub fn find_root(from: &Path) -> Option<PathBuf> {
     found
 }
 
-/// ゴールを動かすコマンド（根に mvnw があればそれを使う）
+/// Maven Wrapper が使えるか（mvnw だけあって `.mvn/wrapper/maven-wrapper.properties` が無いと、wrapper は起動できない）
+fn wrapper_ready(root: &Path, script: &str) -> bool {
+    root.join(script).is_file() && root.join(".mvn").join("wrapper").join("maven-wrapper.properties").is_file()
+}
+
+/// ゴールを動かすコマンド（根に使える mvnw があればそれを、無ければ PATH の mvn）
 pub fn command(root: &Path, pom_dir: &Path, goals: &str) -> String {
     let pom = pom_dir.join("pom.xml");
     // WSL のプロジェクトは WSL の中で動かすので、Linux のパスと ./mvnw
     if crate::wsl::split_unc(root).is_some() {
-        let mvn = if root.join("mvnw").is_file() { "./mvnw" } else { "mvn" };
+        let mvn = if wrapper_ready(root, "mvnw") { "./mvnw" } else { "mvn" };
         return format!("{mvn} -B -f \"{}\" {goals}", crate::wsl::shell_path(&pom));
     }
-    let mvn = if root.join("mvnw.cmd").is_file() { "mvnw.cmd" } else { "mvn" };
+    let mvn = if wrapper_ready(root, "mvnw.cmd") { "mvnw.cmd" } else { "mvn" };
     format!("{mvn} -B -f \"{}\" {goals}", pom.display())
 }
 
@@ -161,5 +166,18 @@ mod tests {
         assert_eq!(pom.deps.len(), 2);
         assert_eq!((pom.deps[0].artifact.as_str(), pom.deps[0].scope.as_str()), ("ojdbc11", "runtime"));
         assert_eq!((pom.deps[1].artifact.as_str(), pom.deps[1].version.as_str()), ("y", "${y.version}"));
+    }
+
+    /// mvnw.cmd だけあって .mvn/wrapper の設定が無ければ、PATH の mvn を使う
+    #[test]
+    fn wrapper_needs_properties() {
+        let dir = std::env::temp_dir().join(format!("nagi-mvnw-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("mvnw.cmd"), "").unwrap();
+        assert!(command(&dir, &dir, "install").starts_with("mvn -B"));
+        std::fs::create_dir_all(dir.join(".mvn/wrapper")).unwrap();
+        std::fs::write(dir.join(".mvn/wrapper/maven-wrapper.properties"), "distributionUrl=x").unwrap();
+        assert!(command(&dir, &dir, "install").starts_with("mvnw.cmd -B"));
     }
 }
