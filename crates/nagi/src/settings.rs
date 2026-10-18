@@ -283,6 +283,33 @@ impl crate::editor::Editor {
         if !self.settings.bool("vim.hlsearch") {
             self.search.highlight = false;
         }
+        // 裏の処理（Maven・git・JDK・ターミナル・ブラウザ）が読む設定
+        let s = &self.settings;
+        nagi_workers::config::set(nagi_workers::config::Config {
+            mvn: s.text("maven.path"),
+            use_wrapper: s.bool("maven.use_wrapper"),
+            mvn_options: s.get("maven.options"),
+            jdk: s.text("maven.jdk").map(PathBuf::from),
+            git: s.text("git.path"),
+            git_wsl: s.bool("git.wsl"),
+            browser: s.text("tools.browser"),
+            terminal_utf8: s.bool("terminal.utf8"),
+        });
+        // 追加の PATH とドライバーの置き場所は、nagi の環境変数に（nagi から起動するものに引き継がれる）。試験では変えない
+        if !cfg!(test) {
+            static BASE_PATH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+            let base = BASE_PATH.get_or_init(|| std::env::var("PATH").unwrap_or_default());
+            let extra = self.settings.list("tools.extra_path").join(";");
+            let path = if extra.is_empty() { base.clone() } else { format!("{extra};{base}") };
+            // SAFETY: 設定を適用するのは UI のスレッドだけで、ほかのスレッドが同時に環境変数を書くことはない
+            unsafe {
+                std::env::set_var("PATH", path);
+                match self.settings.text("db.drivers_dir") {
+                    Some(d) => std::env::set_var("NAGI_DRIVERS_DIR", d),
+                    None => std::env::remove_var("NAGI_DRIVERS_DIR"),
+                }
+            }
+        }
     }
 
     /// ヤンク・削除をいつもクリップボードへ送るか（.ideavimrc の clipboard=unnamed か、設定の「クリップボード」）

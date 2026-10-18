@@ -124,10 +124,9 @@ impl Editor {
     /// リンクを開く: URL はブラウザ、ほかは Markdown のファイルからの相対パスで Nagi に（#見出し は落とす）
     fn open_md_link(&mut self, url: &str) {
         if url.starts_with("http://") || url.starts_with("https://") || url.starts_with("mailto:") {
-            #[cfg(windows)]
-            {
-                use std::os::windows::process::CommandExt;
-                let _ = std::process::Command::new("rundll32").arg("url.dll,FileProtocolHandler").arg(url).creation_flags(0x0800_0000).spawn();
+            // 試験ではブラウザを開かない
+            if !cfg!(test) {
+                let _ = nagi_workers::config::open_url(url);
             }
             self.message = format!("ブラウザで開きました: {url}");
             return;

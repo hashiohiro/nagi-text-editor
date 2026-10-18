@@ -78,6 +78,10 @@ fn pump(r: impl Read + Send + 'static, tx: Sender<JobMsg>, waker: Waker) -> std:
 /// 使えるなら None（そのまま）
 pub fn java_home_fix() -> Option<std::path::PathBuf> {
     let exe = |d: &Path| d.join("bin").join("java.exe").is_file() || d.join("bin").join("java").is_file();
+    // 設定の JDK があればそれ
+    if let Some(j) = crate::config::get().jdk.filter(|j| exe(j)) {
+        return Some(j);
+    }
     if std::env::var_os("JAVA_HOME").is_some_and(|h| exe(Path::new(&h))) {
         return None;
     }

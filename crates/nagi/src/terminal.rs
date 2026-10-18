@@ -120,7 +120,11 @@ fn remember_shell(label: &str) {
 }
 
 /// 既定のシェル（NAGI_SHELL、最後に選んだもの、無ければ一番上）
-fn default_shell() -> (String, String) {
+fn default_shell(setting: Option<String>) -> (String, String) {
+    // 設定の「既定のシェル」（名前で選べなければコマンドとして）
+    if let Some(s) = setting {
+        return shell_by_name(&s).unwrap_or_else(|| (s.split_whitespace().next().unwrap_or("shell").trim_end_matches(".exe").to_string(), s.clone()));
+    }
     if let Some(s) = std::env::var_os("NAGI_SHELL") {
         let s = s.to_string_lossy().into_owned();
         return (s.split_whitespace().next().unwrap_or("shell").trim_end_matches(".exe").to_string(), s);
@@ -197,7 +201,7 @@ impl Editor {
             // WSL のプロジェクトなら、そのディストリビューションのシェルをプロジェクトのフォルダから
             let (name, cmd) = match nagi_workers::wsl::split_unc(&self.nav_root()) {
                 Some((d, linux)) if std::env::var_os("NAGI_SHELL").is_none() => (format!("WSL: {d}"), format!("wsl.exe -d {d} --cd {linux}")),
-                _ => default_shell(),
+                _ => default_shell(self.settings.text("terminal.shell")),
             };
             self.new_terminal(&name, &cmd);
         }
@@ -234,7 +238,12 @@ impl Editor {
     /// 新しい窓を開いて移る（開けたら true）
     pub(crate) fn new_terminal(&mut self, name: &str, cmd: &str) -> bool {
         let (rows, cols) = self.terminal_rect().map_or((10, 80), |r| (r.h as u16, r.w.saturating_sub(1) as u16));
-        let cwd = self.nav_root();
+        // 設定の「始めるフォルダ」
+        let cwd = match self.settings.get("terminal.start_dir").as_str() {
+            "file" => self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()).and_then(|p| p.parent().map(|d| d.to_path_buf())).unwrap_or_else(|| self.nav_root()),
+            "home" => std::env::var_os("USERPROFILE").map(std::path::PathBuf::from).unwrap_or_else(|| self.nav_root()),
+            _ => self.nav_root(),
+        };
         let waker = self.waker.clone().unwrap_or_else(|| std::sync::Arc::new(|| {}));
         match Term::spawn(cmd, &cwd, rows, cols, waker) {
             Ok(term) => {

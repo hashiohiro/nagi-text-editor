@@ -183,7 +183,7 @@ fn open_browser(url: &str) -> R<()> {
     if std::env::var("NAGI_SF_BROWSER").as_deref() == Ok("curl") {
         return win(Command::new(curl_exe()).args(["-s", "-L", "-o", "NUL", url])).stdout(Stdio::null()).stderr(Stdio::null()).spawn().map(|_| ()).map_err(|e| e.to_string());
     }
-    win(Command::new("rundll32.exe").args(["url.dll,FileProtocolHandler", url])).spawn().map(|_| ()).map_err(|e| format!("ブラウザを開けません: {e}"))
+    crate::config::open_url(url)
 }
 
 /// 自動テスト用の偽の Salesforce（OAuth の認可・トークン、REST API の sobjects / describe / query に答える）

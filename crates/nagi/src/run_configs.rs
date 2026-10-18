@@ -229,8 +229,7 @@ fn hash(s: &str) -> u64 {
 fn open_url(url: &str) {
     #[cfg(not(test))]
     {
-        use std::os::windows::process::CommandExt;
-        let _ = std::process::Command::new("rundll32").arg("url.dll,FileProtocolHandler").arg(url).creation_flags(0x0800_0000).spawn();
+        let _ = nagi_workers::config::open_url(url);
     }
     let _ = url;
 }

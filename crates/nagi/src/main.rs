@@ -340,6 +340,7 @@ impl App {
             // 開いたファイルのプロジェクトの設定の上書き
             let root = ed.nav_root();
             ed.settings.set_root(Some(&root));
+            ed.apply_settings(None);
             // 引数がフォルダなら、プロジェクトとして開く（IntelliJ・Eclipse の設定を読み、前に開いていたファイルを復元）
             if let Some(dir) = self.opts.file.clone().filter(|p| p.is_dir()) {
                 ed.open_project(dir);

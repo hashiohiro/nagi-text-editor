@@ -119,7 +119,7 @@ pub fn find_root(from: &Path) -> Option<PathBuf> {
 
 /// Maven Wrapper が使えるか（mvnw だけあって `.mvn/wrapper/maven-wrapper.properties` が無いと、wrapper は起動できない）
 fn wrapper_ready(root: &Path, script: &str) -> bool {
-    root.join(script).is_file() && root.join(".mvn").join("wrapper").join("maven-wrapper.properties").is_file()
+    crate::config::get().use_wrapper && root.join(script).is_file() && root.join(".mvn").join("wrapper").join("maven-wrapper.properties").is_file()
 }
 
 /// ゴールを動かすコマンド（根に使える mvnw があればそれを、無ければ PATH の mvn）
@@ -130,7 +130,10 @@ pub fn command(root: &Path, pom_dir: &Path, goals: &str) -> String {
         let mvn = if wrapper_ready(root, "mvnw") { "./mvnw" } else { "mvn" };
         return format!("{mvn} -B -f \"{}\" {goals}", crate::wsl::shell_path(&pom));
     }
-    let mvn = if wrapper_ready(root, "mvnw.cmd") { "mvnw.cmd" } else { "mvn" };
+    // 設定の「mvn の場所」「追加のオプション」
+    let cfg = crate::config::get();
+    let mvn = if wrapper_ready(root, "mvnw.cmd") { "mvnw.cmd".to_string() } else { cfg.mvn.map_or("mvn".to_string(), |m| if m.contains(' ') { format!("\"{m}\"") } else { m }) };
+    let goals = if cfg.mvn_options.trim().is_empty() { goals.to_string() } else { format!("{} {goals}", cfg.mvn_options.trim()) };
     format!("{mvn} -B -f \"{}\" {goals}", pom.display())
 }
 

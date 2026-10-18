@@ -15,10 +15,13 @@ pub fn git_input(root: &Path, args: &[&str], input: Option<&[u8]>) -> Result<Vec
     // 出力を英語と UTF-8 の決まった形にする（読み取りがずれないように）
     let base = ["-c", "core.quotepath=false", "-c", "color.ui=false"];
     // WSL のプロジェクトは WSL の中の git で（Windows の git だと遅く、safe.directory で断られる）
-    let mut cmd = match crate::wsl::command_in(root, "env", &[["LANG=C", "LC_ALL=C", "GIT_TERMINAL_PROMPT=0", "git"].as_slice(), base.as_slice(), args].concat()) {
+    let cfg = crate::config::get();
+    let wsl = if cfg.git_wsl { crate::wsl::command_in(root, "env", &[["LANG=C", "LC_ALL=C", "GIT_TERMINAL_PROMPT=0", "git"].as_slice(), base.as_slice(), args].concat()) } else { None };
+    let mut cmd = match wsl {
         Some(c) => c,
         None => {
-            let mut c = Command::new("git");
+            // 設定の「git の場所」
+            let mut c = Command::new(cfg.git.as_deref().unwrap_or("git"));
             c.args(base).args(args).current_dir(root);
             c.env("LANG", "C").env("LC_ALL", "C").env("GIT_TERMINAL_PROMPT", "0");
             c

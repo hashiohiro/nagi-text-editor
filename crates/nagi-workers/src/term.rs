@@ -51,6 +51,13 @@ pub fn split_args(s: &str) -> Vec<String> {
 fn utf8_args(prog: &str, args: Vec<String>) -> Vec<String> {
     let base = Path::new(prog).file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
     let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+    // 設定の「UTF-8 で始める」がオフなら、Windows の既定のまま（PowerShell のロゴだけ消す）
+    if !crate::config::get().terminal_utf8 {
+        return match base.as_str() {
+            "powershell.exe" | "powershell" | "pwsh.exe" | "pwsh" if args.is_empty() => s(&["-NoLogo"]),
+            _ => args,
+        };
+    }
     match base.as_str() {
         "cmd.exe" | "cmd" if args.is_empty() => s(&["/K", "chcp", "65001", ">nul"]),
         "powershell.exe" | "powershell" | "pwsh.exe" | "pwsh" if args.is_empty() => s(&[
