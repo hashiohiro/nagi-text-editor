@@ -426,7 +426,7 @@ mod tests {
         assert_eq!(names(&e), vec!["Gblame"]);
         // 小文字のまま実行できる
         keys(&mut e, "<CR>");
-        assert!(!e.message.contains("E492"), "{}", e.message);
+        assert!(!e.notify.text.contains("E492"), "{}", e.notify.text);
         assert_eq!(canonical_cmd("gblame"), "Gblame");
         assert_eq!(canonical_cmd("w"), "w");
         // Insert の Ctrl+Space は単語の候補

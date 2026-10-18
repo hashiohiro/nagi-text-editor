@@ -171,7 +171,7 @@ impl Editor {
         if !initial.is_empty() {
             g.query.set(initial);
         }
-        self.message.clear();
+        self.notify.clear();
         self.restart_grep();
         self.rows = self.text_rows(self.active_rect());
     }
@@ -322,8 +322,8 @@ impl Editor {
                 }
             }
             ViewOut::Command => self.enter_command(""),
-            ViewOut::ReadOnly => self.message = "ログは読み取り専用です（移動・選ぶ・ヤンクはできる）".into(),
-            ViewOut::Yanked(n) => self.message = format!("{n} 行をコピーしました"),
+            ViewOut::ReadOnly => self.notify.info("ログは読み取り専用です（移動・選ぶ・ヤンクはできる）"),
+            ViewOut::Yanked(n) => self.notify.info(format!("{n} 行をコピーしました")),
             ViewOut::None => {}
         }
         crate::editor::Effect::None
@@ -428,16 +428,16 @@ impl Editor {
     /// `:cn` / `:cp`
     pub(crate) fn next_hit(&mut self, forward: bool, count: usize) {
         let Some(g) = &mut self.grep else {
-            self.message = "E42: 検索の結果がありません".into();
+            self.notify.error("E42: 検索の結果がありません");
             return;
         };
         if g.hits.is_empty() {
-            self.message = "E42: 検索の結果がありません".into();
+            self.notify.error("E42: 検索の結果がありません");
             return;
         }
         let i = if forward { g.selected + count } else { g.selected.saturating_sub(count) };
         if (forward && g.selected + 1 >= g.hits.len()) || (!forward && g.selected == 0) {
-            self.message = "E553: これ以上の結果はありません".into();
+            self.notify.error("E553: これ以上の結果はありません");
             return;
         }
         g.select(i);
@@ -445,7 +445,7 @@ impl Editor {
         self.open_hit(false);
         self.mode = if mode == Mode::List { Mode::List } else { Mode::Normal };
         let g = self.grep.as_ref().unwrap();
-        self.message = format!("({} / {}) {}:{}", g.selected + 1, g.hits.len(), g.hits[g.selected].path, g.hits[g.selected].line);
+        self.notify.info(format!("({} / {}) {}:{}", g.selected + 1, g.hits.len(), g.hits[g.selected].path, g.hits[g.selected].line));
     }
 
     /// 選んでいる行をクリップボードへ（範囲を選んでいれば範囲、無ければ今の行）。範囲の選びは消す
@@ -457,7 +457,7 @@ impl Editor {
             let n = self.grep.as_mut().and_then(|g| g.view.as_mut()).map_or(0, |v| v.copy(&mut regs, clip));
             self.registers = regs;
             if n > 0 {
-                self.message = format!("{n} 行をコピーしました");
+                self.notify.info(format!("{n} 行をコピーしました"));
             }
             return;
         }
@@ -472,7 +472,7 @@ impl Editor {
             Some(cb) => (cb.set)(&text),
             None => crate::clipboard::set(&text),
         }
-        self.message = format!("{} 行をコピーしました", b - a + 1);
+        self.notify.info(format!("{} 行をコピーしました", b - a + 1));
     }
 
     /// パネルの上のドラッグ（`row` はパネルの中の行。0 は見出し）。押した行から範囲を選ぶ
@@ -655,7 +655,7 @@ mod tests {
         // 本文へ移った後に、結果をマウスで選び直せる（下の欄の 0 行目はタブ、1 行目は見出し、2 行目から結果）
         assert_eq!(e.mode, Mode::Normal);
         e.bottom_click(3, 5, 1);
-        assert_eq!(e.mode, Mode::List, "{}", e.message);
+        assert_eq!(e.mode, Mode::List, "{}", e.notify.text);
         assert_eq!(e.grep.as_ref().unwrap().selected, 1);
         e.bottom_click(3, 5, 2);
         assert_eq!(e.mode, Mode::Normal);
@@ -664,7 +664,7 @@ mod tests {
         for k in ["ix", "v", "V"] {
             keys(&mut e, k);
             e.bottom_click(2, 5, 1);
-            assert_eq!((e.mode, e.grep.as_ref().unwrap().selected), (Mode::List, 0), "{k}: {}", e.message);
+            assert_eq!((e.mode, e.grep.as_ref().unwrap().selected), (Mode::List, 0), "{k}: {}", e.notify.text);
             e.bottom_click(2, 5, 2);
             assert_eq!(e.mode, Mode::Normal, "{k}");
             keys(&mut e, "<Esc>u");
@@ -720,7 +720,7 @@ mod tests {
         let v = e.grep.as_ref().unwrap().view.as_ref().unwrap();
         assert_eq!(v.ed.buf.line(0), "[INFO] Scanning for projects...");
         assert_eq!(v.ed.buf.line_count(), 3);
-        assert_eq!(e.mode, Mode::List, "{}", e.message);
+        assert_eq!(e.mode, Mode::List, "{}", e.notify.text);
         // 日本語の語もヤンクできる。/ で検索して移る
         keys(&mut e, "/失敗<CR>yiw");
         assert_eq!(get().unwrap(), "失敗しました");

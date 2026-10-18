@@ -58,7 +58,7 @@ impl Editor {
         if v.is_empty() {
             // 構成が無ければ、追加の行だけの一覧を出す
             self.open_run_chooser();
-            self.message = "実行の構成がありません。「＋ 構成を追加・編集」で足せます（IntelliJ で作った構成も読みます）".into();
+            self.notify.info("実行の構成がありません。「＋ 構成を追加・編集」で足せます（IntelliJ で作った構成も読みます）");
             return;
         }
         let want = if arg.is_empty() { self.run_selected.clone().unwrap_or_default() } else { arg.to_string() };
@@ -110,7 +110,7 @@ impl Editor {
     /// `:RunAdd 名前 = コマンド`: nagi の構成に 1 行足して選ぶ
     pub(crate) fn run_add(&mut self, arg: &str) {
         let Some((name, cmd)) = arg.split_once('=').map(|(n, c)| (n.trim(), c.trim())).filter(|(n, c)| !n.is_empty() && !c.is_empty()) else {
-            self.message = "書き方: :RunAdd 名前 = コマンド（例: :RunAdd 開発サーバー = npm run dev）".into();
+            self.notify.info("書き方: :RunAdd 名前 = コマンド（例: :RunAdd 開発サーバー = npm run dev）");
             return;
         };
         let path = self.nav_root().join(".nagi").join("run.conf");
@@ -125,9 +125,9 @@ impl Editor {
         match std::fs::write(&path, text) {
             Ok(()) => {
                 self.run_selected = Some(name.to_string());
-                self.message = format!("実行の構成を足しました: {name}（Shift+F10 で実行。{}）", path.display());
+                self.notify.info(format!("実行の構成を足しました: {name}（Shift+F10 で実行。{}）", path.display()));
             }
-            Err(e) => self.message = format!("{}: {e}", path.display()),
+            Err(e) => self.notify.error(format!("{}: {e}", path.display())),
         }
     }
 
@@ -137,10 +137,10 @@ impl Editor {
         self.run_selected = Some(cfg.name.clone());
         self.run_last = Some(cfg.name.clone());
         match runconfig::launch(&cfg, &root) {
-            Err(e) => self.message = e,
+            Err(e) => self.notify.error(e),
             Ok(Launch::Open(url)) => {
                 open_url(&url);
-                self.message = format!("ブラウザで開きました: {url}");
+                self.notify.info(format!("ブラウザで開きました: {url}"));
             }
             Ok(Launch::Command { cmd, cwd, mut env }) => {
                 // Maven・Gradle で JAVA_HOME が使えなければ、見つけた JDK を使う（:Make と同じ）
@@ -152,7 +152,7 @@ impl Editor {
                 let shell = match shell_line(&cfg.name, &cmd, &cwd, &env) {
                     Ok(s) => s,
                     Err(e) => {
-                        self.message = e;
+                        self.notify.info(e);
                         return;
                     }
                 };
@@ -163,7 +163,7 @@ impl Editor {
                 self.bottom_kind = BottomKind::Terminal;
                 self.rows = self.text_rows(self.active_rect());
                 if self.new_terminal(&name, &shell) {
-                    self.message = format!("実行: {}   {cmd}", cfg.name);
+                    self.notify.info(format!("実行: {}   {cmd}", cfg.name));
                 }
             }
         }
@@ -180,12 +180,13 @@ impl Editor {
         let active = self.terminals.list.get(self.terminals.active).filter(|t| t.name.starts_with(RUN_PREFIX) && !t.exited).map(|t| t.name.clone());
         let last = self.run_last.as_ref().map(|n| format!("{RUN_PREFIX}{n}"));
         let target = active.or(last.filter(|n| self.terminals.list.iter().any(|t| &t.name == n && !t.exited)));
-        match target.and_then(|n| self.terminals.list.iter_mut().find(|t| t.name == n)) {
-            Some(t) => {
-                t.term.kill();
-                self.message = format!("止めました: {}", t.name.trim_start_matches(RUN_PREFIX));
-            }
-            None => self.message = "動いている構成はありません".into(),
+        let stopped = target.and_then(|n| self.terminals.list.iter_mut().find(|t| t.name == n)).map(|t| {
+            t.term.kill();
+            t.name.trim_start_matches(RUN_PREFIX).to_string()
+        });
+        match stopped {
+            Some(name) => self.notify.info(format!("止めました: {name}")),
+            None => self.notify.info("動いている構成はありません"),
         }
     }
 

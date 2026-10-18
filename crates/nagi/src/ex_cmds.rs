@@ -116,7 +116,7 @@ impl Editor {
         let (range, rest) = match self.parse_range(cmd) {
             Ok(v) => v,
             Err(e) => {
-                self.message = e;
+                self.notify.info(e);
                 return Some(Effect::None);
             }
         };
@@ -179,7 +179,7 @@ impl Editor {
                 let (to, _) = match self.parse_addr(arg) {
                     Ok(v) => v,
                     Err(e) => {
-                        self.message = e;
+                        self.notify.info(e);
                         return Some(Effect::None);
                     }
                 };
@@ -201,7 +201,7 @@ impl Editor {
                 self.with_motion(|m, c| m.first_non_blank(c));
             }
             _ if range.is_some() => {
-                self.message = format!("E492: 範囲を取るコマンドではありません: {rest}");
+                self.notify.error(format!("E492: 範囲を取るコマンドではありません: {rest}"));
             }
             _ => return None,
         }
@@ -211,7 +211,7 @@ impl Editor {
     /// `:m` / `:t`。`to` の行の下へ（None は先頭へ）
     fn move_copy(&mut self, l1: usize, l2: usize, to: Option<usize>, mv: bool) {
         if mv && to.is_some_and(|t| t >= l1 && t < l2) {
-            self.message = "E134: 範囲の中へは移せません".into();
+            self.notify.error("E134: 範囲の中へは移せません");
             return;
         }
         let nl = self.buf.newline().to_string();
@@ -305,7 +305,7 @@ impl Editor {
     /// `:g/pat/cmd`（`invert` なら当たらない行。`:g!` と `:v`）
     fn global(&mut self, (l1, l2): (usize, usize), arg: &str, invert: bool) -> Effect {
         if self.in_global {
-            self.message = "E147: :g の中で :g は使えません".into();
+            self.notify.error("E147: :g の中で :g は使えません");
             return Effect::None;
         }
         let Some(delim) = arg.chars().next() else { return Effect::None };
@@ -313,12 +313,12 @@ impl Editor {
         let (pat, cmd) = (parts.first().cloned().unwrap_or_default(), parts.get(1).cloned().unwrap_or_default());
         let pat = if pat.is_empty() { self.search.last.as_ref().map(|l| l.0.clone()).unwrap_or_default() } else { pat.to_string() };
         let Some(re) = compile(&pat, None) else {
-            self.message = format!("E486: パターンが不正です: {pat}");
+            self.notify.error(format!("E486: パターンが不正です: {pat}"));
             return Effect::None;
         };
         let lines: Vec<Option<usize>> = (l1..=l2).filter(|&l| re.is_match(&self.buf.line(l)) != invert).map(Some).collect();
         if lines.is_empty() {
-            self.message = format!("E486: パターンは見つかりませんでした: {pat}");
+            self.notify.error(format!("E486: パターンは見つかりませんでした: {pat}"));
             return Effect::None;
         }
         let cmd = cmd.trim();
@@ -327,7 +327,7 @@ impl Editor {
             let n = lines.len();
             self.cursor.line = lines.last().copied().flatten().unwrap_or(l1);
             self.with_motion(|m, c| m.first_non_blank(c));
-            self.message = format!("{n} 行が一致しました");
+            self.notify.info(format!("{n} 行が一致しました"));
             return Effect::None;
         }
         let cmd = cmd.to_string();
@@ -396,7 +396,7 @@ impl Editor {
                 Some((p, true, _)) => p.clone(),
                 Some((p, false, _)) => regex::escape(p),
                 None => {
-                    self.message = "E35: 直前の検索語がありません".into();
+                    self.notify.error("E35: 直前の検索語がありません");
                     return;
                 }
             }
@@ -405,7 +405,7 @@ impl Editor {
         };
         let case = if flags.contains('I') { Some(true) } else if flags.contains('i') { Some(false) } else { None };
         let Some(re) = compile(&pat, case) else {
-            self.message = format!("E486: パターンが不正です: {pat}");
+            self.notify.error(format!("E486: パターンが不正です: {pat}"));
             return;
         };
         self.last_sub = Some(LastSub { pat: pat.clone(), rep: rep.clone(), flags: flags.clone() });
@@ -419,7 +419,7 @@ impl Editor {
                 n += c;
                 lines += usize::from(c > 0);
             }
-            self.message = format!("{n} 箇所に一致（{lines} 行）");
+            self.notify.info(format!("{n} 箇所に一致（{lines} 行）"));
             return;
         }
         // Vim の置換文字列（\1 と &、\r の改行、\t）を regex の書き方に直す
@@ -447,10 +447,10 @@ impl Editor {
         self.hist.squash_from(undo);
         if count == 0 {
             if !flags.contains('e') {
-                self.message = format!("E486: パターンは見つかりませんでした: {pat}");
+                self.notify.error(format!("E486: パターンは見つかりませんでした: {pat}"));
             }
         } else if self.line_anchors.is_empty() {
-            self.message = format!("{count} 箇所を置換しました");
+            self.notify.info(format!("{count} 箇所を置換しました"));
         }
         if let Some(l) = last_hit {
             self.cursor.line = l.min(self.buf.line_count().saturating_sub(1));
@@ -462,7 +462,7 @@ impl Editor {
     /// `&` / `:s` / `:&`（フラグなし）と `g&` / `:&&`（フラグごと）
     pub(crate) fn repeat_sub(&mut self, range: (usize, usize), keep_flags: bool) {
         let Some(mut last) = self.last_sub.clone() else {
-            self.message = "E35: 直前の置換がありません".into();
+            self.notify.error("E35: 直前の置換がありません");
             return;
         };
         if !keep_flags {

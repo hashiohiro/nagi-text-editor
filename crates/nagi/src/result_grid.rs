@@ -303,7 +303,7 @@ impl Editor {
         }
         let n = s.lines().count();
         self.registers.insert('"', (s, false));
-        self.message = format!("{what}をコピーしました{}", if n > 1 { format!("（{n} 行）") } else { String::new() });
+        self.notify.info(format!("{what}をコピーしました{}", if n > 1 { format!("（{n} 行）") } else { String::new() }));
     }
 
     /// `:DbExport csv|tsv|insert`: 今の結果（テーブルの編集の画面ならその表）を書き出して開く
@@ -324,7 +324,7 @@ impl Editor {
                 _ => t.to_tsv(),
             }, format!("result{}", t.id))
         } else {
-            self.message = "書き出す結果がありません".into();
+            self.notify.info("書き出す結果がありません");
             return;
         };
         let ext = match fmt.as_str() {

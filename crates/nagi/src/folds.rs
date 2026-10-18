@@ -95,14 +95,14 @@ impl Editor {
                     s.sync(&mut self.buf);
                 }
                 let Some(cands) = syntax_folds(self, false) else {
-                    self.message = "E490: 折りたたみがありません（構文木の無いファイルは Visual の zf で作る）".into();
+                    self.notify.error("E490: 折りたたみがありません（構文木の無いファイルは Visual の zf で作る）");
                     return;
                 };
                 // 内側から、まだ閉じていないものを閉じる（閉じていれば外側を）
                 let outer = self.folds.outer_at(line);
                 match cands.into_iter().find(|f| !self.folds.closed.contains(f) && outer.is_none_or(|o| f.0 <= o.0 && f.1 >= o.1)) {
                     Some(f) => self.folds.closed.push(f),
-                    None if outer.is_none() => self.message = "E490: 折りたたみがありません".into(),
+                    None if outer.is_none() => self.notify.error("E490: 折りたたみがありません"),
                     None => {}
                 }
             }
@@ -110,7 +110,7 @@ impl Editor {
                 // 見えている（一番外側の）閉じた折りたたみを開く
                 match self.folds.outer_at(line) {
                     Some(f) => self.folds.closed.retain(|&x| x != f),
-                    None if c == 'o' => self.message = "E490: 閉じた折りたたみはありません".into(),
+                    None if c == 'o' => self.notify.error("E490: 閉じた折りたたみはありません"),
                     None => {}
                 }
             }
@@ -256,7 +256,7 @@ mod tests {
     fn manual_fold_without_syntax() {
         let mut e = Editor::new(Buffer::from_str("1\n2\n3\n4\n"), None);
         keys(&mut e, "zc");
-        assert!(e.message.starts_with("E490"));
+        assert!(e.notify.text.starts_with("E490"));
         keys(&mut e, "jVjzf");
         assert_eq!(e.folds.closed, vec![(1, 2)]);
         keys(&mut e, "ggjj");

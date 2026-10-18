@@ -37,7 +37,7 @@ pub fn refresh() {
         unsafe {
             let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
             if let Err(e) = build(&pinned, &recent) {
-                eprintln!("ジャンプリストを作れない: {e}");
+                nagi_core::log::warn(&format!("ジャンプリストを作れない: {e}"));
             }
             CoUninitialize();
         }

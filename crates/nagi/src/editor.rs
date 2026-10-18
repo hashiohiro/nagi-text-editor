@@ -192,7 +192,8 @@ pub struct Editor {
     /// スムーズスクロール中の、行に満たない分（0.0〜1.0 行。描画は top + frac から始める）
     pub frac: f32,
     pub mode: Mode,
-    pub message: String,
+    /// 状態の行の文・知らせの履歴（notify.rs。self.notify.info・warn・error で書く）
+    pub notify: crate::notify::Notify,
     pub cmdline: Prompt,
     /// 検索語（置換のときも）と置換後
     pub query: Prompt,
@@ -422,7 +423,7 @@ impl Editor {
             top: 0,
             frac: 0.0,
             mode: Mode::Normal,
-            message: String::new(),
+            notify: Default::default(),
             cmdline: Prompt::default(),
             query: Prompt::default(),
             repl: Prompt::default(),
@@ -542,7 +543,7 @@ impl Editor {
             }
         });
         self.loading = Some(rx2);
-        self.message = LOADING.into();
+        self.notify.info(LOADING);
     }
 
     /// 全体が届いていれば差し替える。差し替えたら true（描き直す）
@@ -584,8 +585,8 @@ impl Editor {
         // 先頭部分は全体の頭と同じ内容なので、カーソルと表示位置はそのまま使える
         self.buf = b;
         self.reset_search_cache();
-        if self.message == LOADING {
-            self.message.clear();
+        if self.notify.text == LOADING {
+            self.notify.clear();
         }
         self.start_syntax();
     }
@@ -734,7 +735,7 @@ impl Editor {
     pub(crate) fn enter_insert(&mut self) {
         self.hist.begin();
         self.mode = Mode::Insert;
-        self.message.clear();
+        self.notify.clear();
     }
 
     fn leave_insert(&mut self) {
@@ -1179,7 +1180,7 @@ impl Editor {
         self.repl = Prompt::default();
         self.replace_field = if replace && !initial.is_empty() { 1 } else { 0 };
         self.mode = if replace { Mode::Replace } else { Mode::Search };
-        self.message.clear();
+        self.notify.clear();
         self.update_incsearch();
     }
 
@@ -1256,7 +1257,7 @@ impl Editor {
                     }
                 }
                 if self.search.current.is_none() {
-                    self.message = format!("E486: パターンは見つかりませんでした: {pattern}");
+                    self.notify.error(format!("E486: パターンは見つかりませんでした: {pattern}"));
                 } else {
                     self.show_count();
                 }
@@ -1282,12 +1283,12 @@ impl Editor {
         let lead = if f { '/' } else { '?' };
         match self.match_count() {
             Some((Some(i), n)) => {
-                self.message = format!("{lead}{p}  [{}/{n}]", i + 1);
+                self.notify.progress(format!("{lead}{p}  [{}/{n}]", i + 1));
                 self.search.count_message = false;
             }
             _ => {
                 // 全件はまだ数えている途中。届いたら出し直す
-                self.message = format!("{lead}{p}  [?/…]");
+                self.notify.progress(format!("{lead}{p}  [?/…]"));
                 self.search.count_message = true;
             }
         }
@@ -1296,7 +1297,7 @@ impl Editor {
     /// n / N の移動先。`reverse` は検索の向きを逆にする
     pub(crate) fn search_next(&mut self, reverse: bool, count: usize) -> Option<usize> {
         let Some((_, _, forward)) = self.search.last.clone() else {
-            self.message = "E35: 前回の検索パターンがありません".into();
+            self.notify.error("E35: 前回の検索パターンがありません");
             return None;
         };
         self.search.highlight = self.settings.bool("vim.hlsearch");
@@ -1318,7 +1319,7 @@ impl Editor {
             }
             None => {
                 let p = self.search.last.as_ref().map(|l| l.0.clone()).unwrap_or_default();
-                self.message = format!("E486: パターンは見つかりませんでした: {p}");
+                self.notify.error(format!("E486: パターンは見つかりませんでした: {p}"));
                 None
             }
         }
@@ -1349,7 +1350,7 @@ impl Editor {
                 match self.search.current {
                     Some((s, _)) => self.set_abs(s),
                     None => {
-                        self.message = "置換が終わりました".into();
+                        self.notify.info("置換が終わりました");
                         self.mode = Mode::Normal;
                         self.set_abs(s);
                         self.clamp_normal();
@@ -1373,7 +1374,7 @@ impl Editor {
                     self.edit(s, e, rep);
                 }
                 self.hist.close();
-                self.message = format!("{} 箇所を置換しました", ms.len());
+                self.notify.info(format!("{} 箇所を置換しました", ms.len()));
                 self.mode = Mode::Normal;
                 self.search.origin = None;
                 self.set_abs(ms[0].0);
@@ -1413,7 +1414,7 @@ impl Editor {
             return self.write();
         }
         if target.exists() && !force {
-            self.message = format!("E13: ファイルが既にあります（:w! {name} で上書き）");
+            self.notify.error(format!("E13: ファイルが既にあります（:w! {name} で上書き）"));
             return false;
         }
         if self.buf.path.is_none() || rename {
@@ -1440,7 +1441,7 @@ impl Editor {
         match self.buf.save() {
             Ok(n) => {
                 let name = self.buf.path.as_ref().map(|p| p.display().to_string()).unwrap_or_default();
-                self.message = format!("\"{name}\" {}L, {n}B 書き込み", self.buf.line_count());
+                self.notify.info(format!("\"{name}\" {}L, {n}B 書き込み", self.buf.line_count()));
                 // 保存したファイルの定義を索引し直す（裏で）。git の状態も取り直す
                 self.reindex_saved();
                 self.refresh_status();
@@ -1450,7 +1451,7 @@ impl Editor {
                 true
             }
             Err(e) => {
-                self.message = format!("E212: 書き込めません: {e}");
+                self.notify.error(format!("E212: 書き込めません: {e}"));
                 false
             }
         }
@@ -1463,7 +1464,7 @@ impl Editor {
                 self.set_abs(at.min(self.buf.len_bytes()));
                 self.clamp_normal();
             }
-            None => self.message = if later { "これ以上は進めません".into() } else { "これ以上は戻せません".into() },
+            None => self.notify.info(if later { "これ以上は進めません" } else { "これ以上は戻せません" }),
         }
     }
 
@@ -1505,7 +1506,7 @@ impl Editor {
                     self.close_window(self.cur_win);
                 }
             }
-            "clo" | "close" => self.message = "E444: 最後のウィンドウは閉じられません".into(),
+            "clo" | "close" => self.notify.error("E444: 最後のウィンドウは閉じられません"),
             "on" | "only" => self.only_window(),
             "sp" | "split" | "vs" | "vsplit" => {
                 self.split(name.starts_with('v'));
@@ -1517,10 +1518,10 @@ impl Editor {
                 self.split(name.starts_with('v'));
                 self.new_empty_buffer();
             }
-            "q" | "quit" | "qa" | "qall" | "quitall" if self.buf.dirty => self.message = "E37: 変更が保存されていません（:q! で破棄して終了）".into(),
+            "q" | "quit" | "qa" | "qall" | "quitall" if self.buf.dirty => self.notify.error("E37: 変更が保存されていません（:q! で破棄して終了）"),
             "q" | "quit" | "qa" | "qall" | "quitall" if !self.dirty_docs().is_empty() => {
                 let i = self.dirty_docs()[0];
-                self.message = format!("E162: バッファ {} の変更が保存されていません（:qa! で破棄して終了）", i + 1);
+                self.notify.error(format!("E162: バッファ {} の変更が保存されていません（:qa! で破棄して終了）", i + 1));
             }
             "q" | "quit" | "q!" | "quit!" | "qa" | "qall" | "quitall" | "qa!" | "qall!" | "quitall!" => return Effect::Quit,
             "wq" | "x" | "xit" => {
@@ -1528,7 +1529,7 @@ impl Editor {
                     return Effect::Quit;
                 }
                 if let Some(&i) = self.dirty_docs().first() {
-                    self.message = format!("E162: バッファ {} の変更が保存されていません", i + 1);
+                    self.notify.error(format!("E162: バッファ {} の変更が保存されていません", i + 1));
                 }
             }
             "wa" | "wall" => {
@@ -1556,7 +1557,7 @@ impl Editor {
             "Output" => self.select_bottom_tab(crate::result_grid::BottomKind::Output),
             "TreeSync" => {
                 self.tree_sync = !self.tree_sync;
-                self.message = if self.tree_sync { "木を開いているファイルに合わせます".into() } else { "木を開いているファイルに合わせません".into() };
+                self.notify.info(if self.tree_sync { "木を開いているファイルに合わせます" } else { "木を開いているファイルに合わせません" });
                 self.sync_tree();
             }
             "Project" | "project" if arg.is_empty() => self.pick_project(),
@@ -1574,6 +1575,7 @@ impl Editor {
             "Idea" | "IntelliJ" => self.open_in_intellij(),
             "Make" | "make" => self.make(arg),
             "GrammarInstall" => self.grammar_install_command(arg),
+            "messages" | "mes" | "Messages" => self.show_messages(),
             "Licenses" | "License" => self.open_licenses(),
             "GitHunk" => self.open_hunk_popup(),
             "Git" | "G" | "Gcommit" => self.open_commit_panel(),
@@ -1616,7 +1618,7 @@ impl Editor {
             "source" | "so" => return Effect::ReloadRc,
             "NagiStats" => return Effect::Stats { reset: false },
             "NagiStats!" => return Effect::Stats { reset: true },
-            "echo" => self.message = arg.trim_matches(['"', '\'']).to_string(),
+            "echo" => self.notify.info(arg.trim_matches(['"', '\'']).to_string()),
             "noh" | "nohlsearch" => self.search.highlight = false,
             // ideavimrc の `O`: `:call append(expand('.'), '')`（現在行の下に空行を足す）
             "call" if arg.starts_with("append(") => self.append_blank_line(),
@@ -1625,8 +1627,8 @@ impl Editor {
             "later" | "lat" => self.undo_time(true, arg.parse().unwrap_or(1)),
             "delm" | "delmarks" => self.delete_marks(arg, false),
             "delm!" | "delmarks!" => self.delete_marks(arg, true),
-            n if n.starts_with('!') => self.message = format!("未実装: 外部コマンド（{cmd}）"),
-            _ => self.message = format!("E492: エディタのコマンドではありません: {cmd}"),
+            n if n.starts_with('!') => self.notify.info(format!("未実装: 外部コマンド（{cmd}）")),
+            _ => self.notify.error(format!("E492: エディタのコマンドではありません: {cmd}")),
         }
         Effect::None
     }
@@ -1684,9 +1686,9 @@ impl Editor {
             Some((Some("git.hunk_revert"), _)) => self.revert_hunk(),
             Some((Some("nav.error_prev"), _)) => self.next_error(false),
             Some((Some("jump.forward"), _)) => self.jump(false, 1),
-            Some((Some(cmd), desc)) => self.message = format!("未実装: {desc}（{cmd}）"),
-            Some((None, desc)) => self.message = format!("Nagi には無い機能: {desc}"),
-            None => self.message = format!("不明なアクション: {name}"),
+            Some((Some(cmd), desc)) => self.notify.info(format!("未実装: {desc}（{cmd}）")),
+            Some((None, desc)) => self.notify.info(format!("Nagi には無い機能: {desc}")),
+            None => self.notify.info(format!("不明なアクション: {name}")),
         }
     }
 
@@ -1696,7 +1698,7 @@ impl Editor {
                 self.set_abs(at.min(self.buf.len_bytes()));
                 self.clamp_normal();
             }
-            None => self.message = "E664: 変更履歴がありません".into(),
+            None => self.notify.error("E664: 変更履歴がありません"),
         }
     }
 
@@ -1746,7 +1748,7 @@ impl Editor {
             None => crate::clipboard::get(),
         };
         let Some(text) = text.filter(|t| !t.is_empty()) else {
-            self.message = "クリップボードが空です".into();
+            self.notify.info("クリップボードが空です");
             return;
         };
         let text = if self.mode == Mode::CommitMsg {
@@ -2041,7 +2043,7 @@ mod tests {
         assert_eq!(e.match_count(), Some((Some(0), 1)));
         e.key(Key::Enter);
         assert_eq!(e.mode, Mode::Normal);
-        assert_eq!(e.message, "/needle  [1/1]");
+        assert_eq!(e.notify.text, "/needle  [1/1]");
         // n は近くから探す（全件はもう数えてある）
         e.key(Key::Char('g'));
         e.key(Key::Char('g'));

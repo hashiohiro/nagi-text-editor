@@ -56,7 +56,7 @@ impl Editor {
             HtmlCtx::Tag(t) if t.contains('-') => match component_by_selector(&root, t) {
                 Some(ts) => (ts, None),
                 None => {
-                    self.message = format!("部品が見つかりません: <{t}>（selector: '{t}' の @Component）");
+                    self.notify.warn(format!("部品が見つかりません: <{t}>（selector: '{t}' の @Component）"));
                     return true;
                 }
             },
@@ -103,7 +103,7 @@ impl Editor {
                     if matches!(ctx, HtmlCtx::Other) {
                         return false;
                     }
-                    self.message = format!("{} に {m} がありません", ts.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned()));
+                    self.notify.info(format!("{} に {m} がありません", ts.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned())));
                 }
                 true
             }
@@ -179,18 +179,18 @@ mod tests {
         let at = |e: &Editor| (e.buf.path.as_ref().unwrap().file_name().unwrap().to_string_lossy().into_owned(), e.cursor.line);
         // {{ title }} → 部品のプロパティ
         keys(&mut e, "gg/title<CR>gd");
-        assert_eq!(at(&e), ("page.component.ts".into(), 2), "{}", e.message);
+        assert_eq!(at(&e), ("page.component.ts".into(), 2), "{}", e.notify.text);
         // (click)="onGo(1)" → 部品のメソッド
         keys(&mut e, "<C-o>2G0/onGo<CR>gd");
-        assert_eq!(at(&e), ("page.component.ts".into(), 3), "{}", e.message);
+        assert_eq!(at(&e), ("page.component.ts".into(), 3), "{}", e.notify.text);
         // <app-button> → 部品のクラス
         keys(&mut e, "<C-o>2G0wgd");
-        assert_eq!(at(&e), ("button.component.ts".into(), 1), "{}", e.message);
+        assert_eq!(at(&e), ("button.component.ts".into(), 1), "{}", e.notify.text);
         // [width] → 部品の @Input
         keys(&mut e, "<C-o>2G0/width<CR>gd");
-        assert_eq!(at(&e), ("button.component.ts".into(), 2), "{}", e.message);
+        assert_eq!(at(&e), ("button.component.ts".into(), 2), "{}", e.notify.text);
         // goBack() → 親クラスのメソッド
         keys(&mut e, "<C-o>3G0/goBack<CR>gd");
-        assert_eq!(at(&e), ("page-base.ts".into(), 1), "{}", e.message);
+        assert_eq!(at(&e), ("page-base.ts".into(), 1), "{}", e.notify.text);
     }
 }

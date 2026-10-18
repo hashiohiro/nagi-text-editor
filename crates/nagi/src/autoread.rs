@@ -107,12 +107,12 @@ impl Editor {
                         continue;
                     }
                     if mode == "ask" && !dirty {
-                        self.message = format!("\"{name}\" が外部で変更されました（:e! で読み直す）");
+                        self.notify.info(format!("\"{name}\" が外部で変更されました（:e! で読み直す）"));
                         redraw = true;
                         continue;
                     }
                     if dirty {
-                        self.message = format!("W12: \"{name}\" が外部で変更されました。バッファにも変更があります（:e! で読み直す）");
+                        self.notify.warn(format!("W12: \"{name}\" が外部で変更されました。バッファにも変更があります（:e! で読み直す）"));
                     } else {
                         // 裏で読み直し、届いたら差し替える
                         nagi_core::task::spawn_to("reload", self.reloads.tx.clone(), self.waker(), move || Buffer::open(&p).ok().map(|b| (p, b)));
@@ -123,7 +123,7 @@ impl Editor {
                     if let Some(doc) = self.find_doc(&p) {
                         if self.doc_disk(doc).is_some_and(|(_, d)| d.is_some()) {
                             self.set_doc_disk(doc, None);
-                            self.message = format!("E211: \"{}\" は削除されました", p.display());
+                            self.notify.error(format!("E211: \"{}\" は削除されました", p.display()));
                             redraw = true;
                         }
                     }
@@ -187,7 +187,7 @@ impl Editor {
             }
             _ => return false,
         }
-        self.message = format!("\"{name}\" を読み直しました（外部で変更）");
+        self.notify.info(format!("\"{name}\" を読み直しました（外部で変更）"));
         true
     }
 }
@@ -230,18 +230,18 @@ mod tests {
         // 外部で書き換え → 変更が無いので読み直す（カーソルの行は保つ）
         std::thread::sleep(std::time::Duration::from_millis(20));
         std::fs::write(&f, "ONE\nTWO\nTHREE\n").unwrap();
-        assert!(wait(&mut e, |e, _| e.buf.line(0) == "ONE"), "読み直されない: {}", e.message);
-        assert!(e.message.contains("読み直しました"));
+        assert!(wait(&mut e, |e, _| e.buf.line(0) == "ONE"), "読み直されない: {}", e.notify.text);
+        assert!(e.notify.text.contains("読み直しました"));
         assert_eq!(e.cursor.line, 1);
         // 自分の保存では反応しない
         keys(&mut e, "x:w<CR>");
-        e.message.clear();
-        assert!(!wait(&mut e, |e, _| !e.message.is_empty()), "自分の保存に反応した: {}", e.message);
+        e.notify.clear();
+        assert!(!wait(&mut e, |e, _| !e.notify.text.is_empty()), "自分の保存に反応した: {}", e.notify.text);
         // 編集中に外部で書き換え → 差し替えずに知らせる
         keys(&mut e, "x");
         std::thread::sleep(std::time::Duration::from_millis(20));
         std::fs::write(&f, "outside\n").unwrap();
-        assert!(wait(&mut e, |e, _| e.message.starts_with("W12")), "{}", e.message);
+        assert!(wait(&mut e, |e, _| e.notify.text.starts_with("W12")), "{}", e.notify.text);
         assert_eq!(e.buf.line(1), "O");
         // 設定ファイルの書き換えは App へ知らせる
         std::fs::write(&rc, "set nonumber\n").unwrap();

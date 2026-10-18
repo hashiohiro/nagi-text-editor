@@ -223,7 +223,7 @@ impl Editor {
             }
             None => {
                 let names: Vec<String> = available_shells().into_iter().map(|s| s.0).collect();
-                self.message = format!("シェルが見つかりません: {arg}（使えるもの: {}）", names.join("・"));
+                self.notify.warn(format!("シェルが見つかりません: {arg}（使えるもの: {}）", names.join("・")));
             }
         }
     }
@@ -253,7 +253,7 @@ impl Editor {
                 true
             }
             Err(e) => {
-                self.message = format!("{name} を起動できません（{cmd}）: {e}");
+                self.notify.error(format!("{name} を起動できません（{cmd}）: {e}"));
                 false
             }
         }
@@ -404,7 +404,7 @@ impl Editor {
             None => crate::clipboard::set(&text),
         }
         self.terminals.sel = None;
-        self.message = format!("コピーしました（{} 文字）", text.chars().count());
+        self.notify.info(format!("コピーしました（{} 文字）", text.chars().count()));
         true
     }
 
@@ -686,7 +686,7 @@ mod tests {
         e.set_screen(120, 40);
         e.toggle_bottom_tab(BottomKind::Terminal);
         assert_eq!(e.mode, Mode::Terminal);
-        assert_eq!(e.terminals.list.len(), 1, "{}", e.message);
+        assert_eq!(e.terminals.list.len(), 1, "{}", e.notify.text);
         for k in nagi_vim::parse_keys("echo nagi-tab-ok<CR>", " ") {
             e.key(k);
         }

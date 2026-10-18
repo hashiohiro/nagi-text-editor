@@ -140,7 +140,7 @@ impl Editor {
                 b
             }
             Err(e) => {
-                self.message = format!("{}: {e}", path.display());
+                self.notify.info(format!("{}: {e}", path.display()));
                 return;
             }
         };
@@ -157,7 +157,7 @@ impl Editor {
         }
         crate::finder::remember_recent(&path);
         self.watch_file(&path);
-        self.message = message;
+        self.notify.info(message);
     }
 
     /// `:new`。空のバッファを足して作業中にする
@@ -174,7 +174,7 @@ impl Editor {
                 self.swap_in(d);
                 self.start_syntax();
             }
-            Err(e) => self.message = format!("{}: {e}", path.display()),
+            Err(e) => self.notify.error(format!("{}: {e}", path.display())),
         }
     }
 
@@ -198,14 +198,14 @@ impl Editor {
                 [i] => Some(*i),
                 [] => None,
                 _ => {
-                    self.message = format!("E93: {arg} に当てはまるバッファが複数あります");
+                    self.notify.error(format!("E93: {arg} に当てはまるバッファが複数あります"));
                     return;
                 }
             }
         };
         match id {
             Some(i) => self.switch_doc(i),
-            None => self.message = format!("E86: バッファ {arg} はありません"),
+            None => self.notify.error(format!("E86: バッファ {arg} はありません")),
         }
     }
 
@@ -225,7 +225,7 @@ impl Editor {
             a => match a.parse::<usize>().ok().and_then(|n| n.checked_sub(1)) {
                 Some(i) if !matches!(self.docs.get(i), None | Some(Slot::Deleted)) => i,
                 _ => {
-                    self.message = format!("E516: バッファ {a} はありません");
+                    self.notify.error(format!("E516: バッファ {a} はありません"));
                     return;
                 }
             },
@@ -236,7 +236,7 @@ impl Editor {
             Slot::Deleted => false,
         };
         if dirty && !force {
-            self.message = format!("E89: バッファ {} の変更が保存されていません（:bd! で破棄）", id + 1);
+            self.notify.error(format!("E89: バッファ {} の変更が保存されていません（:bd! で破棄）", id + 1));
             return;
         }
         // 消すバッファを出しているほかの窓は閉じる（Vim と同じ）
@@ -274,7 +274,7 @@ impl Editor {
                 format!("{}{mark}{} {name}", i + 1, if dirty { "+" } else { "" })
             })
             .collect();
-        self.message = items.join("  ");
+        self.notify.info(items.join("  "));
     }
 
     /// 変更が保存されていないバッファ（作業中を含む）の番号
@@ -286,6 +286,7 @@ impl Editor {
     pub(crate) fn write_all(&mut self) -> bool {
         let mut ok = true;
         let mut n = 0;
+        let mut failed = Vec::new();
         for slot in self.docs.iter_mut() {
             if let Slot::Parked(d) = slot {
                 if d.buf.dirty && d.buf.path.is_some() {
@@ -296,25 +297,28 @@ impl Editor {
                     match d.buf.save() {
                         Ok(_) => n += 1,
                         Err(e) => {
-                            self.message = format!("E212: 書き込めません: {e}");
+                            failed.push(format!("E212: 書き込めません: {e}"));
                             ok = false;
                         }
                     }
                 }
             }
         }
+        for m in failed {
+            self.notify.error(m);
+        }
         if self.buf.dirty && self.buf.path.is_some() {
             self.tidy_before_save();
             match self.buf.save() {
                 Ok(_) => n += 1,
                 Err(e) => {
-                    self.message = format!("E212: 書き込めません: {e}");
+                    self.notify.error(format!("E212: 書き込めません: {e}"));
                     ok = false;
                 }
             }
         }
         if ok {
-            self.message = format!("{n} 個のバッファを書き込み");
+            self.notify.info(format!("{n} 個のバッファを書き込み"));
         }
         ok
     }
@@ -366,7 +370,7 @@ mod tests {
         keys(&mut e, &format!(":e {}<CR>", b.display()));
         assert_eq!(e.docs.len(), 2, "開いているファイルは開き直さない");
         keys(&mut e, ":ls<CR>");
-        assert!(e.message.contains("1#+ a.txt") && e.message.contains("2% b.txt"), "{}", e.message);
+        assert!(e.notify.text.contains("1#+ a.txt") && e.notify.text.contains("2% b.txt"), "{}", e.notify.text);
     }
 
     /// 隠れたバッファに変更があれば `:q` `:bd` は止め、`!` なら進む
@@ -378,9 +382,9 @@ mod tests {
         keys(&mut e, "x");
         keys(&mut e, &format!(":e {}<CR>", b.display()));
         assert!(matches!(keys(&mut e, ":q<CR>"), Some(Effect::None)));
-        assert!(e.message.starts_with("E162"), "{}", e.message);
+        assert!(e.notify.text.starts_with("E162"), "{}", e.notify.text);
         keys(&mut e, ":bd 1<CR>");
-        assert!(e.message.starts_with("E89"), "{}", e.message);
+        assert!(e.notify.text.starts_with("E89"), "{}", e.notify.text);
         keys(&mut e, ":bd! 1<CR>");
         assert_eq!(e.buffer_list().len(), 1);
         assert!(matches!(keys(&mut e, ":q<CR>"), Some(Effect::Quit)));
@@ -420,9 +424,9 @@ mod write_as_tests {
         assert_eq!(e.buf.path.as_deref(), Some(a.as_path()));
         assert!(e.buf.dirty, "a にはまだ書いていない");
         keys(&mut e, &format!(":w {}<CR>", b.display()));
-        assert!(e.message.starts_with("E13"), "{}", e.message);
+        assert!(e.notify.text.starts_with("E13"), "{}", e.notify.text);
         keys(&mut e, &format!(":w! {}<CR>", b.display()));
-        assert!(!e.message.starts_with("E13"));
+        assert!(!e.notify.text.starts_with("E13"));
         // :saveas は名前ごと変える
         let c = dir.join("c.txt");
         keys(&mut e, &format!(":saveas {}<CR>", c.display()));

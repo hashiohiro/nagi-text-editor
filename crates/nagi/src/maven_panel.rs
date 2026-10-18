@@ -89,7 +89,7 @@ impl Editor {
         if self.maven.is_none() {
             let from = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()).unwrap_or_else(|| self.nav_root());
             let Some(root) = nagi_workers::maven::find_root(&from).or_else(|| nagi_workers::maven::find_root(&self.nav_root())) else {
-                self.message = "pom.xml が見つかりません（Maven のプロジェクトではありません）".into();
+                self.notify.warn("pom.xml が見つかりません（Maven のプロジェクトではありません）");
                 return;
             };
             let mut m = MavenPanel { root, pom: None, expanded: HashSet::new(), rows: Vec::new(), selected: 0, scroll: 0 };
@@ -110,7 +110,7 @@ impl Editor {
         if let Some(m) = &mut self.maven {
             m.pom = nagi_workers::maven::load(&m.root);
             m.rebuild();
-            self.message = "pom.xml を読み直しました".into();
+            self.notify.info("pom.xml を読み直しました");
         }
     }
 
@@ -123,7 +123,7 @@ impl Editor {
                 match nagi_workers::maven::find_root(&from) {
                     Some(r) => r,
                     None => {
-                        self.message = "pom.xml が見つかりません".into();
+                        self.notify.warn("pom.xml が見つかりません");
                         return;
                     }
                 }

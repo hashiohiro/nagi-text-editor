@@ -69,6 +69,7 @@ mod normal;
 mod stats;
 mod view;
 mod list;
+mod notify;
 mod ui;
 mod grammars;
 mod vim_field;
@@ -516,7 +517,7 @@ impl App {
         }
         let t3 = Instant::now();
         if let Err(e) = r.draw(&insts, view::theme_color(view::BG)) {
-            eprintln!("draw: {e}");
+            nagi_core::log::error(&format!("描けません: {e}"));
         }
         [t1 - t0, t2 - t1, t3 - t2, t3.elapsed()]
     }
@@ -542,7 +543,7 @@ impl App {
         let n = self.rc.keymap.normal.len();
         let us = t.elapsed().as_micros();
         if let Some(ed) = &mut self.ed {
-            ed.message = format!("設定を読み直しました（マッピング {n} 件、{us}µs）");
+            ed.notify.info(format!("設定を読み直しました（マッピング {n} 件、{us}µs）"));
         }
     }
 
@@ -740,7 +741,7 @@ impl App {
                         self.stats.summary(clock::at("window visible"), clock::memory_mb().0)
                     };
                     if let Some(ed) = &mut self.ed {
-                        ed.message = msg;
+                        ed.notify.info(msg);
                     }
                 }
                 Effect::ReloadRc => self.reload_rc(),
@@ -1521,30 +1522,24 @@ impl ApplicationHandler for App {
     }
 }
 
-/// 標準エラーがつながっていなければ（エクスプローラーやショートカットから起動したとき）、ログのファイルへ向ける。
+/// ログ（%LOCALAPPDATA%\nagi\nagi.log。知らせの warn・error、落ちたときの理由）を開く。上限は設定の「ログの上限」。
+/// 標準エラーがつながっていなければ（エクスプローラーやショートカットから起動したとき）、標準エラーも同じファイルへ向ける。
 /// ターミナルや他のプログラムからつないで起動したときは、そのまま（--startup-report などはそこへ出る）
-fn route_stderr_to_log() {
+fn start_log() {
     use windows::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, SetStdHandle};
+    let Some(path) = nagi_core::log::default_path() else { return };
+    let max = settings::Settings::load(None).int("other.log_max_kb") as u64 * 1024;
+    nagi_core::log::init(path, max);
+    nagi_core::log::info(&format!("起動 nagi {} pid {}", env!("CARGO_PKG_VERSION"), std::process::id()));
     let connected = unsafe { GetStdHandle(STD_ERROR_HANDLE) }.is_ok_and(|h| !h.is_invalid() && !h.0.is_null());
     if connected {
         return;
     }
-    let Some(dir) = std::env::var_os("LOCALAPPDATA").map(|d| std::path::PathBuf::from(d).join("nagi")) else { return };
-    let _ = std::fs::create_dir_all(&dir);
-    let path = dir.join("nagi.log");
-    // 大きくなったら 1 つ前の分として残して作り直す
-    // 設定の「ログの上限」を超えていたら古いものに回す
-    let max = settings::Settings::load(None).int("other.log_max_kb") as u64 * 1024;
-    if std::fs::metadata(&path).is_ok_and(|m| m.len() > max) {
-        let _ = std::fs::rename(&path, dir.join("nagi.old.log"));
+    if let Some(file) = nagi_core::log::file_clone() {
+        use std::os::windows::io::IntoRawHandle;
+        let h = windows::Win32::Foundation::HANDLE(file.into_raw_handle());
+        let _ = unsafe { SetStdHandle(STD_ERROR_HANDLE, h) };
     }
-    let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&path) else { return };
-    use std::io::Write;
-    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    let _ = writeln!(file, "--- 起動 {now}（UNIX 秒）pid {}", std::process::id());
-    use std::os::windows::io::IntoRawHandle;
-    let h = windows::Win32::Foundation::HANDLE(file.into_raw_handle());
-    let _ = unsafe { SetStdHandle(STD_ERROR_HANDLE, h) };
 }
 
 /// 押したキーをキーマップの組み合わせに直す。文字を打つのを妨げないよう、Ctrl・Alt を伴うものと F キーなどだけ
@@ -1586,7 +1581,7 @@ fn chord_of(key: &Key, m: winit::keyboard::ModifiersState) -> Option<keymap::Cho
 }
 
 fn main() {
-    route_stderr_to_log();
+    start_log();
     // タスクバーのボタンとジャンプリストを nagi のものとしてまとめる（窓を作る前に）
     jumplist::set_app_id();
     clock::mark("main");
@@ -1627,7 +1622,7 @@ fn main() {
                 .unwrap_or_else(|e| {
                     let mut b = Buffer::from_str("");
                     b.path = Some(p.clone());
-                    eprintln!("{}: {e}", p.display());
+                    nagi_core::log::warn(&format!("{}: {e}", p.display()));
                     b
                 }),
                 None => Buffer::from_str(""),

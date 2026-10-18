@@ -39,7 +39,7 @@ impl Editor {
             return;
         }
         if !self.buf.path.as_deref().is_some_and(is_markdown) {
-            self.message = "Markdown のファイルではありません".into();
+            self.notify.info("Markdown のファイルではありません");
             return;
         }
         self.md_preview = Some(MdPreview { key: (PathBuf::new(), 0, 0), lines: Vec::new(), scroll: 0, selected: 0, follow: true });
@@ -96,7 +96,7 @@ impl Editor {
                 let link = pv.lines.get(pv.selected).and_then(|l| l.links.first()).map(|x| x.1.clone());
                 match link {
                     Some(u) => self.open_md_link(&u),
-                    None => self.message = "この行にリンクはありません".into(),
+                    None => self.notify.info("この行にリンクはありません"),
                 }
             }
             Key::Char('q') => {
@@ -118,7 +118,7 @@ impl Editor {
             if !cfg!(test) {
                 let _ = nagi_workers::config::open_url(url);
             }
-            self.message = format!("ブラウザで開きました: {url}");
+            self.notify.info(format!("ブラウザで開きました: {url}"));
             return;
         }
         let path = url.split('#').next().unwrap_or("");
@@ -131,7 +131,7 @@ impl Editor {
             self.mode = Mode::Normal;
             self.edit_file(target);
         } else {
-            self.message = format!("ファイルがありません: {}", target.display());
+            self.notify.info(format!("ファイルがありません: {}", target.display()));
         }
     }
 
@@ -250,7 +250,7 @@ mod tests {
         let at = e.md_preview.as_ref().unwrap().lines.iter().position(|l| !l.links.is_empty()).unwrap();
         e.md_preview.as_mut().unwrap().selected = at;
         e.key(Key::Enter);
-        assert!(e.buf.path.as_ref().unwrap().ends_with("setup.md"), "{:?} {}", e.buf.path, e.message);
+        assert!(e.buf.path.as_ref().unwrap().ends_with("setup.md"), "{:?} {}", e.buf.path, e.notify.text);
         // もう一度で閉じる
         e.mode = Mode::Normal;
         e.toggle_md_preview();

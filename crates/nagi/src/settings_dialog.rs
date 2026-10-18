@@ -372,32 +372,32 @@ impl Editor {
     pub(crate) fn start_tool_download(&mut self, id: &str, release: Option<nagi_workers::toolchains::Release>) {
         let label = nagi_workers::toolchains::def(id).map_or(id, |t| t.label);
         if self.tool_download.is_some() {
-            self.message = "ほかのツールをダウンロードしています".into();
+            self.notify.info("ほかのツールをダウンロードしています");
             return;
         }
         let what = release.as_ref().map_or("最新版".to_string(), |r| r.version.clone());
         if cfg!(test) {
-            self.message = format!("（試験）{label} {what} のダウンロード");
+            self.notify.info(format!("（試験）{label} {what} のダウンロード"));
             return;
         }
         let waker = self.waker();
         self.tool_download = Some((id.to_string(), nagi_workers::toolchains::download(id, release, waker)));
-        self.message = format!("{label} {what} をダウンロードします…");
+        self.notify.info(format!("{label} {what} をダウンロードします…"));
     }
 
     /// JDK（Eclipse Temurin の `version`）をダウンロードし始める。進み具合は状態の行に、終わったら設定に入れる
     pub(crate) fn start_jdk_download(&mut self, version: u32) {
         if self.jdk_download.is_some() {
-            self.message = "JDK をダウンロードしています。終わるまでお待ちください".into();
+            self.notify.info("JDK をダウンロードしています。終わるまでお待ちください");
             return;
         }
         if cfg!(test) {
-            self.message = format!("（試験）JDK {version} のダウンロード");
+            self.notify.info(format!("（試験）JDK {version} のダウンロード"));
             return;
         }
         let waker = self.waker();
         self.jdk_download = Some((version, nagi_workers::jdk::download_temurin(version, waker)));
-        self.message = format!("Eclipse Temurin {version} をダウンロードしています（約 200MB。~\\.jdks に置く）");
+        self.notify.info(format!("Eclipse Temurin {version} をダウンロードしています（約 200MB。~\\.jdks に置く）"));
     }
 
     /// ダウンロードの進み具合を受け取る。変わったら true
@@ -412,7 +412,7 @@ impl Editor {
         let label = nagi_workers::toolchains::def(&id).map_or(id.clone(), |t| t.label.to_string());
         let changed = polled.status.is_some() || polled.done.is_some();
         if let Some(st) = polled.status {
-            self.message = format!("{label}: {st}");
+            self.notify.progress(format!("{label}: {st}"));
         }
         if let Some(r) = polled.done {
             self.tool_download = None;
@@ -422,9 +422,9 @@ impl Editor {
                     let project = self.settings_dialog.as_ref().is_some_and(|d| d.project_scope);
                     let p = self.set_downloaded(&format!("toolchain.{id}"), &path, project);
                     let scope = if project { "このプロジェクトの設定" } else { "設定" };
-                    self.message = format!("{label} を入れました: {p}（{scope}にしました。ターミナル・実行の構成・:Make で使う）");
+                    self.notify.info(format!("{label} を入れました: {p}（{scope}にしました。ターミナル・実行の構成・:Make で使う）"));
                 }
-                Err(e) => self.message = format!("{label} をダウンロードできません: {e}"),
+                Err(e) => self.notify.error(format!("{label} をダウンロードできません: {e}")),
             }
         }
         changed
@@ -435,16 +435,16 @@ impl Editor {
         let (ver, polled) = (*ver, d.poll());
         let changed = polled.status.is_some() || polled.done.is_some();
         if let Some(st) = polled.status {
-            self.message = format!("Eclipse Temurin {ver}: {st}");
+            self.notify.progress(format!("Eclipse Temurin {ver}: {st}"));
         }
         if let Some(r) = polled.done {
             self.jdk_download = None;
             match r {
                 Ok(path) => {
                     let p = self.set_downloaded("maven.jdk", &path, false);
-                    self.message = format!("JDK を入れました: {p}（設定の JDK にしました）");
+                    self.notify.info(format!("JDK を入れました: {p}（設定の JDK にしました）"));
                 }
-                Err(e) => self.message = format!("JDK をダウンロードできません: {e}"),
+                Err(e) => self.notify.error(format!("JDK をダウンロードできません: {e}")),
             }
         }
         changed
@@ -496,7 +496,7 @@ impl Editor {
         }
         self.settings_dialog = Some(d);
         self.mode = Mode::Settings;
-        self.message.clear();
+        self.notify.clear();
     }
 
     /// 適用（保存して、動いている nagi に効かせる）
@@ -504,7 +504,7 @@ impl Editor {
         let Some(d) = &mut self.settings_dialog else { return false };
         if d.focus == SFocus::Edit {
             if let Some(e) = d.commit_edit() {
-                self.message = e;
+                self.notify.info(e);
                 return false;
             }
         }
@@ -514,11 +514,11 @@ impl Editor {
             Ok(()) => {
                 let old = std::mem::replace(&mut self.settings, work);
                 self.apply_settings(Some(&old));
-                self.message = "設定を保存しました".into();
+                self.notify.info("設定を保存しました");
                 true
             }
             Err(e) => {
-                self.message = format!("設定を保存できません: {e}");
+                self.notify.error(format!("設定を保存できません: {e}"));
                 false
             }
         }
@@ -538,7 +538,7 @@ impl Editor {
             SButton::Cancel => {
                 self.settings_dialog = None;
                 self.mode = Mode::Normal;
-                self.message = "設定の画面を閉じました（適用していない変更は捨てました）".into();
+                self.notify.info("設定の画面を閉じました（適用していない変更は捨てました）");
             }
             SButton::Scope => {
                 if let Some(d) = &mut self.settings_dialog {
@@ -629,7 +629,7 @@ impl Editor {
                 match out {
                     FieldOut::Submit => {
                         if let Some(e) = d.commit_edit() {
-                            self.message = e;
+                            self.notify.info(e);
                         }
                     }
                     FieldOut::Cancel => {
@@ -705,7 +705,7 @@ impl Editor {
         let Some(d) = &mut self.settings_dialog else { return };
         if d.dirty && !confirm {
             d.confirm_close = true;
-            self.message = "適用していない変更があります。もう一度 Esc で捨てて閉じる、Ctrl+Enter で適用して閉じる".into();
+            self.notify.info("適用していない変更があります。もう一度 Esc で捨てて閉じる、Ctrl+Enter で適用して閉じる");
         } else {
             self.settings_button(SButton::Cancel);
         }
@@ -985,7 +985,7 @@ mod tests {
         keys(&mut e, "/インデントの幅<CR>");
         assert_eq!(e.settings_dialog.as_ref().unwrap().current().unwrap().key, "editor.indent_width");
         keys(&mut e, "<CR><Esc>S99<CR>");
-        assert!(e.message.contains("1〜16"), "{}", e.message);
+        assert!(e.notify.text.contains("1〜16"), "{}", e.notify.text);
         keys(&mut e, "<CR><Esc>S2<CR>");
         assert_eq!(e.settings_dialog.as_ref().unwrap().work.int("editor.indent_width"), 2);
         // p でこのプロジェクトに。オン・オフは Space
@@ -993,7 +993,7 @@ mod tests {
         assert!(e.settings_dialog.as_ref().unwrap().project_scope);
         // Ctrl+Enter で適用して閉じる → Editor.settings に入り、プロジェクトのファイルは書かない（全体に入れたので）
         keys(&mut e, "<C-m>");
-        assert_eq!(e.mode, Mode::Normal, "{}", e.message);
+        assert_eq!(e.mode, Mode::Normal, "{}", e.notify.text);
         assert_eq!(e.settings.get("editor.line_numbers"), "relative");
         assert_eq!(e.settings.int("editor.indent_width"), 2);
         // 直してから Esc を 1 回だと確かめる
@@ -1037,7 +1037,7 @@ mod tests {
         assert!(c.items[0].label.starts_with("自動"));
         assert!(c.items.iter().any(|i| i.value == "download:21"));
         keys(&mut e, "temurin 21<CR>");
-        assert!(e.message.contains("JDK 21"), "{}", e.message);
+        assert!(e.notify.text.contains("JDK 21"), "{}", e.notify.text);
         assert_eq!(e.settings_dialog.as_ref().unwrap().work.get("maven.jdk"), "", "ダウンロードが終わるまでは変えない");
     }
 
@@ -1059,6 +1059,6 @@ mod tests {
         let labels: Vec<&str> = c.items.iter().map(|i| i.label.as_str()).collect();
         assert!(labels.contains(&"＋ ダウンロード: Node.js 22.30.0") && !c.items.iter().any(|i| i.value == RELEASES_WAIT), "{labels:?}");
         keys(&mut e, "22.30<CR>");
-        assert!(e.message.contains("Node.js 22.30.0"), "{}", e.message);
+        assert!(e.notify.text.contains("Node.js 22.30.0"), "{}", e.notify.text);
     }
 }

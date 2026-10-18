@@ -485,7 +485,7 @@ impl Editor {
                 // 構文木を今の内容に合わせてから探す（大きなファイルで裏の再解析中なら、位置をずらした木で）
                 self.ensure_syntax();
                 let Some(syn) = &self.syntax else {
-                    self.message = "このファイルには構文木が無いので使えません".into();
+                    self.notify.error("このファイルには構文木が無いので使えません");
                     return None;
                 };
                 let r = syn.text_object(self.abs(), kind, inner, &self.buf)?;
@@ -653,7 +653,7 @@ impl Editor {
                 }
                 // グループは Insert を抜けるまで開いたまま
                 self.mode = Mode::Insert;
-                self.message.clear();
+                self.notify.clear();
             }
             Op::Indent | Op::Dedent => {
                 let (a, b) = if lw { self.lines_of(s, e, &text) } else { (self.buf.pos_of(s).0, self.buf.pos_of(e.saturating_sub(1).max(s)).0) };
@@ -789,7 +789,7 @@ impl Editor {
                 if visual.is_some() {
                     self.mode = Mode::Normal;
                 }
-                self.message.clear();
+                self.notify.clear();
             }
             Action::Insert(c) => self.insert_cmd(c),
             Action::Short(c) => {
@@ -829,7 +829,7 @@ impl Editor {
             Action::ToggleCase => self.toggle_case(n, visual),
             Action::Undo => match self.hist.undo(&mut self.buf) {
                 Some(at) => self.set_abs(at),
-                None => self.message = "これ以上は元に戻せません".into(),
+                None => self.notify.info("これ以上は元に戻せません"),
             },
             Action::Redo => {
                 if let Some(at) = self.hist.redo(&mut self.buf) {
@@ -841,7 +841,7 @@ impl Editor {
             Action::SetMark(c) => self.set_mark(c),
             Action::Record(c) => {
                 self.recording = Some((c, Vec::new()));
-                self.message.clear();
+                self.notify.clear();
             }
             Action::Play(c) => return self.play_macro(c, n),
             Action::UndoTime { later } => self.undo_time(later, n),
@@ -874,7 +874,7 @@ impl Editor {
                 }
                 // 打つ前から候補を出す
                 self.update_cmd_complete();
-                self.message.clear();
+                self.notify.clear();
             }
             Action::Cmdline(c) => self.start_search(c == '/', false, ""),
             Action::SearchWord { forward } => {
@@ -1200,7 +1200,7 @@ mod ts_textobj_tests {
         // 構文木の無いファイルでは知らせる
         let mut e = Editor::new(Buffer::from_str("plain\n"), None);
         keys(&mut e, "daf");
-        assert!(e.message.contains("構文木"));
+        assert!(e.notify.text.contains("構文木"));
         assert_eq!(e.buf.line(0), "plain");
     }
 }

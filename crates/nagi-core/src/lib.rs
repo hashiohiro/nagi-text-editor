@@ -14,6 +14,7 @@ pub const TAB_WIDTH: usize = 4;
 
 mod history;
 pub mod hash;
+pub mod log;
 pub mod task;
 pub mod fuzzy;
 pub mod linediff;

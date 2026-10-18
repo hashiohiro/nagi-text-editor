@@ -209,7 +209,7 @@ impl Editor {
         let start = self.buf.line_start(self.cursor.line) + ws;
         let all = self.smart_candidates(&line, ws, start);
         if all.is_empty() {
-            self.message = "-- 補完の候補はありません".into();
+            self.notify.info("-- 補完の候補はありません");
             return;
         }
         self.completion = Some(Completion { start, original: prefix, items: Vec::new(), sel: Some(0), notes: Vec::new(), smart: Some(SmartState { all, shown: Vec::new() }) });
@@ -406,11 +406,11 @@ impl Editor {
         if self.mode != crate::editor::Mode::Insert || self.completion.is_some() {
             return false;
         }
-        let msg = self.message.clone();
+        let msg = self.notify.text.clone();
         self.start_smart_completion();
         // 自動で出すときは「候補はありません」を出さない
         if self.completion.is_none() {
-            self.message = msg;
+            self.notify.info(msg);
         }
         self.completion.is_some()
     }
@@ -487,7 +487,7 @@ mod tests {
         // user. の後で Ctrl+Space
         keys(&mut e, "3G$a<C-Space>");
         let names = e.completion.as_ref().map(|c| c.items.clone()).unwrap_or_default();
-        assert!(names.contains(&"getName".to_string()) && names.contains(&"setName".to_string()) && names.contains(&"baseName".to_string()), "{names:?} {}", e.message);
+        assert!(names.contains(&"getName".to_string()) && names.contains(&"setName".to_string()) && names.contains(&"baseName".to_string()), "{names:?} {}", e.notify.text);
         assert!(!names.contains(&"name".to_string()), "ほかのクラスの private は出さない: {names:?}");
         assert!(!names.contains(&"User".to_string()), "コンストラクタは出さない: {names:?}");
         assert_eq!(&names[..2], ["getName", "setName"], "定義の順（子の型が先）");

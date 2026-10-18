@@ -119,7 +119,7 @@ impl Editor {
             self.start_git();
         }
         let (Some(root), Some(path)) = (self.git.root.clone(), self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok())) else {
-            self.message = "git のリポジトリのファイルではありません".into();
+            self.notify.info("git のリポジトリのファイルではありません");
             return;
         };
         let Ok(rel) = path.strip_prefix(&root) else { return };
@@ -146,7 +146,7 @@ impl Editor {
                 b.commits = commits;
             }
             Err(e) => {
-                self.message = format!("blame: {}", e.lines().next().unwrap_or(""));
+                self.notify.info(format!("blame: {}", e.lines().next().unwrap_or("")));
                 self.blame = None;
             }
         }

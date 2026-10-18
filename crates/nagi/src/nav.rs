@@ -142,7 +142,7 @@ impl Editor {
     /// `gd`: 定義へ
     pub(crate) fn goto_definition(&mut self) {
         let Some((name, word_at)) = self.word_at_cursor() else {
-            self.message = "E348: カーソルの下に識別子がありません".into();
+            self.notify.error("E348: カーソルの下に識別子がありません");
             return;
         };
         // Angular のテンプレート: 式の名前は部品の .ts（と親クラス）、タグは部品、属性は部品の @Input / @Output
@@ -193,7 +193,7 @@ impl Editor {
                     }
                     nagi_workers::index::Ranked::Outside(t) => {
                         // 受け手の型（またはその親）がライブラリ。同じ名前のプロジェクトのメソッドへは跳ばない
-                        self.message = format!("定義はプロジェクトの外です: {name}（{t} から先はライブラリ）");
+                        self.notify.info(format!("定義はプロジェクトの外です: {name}（{t} から先はライブラリ）"));
                         return;
                     }
                 }
@@ -222,10 +222,10 @@ impl Editor {
         }
         match cands.len() {
             0 => {
-                self.message = match &self.nav.progress {
+                self.notify.warn(match &self.nav.progress {
                     Some((a, b)) => format!("定義が見つかりません: {name}（索引を作っています {a}/{b}）"),
                     None => format!("定義が見つかりません: {name}"),
-                }
+                });
             }
             1 => {
                 let (p, l, c, _) = cands.remove(0);
@@ -246,7 +246,7 @@ impl Editor {
                 let locs = cands.into_iter().map(|(p, l, c, _)| (p, l, c)).collect();
                 self.open_locations(Source::Definitions, items, locs, false);
                 if mark {
-                    self.message = format!("定義の候補 {n} 件（● の {best} 件が有力）");
+                    self.notify.info(format!("定義の候補 {n} 件（● の {best} 件が有力）"));
                 }
             }
         }
@@ -256,7 +256,7 @@ impl Editor {
     pub(crate) fn goto_implementation(&mut self) {
         match self.find_implementations() {
             Ok((locs, root)) => self.show_implementations(locs, root),
-            Err(m) => self.message = m,
+            Err(m) => self.notify.error(m),
         }
     }
 
@@ -305,7 +305,7 @@ impl Editor {
         let items = locs.iter().map(|(n, l)| format!("{n}  {}  {}:{}", l.kind.label(), l.path, l.line + 1)).collect();
         let at = locs.iter().map(|(_, l)| (root.join(&*l.path), l.line as usize, l.col as usize)).collect();
         self.open_locations(Source::Definitions, items, at, false);
-        self.message = format!("実装 {n} 件");
+        self.notify.info(format!("実装 {n} 件"));
     }
 
     /// カーソルがメソッド・型の定義そのものの上か（gd を実装へ向ける）
@@ -325,10 +325,10 @@ impl Editor {
     /// シンボル検索（`types` なら型だけ）
     pub(crate) fn symbol_search(&mut self, types: bool) {
         let Some(idx) = &self.nav.index else {
-            self.message = match &self.nav.progress {
+            self.notify.info(match &self.nav.progress {
                 Some((a, b)) => format!("索引を作っています（{a}/{b}）。しばらくしてからもう一度"),
                 None => "索引がありません".into(),
-            };
+            });
             return;
         };
         let root = idx.root.clone();
@@ -348,7 +348,7 @@ impl Editor {
     pub(crate) fn outline(&mut self) {
         self.ensure_syntax();
         let (Some(syn), Some(path)) = (&self.syntax, self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok())) else {
-            self.message = "このファイルには構文木が無いので使えません".into();
+            self.notify.error("このファイルには構文木が無いので使えません");
             return;
         };
         let defs = syn.defs(&self.buf);
@@ -375,17 +375,17 @@ impl Editor {
     /// `:Idea`: 今のファイルと行を IntelliJ で開く（重いリファクタリング用）
     pub(crate) fn open_in_intellij(&mut self) {
         let Some(path) = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()) else {
-            self.message = "ファイル名がありません".into();
+            self.notify.info("ファイル名がありません");
             return;
         };
         let Some(exe) = find_idea() else {
-            self.message = "IntelliJ が見つかりません（NAGI_IDEA に idea64.exe の場所を入れてください）".into();
+            self.notify.warn("IntelliJ が見つかりません（NAGI_IDEA に idea64.exe の場所を入れてください）");
             return;
         };
         let line = (self.cursor.line + 1).to_string();
         match std::process::Command::new(&exe).arg("--line").arg(&line).arg(&path).spawn() {
-            Ok(_) => self.message = format!("IntelliJ で開きました: {}:{line}", path.display()),
-            Err(e) => self.message = format!("IntelliJ を起動できません: {e}"),
+            Ok(_) => self.notify.info(format!("IntelliJ で開きました: {}:{line}", path.display())),
+            Err(e) => self.notify.error(format!("IntelliJ を起動できません: {e}")),
         }
     }
 
@@ -486,16 +486,16 @@ mod tests {
         assert_eq!(e.cursor.line, 1);
         // 別のファイル: helper → b.ts の定義（import の束縛ではなく、索引の定義へ… import 文の中は束縛として扱わない）
         keys(&mut e, "3G0gd");
-        assert!(e.buf.path.as_ref().unwrap().ends_with("b.ts"), "{:?} {}", e.buf.path, e.message);
+        assert!(e.buf.path.as_ref().unwrap().ends_with("b.ts"), "{:?} {}", e.buf.path, e.notify.text);
         assert_eq!((e.cursor.line, e.cursor.byte), (0, 16));
         // Ctrl-o で戻る
         keys(&mut e, "<C-o>");
         assert!(e.buf.path.as_ref().unwrap().ends_with("a.ts"));
         // F12 でも（Insert の最中でも）
         keys(&mut e, "3G0<F12>");
-        assert!(e.buf.path.as_ref().unwrap().ends_with("b.ts"), "{:?} {}", e.buf.path, e.message);
+        assert!(e.buf.path.as_ref().unwrap().ends_with("b.ts"), "{:?} {}", e.buf.path, e.notify.text);
         keys(&mut e, "<C-o>3G0i<F12>");
-        assert!(e.buf.path.as_ref().unwrap().ends_with("b.ts"), "{:?} {}", e.buf.path, e.message);
+        assert!(e.buf.path.as_ref().unwrap().ends_with("b.ts"), "{:?} {}", e.buf.path, e.notify.text);
         assert_eq!(e.mode, Mode::Normal);
         keys(&mut e, "<C-o>");
         // 候補が 2 つ（Box）: ファインダーで選ぶ
@@ -529,19 +529,19 @@ mod tests {
         wait_index(&mut e);
         // users.find の gd はインタフェースの宣言、gI は実装
         keys(&mut e, "3G0/find<CR>gd");
-        assert!(e.buf.path.as_ref().unwrap().ends_with("UserService.java"), "{:?} {}", e.buf.path, e.message);
+        assert!(e.buf.path.as_ref().unwrap().ends_with("UserService.java"), "{:?} {}", e.buf.path, e.notify.text);
         keys(&mut e, "<C-o>3G0/find<CR>gI");
-        assert!(e.buf.path.as_ref().unwrap().ends_with("UserServiceImpl.java"), "{:?} {}", e.buf.path, e.message);
+        assert!(e.buf.path.as_ref().unwrap().ends_with("UserServiceImpl.java"), "{:?} {}", e.buf.path, e.notify.text);
         assert_eq!(e.cursor.line, 1);
         // インタフェースの宣言の上で gI → 実装
         keys(&mut e, &format!(":e {}<CR>2G0/find<CR>gI", dir.join("src/UserService.java").display()));
-        assert!(e.buf.path.as_ref().unwrap().ends_with("UserServiceImpl.java"), "{:?} {}", e.buf.path, e.message);
+        assert!(e.buf.path.as_ref().unwrap().ends_with("UserServiceImpl.java"), "{:?} {}", e.buf.path, e.notify.text);
         // 宣言の上の gd も実装へ（実装が無ければ従来どおり）
         keys(&mut e, &format!(":e {}<CR>2G0/find<CR>gd", dir.join("src/UserService.java").display()));
-        assert!(e.buf.path.as_ref().unwrap().ends_with("UserServiceImpl.java"), "{:?} {}", e.buf.path, e.message);
+        assert!(e.buf.path.as_ref().unwrap().ends_with("UserServiceImpl.java"), "{:?} {}", e.buf.path, e.notify.text);
         // 型の上で gI → 実装している型
         keys(&mut e, &format!(":e {}<CR>1G0wgI", dir.join("src/UserService.java").display()));
-        assert!(e.buf.path.as_ref().unwrap().ends_with("UserServiceImpl.java"), "{:?} {}", e.buf.path, e.message);
+        assert!(e.buf.path.as_ref().unwrap().ends_with("UserServiceImpl.java"), "{:?} {}", e.buf.path, e.notify.text);
         assert_eq!(e.cursor.line, 0);
     }
 }

@@ -35,7 +35,7 @@ impl Editor {
         let _ = std::fs::create_dir_all(&dir);
         if std::fs::read_to_string(&path).ok().as_deref() != Some(text.as_str()) {
             if let Err(e) = std::fs::write(&path, &text) {
-                self.message = format!("{}: {e}", path.display());
+                self.notify.info(format!("{}: {e}", path.display()));
                 return;
             }
         }
@@ -49,13 +49,13 @@ impl Editor {
         }
         let name = downloadable().iter().find(|(_, g)| *g == id).map_or(id.to_string(), |(l, _)| l.name().to_string());
         if cfg!(test) {
-            self.message = format!("（試験）{name} の文法のダウンロード");
+            self.notify.info(format!("（試験）{name} の文法のダウンロード"));
             return;
         }
         let waker = self.waker();
         self.grammar_downloads.push((id.to_string(), nagi_workers::grammars::download(id, waker)));
         let kb = nagi_syntax::grammar::expected(id).map_or(0, |e| e.1 / 1024);
-        self.message = format!("{name} の文法をダウンロードしています（色分け・定義へ移動に使う。{kb}KB）…");
+        self.notify.info(format!("{name} の文法をダウンロードしています（色分け・定義へ移動に使う。{kb}KB）…"));
     }
 
     /// `:GrammarInstall [名前|all]`: 名前が無ければ今のファイルの言語
@@ -68,20 +68,20 @@ impl Editor {
                 Some(g) => vec![g],
                 None => {
                     let names: Vec<&str> = all.iter().map(|(_, g)| *g).collect();
-                    self.message = format!("この言語は nagi に入っています。ダウンロードする文法: {}（:GrammarInstall all）", names.join(" "));
+                    self.notify.info(format!("この言語は nagi に入っています。ダウンロードする文法: {}（:GrammarInstall all）", names.join(" ")));
                     return;
                 }
             },
             a => match all.iter().find(|(l, g)| *g == a || l.name().eq_ignore_ascii_case(a)) {
                 Some((_, g)) => vec![*g],
                 None => {
-                    self.message = format!("その名前の文法はありません: {a}");
+                    self.notify.info(format!("その名前の文法はありません: {a}"));
                     return;
                 }
             },
         };
         if targets.is_empty() {
-            self.message = "文法はすべて入っています".into();
+            self.notify.info("文法はすべて入っています");
             return;
         }
         for g in &targets {
@@ -89,7 +89,7 @@ impl Editor {
             self.install_grammar(g);
         }
         if targets.len() > 1 {
-            self.message = format!("文法を {} 個ダウンロードしています…", targets.len());
+            self.notify.info(format!("文法を {} 個ダウンロードしています…", targets.len()));
         }
     }
 
@@ -119,12 +119,12 @@ impl Editor {
                         self.start_index();
                     }
                     if self.grammar_downloads.is_empty() {
-                        self.message = format!("{name} の文法を入れました（色分け・定義へ移動）");
+                        self.notify.info(format!("{name} の文法を入れました（色分け・定義へ移動）"));
                     }
                 }
                 Err(e) => {
                     self.grammar_failed.insert(id);
-                    self.message = format!("{name} の文法をダウンロードできません: {e}（:GrammarInstall でやり直す）");
+                    self.notify.error(format!("{name} の文法をダウンロードできません: {e}（:GrammarInstall でやり直す）"));
                 }
             }
         }

@@ -156,7 +156,7 @@ impl Editor {
             self.start_git();
         }
         let Some(root) = self.git.root.clone() else {
-            self.message = "git のリポジトリではありません".into();
+            self.notify.info("git のリポジトリではありません");
             return;
         };
         let rx = nagi_core::task::spawn("git-refs", self.waker(), move |ctx| {
@@ -190,7 +190,7 @@ impl Editor {
                     p.branches = b;
                     p.rebuild();
                 }
-                Err(e) => self.message = format!("git: {}", e.lines().last().unwrap_or("")),
+                Err(e) => self.notify.error(format!("git: {}", e.lines().last().unwrap_or(""))),
             }
             changed = true;
         }
@@ -201,10 +201,10 @@ impl Editor {
     fn poll_git_job(&mut self) -> bool {
         let Some((label, rx)) = &self.git_job else { return false };
         let Ok(r) = rx.try_recv() else { return false };
-        self.message = match r {
-            Ok(_) => format!("{label}しました"),
-            Err(e) => format!("{label}できません: {}", e.lines().last().unwrap_or("")),
-        };
+        match r {
+            Ok(_) => self.notify.info(format!("{label}しました")),
+            Err(e) => self.notify.error(format!("{label}できません: {}", e.lines().last().unwrap_or(""))),
+        }
         self.git_job = None;
         self.refresh_git();
         true
@@ -219,7 +219,7 @@ impl Editor {
             let r = nagi_workers::git::git(&root, &a).map(|b| String::from_utf8_lossy(&b).into_owned());
             ctx.send(r);
         });
-        self.message = format!("{label}しています…");
+        self.notify.info(format!("{label}しています…"));
         self.git_job = Some((label.to_string(), rx));
     }
 
@@ -227,17 +227,17 @@ impl Editor {
     fn git_now(&mut self, args: &[&str], ok: String) -> bool {
         let Some(root) = self.git.root.clone() else { return false };
         let r = nagi_workers::git::git(&root, args);
-        self.message = match &r {
-            Ok(_) => ok,
-            Err(e) => format!("git: {}", e.lines().last().unwrap_or("")),
-        };
+        match &r {
+            Ok(_) => self.notify.info(ok),
+            Err(e) => self.notify.error(format!("git: {}", e.lines().last().unwrap_or(""))),
+        }
         self.refresh_git();
         r.is_ok()
     }
 
     fn checkout_branch(&mut self, b: &Branch) {
         if b.current {
-            self.message = format!("{} はもうチェックアウトしています", b.name);
+            self.notify.info(format!("{} はもうチェックアウトしています", b.name));
             return;
         }
         let ok = if b.remote {
@@ -293,7 +293,7 @@ impl Editor {
                 if let Some(p) = &mut self.branch_popup {
                     p.confirm_delete = Some((b.name.clone(), false));
                 }
-                self.message = format!("ブランチ {} を消しますか（y で消す）", b.name);
+                self.notify.info(format!("ブランチ {} を消しますか（y で消す）", b.name));
             }
         }
     }
@@ -307,7 +307,7 @@ impl Editor {
         // 削除の確認
         if let Some((name, force)) = p.confirm_delete.take() {
             if key != Key::Char('y') {
-                self.message = "消すのをやめました".into();
+                self.notify.info("消すのをやめました");
                 return;
             }
             let flag = if force { "-D" } else { "-d" };
@@ -315,16 +315,16 @@ impl Editor {
             let r = root.map(|r| nagi_workers::git::git(&r, &["branch", flag, &name]));
             match r {
                 Some(Ok(_)) => {
-                    self.message = format!("ブランチ {name} を消しました");
+                    self.notify.info(format!("ブランチ {name} を消しました"));
                     self.open_branches();
                 }
                 Some(Err(e)) if !force && e.contains("not fully merged") => {
-                    self.message = format!("{name} はマージしていません。それでも消しますか（y で強制的に消す）");
+                    self.notify.info(format!("{name} はマージしていません。それでも消しますか（y で強制的に消す）"));
                     if let Some(p) = &mut self.branch_popup {
                         p.confirm_delete = Some((name, true));
                     }
                 }
-                Some(Err(e)) => self.message = format!("git: {}", e.lines().last().unwrap_or("")),
+                Some(Err(e)) => self.notify.error(format!("git: {}", e.lines().last().unwrap_or(""))),
                 None => {}
             }
             return;
@@ -592,7 +592,7 @@ mod tests {
             keys(&mut e, "<Down>");
         }
         keys(&mut e, "<CR>y");
-        assert!(e.message.contains("消しました"), "{}", e.message);
+        assert!(e.notify.text.contains("消しました"), "{}", e.notify.text);
         assert!(!g(&["branch"]).contains("coupon"));
     }
 }

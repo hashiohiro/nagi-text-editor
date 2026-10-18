@@ -268,7 +268,7 @@ impl Editor {
     pub(crate) fn hunk_jump(&mut self, next: bool, count: usize) {
         let hunks = self.current_hunks();
         if hunks.is_empty() {
-            self.message = "変更はありません".into();
+            self.notify.info("変更はありません");
             return;
         }
         let line = self.cursor.line;
@@ -295,7 +295,7 @@ impl Editor {
                     self.git.popup = self.hunk_at_cursor(&hunks);
                 }
             }
-            None => self.message = if next { "これより後に変更はありません".into() } else { "これより前に変更はありません".into() },
+            None => self.notify.info(if next { "これより後に変更はありません" } else { "これより前に変更はありません" }),
         }
     }
 
@@ -309,7 +309,7 @@ impl Editor {
         let hunks = self.current_hunks();
         match self.hunk_at_cursor(&hunks) {
             Some(i) => self.git.popup = Some(i),
-            None => self.message = "カーソルの行に変更はありません".into(),
+            None => self.notify.info("カーソルの行に変更はありません"),
         }
     }
 
@@ -349,7 +349,7 @@ impl Editor {
     pub(crate) fn revert_hunk(&mut self) {
         let hunks = self.current_hunks();
         let Some(i) = self.git.popup.or_else(|| self.hunk_at_cursor(&hunks)) else {
-            self.message = "カーソルの行に変更はありません".into();
+            self.notify.info("カーソルの行に変更はありません");
             return;
         };
         let Some((old, _, h)) = ({
@@ -373,14 +373,14 @@ impl Editor {
         self.cursor.line = h.new.start.min(self.buf.line_count().saturating_sub(1));
         self.with_motion(|m, c| m.first_non_blank(c));
         self.git.popup = None;
-        self.message = "変更を戻しました（u で取り消し）".into();
+        self.notify.info("変更を戻しました（u で取り消し）");
     }
 
     /// カーソルの変更だけをステージする（index にパッチを当てる）
     pub(crate) fn stage_hunk(&mut self) {
         let hunks = self.current_hunks();
         let Some(i) = self.git.popup.or_else(|| self.hunk_at_cursor(&hunks)) else {
-            self.message = "カーソルの行に変更はありません".into();
+            self.notify.info("カーソルの行に変更はありません");
             return;
         };
         self.git.popup = Some(i);
@@ -392,8 +392,8 @@ impl Editor {
         let n: Vec<&str> = new.iter().map(String::as_str).collect();
         let patch = nagi_workers::git::hunk_patch(&rel, h.old.start, &o, h.new.start, &n, new_file);
         match nagi_workers::git::apply_cached(&root, &patch) {
-            Ok(()) => self.message = format!("変更をステージしました（{} 行）", h.new.len().max(h.old.len())),
-            Err(e) => self.message = format!("ステージできません: {}", e.lines().next().unwrap_or("")),
+            Ok(()) => self.notify.info(format!("変更をステージしました（{} 行）", h.new.len().max(h.old.len()))),
+            Err(e) => self.notify.error(format!("ステージできません: {}", e.lines().next().unwrap_or(""))),
         }
         self.git.popup = None;
         self.refresh_status();
@@ -513,7 +513,7 @@ mod tests {
         let (old, new, _) = e.popup_lines().unwrap();
         assert_eq!((old, new), (vec!["2".to_string()], vec!["TWO".to_string()]));
         keys(&mut e, "s");
-        assert!(e.message.starts_with("変更をステージしました"), "{}", e.message);
+        assert!(e.notify.text.starts_with("変更をステージしました"), "{}", e.notify.text);
         assert!(String::from_utf8_lossy(&g(&["diff", "--cached"])).contains("+TWO"));
         // 足した行を戻す（バッファから消える）
         keys(&mut e, "5G");

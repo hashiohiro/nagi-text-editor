@@ -813,6 +813,6 @@ mod tests {
         e.open_dropped(dir.join("proj"));
         assert!(e.launcher.is_none());
         assert_ne!(e.mode, Mode::Launcher, "ランチャーから開いたときと同じく、ツリーへ");
-        assert!(e.git.root.as_ref().is_some_and(|r| r.ends_with("proj")) || e.message.contains("proj"), "{}", e.message);
+        assert!(e.git.root.as_ref().is_some_and(|r| r.ends_with("proj")) || e.notify.text.contains("proj"), "{}", e.notify.text);
     }
 }

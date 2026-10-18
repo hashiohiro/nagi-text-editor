@@ -173,7 +173,7 @@ impl Editor {
             self.start_git();
         }
         let Some(root) = self.git.root.clone() else {
-            self.message = "git のリポジトリではありません".into();
+            self.notify.info("git のリポジトリではありません");
             return;
         };
         let path = if file {
@@ -253,7 +253,7 @@ impl Editor {
                     l.rows = rows;
                     l.refilter();
                 }
-                Err(e) => self.message = format!("git log: {}", e.lines().next().unwrap_or("")),
+                Err(e) => self.notify.error(format!("git log: {}", e.lines().next().unwrap_or(""))),
             }
             changed = true;
         }
@@ -319,14 +319,14 @@ impl Editor {
                 };
                 if let Some(root) = self.git.root.clone() {
                     let a: Vec<&str> = args.iter().map(String::as_str).collect();
-                    self.message = match nagi_workers::git::git(&root, &a) {
-                        Ok(_) => label.to_string(),
-                        Err(e) => format!("git: {}", e.lines().last().unwrap_or("")),
-                    };
+                    match nagi_workers::git::git(&root, &a) {
+                        Ok(_) => self.notify.info(label.to_string()),
+                        Err(e) => self.notify.error(format!("git: {}", e.lines().last().unwrap_or(""))),
+                    }
                     self.refresh_git();
                 }
             } else {
-                self.message = "やめました".into();
+                self.notify.info("やめました");
             }
             return;
         }
@@ -397,7 +397,7 @@ impl Editor {
             Key::Char('o') => {
                 if let Some(c) = l.current() {
                     let h = c.hash.clone();
-                    self.message = format!("{} をチェックアウトしますか（HEAD を切り離す。y で進める）", &h[..7.min(h.len())]);
+                    self.notify.info(format!("{} をチェックアウトしますか（HEAD を切り離す。y で進める）", &h[..7.min(h.len())]));
                     if let Some(l) = &mut self.log {
                         l.confirm = Some(Confirm::Checkout(h));
                     }
@@ -406,7 +406,7 @@ impl Editor {
             Key::Char('c') => {
                 if let Some(c) = l.current() {
                     let h = c.hash.clone();
-                    self.message = format!("{} を今のブランチにチェリーピックしますか（y で進める）", &h[..7.min(h.len())]);
+                    self.notify.info(format!("{} を今のブランチにチェリーピックしますか（y で進める）", &h[..7.min(h.len())]));
                     if let Some(l) = &mut self.log {
                         l.confirm = Some(Confirm::CherryPick(h));
                     }
@@ -430,7 +430,7 @@ impl Editor {
                         (cb.set)(&h);
                     }
                     self.registers.insert('"', (h.clone(), false));
-                    self.message = format!("ハッシュをコピーしました: {h}");
+                    self.notify.info(format!("ハッシュをコピーしました: {h}"));
                 }
             }
             Key::Char('q') | Key::Esc => self.close_log(),
@@ -508,17 +508,17 @@ impl Editor {
         let Some(root) = self.git.root.clone() else { return };
         let mut it = arg.split_whitespace();
         let Some(name) = it.next() else {
-            self.message = "ブランチの名前を書いてください".into();
+            self.notify.info("ブランチの名前を書いてください");
             return;
         };
         let mut args = vec!["checkout", "-q", "-b", name];
         if let Some(start) = it.next() {
             args.push(start);
         }
-        self.message = match nagi_workers::git::git(&root, &args) {
-            Ok(_) => format!("ブランチ {name} を作ってチェックアウトしました"),
-            Err(e) => format!("git: {}", e.lines().last().unwrap_or("")),
-        };
+        match nagi_workers::git::git(&root, &args) {
+            Ok(_) => self.notify.info(format!("ブランチ {name} を作ってチェックアウトしました")),
+            Err(e) => self.notify.error(format!("git: {}", e.lines().last().unwrap_or(""))),
+        }
         self.refresh_git();
         if self.log.is_some() {
             self.close_log();

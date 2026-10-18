@@ -279,7 +279,7 @@ impl Editor {
         f.refilter();
         self.finder = Some(f);
         self.mode = Mode::Finder;
-        self.message.clear();
+        self.notify.clear();
     }
 
     /// 裏で集めている候補を受け取る。変わったら true（描き直す）

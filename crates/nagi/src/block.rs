@@ -341,7 +341,7 @@ mod tests {
         keys(&mut e, "Gp");
         assert_eq!(e.buf.line(2), "xあyz");
         assert_eq!(e.buf.line(3), " ab");
-        assert!(e.message.is_empty() || !e.message.starts_with('E'));
+        assert!(e.notify.text.is_empty() || !e.notify.text.starts_with('E'));
         assert_eq!(e.mode, Mode::Normal);
     }
 }

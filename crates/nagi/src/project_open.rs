@@ -213,7 +213,7 @@ impl Editor {
         let dir = if linux { nagi_workers::wsl::resolve_typed(&s) } else { dir };
         let dir = std::path::absolute(&dir).unwrap_or(dir);
         if !dir.is_dir() {
-            self.message = format!("フォルダではありません: {}", dir.display());
+            self.notify.info(format!("フォルダではありません: {}", dir.display()));
             return;
         }
         let p = project::detect(&dir);
@@ -229,7 +229,7 @@ impl Editor {
             if let Some(f) = &mut self.finder {
                 f.set_projects(items, locs, true);
             }
-            self.message = format!("Eclipse のワークスペース {}: 開くプロジェクトを選んでください", p.name);
+            self.notify.info(format!("Eclipse のワークスペース {}: 開くプロジェクトを選んでください", p.name));
             return;
         }
         self.switch_project(p);
@@ -243,7 +243,7 @@ impl Editor {
 
     fn switch_project(&mut self, p: project::Project) {
         if let Err(e) = std::env::set_current_dir(&p.root) {
-            self.message = format!("{}: {e}", p.root.display());
+            self.notify.info(format!("{}: {e}", p.root.display()));
             return;
         }
         remember_project(&p.root);
@@ -298,7 +298,7 @@ impl Editor {
         };
         let ex = if p.excludes.is_empty() { String::new() } else { format!("、除外 {} か所", p.excludes.len()) };
         let files = if restored > 0 { format!("、前に開いていたファイル {restored} 件") } else { String::new() };
-        self.message = format!("{what}「{}」を開きました{files}{ex}", p.name);
+        self.notify.info(format!("{what}「{}」を開きました{files}{ex}", p.name));
         if !cfg!(test) {
             self.load_run_configs();
         }
@@ -314,7 +314,7 @@ mod tests {
     fn unc_is_not_linux_path() {
         let mut e = Editor::new(Buffer::from_str(""), None);
         e.open_project(PathBuf::from(r"\\wsl.localhost\no-such-distro\home\x"));
-        assert!(e.message.contains(r"\\wsl.localhost\no-such-distro\home\x"), "UNC は変換しない: {}", e.message);
+        assert!(e.notify.text.contains(r"\\wsl.localhost\no-such-distro\home\x"), "UNC は変換しない: {}", e.notify.text);
     }
 
     #[test]
@@ -343,9 +343,9 @@ mod tests {
         let opened = std::env::current_dir().unwrap();
         std::env::set_current_dir(&cwd).unwrap();
         assert_eq!(std::path::absolute(&opened).unwrap(), std::path::absolute(&d).unwrap());
-        assert!(e.buf.path.as_ref().unwrap().ends_with("A.java"), "{:?} {}", e.buf.path, e.message);
+        assert!(e.buf.path.as_ref().unwrap().ends_with("A.java"), "{:?} {}", e.buf.path, e.notify.text);
         assert_eq!((e.cursor.line, e.cursor.byte), (1, 7));
-        assert!(e.message.contains("IntelliJ"), "{}", e.message);
+        assert!(e.notify.text.contains("IntelliJ"), "{}", e.notify.text);
         assert!(e.tree.is_some(), "木を出す");
         // 索引は出力先（out）を見ない
         for _ in 0..1000 {

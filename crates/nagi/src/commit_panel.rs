@@ -109,7 +109,7 @@ impl Editor {
             self.start_git();
         }
         if self.git.root.is_none() {
-            self.message = "git のリポジトリではありません".into();
+            self.notify.info("git のリポジトリではありません");
             return;
         }
         self.left_tab = crate::tree_panel::LeftTab::Commit;
@@ -169,21 +169,21 @@ impl Editor {
             (Job::Commit { push }, Ok(out)) => {
                 p.msg = crate::vim_field::VimField::new("", true);
                 p.amend = false;
-                self.message = format!("コミットしました: {}", out.trim());
+                self.notify.info(format!("コミットしました: {}", out.trim()));
                 self.refresh_git();
                 if push {
                     self.prepare_push();
                 }
             }
             (Job::Push, Ok(out)) => {
-                self.message = format!("プッシュしました{}", if out.trim().is_empty() { String::new() } else { format!(": {}", out.trim().lines().last().unwrap_or("")) });
+                self.notify.info(format!("プッシュしました{}", if out.trim().is_empty() { String::new() } else { format!(": {}", out.trim().lines().last().unwrap_or("")) }));
                 self.refresh_status();
             }
             (Job::Revert, Ok(_)) => {
-                self.message = "変更を戻しました".into();
+                self.notify.info("変更を戻しました");
                 self.refresh_git();
             }
-            (_, Err(e)) => self.message = format!("git: {}", e.lines().last().unwrap_or("")),
+            (_, Err(e)) => self.notify.error(format!("git: {}", e.lines().last().unwrap_or(""))),
         }
         true
     }
@@ -197,12 +197,12 @@ impl Editor {
         }
         let msg = p.msg.text().trim().to_string();
         if msg.is_empty() && !p.amend {
-            self.message = "コミットのメッセージを書いてください（c で欄へ）".into();
+            self.notify.info("コミットのメッセージを書いてください（c で欄へ）");
             return;
         }
         let paths: Vec<String> = p.checked().iter().flat_map(|c| [Some(c.path.clone()), c.orig.clone()]).flatten().collect();
         if paths.is_empty() && !p.amend {
-            self.message = "コミットするファイルを選んでください（Space）".into();
+            self.notify.info("コミットするファイルを選んでください（Space）");
             return;
         }
         let amend = p.amend;
@@ -278,7 +278,7 @@ impl Editor {
         let Some(it) = p.items.get(i) else { return };
         let c = it.change.clone();
         if c.state == FileState::Untracked {
-            self.message = "未追跡のファイルは戻せません（消すならファイルツリーなどから）".into();
+            self.notify.info("未追跡のファイルは戻せません（消すならファイルツリーなどから）");
             return;
         }
         let rx = run_git(self.waker.clone(), move || {
@@ -354,7 +354,7 @@ impl Editor {
                 Key::Enter | Key::Char('y') => self.push(),
                 _ => {
                     p.confirm_push = None;
-                    self.message = "プッシュをやめました".into();
+                    self.notify.info("プッシュをやめました");
                 }
             }
             return Effect::None;
@@ -363,7 +363,7 @@ impl Editor {
             if key == Key::Char('y') {
                 self.revert_item(i);
             } else {
-                self.message = "戻すのをやめました".into();
+                self.notify.info("戻すのをやめました");
             }
             return Effect::None;
         }
@@ -393,7 +393,7 @@ impl Editor {
             Key::Char('u') => {
                 if !p.items.is_empty() {
                     p.confirm_revert = Some(p.selected);
-                    self.message = format!("{} の変更を戻しますか（y で戻す）", p.items[p.selected].change.path);
+                    self.notify.info(format!("{} の変更を戻しますか（y で戻す）", p.items[p.selected].change.path));
                 }
             }
             Key::Char('r') => {
@@ -402,7 +402,7 @@ impl Editor {
             Key::Enter | Key::Char('o') => {
                 let (Some(root), Some(it)) = (self.git.root.clone(), p.items.get(p.selected)) else { return Effect::None };
                 if it.change.state == FileState::Deleted {
-                    self.message = "消したファイルは開けません".into();
+                    self.notify.info("消したファイルは開けません");
                     return Effect::None;
                 }
                 let path: PathBuf = root.join(&it.change.path);
@@ -635,7 +635,7 @@ mod tests {
         keys(&mut e, "<C-m>");
         wait(&mut e);
         wait(&mut e);
-        assert!(e.message.starts_with("コミットしました"), "{}", e.message);
+        assert!(e.notify.text.starts_with("コミットしました"), "{}", e.notify.text);
         assert_eq!(g(&["log", "-1", "--format=%B"]).trim(), "fix a\n\nbody");
         let files = g(&["show", "--name-only", "--format=", "HEAD"]);
         assert_eq!(files.trim(), "a.txt\nnew.txt");
@@ -645,7 +645,7 @@ mod tests {
         assert!(p.msg.text().is_empty());
         // b の変更を戻す（確認してから）
         keys(&mut e, "u");
-        assert!(e.message.contains("y で戻す"));
+        assert!(e.notify.text.contains("y で戻す"));
         keys(&mut e, "y");
         wait(&mut e);
         wait(&mut e);

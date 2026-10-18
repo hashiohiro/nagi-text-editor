@@ -153,10 +153,11 @@ impl Editor {
         // 欄の中でモードが変わったら最下行に出す
         if let (Some((a, b)), FieldOut::None | FieldOut::Changed) = (modes, out) {
             if a != b {
-                self.message = match b {
+                // モードの表示はすぐ書き換わるので履歴に残さない
+                self.notify.progress(match b {
                     "NORMAL" => "-- NORMAL --（入力欄。Enter で決める・もう一度 Esc で閉じる）".into(),
                     m => format!("-- {m} --"),
-                };
+                });
             }
         }
         out

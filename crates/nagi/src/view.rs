@@ -255,8 +255,18 @@ impl Painter<'_> {
 }
 
 /// ステータスバーの左: メッセージがあれば少し小さい字で、無ければ `fallback`（モードの名前など）をふつうの字で
-pub(crate) fn status_left(p: &mut Painter, message: &str, fallback: &str, y: f32, fg: [f32; 4]) -> usize {
-    if message.is_empty() { p.text(fallback, 0, y, fg) } else { p.msg_text(message, 0, y, fg) }
+/// ステータスバーの左: 知らせがあればそれを（重さの色で）、無ければ `fallback` を
+pub(crate) fn status_left(p: &mut Painter, ed: &Editor, fallback: &str, y: f32, fg: [f32; 4]) -> usize {
+    if ed.notify.text.is_empty() { p.text(fallback, 0, y, fg) } else { p.msg_text(&ed.notify.text, 0, y, msg_color(ed, fg)) }
+}
+
+/// 知らせの色（エラーは赤・警告は黄、ほかは `fg`）
+pub(crate) fn msg_color(ed: &Editor, fg: [f32; 4]) -> [f32; 4] {
+    match ed.notify.level {
+        Some(nagi_core::log::Level::Error) if !ed.notify.text.is_empty() => DIAG_ERROR,
+        Some(nagi_core::log::Level::Warn) if !ed.notify.text.is_empty() => DIAG_WARN,
+        _ => fg,
+    }
 }
 
 /// ステータスバーの左: `small` ならメッセージとして少し小さい字で
@@ -891,7 +901,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             p.text(&info, pc, y, STATUS_FG);
         }
         Mode::List if ed.list_side == crate::editor::Side::Commit => {
-            let end = status_left(&mut p, &ed.message, "-- コミット --", y, FG);
+            let end = status_left(&mut p, ed, "-- コミット --", y, FG);
             let help = "Space 選択  d 差分  u 戻す  c メッセージ  Ctrl-Enter コミット  P プッシュも  Alt-1 プロジェクト  q 閉じる ";
             let pc = cols.saturating_sub(p.width(help));
             if end + 2 <= pc {
@@ -899,12 +909,12 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             }
         }
         Mode::CommitMsg => {
-            status_left(&mut p, &ed.message, "-- コミットメッセージ --   Esc 一覧へ   Ctrl-Enter コミット", y, FG);
+            status_left(&mut p, ed, "-- コミットメッセージ --   Esc 一覧へ   Ctrl-Enter コミット", y, FG);
         }
         Mode::DbTable => {
             let n = ed.db_table.as_ref().map_or(0, |t| t.changes());
-            let left = if !ed.message.is_empty() { ed.message.clone() } else if n > 0 { format!("-- 編集 --  変更 {n} 件（未送信）") } else { "-- テーブル --".into() };
-            let end = status_text(&mut p, &left, !ed.message.is_empty(), y, if n > 0 && ed.message.is_empty() { DIAG_WARN } else { FG });
+            let left = if !ed.notify.text.is_empty() { ed.notify.text.clone() } else if n > 0 { format!("-- 編集 --  変更 {n} 件（未送信）") } else { "-- テーブル --".into() };
+            let end = status_text(&mut p, &left, !ed.notify.text.is_empty(), y, if n > 0 && ed.notify.text.is_empty() { DIAG_WARN } else { FG });
             let help = "i 値  c 入れ替え  x NULL  o 行を足す  dd 消す  u 戻す  f/F 絞り込み  s 並べ替え  < > ページ  Ctrl+Enter 送信  q 閉じる ";
             let pc = cols.saturating_sub(p.width(help));
             if end + 2 <= pc {
@@ -912,8 +922,8 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             }
         }
         Mode::Branches => {
-            let left = if ed.message.is_empty() { "-- ブランチ --".to_string() } else { ed.message.clone() };
-            let end = status_text(&mut p, &left, !ed.message.is_empty(), y, FG);
+            let left = if ed.notify.text.is_empty() { "-- ブランチ --".to_string() } else { ed.notify.text.clone() };
+            let end = status_text(&mut p, &left, !ed.notify.text.is_empty(), y, msg_color(ed, FG));
             let help = "打つと絞り込み  ↑↓ 移動  Enter チェックアウト  → 操作  Esc 閉じる ";
             let pc = cols.saturating_sub(p.width(help));
             if end + 2 <= pc {
@@ -922,14 +932,14 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         }
         Mode::Log => {
             let l = ed.log.as_ref();
-            let left = if !ed.message.is_empty() {
-                ed.message.clone()
+            let left = if !ed.notify.text.is_empty() {
+                ed.notify.text.clone()
             } else if l.is_some_and(|l| l.filter.is_some()) {
                 format!("/{}", l.map_or(String::new(), |l| l.filter_text.clone()))
             } else {
                 "-- 履歴 --".into()
             };
-            let end = status_text(&mut p, &left, !ed.message.is_empty(), y, FG);
+            let end = status_text(&mut p, &left, !ed.notify.text.is_empty(), y, msg_color(ed, FG));
             let help = "j/k 移動  / 絞り込み  Tab ファイル  Enter 差分  o チェックアウト  b ブランチ  c チェリーピック  y ハッシュ  q 閉じる ";
             let pc = cols.saturating_sub(p.width(help));
             if end + 2 <= pc {
@@ -940,8 +950,8 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             let d = ed.diff.as_ref();
             let n = d.map_or(0, |d| d.hunk_rows.len());
             let i = d.map_or(0, |d| d.hunk_rows.iter().rposition(|&r| r <= d.cursor).map_or(0, |i| i + 1));
-            let left = if ed.message.is_empty() { format!("-- 差分 --   変更 {i}/{n}") } else { ed.message.clone() };
-            let end = status_text(&mut p, &left, !ed.message.is_empty(), y, FG);
+            let left = if ed.notify.text.is_empty() { format!("-- 差分 --   変更 {i}/{n}") } else { ed.notify.text.clone() };
+            let end = status_text(&mut p, &left, !ed.notify.text.is_empty(), y, msg_color(ed, FG));
             let help = "]c 次  [c 前  s ステージ  u 戻す  Enter 開く  q 閉じる ";
             let pc = cols.saturating_sub(p.width(help));
             if end + 2 <= pc {
@@ -954,14 +964,14 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
                 Some(crate::right_panel::RightTab::Preview) => ("-- プレビュー --", "j/k 送る  Enter リンクを開く  g/G 先頭・末尾  q 閉じる  Ctrl-w h 窓へ "),
                 _ => ("-- データベース --", "Enter つなぐ・開閉  o 中身  n 新しいクエリ  c コンソール  / 絞り込み  a 足す  x 切る  Ctrl-w h 窓へ "),
             };
-            let end = status_left(&mut p, &ed.message, name, y, FG);
+            let end = status_left(&mut p, ed, name, y, FG);
             let pc = cols.saturating_sub(p.width(help));
             if end + 2 <= pc {
                 p.text(help, pc, y, STATUS_FG);
             }
         }
         Mode::List if ed.list_side == crate::editor::Side::Bottom && ed.bottom_kind == crate::result_grid::BottomKind::Problems => {
-            let end = status_left(&mut p, &ed.message, "-- 問題 --", y, FG);
+            let end = status_left(&mut p, ed, "-- 問題 --", y, FG);
             let help = "j/k 移動  Enter 開く  o 欄に残って開く  ]e [e 次・前  q 隠す  Ctrl-w k 窓へ ";
             let pc = cols.saturating_sub(p.width(help));
             if end + 2 <= pc {
@@ -970,7 +980,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         }
         Mode::Terminal => {
             let run = ed.terminals.current().is_some_and(|t| t.name.starts_with(crate::run_configs::RUN_PREFIX));
-            let end = status_left(&mut p, &ed.message, if run { "-- 実行 --" } else { "-- ターミナル --" }, y, FG);
+            let end = status_left(&mut p, ed, if run { "-- 実行 --" } else { "-- ターミナル --" }, y, FG);
             let help = if run {
                 "Esc エディタへ   Ctrl+C 止める   Ctrl+F5 もう一度   Ctrl-\\ x 閉じる   Alt+F12 隠す "
             } else {
@@ -982,7 +992,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             }
         }
         Mode::List if ed.list_side == crate::editor::Side::Bottom && ed.bottom_kind == crate::result_grid::BottomKind::Result => {
-            let end = status_left(&mut p, &ed.message, "-- クエリの結果 --", y, FG);
+            let end = status_left(&mut p, ed, "-- クエリの結果 --", y, FG);
             let help = "hjkl 移動  y 値  Y 行  gy 表全体（タブ区切り）  q 閉じる ";
             let pc = cols.saturating_sub(p.width(help));
             if end + 2 <= pc {
@@ -990,11 +1000,11 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             }
         }
         Mode::List if ed.list_side == crate::editor::Side::Left => {
-            status_left(&mut p, &ed.message, "-- プロジェクト --", y, FG);
+            status_left(&mut p, ed, "-- プロジェクト --", y, FG);
         }
         Mode::List if ed.grep.is_some() => {
             let g = ed.grep.as_ref().unwrap();
-            let end = status_left(&mut p, &ed.message, "-- 検索結果 --", y, FG);
+            let end = status_left(&mut p, ed, "-- 検索結果 --", y, FG);
             let info = format!("{}/{} ", (g.selected + 1).min(g.hits.len()), g.hits.len());
             let pc = cols.saturating_sub(p.width(&info));
             if end + 2 <= pc {
@@ -1030,8 +1040,8 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             p.text(&c, pc, y2, STATUS_FG);
         }
         _ => {
-            let left = if !ed.message.is_empty() {
-                ed.message.clone()
+            let left = if !ed.notify.text.is_empty() {
+                ed.notify.text.clone()
             } else {
                 let mode = match ed.mode {
                     Mode::Insert => "-- INSERT --",
@@ -1049,9 +1059,9 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             // 何も出していなければ、カーソルの行の診断を出す
             let (left, color) = match ed.diag_at_cursor() {
                 Some(d) if left.is_empty() && ed.mode == Mode::Normal => (format!("{}: {}", if d.error { "error" } else { "warning" }, d.msg), if d.error { DIAG_ERROR } else { DIAG_WARN }),
-                _ => (left, FG),
+                _ => (left, msg_color(ed, FG)),
             };
-            let end = status_text(&mut p, &left, !ed.message.is_empty(), y, color);
+            let end = status_text(&mut p, &left, !ed.notify.text.is_empty(), y, color);
             // 長いメッセージと重なるときは位置表示を出さない（メッセージを優先する）
             let pc = cols.saturating_sub(p.width(&ruler));
             if end + 2 <= pc {

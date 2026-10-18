@@ -407,7 +407,7 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        assert_eq!((m.cursor.line, m.mode), (0, Mode::Normal), "{}", m.message);
+        assert_eq!((m.cursor.line, m.mode), (0, Mode::Normal), "{}", m.notify.text);
         assert_eq!(m.bottom_kind, BottomKind::Output);
         assert_eq!(m.problem_rows().len(), 3, "問題のタブにも出る");
         // タブの位置

@@ -380,7 +380,7 @@ impl crate::editor::Editor {
             }
         }
         if let Err(e) = self.settings.save() {
-            self.message = format!("欄の大きさを覚えられません: {e}");
+            self.notify.info(format!("欄の大きさを覚えられません: {e}"));
         }
     }
 

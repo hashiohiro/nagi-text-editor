@@ -192,7 +192,7 @@ impl Editor {
         }
         self.run_dialog = Some(d);
         self.mode = Mode::RunDialog;
-        self.message.clear();
+        self.notify.clear();
     }
 
     fn close_run_dialog(&mut self) {
@@ -208,7 +208,7 @@ impl Editor {
         // 名前が重なっていれば保存しない
         let names: Vec<&str> = d.configs.iter().map(|c| c.name.as_str()).collect();
         if let Some(dup) = names.iter().enumerate().find(|(i, n)| names[..*i].contains(n)).map(|x| x.1.to_string()) {
-            self.message = format!("名前が重なっています: {dup}");
+            self.notify.info(format!("名前が重なっています: {dup}"));
             return false;
         }
         let ours: Vec<RunConfig> = d.configs.iter().filter(|c| c.from == "nagi").cloned().collect();
@@ -222,11 +222,11 @@ impl Editor {
                 if sel.is_some() {
                     self.run_selected = sel;
                 }
-                self.message = format!("実行の構成を保存しました（{} 件、{}）", ours.len(), path.display());
+                self.notify.info(format!("実行の構成を保存しました（{} 件、{}）", ours.len(), path.display()));
                 true
             }
             Err(e) => {
-                self.message = format!("保存できません: {}: {e}", path.display());
+                self.notify.error(format!("保存できません: {}: {e}", path.display()));
                 false
             }
         }
@@ -243,18 +243,18 @@ impl Editor {
             DialogButton::Run => {
                 if self.save_run_dialog() {
                     let cfg = self.run_dialog.as_ref().and_then(|d| d.current().cloned());
-                    let msg = self.message.clone();
+                    let msg = self.notify.text.clone();
                     self.close_run_dialog();
                     if let Some(c) = cfg {
                         self.run_config(c);
                     } else {
-                        self.message = msg;
+                        self.notify.info(msg);
                     }
                 }
             }
             DialogButton::Cancel => {
                 self.close_run_dialog();
-                self.message = "実行の構成の画面を閉じました（保存していない変更は捨てました）".into();
+                self.notify.info("実行の構成の画面を閉じました（保存していない変更は捨てました）");
             }
             DialogButton::Add | DialogButton::Copy | DialogButton::Delete => {
                 if let Some(d) = &mut self.run_dialog {
@@ -332,14 +332,14 @@ impl Editor {
                             d.load_fields();
                             d.dirty = true;
                         }
-                        Some(_) => self.message = "IntelliJ の構成は nagi からは消せません（IntelliJ で消してください）".into(),
+                        Some(_) => self.notify.info("IntelliJ の構成は nagi からは消せません（IntelliJ で消してください）"),
                         None => {}
                     },
                     Key::Char('r') => self.run_dialog_button(DialogButton::Run),
                     Key::Esc | Key::Char('q') => {
                         if d.dirty && !confirm {
                             d.confirm_close = true;
-                            self.message = "保存していない変更があります。もう一度 Esc で捨てて閉じる、Ctrl+Enter で保存して閉じる".into();
+                            self.notify.info("保存していない変更があります。もう一度 Esc で捨てて閉じる、Ctrl+Enter で保存して閉じる");
                         } else {
                             self.run_dialog_button(DialogButton::Cancel);
                         }
@@ -648,12 +648,12 @@ mod tests {
         assert!(e.run_dialog_preview().contains("test -q"), "{}", e.run_dialog_preview());
         // IntelliJ の構成は消せない。直すと nagi の構成になる
         keys(&mut e, "<Esc><Esc>gd");
-        assert!(e.message.contains("IntelliJ"), "{}", e.message);
+        assert!(e.notify.text.contains("IntelliJ"), "{}", e.notify.text);
         keys(&mut e, "i<Tab><Tab><Esc>Secho nagi<Esc><Esc>");
         assert_eq!(e.run_dialog.as_ref().unwrap().configs[0].from, "nagi");
         // Ctrl+Enter で保存して閉じる
         keys(&mut e, "<C-m>");
-        assert_eq!(e.mode, Mode::Normal, "{}", e.message);
+        assert_eq!(e.mode, Mode::Normal, "{}", e.notify.text);
         let text = std::fs::read_to_string(dir.join(".nagi/run.conf")).unwrap();
         assert!(text.contains("[IJ]\ntype = shell\ncommand = echo nagi\n") && text.contains("[テスト]\ntype = maven\ngoals = test -q\n"), "{text}");
         // 読み直すと、直した IJ は nagi の方が使われる

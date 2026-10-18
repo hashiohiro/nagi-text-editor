@@ -358,10 +358,10 @@ impl Editor {
                 if let Some(c) = self.db.as_mut().map(|p| &mut p.conns[i]) {
                     c.send_batch(stmts);
                 }
-                self.message = "送信しています…".into();
+                self.notify.info("送信しています…");
             } else {
                 te.preview = None;
-                self.message = "送信をやめました（変更は残っています）".into();
+                self.notify.info("送信をやめました（変更は残っています）");
             }
             return;
         }
@@ -437,7 +437,7 @@ impl Editor {
             (_, Key::Char('G')) => te.row = last_row,
             (_, Key::Char('i') | Key::Enter) if !te.cols.is_empty() && te.len() > 0 => {
                 if te.at(te.row).0 == RowState::Deleted {
-                    self.message = "消す行は直せません（dd で取り消し）".into();
+                    self.notify.info("消す行は直せません（dd で取り消し）");
                 } else {
                     te.editing = Some(VimField::new(&te.value(te.row, te.col).unwrap_or_default(), false));
                 }
@@ -445,7 +445,7 @@ impl Editor {
             // c: 空にしてから直す（値を入れ替える）
             (_, Key::Char('c')) if !te.cols.is_empty() && te.len() > 0 => {
                 if te.at(te.row).0 == RowState::Deleted {
-                    self.message = "消す行は直せません（dd で取り消し）".into();
+                    self.notify.info("消す行は直せません（dd で取り消し）");
                 } else {
                     te.editing = Some(VimField::new("", false));
                 }
@@ -461,16 +461,16 @@ impl Editor {
             }
             (_, Key::Char('u')) => {
                 if !te.undo_one() {
-                    self.message = "戻す変更はありません".into();
+                    self.notify.info("戻す変更はありません");
                 }
             }
             (_, Key::Ctrl('m')) => match te.statements() {
-                Ok(s) if s.is_empty() => self.message = "送る変更はありません".into(),
+                Ok(s) if s.is_empty() => self.notify.info("送る変更はありません"),
                 Ok(s) => {
-                    self.message = format!("{} 件の変更を送りますか（y で送る・ほかのキーでやめる）", s.len());
+                    self.notify.info(format!("{} 件の変更を送りますか（y で送る・ほかのキーでやめる）", s.len()));
                     te.preview = Some(s);
                 }
-                Err(e) => self.message = e,
+                Err(e) => self.notify.error(e),
             },
             (_, Key::Char('f') | Key::Char('F')) if !dirty => {
                 let field = if key == Key::Char('f') { Field::Where } else { Field::Order };
@@ -501,16 +501,16 @@ impl Editor {
             (_, Key::Char('R')) => {
                 if dirty && !te.quit_armed {
                     te.quit_armed = true;
-                    self.message = "未送信の変更があります。もう一度 R で捨てて読み直す".into();
+                    self.notify.info("未送信の変更があります。もう一度 R で捨てて読み直す");
                 } else {
                     self.db_table_reload();
                 }
             }
-            (_, Key::Char('f' | 'F' | 's' | '>' | '<')) => self.message = "未送信の変更があります（Ctrl+Enter で送るか、u で戻す）".into(),
+            (_, Key::Char('f' | 'F' | 's' | '>' | '<')) => self.notify.info("未送信の変更があります（Ctrl+Enter で送るか、u で戻す）"),
             (_, Key::Char('q') | Key::Esc) => {
                 if dirty && !te.quit_armed {
                     te.quit_armed = true;
-                    self.message = format!("未送信の変更が {} 件あります。もう一度 q で捨てて閉じる", te.changes());
+                    self.notify.info(format!("未送信の変更が {} 件あります。もう一度 q で捨てて閉じる", te.changes()));
                 } else {
                     self.close_db_table();
                 }

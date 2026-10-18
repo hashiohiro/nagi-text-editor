@@ -101,7 +101,7 @@ impl Editor {
     /// 今のファイルの差分（`:Gdiff`）
     pub(crate) fn diff_current(&mut self) {
         let (Some(root), Some(p)) = (self.git.root.clone(), self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok())) else {
-            self.message = "git のリポジトリのファイルではありません".into();
+            self.notify.info("git のリポジトリのファイルではありません");
             return;
         };
         let Ok(rel) = p.strip_prefix(&root) else { return };
@@ -113,7 +113,7 @@ impl Editor {
     pub(crate) fn show_diff(&mut self, left_title: String, right_title: String, old: &str, new: &str, work: Option<(PathBuf, String, PathBuf)>) {
         let (rows, hunk_rows, hunks) = build_rows(old, new);
         if hunks.is_empty() {
-            self.message = "差分はありません".into();
+            self.notify.info("差分はありません");
         }
         let cursor = hunk_rows.first().copied().unwrap_or(0);
         self.diff = Some(DiffView { left_title, right_title, rows, top: cursor.saturating_sub(5), cursor, hunk_rows, work, hunks, old_text: old.to_string() });
@@ -177,11 +177,11 @@ impl Editor {
     fn diff_apply(&mut self, stage: bool) {
         let Some(d) = &self.diff else { return };
         let Some((root, rel, path)) = d.work.clone() else {
-            self.message = "この差分では戻せません（作業中のファイルとの差分だけ）".into();
+            self.notify.info("この差分では戻せません（作業中のファイルとの差分だけ）");
             return;
         };
         let Some(k) = d.rows[d.cursor].hunk.or_else(|| d.hunk_rows.iter().rposition(|&r| r <= d.cursor)) else {
-            self.message = "カーソルの行に変更はありません".into();
+            self.notify.info("カーソルの行に変更はありません");
             return;
         };
         let h = d.hunks[k].clone();
@@ -192,10 +192,10 @@ impl Editor {
             let n: Vec<&str> = new_lines.iter().map(String::as_str).collect();
             let new_file = d.old_text.is_empty();
             let patch = nagi_workers::git::hunk_patch(&rel, h.old.start, &o, h.new.start, &n, new_file);
-            self.message = match nagi_workers::git::apply_cached(&root, &patch) {
-                Ok(()) => "変更をステージしました".into(),
-                Err(e) => format!("ステージできません: {}", e.lines().next().unwrap_or("")),
-            };
+            match nagi_workers::git::apply_cached(&root, &patch) {
+                Ok(()) => self.notify.info("変更をステージしました"),
+                Err(e) => self.notify.error(format!("ステージできません: {}", e.lines().next().unwrap_or(""))),
+            }
             self.refresh_status();
             return;
         }
@@ -211,7 +211,7 @@ impl Editor {
         self.hist.begin();
         self.edit(start, end, &text);
         self.hist.close();
-        self.message = "変更を戻しました（バッファで u で取り消し）".into();
+        self.notify.info("変更を戻しました（バッファで u で取り消し）");
         drop(keep);
         // 差分を作り直して開き直す
         let new = self.buf.text();
