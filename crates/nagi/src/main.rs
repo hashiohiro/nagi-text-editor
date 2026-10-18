@@ -24,6 +24,7 @@ mod run_dialog;
 mod keymap;
 mod settings;
 mod settings_dialog;
+mod editor_settings;
 mod smart_complete;
 mod autoread;
 mod bottom_panel;
@@ -138,7 +139,7 @@ struct Pending {
 const TIMEOUT_LEN: Duration = Duration::from_millis(1000);
 /// ホイール 1 目盛りで動かす行数と、それを動かしきる時間
 const WHEEL_LINES: f64 = 3.0;
-const SCROLL_TIME: Duration = Duration::from_millis(110);
+
 /// タッチパッドで止まってから行境界へ寄せるまでの時間
 const SNAP_AFTER: Duration = Duration::from_millis(120);
 /// `--replay` で 1 打ずつ流す間隔（速く打つ人の打鍵間隔くらい。詰めすぎるとフレームの待ちが毎回乗る）
@@ -146,9 +147,7 @@ const REPLAY_EVERY: Duration = Duration::from_millis(30);
 /// `--replay` の間隔。`NAGI_REPLAY_MS` で変えられる（打鍵の間隔で速さが変わるかを調べる用）
 /// 移動のキーの押しっぱなし: 繰り返し始めるまで・繰り返しの間隔・速める間隔と、速めるまで
 /// （Windows の最速は 約 500ms・約 33ms ごと）
-const REPEAT_DELAY: Duration = Duration::from_millis(250);
-const REPEAT_EVERY: Duration = Duration::from_millis(25);
-const REPEAT_FAST: Duration = Duration::from_millis(16);
+/// 押しっぱなしで速めるまで（間隔の速さは設定の「エディタ」）
 const REPEAT_FAST_AFTER: Duration = Duration::from_millis(1200);
 
 fn replay_every() -> Duration {
@@ -162,12 +161,14 @@ struct ScrollAnim {
     from: f64,
     to: f64,
     start: Instant,
+    /// かける時間（設定の「スムーズスクロールの時間」。0 ならすぐ）
+    dur: Duration,
 }
 
 impl ScrollAnim {
     /// 今の位置と、動ききったか
     fn at(&self, now: Instant) -> (f64, bool) {
-        let t = (now - self.start).as_secs_f64() / SCROLL_TIME.as_secs_f64();
+        let t = if self.dur.is_zero() { 1.0 } else { (now - self.start).as_secs_f64() / self.dur.as_secs_f64() };
         if t >= 1.0 {
             return (self.to, true);
         }
@@ -336,6 +337,9 @@ impl App {
         if let Some(ed) = &mut self.ed {
             ed.start_watch(&rc_files);
             clock::mark("watch started");
+            // 開いたファイルのプロジェクトの設定の上書き
+            let root = ed.nav_root();
+            ed.settings.set_root(Some(&root));
             // 引数がフォルダなら、プロジェクトとして開く（IntelliJ・Eclipse の設定を読み、前に開いていたファイルを復元）
             if let Some(dir) = self.opts.file.clone().filter(|p| p.is_dir()) {
                 ed.open_project(dir);
@@ -553,7 +557,8 @@ impl App {
         self.held = None;
         if !ev.repeat && self.repeatable(&keys) {
             let now = Instant::now();
-            self.held = Some((ev.physical_key, keys.clone(), now, now + REPEAT_DELAY));
+            let delay = self.ed.as_ref().map_or(250, |e| e.settings.int("editor.repeat_delay")) as u64;
+            self.held = Some((ev.physical_key, keys.clone(), now, now + Duration::from_millis(delay)));
         }
         self.handle_keys(keys, el);
     }
@@ -575,7 +580,8 @@ impl App {
         }
         self.handle_keys(keys, el);
         // 長く押すほど少し速く。遅れても溜めて一度に流さない
-        let every = if since.elapsed() > REPEAT_FAST_AFTER { REPEAT_FAST } else { REPEAT_EVERY };
+        let (fast, normal) = self.ed.as_ref().map_or((16, 25), |e| (e.settings.int("editor.repeat_fast"), e.settings.int("editor.repeat_interval")));
+        let every = Duration::from_millis(if since.elapsed() > REPEAT_FAST_AFTER { fast } else { normal } as u64);
         let now = Instant::now();
         if let Some(h) = &mut self.held {
             h.3 = (next + every).max(now);
@@ -1193,7 +1199,8 @@ impl App {
                 let base = self.scroll_anim.as_ref().map_or(ed.scroll_pos(), |a| a.to);
                 let max = ed.buf.line_count().saturating_sub(1) as f64;
                 let to = (base - y as f64 * WHEEL_LINES).round().clamp(0.0, max);
-                self.scroll_anim = Some(ScrollAnim { from: ed.scroll_pos(), to, start: now });
+                let dur = Duration::from_millis(ed.settings.int("editor.scroll_ms") as u64);
+                self.scroll_anim = Some(ScrollAnim { from: ed.scroll_pos(), to, start: now, dur });
                 self.snap_deadline = None;
                 self.step_scroll(now);
             }
@@ -1231,7 +1238,8 @@ impl App {
         let Some(ed) = &self.ed else { return };
         let pos = ed.scroll_pos();
         if pos.fract() != 0.0 {
-            self.scroll_anim = Some(ScrollAnim { from: pos, to: pos.round(), start: Instant::now() });
+            let dur = self.ed.as_ref().map_or(Duration::from_millis(110), |e| Duration::from_millis(e.settings.int("editor.scroll_ms") as u64));
+            self.scroll_anim = Some(ScrollAnim { from: pos, to: pos.round(), start: Instant::now(), dur });
         }
     }
 

@@ -135,6 +135,7 @@ impl Editor {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 let mut b = Buffer::from_str("");
                 b.path = Some(path.clone());
+                self.new_file_defaults(&mut b);
                 message = format!("\"{}\" [新規]", path.display());
                 b
             }
@@ -288,6 +289,10 @@ impl Editor {
         for slot in self.docs.iter_mut() {
             if let Slot::Parked(d) = slot {
                 if d.buf.dirty && d.buf.path.is_some() {
+                    // 保存時の処理（裏のバッファは取り消しの履歴には残さない）
+                    for (s, e, t) in crate::editor_settings::tidy(&d.buf, self.settings.bool("editor.trim_trailing"), self.settings.bool("editor.final_newline")) {
+                        d.buf.edit(s, e, &t);
+                    }
                     match d.buf.save() {
                         Ok(_) => n += 1,
                         Err(e) => {
@@ -299,6 +304,7 @@ impl Editor {
             }
         }
         if self.buf.dirty && self.buf.path.is_some() {
+            self.tidy_before_save();
             match self.buf.save() {
                 Ok(_) => n += 1,
                 Err(e) => {

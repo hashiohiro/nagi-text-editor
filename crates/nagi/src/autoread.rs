@@ -100,6 +100,16 @@ impl Editor {
                     }
                     self.set_doc_disk(doc, Some(stamp));
                     let name = p.file_name().map_or(p.display().to_string(), |n| n.to_string_lossy().into_owned());
+                    // 設定の「外部での変更」: 何もしない／知らせるだけ／自動で読み直す
+                    let mode = self.settings.get("editor.autoread");
+                    if mode == "off" {
+                        continue;
+                    }
+                    if mode == "ask" && !dirty {
+                        self.message = format!("\"{name}\" が外部で変更されました（:e! で読み直す）");
+                        redraw = true;
+                        continue;
+                    }
                     if dirty {
                         self.message = format!("W12: \"{name}\" が外部で変更されました。バッファにも変更があります（:e! で読み直す）");
                     } else {
@@ -139,6 +149,11 @@ impl Editor {
     /// 読み直したバッファを差し替える。読み直している間に編集していたら差し替えない
     fn apply_reload(&mut self, p: &Path, b: Buffer) -> bool {
         let Some(doc) = self.find_doc(p) else { return false };
+        // 古い読み直し（同じ変更の知らせが 2 回来て、遅れて届いたもの。その後に自分で保存していれば元に戻してしまう）は当てない。
+        // 読んだときのファイルの時刻と大きさが、今覚えているものと同じときだけ
+        if self.doc_disk(doc).is_some_and(|(_, d)| d != b.disk) {
+            return false;
+        }
         let name = p.file_name().map_or(p.display().to_string(), |n| n.to_string_lossy().into_owned());
         match self.docs.get_mut(doc) {
             Some(Slot::Active) => {

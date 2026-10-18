@@ -21,7 +21,6 @@ enum Kd {
     Linewise,
 }
 
-const SHIFT: &str = "    ";
 
 fn leading_ws(line: &str) -> &str {
     &line[..line.len() - line.trim_start_matches([' ', '\t']).len()]
@@ -659,16 +658,19 @@ impl Editor {
             Op::Indent | Op::Dedent => {
                 let (a, b) = if lw { self.lines_of(s, e, &text) } else { (self.buf.pos_of(s).0, self.buf.pos_of(e.saturating_sub(1).max(s)).0) };
                 self.hist.begin();
+                // 1 段は設定のインデント（タブか空白。言語ごとの幅）
+                let unit = self.indent_unit();
+                let width = self.indent_width();
                 for l in a..=b.max(a) {
                     let line = self.buf.line(l);
                     let ls = self.buf.line_start(l);
                     if op == Op::Indent {
                         if !line.is_empty() {
-                            self.edit(ls, ls, SHIFT);
+                            self.edit(ls, ls, &unit);
                         }
                     } else {
                         let ws = leading_ws(&line);
-                        let cut = if ws.starts_with('\t') { 1 } else { ws.len().min(SHIFT.len()) };
+                        let cut = if ws.starts_with('\t') { 1 } else { ws.len().min(width) };
                         if cut > 0 {
                             self.edit(ls, ls + cut, "");
                         }

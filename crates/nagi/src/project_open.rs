@@ -255,6 +255,8 @@ impl Editor {
         self.diags.clear();
         self.finder = None;
         self.mode = Mode::Normal;
+        // プロジェクトの設定の上書き（.nagi\settings.conf）を読み直す
+        self.settings.set_root(Some(&p.root));
         // 実行の構成は、選んでいたものを忘れて読み直す（ステータスバーに出す）
         self.run_selected = None;
         self.run_last = None;

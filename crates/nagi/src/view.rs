@@ -354,7 +354,19 @@ fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
             }
             p.out.push(Instance::fill((rect.x + bw) as f32 * cell.w - cell.w * 0.5, y, 1.0, cell.h, MATCH_BG));
         }
-        p.text(&format!("{:>5} ", ln + 1), rect.x + bw, y, num_color);
+        // 行番号（設定: 絶対・相対（今の行は絶対）・出さない）
+        match ed.settings.get("editor.line_numbers").as_str() {
+            "off" => {}
+            "relative" if ln != pane.cursor.line => {
+                p.text(&format!("{:>5} ", ln.abs_diff(pane.cursor.line)), rect.x + bw, y, num_color);
+            }
+            "relative" => {
+                p.text(&format!("{:<5} ", ln + 1), rect.x + bw, y, if num_color == LINE_NO { STATUS_FG } else { num_color });
+            }
+            _ => {
+                p.text(&format!("{:>5} ", ln + 1), rect.x + bw, y, num_color);
+            }
+        }
         // SQL コンソール: カーソルのある文（Ctrl+Enter で流す範囲）に緑の線
         if stmt.is_some_and(|(s, e)| ln >= s && ln < e) {
             p.out.push(Instance::fill((rect.x + gutter) as f32 * cell.w - cell.w * 0.5 - 2.0, y, 3.0, cell.h, GIT_ADD));
@@ -634,7 +646,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         let last = buf.line_count().saturating_sub(1);
         let mut cursor = st.cursor;
         cursor.line = cursor.line.min(last);
-        let pane = Pane { buf, marks: ed.git_markers(buf.path.as_deref()), diags: ed.diag_lines(buf.path.as_deref()), squiggles: ed.diag_spans(buf.path.as_deref()), folds, syntax, cursor, top: st.top.min(last), frac: if active { ed.frac } else { 0.0 }, active };
+        let pane = Pane { buf, marks: ed.git_markers(buf.path.as_deref()), diags: ed.diag_lines(buf.path.as_deref()), squiggles: if ed.settings.bool("editor.squiggles") { ed.diag_spans(buf.path.as_deref()) } else { Vec::new() }, folds, syntax, cursor, top: st.top.min(last), frac: if active { ed.frac } else { 0.0 }, active };
         draw_pane(&mut p, ed, &pane, Rect { h: ed.text_rows(rect), ..rect });
     }
     // 窓ごとの状態行（分割中だけ。Vim の laststatus=1 と同じ）と、左右の窓の間の 1px の区切り線

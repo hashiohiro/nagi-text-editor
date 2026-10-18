@@ -928,7 +928,7 @@ impl Editor {
                 self.insert_text(&format!("\n{indent}"));
             }
             Key::Backspace => self.backspace(),
-            Key::Tab => self.insert_text("\t"),
+            Key::Tab => self.insert_tab(),
             Key::Left => self.with_motion(|m, c| m.left(c, 1)),
             Key::Up => self.with_motion(|m, c| m.vertical(c, -1)),
             Key::Down => self.with_motion(|m, c| m.vertical(c, 1)),
@@ -1369,6 +1369,7 @@ impl Editor {
     }
 
     fn write(&mut self) -> bool {
+        self.tidy_before_save();
         match self.buf.save() {
             Ok(n) => {
                 let name = self.buf.path.as_ref().map(|p| p.display().to_string()).unwrap_or_default();
