@@ -375,9 +375,9 @@ impl Editor {
         }
         // 操作の一覧
         if let Some((ops, sel)) = &mut p.ops {
+            let moved = crate::list::step_typing(key, *sel, ops.len());
             match key {
-                Key::Down | Key::Ctrl('n') | Key::Tab => *sel = (*sel + 1).min(ops.len() - 1),
-                Key::Up | Key::Ctrl('p') => *sel = sel.saturating_sub(1),
+                _ if moved.is_some() => *sel = moved.unwrap_or(*sel),
                 Key::Left | Key::Esc | Key::Ctrl('h') => p.ops = None,
                 Key::Enter | Key::Right => {
                     let op = ops[*sel];

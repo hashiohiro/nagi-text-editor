@@ -138,6 +138,7 @@ impl Editor {
         };
         let last = d.rows.len().saturating_sub(1);
         let pending = std::mem::take(&mut self.diff_pending);
+        let moved = crate::list::step(key, d.cursor, last + 1, rows);
         match (pending, key) {
             (Some(']'), Key::Char('c')) => {
                 if let Some(&r) = d.hunk_rows.iter().find(|&&r| r > d.cursor) {
@@ -151,11 +152,7 @@ impl Editor {
             }
             (Some('g'), Key::Char('g')) => d.cursor = 0,
             (_, Key::Char(c @ (']' | '[' | 'g'))) => self.diff_pending = Some(c),
-            (_, Key::Char('j') | Key::Down) => d.cursor = (d.cursor + 1).min(last),
-            (_, Key::Char('k') | Key::Up) => d.cursor = d.cursor.saturating_sub(1),
-            (_, Key::Ctrl('d')) => d.cursor = (d.cursor + rows / 2).min(last),
-            (_, Key::Ctrl('u')) => d.cursor = d.cursor.saturating_sub(rows / 2),
-            (_, Key::Char('G')) => d.cursor = last,
+            _ if moved.is_some() => d.cursor = moved.unwrap_or(d.cursor),
             (_, Key::Char('q') | Key::Esc) => self.close_diff(),
             (_, Key::Char('u')) => self.diff_apply(false),
             (_, Key::Char('s')) => self.diff_apply(true),
@@ -172,11 +169,7 @@ impl Editor {
             _ => {}
         }
         if let Some(d) = &mut self.diff {
-            if d.cursor < d.top {
-                d.top = d.cursor;
-            } else if d.cursor >= d.top + rows {
-                d.top = d.cursor + 1 - rows;
-            }
+            crate::list::fit(d.cursor, &mut d.top, rows);
         }
     }
 

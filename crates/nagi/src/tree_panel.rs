@@ -355,16 +355,12 @@ impl Editor {
             }
             return Effect::None;
         }
-        let last = t.rows.len().saturating_sub(1);
+        let moved = crate::list::step(key, t.selected, t.rows.len(), half * 2);
         match key {
+            _ if moved.is_some() => t.selected = moved.unwrap_or(t.selected),
             Key::Ctrl('w') => t.pending_w = true,
-            Key::Char('j') | Key::Down => t.selected = (t.selected + 1).min(last),
-            Key::Char('k') | Key::Up => t.selected = t.selected.saturating_sub(1),
             Key::Char('g') if g_pending => t.selected = 0,
             Key::Char('g') => t.pending_g = true,
-            Key::Char('G') => t.selected = last,
-            Key::Ctrl('d') => t.selected = (t.selected + half).min(last),
-            Key::Ctrl('u') => t.selected = t.selected.saturating_sub(half),
             Key::Enter | Key::Char('l') | Key::Char('o') => {
                 let stay = key == Key::Char('o');
                 let Some(row) = t.rows.get(t.selected).cloned() else { return Effect::None };

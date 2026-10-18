@@ -596,25 +596,13 @@ impl Editor {
             SFocus::Combo => {
                 let n = d.combo.as_ref().map_or(0, |c| c.shown().len());
                 let normal = d.combo.as_ref().is_some_and(|c| !c.filter.is_insert());
+                // 打って絞り込む一覧: ↑↓ Ctrl+n/p など。ノーマルでは j・k も
+                let sel = d.combo.as_ref().map_or(0, |c| c.sel);
+                let moved = crate::list::step_typing(key, sel, n).or_else(|| if normal { crate::list::step(key, sel, n, 10) } else { None });
                 match key {
-                    Key::Down | Key::Tab | Key::Ctrl('n') | Key::Ctrl('j') => {
+                    _ if moved.is_some() => {
                         if let Some(c) = &mut d.combo {
-                            c.sel = (c.sel + 1).min(n.saturating_sub(1));
-                        }
-                    }
-                    Key::Char('j') if normal => {
-                        if let Some(c) = &mut d.combo {
-                            c.sel = (c.sel + 1).min(n.saturating_sub(1));
-                        }
-                    }
-                    Key::Up | Key::Ctrl('p') | Key::Ctrl('k') => {
-                        if let Some(c) = &mut d.combo {
-                            c.sel = c.sel.saturating_sub(1);
-                        }
-                    }
-                    Key::Char('k') if normal => {
-                        if let Some(c) = &mut d.combo {
-                            c.sel = c.sel.saturating_sub(1);
+                            c.sel = moved.unwrap_or(c.sel);
                         }
                     }
                     Key::Enter => {
@@ -686,11 +674,10 @@ impl Editor {
             },
             SFocus::Items => {
                 let n = d.items().len();
+                let moved = crate::list::step(key, d.selected, n, 10);
                 match key {
-                    Key::Char('j') | Key::Down => d.selected = (d.selected + 1).min(n.saturating_sub(1)),
-                    Key::Char('k') | Key::Up => d.selected = d.selected.saturating_sub(1),
+                    _ if moved.is_some() => d.selected = moved.unwrap_or(d.selected),
                     Key::Char('g') => d.selected = 0,
-                    Key::Char('G') => d.selected = n.saturating_sub(1),
                     Key::Tab => d.focus = SFocus::Cats,
                     Key::Char('h') | Key::Left => {
                         if d.current().is_some_and(|i| matches!(i.kind, SKind::Choice(_))) {

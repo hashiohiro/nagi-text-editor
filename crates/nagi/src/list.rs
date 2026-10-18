@@ -1,0 +1,65 @@
+//! 一覧の選択とスクロール（パネル・ダイアログ・表で共通）。
+//!
+//! 一覧は「選んでいる行」と「先頭に見せている行」の 2 つの数を持つ。キーでの移動は `step`、
+//! 描く前に選んでいる行を見える範囲に収めるのは `fit`。パネル独自のキー（Enter・o・g など）はパネルが先に見る。
+
+use nagi_vim::Key;
+
+/// 移動のキーなら、選び直した位置（`len` 行の中で。`page` は 1 画面の行数）。移動のキーでなければ None。
+/// j k ↓ ↑・Ctrl+d Ctrl+u（半画面）・Ctrl+f Ctrl+b PageDown PageUp（1 画面）・G End（最後）・Home（最初）
+pub fn step(key: Key, sel: usize, len: usize, page: usize) -> Option<usize> {
+    let last = len.saturating_sub(1);
+    let page = page.max(1);
+    let half = (page / 2).max(1);
+    Some(match key {
+        Key::Char('j') | Key::Down => (sel + 1).min(last),
+        Key::Char('k') | Key::Up => sel.saturating_sub(1),
+        Key::Ctrl('d') => (sel + half).min(last),
+        Key::Ctrl('u') => sel.saturating_sub(half),
+        Key::Ctrl('f') | Key::PageDown => (sel + page).min(last),
+        Key::Ctrl('b') | Key::PageUp => sel.saturating_sub(page),
+        Key::Char('G') | Key::End => last,
+        Key::Home => 0,
+        _ => return None,
+    })
+}
+
+/// 打って絞り込む一覧（入力欄があり j・k は文字になる）の移動: ↓ Ctrl+n Ctrl+j Tab・↑ Ctrl+p Ctrl+k
+pub fn step_typing(key: Key, sel: usize, len: usize) -> Option<usize> {
+    match key {
+        Key::Down | Key::Ctrl('n') | Key::Ctrl('j') | Key::Tab => Some((sel + 1).min(len.saturating_sub(1))),
+        Key::Up | Key::Ctrl('p') | Key::Ctrl('k') => Some(sel.saturating_sub(1)),
+        _ => None,
+    }
+}
+
+/// 選んでいる行 `sel` が、`h` 行の見える範囲に入るように先頭 `top` を送る
+pub fn fit(sel: usize, top: &mut usize, h: usize) {
+    let h = h.max(1);
+    if sel < *top {
+        *top = sel;
+    } else if sel >= *top + h {
+        *top = sel + 1 - h;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn steps_and_fit() {
+        assert_eq!(step(Key::Char('j'), 9, 10, 4), Some(9), "最後で止まる");
+        assert_eq!(step(Key::Ctrl('d'), 0, 10, 4), Some(2));
+        assert_eq!(step(Key::PageDown, 0, 10, 4), Some(4));
+        assert_eq!(step(Key::Char('G'), 0, 10, 4), Some(9));
+        assert_eq!(step(Key::Char('j'), 0, 0, 4), Some(0), "空の一覧");
+        assert_eq!(step(Key::Enter, 0, 10, 4), None);
+        assert_eq!(step_typing(Key::Char('j'), 0, 10), None, "打つ一覧では j は文字");
+        let mut top = 0;
+        fit(7, &mut top, 5);
+        assert_eq!(top, 3);
+        fit(1, &mut top, 5);
+        assert_eq!(top, 1);
+    }
+}

@@ -354,6 +354,7 @@ impl Editor {
         let normal = !l.field.is_insert() && l.field.ed.pending_keys.is_empty() && l.field.visual().is_none();
         let last = l.hits.len().saturating_sub(1);
         let pending_d = std::mem::take(&mut l.pending_d);
+        let moved = crate::list::step_typing(key, l.selected, last + 1);
         match key {
             Key::Enter | Key::Ctrl('m') => {
                 if let Some(e) = l.selected_entry() {
@@ -366,18 +367,16 @@ impl Editor {
                 }
                 return;
             }
-            Key::Down | Key::Ctrl('n') | Key::Ctrl('j') | Key::Tab => l.selected = (l.selected + 1).min(last),
-            Key::Up | Key::Ctrl('p') | Key::Ctrl('k') => l.selected = l.selected.saturating_sub(1),
+            _ if moved.is_some() => l.selected = moved.unwrap_or(l.selected),
             // 左の操作（入力中でも使える Ctrl のキー）
             Key::Ctrl('o') => return self.launcher_action('o'),
             Key::Ctrl('l') => return self.launcher_action('w'),
             Key::Ctrl('g') => return self.launcher_action('g'),
             Key::Ctrl('r') => return self.launcher_action('r'),
             Key::Ctrl('e') => return self.launcher_action('n'),
-            Key::Char('j') if normal => l.selected = (l.selected + 1).min(last),
-            Key::Char('k') if normal => l.selected = l.selected.saturating_sub(1),
+            Key::Char('j' | 'k') if normal => l.selected = crate::list::step(key, l.selected, last + 1, 10).unwrap_or(l.selected),
             Key::Char(c @ ('g' | 'o' | 'w' | 'r' | 'n')) if normal => return self.launcher_action(c),
-            Key::Char('G') if normal => l.selected = last,
+            Key::Char('G') if normal => l.selected = crate::list::step(key, l.selected, last + 1, 10).unwrap_or(l.selected),
 
             Key::Char('p') if normal => {
                 if let Some(e) = l.selected_entry().cloned() {

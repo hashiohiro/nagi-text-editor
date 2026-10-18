@@ -185,14 +185,11 @@ impl Editor {
             }
             return Effect::None;
         }
+        let moved = crate::list::step(key, p.selected, last + 1, h);
         match key {
-            Key::Char('j') | Key::Down => p.selected = (p.selected + 1).min(last),
-            Key::Char('k') | Key::Up => p.selected = p.selected.saturating_sub(1),
-            Key::Ctrl('d') => p.selected = (p.selected + h / 2).min(last),
-            Key::Ctrl('u') => p.selected = p.selected.saturating_sub(h / 2),
+            _ if moved.is_some() => p.selected = moved.unwrap_or(p.selected),
             Key::Char('g') if g => p.selected = 0,
             Key::Char('g') => p.pending_g = true,
-            Key::Char('G') => p.selected = last,
             Key::Ctrl('w') => p.pending_w = true,
             Key::Enter | Key::Char('o') => {
                 let stay = key == Key::Char('o');
@@ -218,11 +215,7 @@ impl Editor {
             _ => {}
         }
         let p = &mut self.problems;
-        if p.selected < p.scroll {
-            p.scroll = p.selected;
-        } else if p.selected >= p.scroll + h {
-            p.scroll = p.selected + 1 - h;
-        }
+        crate::list::fit(p.selected, &mut p.scroll, h);
         Effect::None
     }
 

@@ -68,6 +68,7 @@ mod tree_panel;
 mod normal;
 mod stats;
 mod view;
+mod list;
 mod grammars;
 mod vim_field;
 mod panes;

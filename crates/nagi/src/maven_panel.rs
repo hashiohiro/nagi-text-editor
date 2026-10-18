@@ -162,13 +162,9 @@ impl Editor {
             self.mode = Mode::Normal;
             return Effect::None;
         };
-        let last = m.rows.len().saturating_sub(1);
+        let moved = crate::list::step(key, m.selected, m.rows.len(), half * 2);
         match key {
-            Key::Char('j') | Key::Down => m.selected = (m.selected + 1).min(last),
-            Key::Char('k') | Key::Up => m.selected = m.selected.saturating_sub(1),
-            Key::Ctrl('d') => m.selected = (m.selected + half).min(last),
-            Key::Ctrl('u') => m.selected = m.selected.saturating_sub(half),
-            Key::Char('G') => m.selected = last,
+            _ if moved.is_some() => m.selected = moved.unwrap_or(m.selected),
             Key::Char('g') => m.selected = 0,
             Key::Enter | Key::Char('o') => self.maven_activate(),
             // l で開く・h で閉じる（閉じていれば親へ）

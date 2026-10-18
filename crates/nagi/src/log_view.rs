@@ -443,11 +443,7 @@ impl Editor {
             _ => {}
         }
         if let Some(l) = &mut self.log {
-            if l.selected < l.top {
-                l.top = l.selected;
-            } else if l.selected >= l.top + rows {
-                l.top = l.selected + 1 - rows;
-            }
+            crate::list::fit(l.selected, &mut l.top, rows);
         }
     }
 

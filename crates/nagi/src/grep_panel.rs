@@ -351,6 +351,7 @@ impl Editor {
             }
             return crate::editor::Effect::None;
         }
+        let moved = crate::list::step(key, g.selected, g.hits.len(), half * 2);
         match key {
             Key::Ctrl('w') => g.pending_w = true,
             // 行の範囲を選ぶ（V）、y・Ctrl+C でコピー（範囲が無ければ今の行）
@@ -359,28 +360,12 @@ impl Editor {
                 self.panel_copy();
             }
             Key::Esc if g.anchor.is_some() => g.anchor = None,
-            Key::Char('j') | Key::Down => {
-                let i = g.selected + 1;
-                g.select(i);
-            }
-            Key::Char('k') | Key::Up => {
-                let i = g.selected.saturating_sub(1);
+            _ if moved.is_some() => {
+                let i = moved.unwrap_or(g.selected);
                 g.select(i);
             }
             Key::Char('g') if g_pending => g.select(0),
             Key::Char('g') => g.pending_g = true,
-            Key::Char('G') => {
-                let i = g.hits.len();
-                g.select(i);
-            }
-            Key::Ctrl('d') => {
-                let i = g.selected + half;
-                g.select(i);
-            }
-            Key::Ctrl('u') => {
-                let i = g.selected.saturating_sub(half);
-                g.select(i);
-            }
             Key::Enter => {
                 self.mode = Mode::Normal;
                 self.open_hit(false);

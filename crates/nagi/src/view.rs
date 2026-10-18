@@ -646,57 +646,31 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     let underline = (cell.h / 16.0).round().max(1.0);
     let mut p = Painter { out: Vec::with_capacity(cols * rows + 64), fonts, r, cols, bar, underline, caret_at: None, tab_hits: Vec::new(), wrap_w: 0, wrap_rows: 1, end_y: 0.0 };
     if let (Some(r), Some(t)) = (ed.tree_rect(), &mut ed.tree) {
-        let h = r.h.saturating_sub(1).max(1);
-        if t.selected < t.scroll {
-            t.scroll = t.selected;
-        } else if t.selected >= t.scroll + h {
-            t.scroll = t.selected + 1 - h;
-        }
+        crate::list::fit(t.selected, &mut t.scroll, r.h.saturating_sub(1));
     }
     if let (Some(r), Some(g)) = (ed.panel_rect(), &mut ed.grep) {
         // 選んでいる結果が見える範囲に入るように送る（1 行目は見出し）
-        let h = r.h.saturating_sub(1).max(1);
-        if g.selected < g.scroll {
-            g.scroll = g.selected;
-        } else if g.selected >= g.scroll + h {
-            g.scroll = g.selected + 1 - h;
-        }
+        crate::list::fit(g.selected, &mut g.scroll, r.h.saturating_sub(1));
     }
     if let (Some(r), Some(c)) = (ed.commit_rect(), &mut ed.commit) {
         // 選んでいる項目（見出しの行を含めた位置）が見える範囲に入るように送る
         let h = crate::commit_panel::layout(r.h).list_h;
         let tracked = c.tracked();
         let at = c.selected + 1 + usize::from(c.selected >= tracked);
-        if at < c.scroll {
-            c.scroll = at;
-        } else if at >= c.scroll + h {
-            c.scroll = at + 1 - h;
-        }
+        crate::list::fit(at, &mut c.scroll, h);
     }
     if let Some(r) = ed.right_rect() {
-        let h = r.h.saturating_sub(2).max(1);
-        let fit = |sel: usize, scroll: &mut usize| {
-            if sel < *scroll {
-                *scroll = sel;
-            } else if sel >= *scroll + h {
-                *scroll = sel + 1 - h;
-            }
-        };
+        let h = r.h.saturating_sub(2);
         if let Some(m) = &mut ed.maven {
-            fit(m.selected, &mut m.scroll);
+            crate::list::fit(m.selected, &mut m.scroll, h);
         }
         if let Some(d) = &mut ed.db {
-            fit(d.selected, &mut d.scroll);
+            crate::list::fit(d.selected, &mut d.scroll, h);
         }
     }
     // 表: 選んだ行と列が見える範囲に入るように送る
     let fit_grid = |row: usize, col: usize, scroll: &mut usize, hscroll: &mut usize, widths: &[usize], h: usize, w: usize| {
-        let h = h.max(1);
-        if row < *scroll {
-            *scroll = row;
-        } else if row >= *scroll + h {
-            *scroll = row + 1 - h;
-        }
+        crate::list::fit(row, scroll, h);
         if col < *hscroll {
             *hscroll = col;
         }
@@ -719,12 +693,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     }
     if let Some(f) = &mut ed.finder {
         // 選んでいる候補が見える範囲に入るように送る
-        let h = finder_height(rows);
-        if f.selected < f.scroll {
-            f.scroll = f.selected;
-        } else if f.selected >= f.scroll + h {
-            f.scroll = f.selected + 1 - h;
-        }
+        crate::list::fit(f.selected, &mut f.scroll, finder_height(rows));
     }
     // 見えている窓のバッファの git の差分（版が変わったときだけ計算し直す）
     ed.prepare_git();

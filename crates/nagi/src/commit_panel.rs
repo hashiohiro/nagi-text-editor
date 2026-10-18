@@ -374,10 +374,9 @@ impl Editor {
             return Effect::None;
         }
         let last = p.items.len().saturating_sub(1);
+        let moved = crate::list::step(key, p.selected, p.items.len(), 10);
         match key {
-            Key::Char('j') | Key::Down => p.selected = (p.selected + 1).min(last),
-            Key::Char('k') | Key::Up => p.selected = p.selected.saturating_sub(1),
-            Key::Char('G') => p.selected = last,
+            _ if moved.is_some() => p.selected = moved.unwrap_or(p.selected),
             Key::Char('g') => p.selected = 0,
             Key::Char(' ') => {
                 if let Some(it) = p.items.get_mut(p.selected) {

@@ -390,16 +390,14 @@ impl Editor {
                 let Some(t) = r.active_tab_mut() else { return crate::editor::Effect::None };
                 let last_row = t.rows.len().saturating_sub(1);
                 let last_col = t.cols.len().saturating_sub(1);
+                let moved = crate::list::step(k, t.row, last_row + 1, half * 2);
                 match k {
-                    Key::Char('j') | Key::Down => t.row = (t.row + 1).min(last_row),
-                    Key::Char('k') | Key::Up => t.row = t.row.saturating_sub(1),
                     Key::Char('l') | Key::Right | Key::Tab => t.col = (t.col + 1).min(last_col),
                     Key::Char('h') | Key::Left => t.col = t.col.saturating_sub(1),
+                    // 表では Home・End は列の端へ
                     Key::Char('0') | Key::Home => t.col = 0,
                     Key::Char('$') | Key::End => t.col = last_col,
-                    Key::Ctrl('d') => t.row = (t.row + half).min(last_row),
-                    Key::Ctrl('u') => t.row = t.row.saturating_sub(half),
-                    Key::Char('G') => t.row = last_row,
+                    _ if moved.is_some() => t.row = moved.unwrap_or(t.row),
                     Key::Char('g') if pending => t.row = 0,
                     Key::Char('y') if pending => {
                         let s = t.to_tsv();

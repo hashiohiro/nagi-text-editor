@@ -1312,13 +1312,9 @@ impl Editor {
             }
             return Effect::None;
         }
-        let last = p.rows.len().saturating_sub(1);
+        let moved = crate::list::step(key, p.selected, p.rows.len(), half * 2);
         match key {
-            Key::Char('j') | Key::Down => p.selected = (p.selected + 1).min(last),
-            Key::Char('k') | Key::Up => p.selected = p.selected.saturating_sub(1),
-            Key::Ctrl('d') => p.selected = (p.selected + half).min(last),
-            Key::Ctrl('u') => p.selected = p.selected.saturating_sub(half),
-            Key::Char('G') => p.selected = last,
+            _ if moved.is_some() => p.selected = moved.unwrap_or(p.selected),
             Key::Char('g') => p.selected = 0,
             Key::Char('/') => {
                 p.filter = Some(VimField::new(&p.filter_text, false));

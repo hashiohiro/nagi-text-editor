@@ -295,11 +295,10 @@ impl Editor {
         match d.focus {
             Focus::List => {
                 let n = d.configs.len();
+                let moved = crate::list::step(key, d.selected, n, 10);
                 match key {
-                    Key::Char('j') | Key::Down => d.select(d.selected + 1),
-                    Key::Char('k') | Key::Up => d.select(d.selected.saturating_sub(1)),
+                    _ if moved.is_some() => d.select(moved.unwrap_or(d.selected)),
                     Key::Char('g') => d.select(0),
-                    Key::Char('G') => d.select(n.saturating_sub(1)),
                     Key::Enter | Key::Tab | Key::Char('l') | Key::Char('i') => {
                         d.focus = Focus::Name;
                         d.name.reinsert();

@@ -78,11 +78,7 @@ impl Editor {
         }
         let max = pv.lines.len().saturating_sub(h);
         pv.scroll = pv.scroll.min(max);
-        if pv.selected < pv.scroll {
-            pv.scroll = pv.selected;
-        } else if pv.selected >= pv.scroll + h {
-            pv.scroll = pv.selected + 1 - h;
-        }
+        crate::list::fit(pv.selected, &mut pv.scroll, h);
     }
 
     pub(crate) fn md_preview_key(&mut self, key: Key) -> Effect {
@@ -91,17 +87,11 @@ impl Editor {
             self.mode = Mode::Normal;
             return Effect::None;
         };
-        let last = pv.lines.len().saturating_sub(1);
         pv.follow = false;
+        let moved = crate::list::step(key, pv.selected, pv.lines.len(), h);
         match key {
-            Key::Char('j') | Key::Down => pv.selected = (pv.selected + 1).min(last),
-            Key::Char('k') | Key::Up => pv.selected = pv.selected.saturating_sub(1),
-            Key::Ctrl('d') => pv.selected = (pv.selected + h / 2).min(last),
-            Key::Ctrl('u') => pv.selected = pv.selected.saturating_sub(h / 2),
-            Key::Ctrl('f') | Key::PageDown => pv.selected = (pv.selected + h).min(last),
-            Key::Ctrl('b') | Key::PageUp => pv.selected = pv.selected.saturating_sub(h),
+            _ if moved.is_some() => pv.selected = moved.unwrap_or(pv.selected),
             Key::Char('g') => pv.selected = 0,
-            Key::Char('G') => pv.selected = last,
             Key::Enter => {
                 let link = pv.lines.get(pv.selected).and_then(|l| l.links.first()).map(|x| x.1.clone());
                 match link {
