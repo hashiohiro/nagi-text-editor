@@ -257,7 +257,8 @@ impl Editor {
             BottomKind::Result => self.result_click(row, col.saturating_sub(1)),
             BottomKind::Problems => self.problems_click(row, clicks),
             BottomKind::Git => {
-                self.mode = Mode::Log;
+                let w = self.bottom_content_rect().map_or(0, |r| r.w);
+                self.log_click(row, col, w, clicks);
             }
             BottomKind::Terminal => self.terminal_click(row, col),
             BottomKind::Grep | BottomKind::Output => self.panel_click(row, clicks),

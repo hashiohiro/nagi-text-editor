@@ -451,6 +451,47 @@ impl Editor {
         }
     }
 
+    /// 下の欄の Git を押した（欄の中身の行・列・幅。0 行目は絞り込みの見出し）。
+    /// 真ん中はコミットを選ぶ（ダブルクリックで変えたファイルへ）、右は変えたファイルを選ぶ（ダブルクリックで差分）
+    pub(crate) fn log_click(&mut self, row: usize, col: usize, w: usize, clicks: u32) {
+        self.mode = Mode::Log;
+        let Some(l) = &mut self.log else { return };
+        l.confirm = None;
+        if row == 0 {
+            return;
+        }
+        l.filter = None;
+        // 描き方（view.rs の draw_log_view）と同じ割り付け
+        let bw = 20.min(w / 6);
+        let dw = 42.min(w / 3);
+        let cx = bw + 1;
+        let cw = w.saturating_sub(bw + dw + 2);
+        let dx = cx + cw + 1;
+        if col >= cx && col < cx + cw {
+            let k = l.top + row - 1;
+            if k < l.visible.len() && l.rows[l.visible[k]].commit.is_some() {
+                l.selected = k;
+                l.focus_files = false;
+                if clicks >= 2 && l.detail.as_ref().is_some_and(|d| !d.files.is_empty()) {
+                    l.focus_files = true;
+                }
+            }
+        } else if col >= dx {
+            // 右: 見出し 2 行・本文（8 行まで）・「変えたファイル」の後にファイル
+            let Some(d) = &l.detail else { return };
+            let first = 5 + d.message.lines().count().min(8);
+            if let Some(k) = row.checked_sub(first).filter(|&k| k < d.files.len()) {
+                l.focus_files = true;
+                l.file_sel = k;
+                if clicks >= 2 {
+                    self.log_open_file_diff();
+                }
+            }
+        } else {
+            l.focus_files = false;
+        }
+    }
+
     pub(crate) fn close_log(&mut self) {
         self.log = None;
         if self.mode == Mode::Log {
@@ -510,5 +551,50 @@ mod tests {
         let d = parse_detail("abc\x1f自分\x1f3 days ago\x1fp1 p2\x1f件名\n\n本文\n\x1e\n\nM\tsrc/a.rs\nR100\told.rs\tnew.rs\n");
         assert_eq!((d.hash.as_str(), d.parents.as_str(), d.message.as_str()), ("abc", "p1 p2", "件名\n\n本文"));
         assert_eq!(d.files, vec![('M', "src/a.rs".to_string()), ('R', "new.rs".to_string())]);
+    }
+
+    /// 本文へ移った後でも、Git の欄の行を押せば選び直せる
+    #[test]
+    fn click_selects_commit_and_file() {
+        let mut e = Editor::new(nagi_core::Buffer::from_str("x"), None);
+        e.set_screen(120, 40);
+        let rows = parse_log("*\x1fa1\x1f\x1f一\x1fA\x1f1\x1fa1\n|\n*\x1fb2\x1f\x1f二\x1fA\x1f2\x1fb2\n");
+        e.log = Some(LogView {
+            docked: true,
+            visible: (0..rows.len()).collect(),
+            rows,
+            selected: 0,
+            top: 0,
+            branches: Vec::new(),
+            detail: Some(parse_detail("a1\x1fA\x1f1\x1fp\x1f件名\x1e\n\nM\ta.rs\nA\tb.rs\n")),
+            focus_files: false,
+            file_sel: 0,
+            filter_text: String::new(),
+            filter: None,
+            path: None,
+            confirm: None,
+            loading: false,
+            rx_log: None,
+            rx_branches: None,
+            rx_detail: None,
+        });
+        e.select_bottom_tab(crate::result_grid::BottomKind::Git);
+        e.mode = Mode::Normal;
+        // 真ん中の 3 行目（グラフだけの行の次）を押す。欄の 0 行目はタブ、1 行目は絞り込みの見出し
+        e.bottom_click(4, 60, 1);
+        assert_eq!(e.mode, Mode::Log);
+        assert_eq!(e.log.as_ref().unwrap().selected, 2);
+        // グラフだけの行は選ばない
+        e.bottom_click(3, 60, 1);
+        assert_eq!(e.log.as_ref().unwrap().selected, 2);
+        // 本文へ戻ってから、右の変えたファイル（見出し 2 行・件名 1 行・「変えたファイル」の次）を押す
+        e.mode = Mode::Normal;
+        e.bottom_click(1 + 5 + 1 + 1, 110, 1);
+        let l = e.log.as_ref().unwrap();
+        assert_eq!((e.mode, l.focus_files, l.file_sel), (Mode::Log, true, 1));
+        // 真ん中を押せばコミットの選びへ戻る
+        e.bottom_click(2, 60, 1);
+        let l = e.log.as_ref().unwrap();
+        assert_eq!((l.focus_files, l.selected), (false, 0));
     }
 }

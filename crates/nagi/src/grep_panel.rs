@@ -447,6 +447,23 @@ mod tests {
         keys(&mut e, "G<CR>");
         assert_eq!(e.mode, Mode::Normal);
         assert_eq!(e.cursor.line, 2);
+        // 本文へ移った後に、結果をマウスで選び直せる（下の欄の 0 行目はタブ、1 行目は見出し、2 行目から結果）
+        assert_eq!(e.mode, Mode::Normal);
+        e.bottom_click(3, 5, 1);
+        assert_eq!(e.mode, Mode::List, "{}", e.message);
+        assert_eq!(e.grep.as_ref().unwrap().selected, 1);
+        e.bottom_click(3, 5, 2);
+        assert_eq!(e.mode, Mode::Normal);
+        assert_eq!(e.buf.line(0), "// Needle here");
+        // 本文で挿入・ビジュアルの最中でも、結果を押せば選べる
+        for k in ["ix", "v", "V"] {
+            keys(&mut e, k);
+            e.bottom_click(2, 5, 1);
+            assert_eq!((e.mode, e.grep.as_ref().unwrap().selected), (Mode::List, 0), "{k}: {}", e.message);
+            e.bottom_click(2, 5, 2);
+            assert_eq!(e.mode, Mode::Normal, "{k}");
+            keys(&mut e, "<Esc>u");
+        }
         // パネルで q を押すと閉じ、窓が元の大きさに戻る
         keys(&mut e, "<C-w>jq");
         assert!(e.grep.is_none());
