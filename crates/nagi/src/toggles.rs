@@ -76,6 +76,11 @@ impl Editor {
         self.bottom_exists() && !self.bottom_hidden
     }
 
+    /// 下の欄を出すボタン（▴）を出すか。出すときは、左の欄を 1 行短くして左下の隅に置く
+    pub fn show_bottom_button(&self) -> bool {
+        !self.bottom_visible() && self.diff.is_none() && !self.log_fullscreen() && self.db_table.is_none()
+    }
+
     /// 画面にあるボタン（ボタン, 行, 列）。幅はどれも 1 セル
     pub fn toggle_buttons(&self) -> Vec<(Button, usize, usize)> {
         let mut v = Vec::new();
@@ -84,12 +89,11 @@ impl Editor {
             None if self.diff.is_none() && !self.log_fullscreen() && self.db_table.is_none() => v.push((Button::ShowLeft, 0, 0)),
             None => {}
         }
+        // 下の欄: ▾・▴ とも画面の左端（左の欄を開いていても）
         match self.panel_rect() {
-            Some(r) => v.push((Button::HideBottom, r.y, r.x + r.w - 2)),
+            Some(r) => v.push((Button::HideBottom, r.y, 0)),
             // 下の欄はまだ開いていなくても出す（押すと最後に使ったタブ）
-            None if self.diff.is_none() && !self.log_fullscreen() && self.db_table.is_none() => {
-                v.push((Button::ShowBottom, self.windows_rows().saturating_sub(1), self.windows_x().0))
-            }
+            None if self.show_bottom_button() => v.push((Button::ShowBottom, self.windows_rows().saturating_sub(1), 0)),
             None => {}
         }
         // 右の欄: タブの行の右端に「隠す」、隠している間は右上の隅に「出す」

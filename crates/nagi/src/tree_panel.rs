@@ -203,7 +203,9 @@ impl Editor {
         self.left_visible()?;
         let (cols, _) = self.screen;
         let _ = cols;
-        Some(Rect { x: 0, y: 0, w: self.left_width(), h: self.windows_rows() })
+        // 下の欄を隠しているときは、左下の隅を ▴ のボタンに空ける
+        let h = self.windows_rows() - usize::from(self.show_bottom_button() && self.windows_rows() > 2);
+        Some(Rect { x: 0, y: 0, w: self.left_width(), h })
     }
 
     pub fn tree_rect(&self) -> Option<Rect> {

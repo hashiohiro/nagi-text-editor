@@ -28,6 +28,9 @@ pub const BTABS: [(&str, BottomKind); 6] = [
     ("クエリの結果", BottomKind::Result),
 ];
 
+/// タブの並びの左端（その手前は ▾ のボタン）
+pub const BTAB_X: usize = 2;
+
 /// 問題の一覧の 1 行
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProblemRow {
@@ -59,7 +62,8 @@ impl Editor {
 
     /// 1 行目の `col` にあるタブ
     pub fn btab_at(&self, col: usize) -> Option<BottomKind> {
-        self.bottom_tabs().get(col / crate::tree_panel::TAB_W).map(|t| t.1)
+        // 左端の 2 列は ▾ のボタン
+        self.bottom_tabs().get(col.checked_sub(BTAB_X)? / crate::tree_panel::TAB_W).map(|t| t.1)
     }
 
     /// ログ（コマンドの出力）の入れ物（出していなくても）
@@ -317,7 +321,8 @@ mod tests {
         assert_eq!(m.bottom_kind, BottomKind::Output);
         assert_eq!(m.problem_rows().len(), 3, "問題のタブにも出る");
         // タブの位置
-        assert_eq!(e.btab_at(1), Some(BottomKind::Git));
-        assert_eq!(e.btab_at(5), Some(BottomKind::Grep));
+        assert_eq!(e.btab_at(0), None, "▾ のボタン");
+        assert_eq!(e.btab_at(3), Some(BottomKind::Git));
+        assert_eq!(e.btab_at(7), Some(BottomKind::Grep));
     }
 }
