@@ -35,6 +35,8 @@ pub enum Source {
 
 /// コマンドパレットの項目（説明, Ex コマンド）
 const COMMANDS: &[(&str, &str)] = &[
+    ("実行の構成を選んで実行（Alt+Shift+F10）", "RunConfigs"),
+    ("実行の構成を追加・編集", "RunEdit"),
     ("ファイルを開く", "Files"),
     ("バッファを切り替える", "Buffers"),
     ("最近のファイル", "Recent"),
@@ -418,11 +420,7 @@ impl Editor {
                 self.edit_file(if p.is_absolute() { p } else { f.root.join(p) });
             }
             Source::Buffers => self.switch_doc(f.docs[i]),
-            Source::RunConfigs => {
-                if let Some(c) = self.run_list.get(i).cloned() {
-                    self.run_config(c);
-                }
-            }
+            Source::RunConfigs => self.run_list_pick(i),
             Source::Commands => {
                 let cmd = f.items[i].rsplit_once("  :").map_or("", |(_, c)| c).to_string();
                 return self.run_ex(&cmd);

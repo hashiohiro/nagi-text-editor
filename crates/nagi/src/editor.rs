@@ -1437,6 +1437,7 @@ impl Editor {
             "RunConfigs" => self.open_run_chooser(),
             "RunStop" => self.run_stop(),
             "RunEdit" => self.run_edit(),
+            "RunAdd" => self.run_add(arg),
             "Problems" => self.select_bottom_tab(crate::result_grid::BottomKind::Problems),
             "Output" => self.select_bottom_tab(crate::result_grid::BottomKind::Output),
             "TreeSync" => {

@@ -81,6 +81,7 @@ const EX_COMMANDS: &[(&str, &str)] = &[
     ("RunConfigs", "実行の構成を選んで動かす（Alt+Shift+F10）"),
     ("RunStop", "動いている構成を止める（Ctrl+F2）"),
     ("RunEdit", "nagi の実行の構成のファイル（.nagi/run.conf）を開く"),
+    ("RunAdd", "実行の構成を足す（:RunAdd 名前 = コマンド）"),
     ("Terminal", "ターミナル（下の欄。Alt+F12）。後に cmd・powershell・bash・wsl を書けばそのシェルで新しい窓"),
     ("Problems", "問題（下の欄。Alt+6）"),
     ("Output", "実行の出力（下の欄のログ。Alt+4）"),

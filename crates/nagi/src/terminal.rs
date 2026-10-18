@@ -264,6 +264,12 @@ impl Editor {
     }
 
     pub(crate) fn terminal_key(&mut self, key: Key) {
+        // 実行の構成の窓（▶）は、IntelliJ の実行の窓と同じく Esc でエディタへ戻る（シェルの窓では Esc はシェルへ）
+        if key == Key::Esc && self.terminals.chooser.is_none() && self.terminals.current().is_some_and(|t| t.name.starts_with(crate::run_configs::RUN_PREFIX)) {
+            self.terminals.sel = None;
+            self.mode = Mode::Normal;
+            return;
+        }
         // シェルを選んでいる
         if let Some(sel) = self.terminals.chooser {
             let shells = available_shells();

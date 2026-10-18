@@ -17,6 +17,22 @@ use crate::result_grid::BottomKind;
 /// 構成を動かすターミナルの窓の名前の頭
 pub const RUN_PREFIX: &str = "▶ ";
 
+/// 一覧の最後の行（選ぶと .nagi/run.conf を開く）
+const ADD_ITEM: &str = "＋ 構成を追加・編集（.nagi/run.conf）";
+
+/// .nagi/run.conf を初めて作るときの中身
+const RUN_CONF_TEMPLATE: &str = "\
+# nagi の実行の構成。1 行に 1 つ「名前 = コマンド」。プロジェクトのフォルダで動かす（# から行末は注釈）。
+# 保存すれば Shift+F10（選んでいる構成を実行）・Alt+Shift+F10（選んで実行）の一覧に出る。
+# IntelliJ で作った構成（.run・.idea）はここに書かなくても読む。1 行で足すなら :RunAdd 名前 = コマンド
+#
+# 例:
+# 開発サーバー = npm run dev
+# テスト = mvn -B test
+# Spring Boot = mvn -B -pl rest.demo spring-boot:run
+# 掃除 = rmdir /s /q target
+";
+
 impl Editor {
     /// 今のプロジェクトの構成を読み直す（選んでいる構成が無くなっていれば、IntelliJ で選んでいたもの → 先頭）
     pub(crate) fn load_run_configs(&mut self) -> Vec<RunConfig> {
@@ -33,7 +49,9 @@ impl Editor {
     pub(crate) fn run_command(&mut self, arg: &str) {
         let v = self.load_run_configs();
         if v.is_empty() {
-            self.message = "実行の構成がありません（IntelliJ で作った構成を読みます。自分で足すなら :RunEdit で .nagi/run.conf に「名前 = コマンド」）".into();
+            // 構成が無ければ、追加の行だけの一覧を出す
+            self.open_run_chooser();
+            self.message = "実行の構成がありません。「＋ 構成を追加・編集」で足せます（IntelliJ で作った構成も読みます）".into();
             return;
         }
         let want = if arg.is_empty() { self.run_selected.clone().unwrap_or_default() } else { arg.to_string() };
@@ -44,23 +62,53 @@ impl Editor {
         }
     }
 
-    /// 構成を選ぶ一覧（Alt+Shift+F10）。選ぶと実行する
+    /// 構成を選ぶ一覧（Alt+Shift+F10）。選ぶと実行する。最後の行は「構成を追加・編集」
     pub(crate) fn open_run_chooser(&mut self) {
-        let v = self.load_run_configs();
-        if v.is_empty() {
-            self.run_command("");
-            return;
-        }
-        self.run_list = v;
+        self.run_list = self.load_run_configs();
         self.open_finder(crate::finder::Source::RunConfigs);
     }
 
-    /// 一覧の 1 行（名前・種類・どこの構成か。選んでいるものに ●）
+    /// 一覧の 1 行（名前・種類・どこの構成か。選んでいるものに ●）。最後に「構成を追加・編集」
     pub(crate) fn run_list_items(&self) -> Vec<String> {
-        self.run_list
+        let mut v: Vec<String> = self
+            .run_list
             .iter()
             .map(|c| format!("{}{}   {}{}", if Some(&c.name) == self.run_selected.as_ref() { "● " } else { "  " }, c.name, c.kind_label(), if c.from == "nagi" { "（.nagi/run.conf）" } else { "" }))
-            .collect()
+            .collect();
+        v.push(ADD_ITEM.to_string());
+        v
+    }
+
+    /// 一覧で `i` 番目を選んだ（最後の行なら構成のファイルを開く）
+    pub(crate) fn run_list_pick(&mut self, i: usize) {
+        match self.run_list.get(i).cloned() {
+            Some(c) => self.run_config(c),
+            None => self.run_edit(),
+        }
+    }
+
+    /// `:RunAdd 名前 = コマンド`: nagi の構成に 1 行足して選ぶ
+    pub(crate) fn run_add(&mut self, arg: &str) {
+        let Some((name, cmd)) = arg.split_once('=').map(|(n, c)| (n.trim(), c.trim())).filter(|(n, c)| !n.is_empty() && !c.is_empty()) else {
+            self.message = "書き方: :RunAdd 名前 = コマンド（例: :RunAdd 開発サーバー = npm run dev）".into();
+            return;
+        };
+        let path = self.nav_root().join(".nagi").join("run.conf");
+        if let Some(d) = path.parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        let mut text = std::fs::read_to_string(&path).unwrap_or_else(|_| RUN_CONF_TEMPLATE.to_string());
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str(&format!("{name} = {cmd}\n"));
+        match std::fs::write(&path, text) {
+            Ok(()) => {
+                self.run_selected = Some(name.to_string());
+                self.message = format!("実行の構成を足しました: {name}（Shift+F10 で実行。{}）", path.display());
+            }
+            Err(e) => self.message = format!("{}: {e}", path.display()),
+        }
     }
 
     /// 構成を動かす
@@ -128,7 +176,7 @@ impl Editor {
             if let Some(d) = path.parent() {
                 let _ = std::fs::create_dir_all(d);
             }
-            let _ = std::fs::write(&path, "# nagi の実行の構成（1 行に 1 つ: 名前 = コマンド。プロジェクトのフォルダで動かす）\n# 開発サーバー = npm run dev\n");
+            let _ = std::fs::write(&path, RUN_CONF_TEMPLATE);
         }
         self.edit_file(path);
         self.mode = Mode::Normal;
@@ -241,5 +289,19 @@ mod tests {
         e.key(nagi_vim::Key::F(41));
         assert_eq!(e.mode, Mode::Finder);
         assert!(e.run_list_items()[0].contains("あいさつ"));
+        // 最後の行は「追加・編集」
+        assert!(e.run_list_items().last().unwrap().contains("追加"));
+        // 選んで動かした後はエディタのまま
+        e.key(nagi_vim::Key::Enter);
+        assert_eq!(e.mode, Mode::Normal);
+        // 実行の窓に移っても、Esc でエディタへ戻る
+        e.mode = Mode::Terminal;
+        e.key(nagi_vim::Key::Esc);
+        assert_eq!(e.mode, Mode::Normal);
+        // :RunAdd で足すと、一覧に出て選ばれる
+        e.run_add("テスト = echo t");
+        assert_eq!(e.run_selected.as_deref(), Some("テスト"));
+        assert!(std::fs::read_to_string(dir.join(".nagi/run.conf")).unwrap().ends_with("あいさつ = echo nagi-run-ok\nテスト = echo t\n"));
+        assert!(e.load_run_configs().iter().any(|c| c.name == "テスト"));
     }
 }

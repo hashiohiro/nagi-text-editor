@@ -847,8 +847,13 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             }
         }
         Mode::Terminal => {
-            let end = status_left(&mut p, &ed.message, "-- ターミナル --", y, FG);
-            let help = "Ctrl-\\ の後: n 本文へ  c 新しい窓（シェルを選ぶ）  1〜9 切り替え  x 閉じる   Alt+F12 隠す ";
+            let run = ed.terminals.current().is_some_and(|t| t.name.starts_with(crate::run_configs::RUN_PREFIX));
+            let end = status_left(&mut p, &ed.message, if run { "-- 実行 --" } else { "-- ターミナル --" }, y, FG);
+            let help = if run {
+                "Esc エディタへ   Ctrl+C 止める   Ctrl+F5 もう一度   Ctrl-\\ x 閉じる   Alt+F12 隠す "
+            } else {
+                "Ctrl-\\ の後: n 本文へ  c 新しい窓（シェルを選ぶ）  1〜9 切り替え  x 閉じる   Alt+F12 隠す "
+            };
             let pc = cols.saturating_sub(p.width(help));
             if end + 2 <= pc {
                 p.text(help, pc, y, STATUS_FG);
@@ -3213,7 +3218,8 @@ fn draw_terminal(p: &mut Painter, ed: &Editor, r: Rect, focused: bool) {
     if t.exited {
         let y = (r.y + r.h.saturating_sub(1)) as f32 * cell.h;
         p.out.push(Instance::fill(r.x as f32 * cell.w, y, r.w as f32 * cell.w, cell.h, MATCH_BG));
-        p.text(&format!(" {} が終わりました。Enter で起動し直す（Ctrl-\\ x で閉じる） ", t.name), r.x, y, FG);
+        let back = if t.name.starts_with(crate::run_configs::RUN_PREFIX) { "Esc でエディタへ、" } else { "" };
+        p.text(&format!(" {} が終わりました。Enter で起動し直す（{back}Ctrl-\\ x で閉じる） ", t.name), r.x, y, FG);
     }
     p.cols = saved;
 }
