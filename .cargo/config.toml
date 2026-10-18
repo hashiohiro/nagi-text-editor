@@ -1,0 +1,4 @@
+# 単一の exe にする: C の実行時ライブラリ（VCRUNTIME140.dll）を静的に組み込む。
+# 入れていない PC（Visual C++ 再頒布可能パッケージが無い）でも、exe 1 つで動く
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
