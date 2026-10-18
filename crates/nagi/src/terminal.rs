@@ -685,7 +685,8 @@ mod tests {
         assert!(s.iter().any(|(l, _)| l == "コマンドプロンプト"));
         assert!(s.iter().any(|(l, _)| l == "Windows PowerShell"));
         assert_eq!(shell_by_name("cmd").map(|s| s.0).as_deref(), Some("コマンドプロンプト"));
-        assert_eq!(shell_by_name("powershell").map(|s| s.0).as_deref(), Some("Windows PowerShell"));
+        // PowerShell 7 が入っていればそちら
+        assert!(matches!(shell_by_name("powershell").map(|s| s.0).as_deref(), Some("Windows PowerShell" | "PowerShell 7")));
     }
 
     fn wait_text(e: &mut Editor, want: &str) {

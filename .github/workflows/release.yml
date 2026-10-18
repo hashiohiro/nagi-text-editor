@@ -4,7 +4,11 @@
 #               git tag -a v0.3.0 -m "nagi v0.3.0" -m "- change 1" -m "- change 2"   (or -F notes.md)
 #               git push origin v0.3.0
 #             The first line of the tag message is the release title, the rest is the release notes.
-#   Dry run:  Actions > Release > Run workflow (builds, tests and uploads the zip as an artifact; no release)
+#   Dry run:  Actions > Release > Run workflow (builds and uploads the zip as an artifact; no release)
+#
+# Run the tests locally before tagging (grammars/build.sh, then cargo test --workspace). They are not run here:
+# the release profile uses panic = "abort", so tests and the release build cannot share compiled dependencies,
+# and building everything twice made the workflow slow.
 #
 # Grammars are not built here: nagi embeds the SHA-256 of each grammar DLL (crates/nagi-syntax/grammars.lock),
 # so they are built locally with grammars/build.sh and released as grammars-vN (see that script).
@@ -45,18 +49,8 @@ jobs:
           rustc --version
 
       - uses: Swatinem/rust-cache@v2
-
-      # Tests load the grammar DLLs from target/grammars/dist (.cargo/config.toml). Use the released ones,
-      # which also checks that they still match grammars.lock.
-      - name: Grammars
-        run: |
-          $release = (Select-String -Path crates/nagi-syntax/src/grammar.rs -Pattern 'pub const RELEASE: &str = "(.+)"').Matches[0].Groups[1].Value
-          New-Item -ItemType Directory -Force target/grammars/zips, target/grammars/dist | Out-Null
-          gh release download $release --repo $env:GITHUB_REPOSITORY --pattern 'grammar-*.zip' --dir target/grammars/zips
-          Get-ChildItem target/grammars/zips/*.zip | ForEach-Object { Expand-Archive $_.FullName -DestinationPath target/grammars/dist -Force }
-
-      - name: Test
-        run: cargo test --workspace --locked
+        with:
+          cache-on-failure: true
 
       - name: Build
         run: cargo build --release --locked

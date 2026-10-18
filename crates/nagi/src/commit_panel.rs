@@ -674,6 +674,8 @@ mod tests {
         g(&["init", "-q", "-b", "main"]);
         g(&["config", "user.email", "test@example.com"]);
         g(&["config", "user.name", "test"]);
+        // 改行を変えない（Windows の git の既定の core.autocrlf=true だと、戻したファイルが CRLF になる）
+        g(&["config", "core.autocrlf", "false"]);
         std::fs::write(dir.join("a.txt"), "a\n").unwrap();
         std::fs::write(dir.join("b.txt"), "b\n").unwrap();
         g(&["add", "."]);
