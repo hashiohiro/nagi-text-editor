@@ -10,6 +10,12 @@ use crate::drivers::{Download, download_and_extract};
 
 /// `id` の文法をダウンロードする（裏のスレッド）。Done で置いた DLL
 pub fn download(id: &str, waker: Waker) -> Download {
+    // 前に失敗して残った作業用のフォルダを消す
+    for e in std::fs::read_dir(grammar::dir()).into_iter().flatten().flatten() {
+        if e.file_name().to_string_lossy().starts_with(&format!(".download-{id}-")) {
+            let _ = std::fs::remove_dir_all(e.path());
+        }
+    }
     let work = grammar::dir().join(format!(".download-{id}-{}", std::process::id()));
     let name = format!("grammar-{id}.dll");
     let id2 = id.to_string();
