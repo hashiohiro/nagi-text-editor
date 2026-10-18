@@ -517,6 +517,25 @@ impl crate::component::Component for LauncherComponent {
     }
 }
 
+
+/// ランチャー（layout.rs の View）
+pub struct LauncherView;
+
+impl crate::layout::View for LauncherView {
+    fn rect(&self, ed: &crate::editor::Editor, s: crate::layout::Screen) -> Option<crate::panes::Rect> {
+        let _ = s;
+        ed.launcher.as_ref()?;
+        Some(crate::panes::Rect { x: 0, y: 0, w: s.cols, h: s.rows + ed.status_rows() })
+    }
+
+    fn draw(&self, ed: &crate::editor::Editor, p: &mut crate::view::Painter, r: crate::panes::Rect, s: crate::layout::Screen) {
+        let _ = (r, s);
+        if let Some(l) = &ed.launcher {
+            draw::draw_launcher(p, l, s.cols, s.rows + ed.status_rows(), &ed.preedit);
+        }
+    }
+}
+
 /// 描き方（view.rs の Painter で描く）
 pub(crate) mod draw {
     #![allow(unused_imports)]

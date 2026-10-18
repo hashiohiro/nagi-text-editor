@@ -69,6 +69,7 @@ mod normal;
 mod stats;
 mod view;
 mod list;
+mod layout;
 mod component;
 mod commands;
 mod notify;
@@ -1018,115 +1019,29 @@ impl App {
                 return;
             }
         }
-        // パネルの上なら、パネルの行を選ぶ（ダブルクリックで開く）
-        if let (Some(f), Some(ed)) = (&self.fonts, &mut self.ed) {
-            let cell = f.cell();
-            let row = (self.mouse.1 as f32 / cell.h) as usize;
-            // ターミナルの画面: 押して選び始める（ドラッグで範囲）
-            if ed.bottom_kind == result_grid::BottomKind::Terminal && ed.terminals.chooser.is_none() && ed.terminal_rect().is_some_and(|r| r.contains(row, (self.mouse.0.max(0.0) as f32 / cell.w) as usize)) {
-                let col = (self.mouse.0.max(0.0) as f32 / cell.w) as usize;
-                if ed.terminal_press(row, col) {
-                    self.term_select = true;
-                    self.sync_ime();
-                    self.draw();
-                    return;
-                }
-            }
-            if let Some(r) = ed.panel_rect().filter(|r| row >= r.y && row < r.y + r.h) {
-                let now = Instant::now();
-                let clicks = match self.last_click {
-                    Some((t, c, n)) if now - t <= double_click_time() && c == (row, usize::MAX) => n % 3 + 1,
-                    _ => 1,
-                };
-                self.last_click = Some((now, (row, usize::MAX), clicks));
-                // 1 行目はタブ、2 行目から中身
-                let col = (self.mouse.0.max(0.0) as f32 / cell.w) as usize;
-                ed.bottom_click(row - r.y, col.saturating_sub(r.x), clicks);
-                // 検索・ログの行を押したら、そのままドラッグで範囲を選べる
-                self.list_select = clicks == 1 && row > r.y + 1 && matches!(ed.bottom_kind, result_grid::BottomKind::Grep | result_grid::BottomKind::Output);
-                self.sync_ime();
-                self.draw();
-                return;
-            }
-        }
-        // SQL コンソールの上の帯
+        // 欄・小窓の上なら、その部品へ（layout.rs。上の部品から当てる。連続して押した回数は部品ごとに数える）
         if let (Some(f), Some(ed)) = (&self.fonts, &mut self.ed) {
             let cell = f.cell();
             let (row, col) = ((self.mouse.1 as f32 / cell.h) as usize, (self.mouse.0.max(0.0) as f32 / cell.w) as usize);
-            if row == 0 && ed.windows_top() > 0 {
-                let (x, w) = ed.windows_x();
-                if col >= x && col < x + w {
-                    if let Some(item) = ed.console_bar(w).into_iter().find(|b| col >= x + b.1 && col < x + b.1 + b.2).map(|b| b.3) {
-                        ed.console_bar_press(item);
-                    }
-                    self.sync_ime();
-                    self.draw();
-                    return;
-                }
-            }
-        }
-        // 右の欄（データベース・Maven）
-        if let (Some(f), Some(ed)) = (&self.fonts, &mut self.ed) {
-            let cell = f.cell();
-            let (row, col) = ((self.mouse.1 as f32 / cell.h) as usize, (self.mouse.0.max(0.0) as f32 / cell.w) as usize);
-            if let Some(r) = ed.right_rect().filter(|r| r.contains(row, col)) {
+            let screen = layout::Screen { rows: ed.screen.1, cols: ed.screen.0 };
+            if let Some((i, v, r)) = layout::hit(ed, screen, row, col) {
                 let now = Instant::now();
-                let key = (row, usize::MAX - 4);
+                let key = (row, usize::MAX - 16 - i);
                 let clicks = match self.last_click {
                     Some((t, c, n)) if now - t <= double_click_time() && c == key => n % 3 + 1,
                     _ => 1,
                 };
-                self.last_click = Some((now, key, clicks));
-                ed.right_click(row - r.y, col - r.x, clicks);
-                self.sync_ime();
-                self.draw();
-                return;
-            }
-        }
-        // 左の欄の 1 行目ならタブを切り替える。コミットのパネルなら、その行を押す
-        if let (Some(f), Some(ed)) = (&self.fonts, &mut self.ed) {
-            let cell = f.cell();
-            let (row, col) = ((self.mouse.1 as f32 / cell.h) as usize, (self.mouse.0.max(0.0) as f32 / cell.w) as usize);
-            if let Some(r) = ed.left_rect().filter(|r| r.contains(row, col)) {
-                let handled = if row == r.y {
-                    if let Some(tab) = tree_panel::tab_at(col - r.x) {
-                        ed.select_left_tab(tab);
+                match v.click(ed, r, row, col, clicks) {
+                    layout::Click::Pass => {}
+                    done => {
+                        self.last_click = Some((now, key, clicks));
+                        self.list_select = done == layout::Click::SelectList;
+                        self.term_select = done == layout::Click::SelectTerminal;
+                        self.sync_ime();
+                        self.draw();
+                        return;
                     }
-                    true
-                } else if ed.commit_rect().is_some() {
-                    let now = Instant::now();
-                    let clicks = match self.last_click {
-                        Some((t, c, n)) if now - t <= double_click_time() && c == (row, usize::MAX - 2) => n % 3 + 1,
-                        _ => 1,
-                    };
-                    self.last_click = Some((now, (row, usize::MAX - 2), clicks));
-                    ed.commit_click(row - r.y, col - r.x, clicks);
-                    true
-                } else {
-                    false
-                };
-                if handled {
-                    self.sync_ime();
-                    self.draw();
-                    return;
                 }
-            }
-        }
-        // ツリーの上なら、ツリーの行を選ぶ（フォルダは開閉、ファイルはダブルクリックで開く）
-        if let (Some(f), Some(ed)) = (&self.fonts, &mut self.ed) {
-            let cell = f.cell();
-            let (row, col) = ((self.mouse.1 as f32 / cell.h) as usize, (self.mouse.0.max(0.0) as f32 / cell.w) as usize);
-            if ed.tree_rect().is_some_and(|r| r.contains(row, col)) {
-                let now = Instant::now();
-                let clicks = match self.last_click {
-                    Some((t, c, n)) if now - t <= double_click_time() && c == (row, usize::MAX - 1) => n % 3 + 1,
-                    _ => 1,
-                };
-                self.last_click = Some((now, (row, usize::MAX - 1), clicks));
-                ed.tree_click(row, clicks);
-                self.sync_ime();
-                self.draw();
-                return;
             }
         }
         let on_text = self.focus_under_mouse();

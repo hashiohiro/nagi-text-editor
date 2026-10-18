@@ -20,29 +20,14 @@ pub(crate) const fn rgb(hex: u32) -> [f32; 4] {
 pub const BG: [f32; 4] = rgb(0x0c0c0c);
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
-// パネルごとの描き方（それぞれのファイルの draw）
-pub(crate) use crate::settings_dialog::draw::draw_settings_dialog;
-pub(crate) use crate::run_dialog::draw::draw_run_dialog;
-pub(crate) use crate::launcher::draw::draw_launcher;
-pub(crate) use crate::finder::draw::{draw_finder, finder_height};
-pub(crate) use crate::md_preview::draw::draw_md_preview;
-pub(crate) use crate::commit_panel::draw::draw_commit_panel;
-pub(crate) use crate::branches::draw::draw_branch_popup;
-pub(crate) use crate::log_view::draw::draw_log_view;
-pub(crate) use crate::diff_view::draw::draw_diff_view;
-pub(crate) use crate::blame::draw::draw_blame_popup;
-pub(crate) use crate::git_ui::draw::draw_hunk_popup;
-pub(crate) use crate::cmdline_complete::draw::draw_cmd_complete;
-pub(crate) use crate::complete::draw::draw_completion;
-pub(crate) use crate::tree_panel::draw::draw_tree;
+// 部品の中でほかの部品の描き方を使うもの（下の欄が検索・ログ・ターミナルを、右の欄がプレビューを描く）
+pub(crate) use crate::finder::draw::finder_height;
 pub(crate) use crate::grep_panel::draw::draw_grep_panel;
+pub(crate) use crate::log_view::draw::draw_log_view;
+pub(crate) use crate::md_preview::draw::draw_md_preview;
 pub(crate) use crate::read_view::draw::draw_read_view;
-pub(crate) use crate::bottom_panel::draw::draw_bottom_panel;
 pub(crate) use crate::result_grid::draw::draw_db_results;
-pub(crate) use crate::db_table::draw::draw_db_table;
-pub(crate) use crate::db_panel::draw::draw_console_bar;
 pub(crate) use crate::terminal::draw::draw_terminal;
-pub(crate) use crate::right_panel::draw::draw_right_panel;
 
 /// 配色（設定の「配色」: 0 ダーク・1 ブラック・2 ダークグレー・3 ライト）と強調の色（0xRRGGBB）。設定を適用したときに入れる
 pub(crate) static THEME: AtomicU8 = AtomicU8::new(0);
@@ -791,51 +776,8 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             p.cols = saved;
         }
     }
-    if let (Some(r), Some(t)) = (ed.tree_rect(), &ed.tree) {
-        let git = ed.tree_git_states();
-        draw_tree(&mut p, t, r, ed.state() == State::List && ed.list_side == crate::editor::Side::Left, &git, ed.nav.index.as_ref());
-    }
-    if let (Some(r), Some(c)) = (ed.commit_rect(), &ed.commit) {
-        draw_commit_panel(&mut p, ed, c, r);
-    }
-    if let (Some(l), None) = (ed.log.as_ref().filter(|l| !l.docked), &ed.diff) {
-        let (x, w) = ed.windows_x();
-        draw_log_view(&mut p, l, Rect { x, y: 0, w, h: ed.windows_rows() }, &ed.preedit);
-    }
-    if let Some(d) = &ed.diff {
-        let (x, w) = ed.windows_x();
-        draw_diff_view(&mut p, d, Rect { x, y: 0, w, h: ed.windows_rows() });
-    }
-    if let Some(r) = ed.right_rect() {
-        draw_right_panel(&mut p, ed, r);
-    }
-    if let Some(te) = &ed.db_table {
-        let (x, w) = ed.windows_x();
-        draw_db_table(&mut p, ed, te, Rect { x, y: 0, w, h: ed.windows_rows() });
-    }
-    if ed.windows_top() > 0 {
-        draw_console_bar(&mut p, ed);
-    }
-    if let Some(r) = ed.panel_rect() {
-        draw_bottom_panel(&mut p, ed, r);
-    }
-    if let Some(f) = &ed.finder {
-        draw_finder(&mut p, f, rows, cols);
-    }
-    if let Some(b) = &ed.branch_popup {
-        draw_branch_popup(&mut p, b, rows, cols, &ed.preedit);
-    }
-    if ed.git.popup.is_some() && ed.state() == State::Normal {
-        draw_hunk_popup(&mut p, ed, rows, cols);
-    } else if ed.blame_active() && ed.state() == State::Normal {
-        draw_blame_popup(&mut p, ed, rows);
-    }
-    if let (Some(c), State::Insert) = (&ed.completion, ed.state()) {
-        draw_completion(&mut p, ed, c, rows, cols);
-    }
-    if let (Some(c), State::Command) = (&ed.cmd_complete, ed.state()) {
-        draw_cmd_complete(&mut p, ed, c, rows, cols);
-    }
+    // 欄・小窓（layout.rs の表の順に下から）
+    crate::layout::draw(crate::layout::Layer::Panels, ed, &mut p, crate::layout::Screen { rows, cols });
     draw_toggle_buttons(&mut p, ed, cols);
     match ed.stripe {
         Some(crate::editor::Side::Left) => draw_stripe_left(&mut p, ed.windows_rows(), ed.left_visible()),
@@ -1069,15 +1011,8 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             }
         }
     }
-    if let Some(d) = &ed.run_dialog {
-        draw_run_dialog(&mut p, ed, d, cols, rows);
-    }
-    if let Some(d) = &ed.settings_dialog {
-        draw_settings_dialog(&mut p, ed, d, cols, rows);
-    }
-    if let Some(l) = &ed.launcher {
-        draw_launcher(&mut p, l, cols, rows + ed.status_rows(), &ed.preedit);
-    }
+    // 画面を覆うダイアログ（layout.rs）
+    crate::layout::draw(crate::layout::Layer::Overlays, ed, &mut p, crate::layout::Screen { rows, cols });
     // タブのアイコンにマウスを載せていれば、その下に名前
     if let Some((row, col, label)) = ed.hover_tab.as_ref().filter(|_| ed.run_dialog.is_none() && ed.launcher.is_none()) {
         let cell = p.fonts.cell();

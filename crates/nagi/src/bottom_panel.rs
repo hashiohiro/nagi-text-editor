@@ -270,6 +270,38 @@ impl crate::component::Component for ProblemsComponent {
     }
 }
 
+
+/// 下の欄（検索・ログ・問題・ターミナル・結果）（layout.rs の View）
+pub struct BottomView;
+
+impl crate::layout::View for BottomView {
+    fn rect(&self, ed: &crate::editor::Editor, s: crate::layout::Screen) -> Option<crate::panes::Rect> {
+        let _ = s;
+        ed.panel_rect()
+    }
+
+    fn draw(&self, ed: &crate::editor::Editor, p: &mut crate::view::Painter, r: crate::panes::Rect, s: crate::layout::Screen) {
+        let _ = (r, s);
+        draw::draw_bottom_panel(p, ed, r);
+    }
+
+    fn click(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, clicks: u32) -> crate::layout::Click {
+        let _ = (r, row, col, clicks);
+        // ターミナルの画面: 押して選び始める（ドラッグで範囲）
+        if ed.bottom_kind == BottomKind::Terminal && ed.terminals.chooser.is_none() && ed.terminal_rect().is_some_and(|t| t.contains(row, col)) && ed.terminal_press(row, col) {
+            return crate::layout::Click::SelectTerminal;
+        }
+        // 1 行目はタブ、2 行目から中身
+        ed.bottom_click(row - r.y, col.saturating_sub(r.x), clicks);
+        // 検索・ログの行を押したら、そのままドラッグで範囲を選べる
+        if clicks == 1 && row > r.y + 1 && matches!(ed.bottom_kind, BottomKind::Grep | BottomKind::Output) {
+            crate::layout::Click::SelectList
+        } else {
+            crate::layout::Click::Done
+        }
+    }
+}
+
 /// 描き方（view.rs の Painter で描く）
 pub(crate) mod draw {
     #![allow(unused_imports)]

@@ -549,6 +549,28 @@ impl crate::component::Component for LogComponent {
     }
 }
 
+
+/// 履歴の画面（layout.rs の View）
+pub struct LogScreenView;
+
+impl crate::layout::View for LogScreenView {
+    fn rect(&self, ed: &crate::editor::Editor, s: crate::layout::Screen) -> Option<crate::panes::Rect> {
+        let _ = s;
+        if ed.diff.is_some() || !ed.log.as_ref().is_some_and(|l| !l.docked) {
+            return None;
+        }
+        let (x, w) = ed.windows_x();
+        Some(crate::panes::Rect { x, y: 0, w, h: ed.windows_rows() })
+    }
+
+    fn draw(&self, ed: &crate::editor::Editor, p: &mut crate::view::Painter, r: crate::panes::Rect, s: crate::layout::Screen) {
+        let _ = (r, s);
+        if let Some(l) = &ed.log {
+            draw::draw_log_view(p, l, r, &ed.preedit);
+        }
+    }
+}
+
 /// 描き方（view.rs の Painter で描く）
 pub(crate) mod draw {
     #![allow(unused_imports)]

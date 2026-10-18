@@ -242,6 +242,24 @@ impl crate::component::Component for CommandLineComponent {
     }
 }
 
+
+/// コマンドの候補（layout.rs の View）
+pub struct CmdCompleteView;
+
+impl crate::layout::View for CmdCompleteView {
+    fn rect(&self, ed: &crate::editor::Editor, s: crate::layout::Screen) -> Option<crate::panes::Rect> {
+        let _ = s;
+        (ed.cmd_complete.is_some() && ed.state() == crate::editor::State::Command).then_some(crate::panes::Rect { x: 0, y: 0, w: s.cols, h: s.rows })
+    }
+
+    fn draw(&self, ed: &crate::editor::Editor, p: &mut crate::view::Painter, r: crate::panes::Rect, s: crate::layout::Screen) {
+        let _ = (r, s);
+        if let Some(c) = &ed.cmd_complete {
+            draw::draw_cmd_complete(p, ed, c, s.rows, s.cols);
+        }
+    }
+}
+
 /// 描き方（view.rs の Painter で描く）
 pub(crate) mod draw {
     #![allow(unused_imports)]

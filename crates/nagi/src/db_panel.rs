@@ -1662,6 +1662,34 @@ pub(crate) mod tests {
     }
 }
 
+
+/// SQL コンソールの上の帯（layout.rs の View）
+pub struct ConsoleBarView;
+
+impl crate::layout::View for ConsoleBarView {
+    fn rect(&self, ed: &crate::editor::Editor, s: crate::layout::Screen) -> Option<crate::panes::Rect> {
+        let _ = s;
+        if ed.windows_top() == 0 {
+            return None;
+        }
+        let (x, w) = ed.windows_x();
+        Some(crate::panes::Rect { x, y: 0, w, h: 1 })
+    }
+
+    fn draw(&self, ed: &crate::editor::Editor, p: &mut crate::view::Painter, r: crate::panes::Rect, s: crate::layout::Screen) {
+        let _ = (r, s);
+        draw::draw_console_bar(p, ed);
+    }
+
+    fn click(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, clicks: u32) -> crate::layout::Click {
+        let _ = (r, row, col, clicks);
+        if let Some(item) = ed.console_bar(r.w).into_iter().find(|b| col >= r.x + b.1 && col < r.x + b.1 + b.2).map(|b| b.3) {
+            ed.console_bar_press(item);
+        }
+        crate::layout::Click::Done
+    }
+}
+
 /// 描き方（view.rs の Painter で描く）
 pub(crate) mod draw {
     #![allow(unused_imports)]

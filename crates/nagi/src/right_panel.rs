@@ -179,6 +179,28 @@ impl crate::component::Component for RightComponent {
     }
 }
 
+
+/// 右の欄（データベース・Maven・プレビュー）（layout.rs の View）
+pub struct RightView;
+
+impl crate::layout::View for RightView {
+    fn rect(&self, ed: &crate::editor::Editor, s: crate::layout::Screen) -> Option<crate::panes::Rect> {
+        let _ = s;
+        ed.right_rect()
+    }
+
+    fn draw(&self, ed: &crate::editor::Editor, p: &mut crate::view::Painter, r: crate::panes::Rect, s: crate::layout::Screen) {
+        let _ = (r, s);
+        draw::draw_right_panel(p, ed, r);
+    }
+
+    fn click(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, clicks: u32) -> crate::layout::Click {
+        let _ = (r, row, col, clicks);
+        ed.right_click(row - r.y, col - r.x, clicks);
+        crate::layout::Click::Done
+    }
+}
+
 /// 描き方（view.rs の Painter で描く）
 pub(crate) mod draw {
     #![allow(unused_imports)]

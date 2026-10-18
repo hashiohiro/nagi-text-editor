@@ -539,6 +539,26 @@ impl crate::component::Component for DbTableComponent {
     }
 }
 
+
+/// テーブルの編集（layout.rs の View）
+pub struct DbTableView;
+
+impl crate::layout::View for DbTableView {
+    fn rect(&self, ed: &crate::editor::Editor, s: crate::layout::Screen) -> Option<crate::panes::Rect> {
+        let _ = s;
+        ed.db_table.as_ref()?;
+        let (x, w) = ed.windows_x();
+        Some(crate::panes::Rect { x, y: 0, w, h: ed.windows_rows() })
+    }
+
+    fn draw(&self, ed: &crate::editor::Editor, p: &mut crate::view::Painter, r: crate::panes::Rect, s: crate::layout::Screen) {
+        let _ = (r, s);
+        if let Some(te) = &ed.db_table {
+            draw::draw_db_table(p, ed, te, r);
+        }
+    }
+}
+
 /// 描き方（view.rs の Painter で描く）
 pub(crate) mod draw {
     #![allow(unused_imports)]

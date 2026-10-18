@@ -778,6 +778,25 @@ impl crate::component::Component for SettingsComponent {
     }
 }
 
+
+/// 設定の画面（layout.rs の View）
+pub struct SettingsView;
+
+impl crate::layout::View for SettingsView {
+    fn rect(&self, ed: &crate::editor::Editor, s: crate::layout::Screen) -> Option<crate::panes::Rect> {
+        let _ = s;
+        ed.settings_dialog.as_ref()?;
+        Some(crate::panes::Rect { x: 0, y: 0, w: s.cols, h: s.rows })
+    }
+
+    fn draw(&self, ed: &crate::editor::Editor, p: &mut crate::view::Painter, r: crate::panes::Rect, s: crate::layout::Screen) {
+        let _ = (r, s);
+        if let Some(d) = &ed.settings_dialog {
+            draw::draw_settings_dialog(p, ed, d, s.cols, s.rows);
+        }
+    }
+}
+
 /// 描き方（view.rs の Painter で描く）
 pub(crate) mod draw {
     #![allow(unused_imports)]
