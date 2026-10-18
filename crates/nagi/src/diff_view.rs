@@ -228,6 +228,13 @@ impl Editor {
 pub struct DiffComponent;
 
 impl crate::component::Component for DiffComponent {
+    fn status(&self, ed: &crate::editor::Editor) -> Option<crate::component::Status> {
+        let d = ed.diff.as_ref();
+        let n = d.map_or(0, |d| d.hunk_rows.len());
+        let i = d.map_or(0, |d| d.hunk_rows.iter().rposition(|&r| r <= d.cursor).map_or(0, |i| i + 1));
+        crate::component::Status::new(format!("-- 差分 --   変更 {i}/{n}"), "]c 次  [c 前  s ステージ  u 戻す  Enter 開く  q 閉じる ")
+    }
+
     fn key(&self, ed: &mut crate::editor::Editor, key: nagi_vim::Key) -> crate::editor::Effect {
         ed.diff_key(key);
         crate::editor::Effect::None

@@ -523,6 +523,11 @@ pub fn tab_label(k: usize, t: &ResultTab) -> String {
 pub struct ResultComponent;
 
 impl crate::component::Component for ResultComponent {
+    fn status(&self, ed: &crate::editor::Editor) -> Option<crate::component::Status> {
+        let _ = ed;
+        crate::component::Status::new("-- クエリの結果 --", "hjkl 移動  y 値  Y 行  gy 表全体（タブ区切り）  q 閉じる ")
+    }
+
     fn key(&self, ed: &mut crate::editor::Editor, key: nagi_vim::Key) -> crate::editor::Effect {
         ed.result_key(key)
     }

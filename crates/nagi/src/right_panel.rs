@@ -170,6 +170,14 @@ impl Editor {
 pub struct RightComponent;
 
 impl crate::component::Component for RightComponent {
+    fn status(&self, ed: &crate::editor::Editor) -> Option<crate::component::Status> {
+        match ed.right_visible() {
+            Some(RightTab::Maven) => crate::component::Status::new("-- Maven --", "Enter 実行・開閉  l/h 開く・閉じる  r 読み直す  q 閉じる  Ctrl-w h 窓へ "),
+            Some(RightTab::Preview) => crate::component::Status::new("-- プレビュー --", "j/k 送る  Enter リンクを開く  g/G 先頭・末尾  q 閉じる  Ctrl-w h 窓へ "),
+            _ => crate::component::Status::new("-- データベース --", "Enter つなぐ・開閉  o 中身  n 新しいクエリ  c コンソール  / 絞り込み  a 足す  x 切る  Ctrl-w h 窓へ "),
+        }
+    }
+
     fn key(&self, ed: &mut crate::editor::Editor, key: nagi_vim::Key) -> crate::editor::Effect {
         ed.right_key(key)
     }

@@ -260,6 +260,11 @@ impl Editor {
 pub struct ProblemsComponent;
 
 impl crate::component::Component for ProblemsComponent {
+    fn status(&self, ed: &crate::editor::Editor) -> Option<crate::component::Status> {
+        let _ = ed;
+        crate::component::Status::new("-- 問題 --", "j/k 移動  Enter 開く  o 欄に残って開く  ]e [e 次・前  q 隠す  Ctrl-w k 窓へ ")
+    }
+
     fn key(&self, ed: &mut crate::editor::Editor, key: nagi_vim::Key) -> crate::editor::Effect {
         ed.problems_key(key)
     }

@@ -461,6 +461,11 @@ impl Editor {
 pub struct CommitListComponent;
 
 impl crate::component::Component for CommitListComponent {
+    fn status(&self, ed: &crate::editor::Editor) -> Option<crate::component::Status> {
+        let _ = ed;
+        crate::component::Status::new("-- コミット --", "Space 選択  d 差分  u 戻す  c メッセージ  Ctrl-Enter コミット  P プッシュも  Alt-1 プロジェクト  q 閉じる ")
+    }
+
     fn key(&self, ed: &mut crate::editor::Editor, key: nagi_vim::Key) -> crate::editor::Effect {
         ed.commit_list_key(key)
     }
@@ -471,6 +476,11 @@ impl crate::component::Component for CommitListComponent {
 pub struct CommitMsgComponent;
 
 impl crate::component::Component for CommitMsgComponent {
+    fn status(&self, ed: &crate::editor::Editor) -> Option<crate::component::Status> {
+        let _ = ed;
+        crate::component::Status::new("-- コミットメッセージ --   Esc 一覧へ   Ctrl-Enter コミット", "")
+    }
+
     fn key(&self, ed: &mut crate::editor::Editor, key: nagi_vim::Key) -> crate::editor::Effect {
         ed.commit_msg_key(key);
         crate::editor::Effect::None

@@ -508,6 +508,14 @@ impl Editor {
 pub struct LogComponent;
 
 impl crate::component::Component for LogComponent {
+    fn status(&self, ed: &crate::editor::Editor) -> Option<crate::component::Status> {
+        let name = match ed.log.as_ref().filter(|l| l.filter.is_some()) {
+            Some(l) => format!("/{}", l.filter_text),
+            None => "-- 履歴 --".into(),
+        };
+        crate::component::Status::new(name, "j/k 移動  / 絞り込み  Tab ファイル  Enter 差分  o チェックアウト  b ブランチ  c チェリーピック  y ハッシュ  q 閉じる ")
+    }
+
     fn key(&self, ed: &mut crate::editor::Editor, key: nagi_vim::Key) -> crate::editor::Effect {
         ed.log_key(key);
         crate::editor::Effect::None

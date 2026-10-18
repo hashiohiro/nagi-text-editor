@@ -529,6 +529,16 @@ impl Editor {
 pub struct DbTableComponent;
 
 impl crate::component::Component for DbTableComponent {
+    fn status(&self, ed: &crate::editor::Editor) -> Option<crate::component::Status> {
+        let n = ed.db_table.as_ref().map_or(0, |t| t.changes());
+        let help = "i 値  c 入れ替え  x NULL  o 行を足す  dd 消す  u 戻す  f/F 絞り込み  s 並べ替え  < > ページ  Ctrl+Enter 送信  q 閉じる ";
+        if n > 0 {
+            Some(crate::component::Status { name: format!("-- 編集 --  変更 {n} 件（未送信）"), warn: true, help: help.into() })
+        } else {
+            crate::component::Status::new("-- テーブル --", help)
+        }
+    }
+
     fn key(&self, ed: &mut crate::editor::Editor, key: nagi_vim::Key) -> crate::editor::Effect {
         ed.db_table_key(key);
         crate::editor::Effect::None

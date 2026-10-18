@@ -5,7 +5,7 @@
 //!
 //! 新しい部品（パネル・ダイアログ）の作り方:
 //! 1. 状態の構造体を Editor のフィールドに置き、操作を Editor のメソッドとして書く（そのパネルのファイルに）。
-//! 2. 同じファイルに `pub struct XxxComponent;` と `impl Component for XxxComponent` を書く（key は必須、text・click は要るものだけ）。
+//! 2. 同じファイルに `pub struct XxxComponent;` と `impl Component for XxxComponent` を書く（key は必須、text・click・status は要るものだけ）。
 //! 3. editor.rs の Panel（と見え方の State）に 1 つ足し、下の `focused` に 1 行足す。描き方はそのファイルの `draw` モジュールに。
 //!
 //! Vim の編集の状態（Normal・Visual・Insert・検索・置換）は Editor そのものが受け取る（ここには載せない）。
@@ -30,6 +30,28 @@ pub trait Component: Sync {
     fn click(&self, ed: &mut Editor, row: usize, col: usize, clicks: u32) -> bool {
         let _ = (ed, row, col, clicks);
         false
+    }
+
+    /// 状態行（左に部品の名前、右に操作の説明。知らせがあれば左は知らせ）。None なら view.rs が描く（入力欄を出す部品・Vim の状態）
+    fn status(&self, ed: &Editor) -> Option<Status> {
+        let _ = ed;
+        None
+    }
+}
+
+/// 部品の状態行
+pub struct Status {
+    /// 左（`-- 履歴 --` など）
+    pub name: String,
+    /// 左を注意の色で（送っていない変更があるなど）
+    pub warn: bool,
+    /// 右の操作の説明
+    pub help: String,
+}
+
+impl Status {
+    pub fn new(name: impl Into<String>, help: impl Into<String>) -> Option<Status> {
+        Some(Status { name: name.into(), warn: false, help: help.into() })
     }
 }
 

@@ -430,6 +430,11 @@ impl Editor {
 pub struct BranchesComponent;
 
 impl crate::component::Component for BranchesComponent {
+    fn status(&self, ed: &crate::editor::Editor) -> Option<crate::component::Status> {
+        let _ = ed;
+        crate::component::Status::new("-- ブランチ --", "打つと絞り込み  ↑↓ 移動  Enter チェックアウト  → 操作  Esc 閉じる ")
+    }
+
     fn key(&self, ed: &mut crate::editor::Editor, key: nagi_vim::Key) -> crate::editor::Effect {
         ed.branches_key(key);
         crate::editor::Effect::None

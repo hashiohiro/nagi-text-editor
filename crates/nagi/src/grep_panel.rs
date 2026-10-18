@@ -554,6 +554,11 @@ impl crate::component::Component for GrepPromptComponent {
 pub struct ListComponent;
 
 impl crate::component::Component for ListComponent {
+    fn status(&self, ed: &crate::editor::Editor) -> Option<crate::component::Status> {
+        let g = ed.grep.as_ref()?;
+        crate::component::Status::new("-- 検索結果 --", format!("{}/{} ", (g.selected + 1).min(g.hits.len()), g.hits.len()))
+    }
+
     fn key(&self, ed: &mut crate::editor::Editor, key: nagi_vim::Key) -> crate::editor::Effect {
         ed.list_key(key)
     }

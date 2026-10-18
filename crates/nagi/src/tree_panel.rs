@@ -442,6 +442,11 @@ impl Editor {
 pub struct TreeComponent;
 
 impl crate::component::Component for TreeComponent {
+    fn status(&self, ed: &crate::editor::Editor) -> Option<crate::component::Status> {
+        let _ = ed;
+        crate::component::Status::new("-- プロジェクト --", "")
+    }
+
     fn key(&self, ed: &mut crate::editor::Editor, key: nagi_vim::Key) -> crate::editor::Effect {
         ed.tree_key(key)
     }
