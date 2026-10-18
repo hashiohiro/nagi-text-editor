@@ -11,6 +11,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::{Duration, Instant};
 
 pub mod defs;
+pub mod grammar;
 pub mod markdown;
 pub mod sass;
 
@@ -107,13 +108,6 @@ unsafe extern "C" {
 }
 const VIM_LANGUAGE: tree_sitter_language::LanguageFn = unsafe { tree_sitter_language::LanguageFn::from_raw(tree_sitter_vim) };
 
-// tree-sitter-dockerfile 0.2.0 も古い形式。同じく C の関数を新しい形式で呼ぶ
-// （Rust からはクレートの中身を使わないので、extern crate でリンクさせる）
-extern crate tree_sitter_dockerfile;
-unsafe extern "C" {
-    fn tree_sitter_dockerfile() -> *const ();
-}
-const DOCKERFILE_LANGUAGE: tree_sitter_language::LanguageFn = unsafe { tree_sitter_language::LanguageFn::from_raw(tree_sitter_dockerfile) };
 
 impl Lang {
     pub fn detect(path: &Path) -> Option<Lang> {
@@ -238,8 +232,50 @@ impl Lang {
         matches!(self, Lang::Bash | Lang::Batch | Lang::PowerShell)
     }
 
-    fn language(self) -> Language {
-        match self {
+    /// 対応している言語すべて
+    pub fn all() -> &'static [Lang] {
+        &ALL
+    }
+
+    /// 文法をダウンロードする言語の名前（grammar.rs。exe に入っている言語は None）
+    pub fn grammar_id(self) -> Option<&'static str> {
+        Some(match self {
+            Lang::C => "c",
+            Lang::Cpp => "cpp",
+            Lang::Go => "go",
+            Lang::CSharp => "csharp",
+            Lang::Php => "php",
+            Lang::Ruby => "ruby",
+            Lang::Lua => "lua",
+            Lang::Scala => "scala",
+            Lang::Swift => "swift",
+            Lang::Dart => "dart",
+            Lang::Zig => "zig",
+            Lang::Haskell => "haskell",
+            Lang::Elixir => "elixir",
+            Lang::R => "r",
+            Lang::Sql => "sql",
+            Lang::Toml => "toml",
+            Lang::Xml => "xml",
+            Lang::Make => "make",
+            Lang::CMake => "cmake",
+            Lang::Dockerfile => "dockerfile",
+            Lang::Groovy => "groovy",
+            _ => return None,
+        })
+    }
+
+    /// 文法を使える（exe に入っているか、ダウンロード済み）
+    pub fn available(self) -> bool {
+        self.grammar_id().is_none_or(grammar::installed)
+    }
+
+    /// tree-sitter の言語。ダウンロードする言語で、まだ入っていなければ None
+    pub fn language(self) -> Option<Language> {
+        if let Some(id) = self.grammar_id() {
+            return grammar::load(id);
+        }
+        Some(match self {
             Lang::Rust => tree_sitter_rust::LANGUAGE.into(),
             Lang::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
             Lang::Tsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
@@ -257,28 +293,8 @@ impl Lang {
             Lang::Css => tree_sitter_css::LANGUAGE.into(),
             Lang::Scss => tree_sitter_scss::language(),
             Lang::Html => tree_sitter_html::LANGUAGE.into(),
-            Lang::C => tree_sitter_c::LANGUAGE.into(),
-            Lang::Cpp => tree_sitter_cpp::LANGUAGE.into(),
-            Lang::Go => tree_sitter_go::LANGUAGE.into(),
-            Lang::CSharp => tree_sitter_c_sharp::LANGUAGE.into(),
-            Lang::Php => tree_sitter_php::LANGUAGE_PHP.into(),
-            Lang::Ruby => tree_sitter_ruby::LANGUAGE.into(),
-            Lang::Lua => tree_sitter_lua::LANGUAGE.into(),
-            Lang::Scala => tree_sitter_scala::LANGUAGE.into(),
-            Lang::Swift => tree_sitter_swift::LANGUAGE.into(),
-            Lang::Dart => tree_sitter_dart::LANGUAGE.into(),
-            Lang::Zig => tree_sitter_zig::LANGUAGE.into(),
-            Lang::Haskell => tree_sitter_haskell::LANGUAGE.into(),
-            Lang::Elixir => tree_sitter_elixir::LANGUAGE.into(),
-            Lang::R => tree_sitter_r::LANGUAGE.into(),
-            Lang::Sql => tree_sitter_sequel::LANGUAGE.into(),
-            Lang::Toml => tree_sitter_toml_ng::LANGUAGE.into(),
-            Lang::Xml => tree_sitter_xml::LANGUAGE_XML.into(),
-            Lang::Make => tree_sitter_make::LANGUAGE.into(),
-            Lang::CMake => tree_sitter_cmake::LANGUAGE.into(),
-            Lang::Dockerfile => DOCKERFILE_LANGUAGE.into(),
-            Lang::Groovy => tree_sitter_groovy::LANGUAGE.into(),
-        }
+            _ => unreachable!("ダウンロードする文法は grammar_id で返した"),
+        })
     }
 
     /// ハイライトのクエリ。TypeScript は JavaScript のクエリに TS 固有分を足して使う（grammar の想定どおり）
@@ -303,25 +319,25 @@ impl Lang {
             // SCSS は CSS のクエリに SCSS 固有分を足す（nvim-treesitter と同じ）
             Lang::Scss => format!("{}\n{}", tree_sitter_css::HIGHLIGHTS_QUERY, tree_sitter_scss::HIGHLIGHTS_QUERY),
             Lang::Html => tree_sitter_html::HIGHLIGHTS_QUERY.to_string(),
-            Lang::C => tree_sitter_c::HIGHLIGHT_QUERY.to_string(),
-            Lang::Cpp => format!("{}\n{}", tree_sitter_c::HIGHLIGHT_QUERY, tree_sitter_cpp::HIGHLIGHT_QUERY),
-            Lang::Go => tree_sitter_go::HIGHLIGHTS_QUERY.to_string(),
-            Lang::CSharp => tree_sitter_c_sharp::HIGHLIGHTS_QUERY.to_string(),
-            Lang::Php => tree_sitter_php::HIGHLIGHTS_QUERY.to_string(),
-            Lang::Ruby => tree_sitter_ruby::HIGHLIGHTS_QUERY.to_string(),
-            Lang::Lua => tree_sitter_lua::HIGHLIGHTS_QUERY.to_string(),
-            Lang::Scala => tree_sitter_scala::HIGHLIGHTS_QUERY.to_string(),
-            Lang::Swift => tree_sitter_swift::HIGHLIGHTS_QUERY.to_string(),
-            Lang::Dart => tree_sitter_dart::HIGHLIGHTS_QUERY.to_string(),
-            Lang::Zig => tree_sitter_zig::HIGHLIGHTS_QUERY.to_string(),
-            Lang::Haskell => tree_sitter_haskell::HIGHLIGHTS_QUERY.to_string(),
-            Lang::Elixir => tree_sitter_elixir::HIGHLIGHTS_QUERY.to_string(),
-            Lang::R => tree_sitter_r::HIGHLIGHTS_QUERY.to_string(),
-            Lang::Sql => tree_sitter_sequel::HIGHLIGHTS_QUERY.to_string(),
-            Lang::Toml => tree_sitter_toml_ng::HIGHLIGHTS_QUERY.to_string(),
-            Lang::Xml => tree_sitter_xml::XML_HIGHLIGHT_QUERY.to_string(),
-            Lang::Make => tree_sitter_make::HIGHLIGHTS_QUERY.to_string(),
-            Lang::CMake => tree_sitter_cmake::HIGHLIGHTS_QUERY.to_string(),
+            Lang::C => include_str!("../queries/c/highlights.scm").to_string(),
+            Lang::Cpp => include_str!("../queries/cpp/highlights.scm").to_string(),
+            Lang::Go => include_str!("../queries/go/highlights.scm").to_string(),
+            Lang::CSharp => include_str!("../queries/csharp/highlights.scm").to_string(),
+            Lang::Php => include_str!("../queries/php/highlights.scm").to_string(),
+            Lang::Ruby => include_str!("../queries/ruby/highlights.scm").to_string(),
+            Lang::Lua => include_str!("../queries/lua/highlights.scm").to_string(),
+            Lang::Scala => include_str!("../queries/scala/highlights.scm").to_string(),
+            Lang::Swift => include_str!("../queries/swift/highlights.scm").to_string(),
+            Lang::Dart => include_str!("../queries/dart/highlights.scm").to_string(),
+            Lang::Zig => include_str!("../queries/zig/highlights.scm").to_string(),
+            Lang::Haskell => include_str!("../queries/haskell/highlights.scm").to_string(),
+            Lang::Elixir => include_str!("../queries/elixir/highlights.scm").to_string(),
+            Lang::R => include_str!("../queries/r/highlights.scm").to_string(),
+            Lang::Sql => include_str!("../queries/sql/highlights.scm").to_string(),
+            Lang::Toml => include_str!("../queries/toml/highlights.scm").to_string(),
+            Lang::Xml => include_str!("../queries/xml/highlights.scm").to_string(),
+            Lang::Make => include_str!("../queries/make/highlights.scm").to_string(),
+            Lang::CMake => include_str!("../queries/cmake/highlights.scm").to_string(),
             Lang::Dockerfile => include_str!("../queries/dockerfile/highlights.scm").to_string(),
             Lang::Groovy => include_str!("../queries/groovy/highlights.scm").to_string(),
         }
@@ -330,7 +346,12 @@ impl Lang {
     /// 言語ごとに 1 回だけコンパイルしたクエリ
     pub fn highlights(self) -> &'static Result<Query, String> {
         static Q: [OnceLock<Result<Query, String>>; ALL.len()] = [const { OnceLock::new() }; ALL.len()];
-        Q[self as usize].get_or_init(|| Query::new(&self.language(), &self.highlights_source()).map_err(|e| format!("{e}")))
+        static MISSING: OnceLock<Result<Query, String>> = OnceLock::new();
+        // 文法がまだ無ければ覚えない（ダウンロードした後に作る）
+        let Some(language) = self.language() else {
+            return MISSING.get_or_init(|| Err("文法がまだダウンロードされていません".into()));
+        };
+        Q[self as usize].get_or_init(|| Query::new(&language, &self.highlights_source()).map_err(|e| format!("{e}")))
     }
 }
 
@@ -426,7 +447,7 @@ fn parse_with(parser: &mut Parser, buf: &Buffer, old: Option<&Tree>) -> Option<T
 impl Syntax {
     pub fn new(lang: Lang) -> Option<Self> {
         let mut parser = Parser::new();
-        parser.set_language(&lang.language()).ok()?;
+        parser.set_language(&lang.language()?).ok()?;
         Some(Self { lang, parser: Some(parser), tree: None, stale: false, job: None, last_parse: Duration::ZERO, waker: None, injected: Default::default() })
     }
 

@@ -620,7 +620,8 @@ impl DefParser {
 
     /// 参照ごとに (名前, 種類, ファイルの中で定義が見つかったか)（的中率の計測用）
     pub fn reference_report(&mut self, lang: Lang, src: &str) -> Vec<(String, RefKind, bool, Option<Receiver>, Option<Vec<Arg>>)> {
-        if self.parser.set_language(&lang.language()).is_err() {
+        let Some(language) = lang.language() else { return Vec::new() };
+        if self.parser.set_language(&language).is_err() {
             return Vec::new();
         }
         let Some(tree) = self.parser.parse(src, None) else { return Vec::new() };
@@ -641,7 +642,8 @@ impl DefParser {
 
 /// ファイルの中身から定義の一覧（索引用。構文木を作って捨てる）
 pub fn defs_of_source(lang: Lang, src: &str, parser: &mut Parser) -> Vec<Def> {
-    if parser.set_language(&lang.language()).is_err() {
+    let Some(language) = lang.language() else { return Vec::new() };
+    if parser.set_language(&language).is_err() {
         return Vec::new();
     }
     let Some(tree) = parser.parse(src, None) else { return Vec::new() };
@@ -659,7 +661,7 @@ mod tests {
 
     fn local(lang: Lang, src: &str, at_text: &str, nth: usize) -> Option<String> {
         let mut p = Parser::new();
-        p.set_language(&lang.language()).unwrap();
+        p.set_language(&lang.language().unwrap()).unwrap();
         let tree = p.parse(src, None).unwrap();
         let at = src.match_indices(at_text).nth(nth).unwrap().0;
         let d = find_local_definition(&tree, at, &|r: Range<usize>| src[r].to_string())?;
@@ -669,7 +671,7 @@ mod tests {
 
     fn recv(lang: Lang, src: &str, call: &str) -> Option<Receiver> {
         let mut p = Parser::new();
-        p.set_language(&lang.language()).unwrap();
+        p.set_language(&lang.language().unwrap()).unwrap();
         let tree = p.parse(src, None).unwrap();
         let at = src.find(call).unwrap();
         let text = |r: Range<usize>| src[r].to_string();
@@ -713,7 +715,7 @@ mod tests {
         // 引数の型
         let java4 = "class C {\n  void f(Date d, LocalDate ld) {\n    DateUtil.format(d, \"x\");\n    DateUtil.format(ld, 3L, null, new Foo(), true, other);\n  }\n}\n";
         let mut p = Parser::new();
-        p.set_language(&Lang::Java.language()).unwrap();
+        p.set_language(&Lang::Java.language().unwrap()).unwrap();
         let tree = p.parse(java4, None).unwrap();
         let text = |r: Range<usize>| java4[r].to_string();
         let binds = local_bindings(&tree, &text);

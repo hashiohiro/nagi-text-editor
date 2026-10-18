@@ -190,7 +190,8 @@ pub fn stamp(path: &Path) -> Option<(u64, u64)> {
 
 /// 1 ファイルの定義を取り出す
 pub fn index_file(path: &Path, parser: &mut DefParser) -> Option<((u64, u64), Vec<Entry>)> {
-    let lang = Lang::detect(path)?;
+    // 文法をまだダウンロードしていない言語は入れない（空のまま覚えると、入れた後も読み直さない）
+    let lang = Lang::detect(path).filter(|l| l.available())?;
     let st = stamp(path)?;
     let bytes = std::fs::read(path).ok()?;
     // 大きすぎるもの（生成物など）は入れない
@@ -218,7 +219,7 @@ pub fn build(root: &Path, waker: Waker) -> Receiver<Progress> {
         // 対応する言語のファイルを集める
         let mut paths = Vec::new();
         for e in crate::files::walker(&root).build().flatten() {
-            if e.file_type().is_some_and(|t| t.is_file()) && Lang::detect(e.path()).is_some() {
+            if e.file_type().is_some_and(|t| t.is_file()) && Lang::detect(e.path()).is_some_and(|l| l.available()) {
                 paths.push(e.into_path());
             }
         }

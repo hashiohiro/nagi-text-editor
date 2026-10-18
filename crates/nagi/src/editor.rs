@@ -323,6 +323,9 @@ pub struct Editor {
     pub jdk_download: Option<(u32, nagi_workers::drivers::Download)>,
     /// 言語のツールのダウンロード（種類）
     pub tool_download: Option<(String, nagi_workers::drivers::Download)>,
+    /// 文法のダウンロード（言語の名前）と、失敗したもの（開くたびにやり直さない。:GrammarInstall でやり直す）
+    pub grammar_downloads: Vec<(String, nagi_workers::drivers::Download)>,
+    pub grammar_failed: std::collections::HashSet<String>,
     pub right_tab: crate::right_panel::RightTab,
     pub right_hidden: bool,
     pub right_w: Option<usize>,
@@ -481,6 +484,8 @@ impl Editor {
             appearance_changed: false,
             jdk_download: None,
             tool_download: None,
+            grammar_downloads: Vec::new(),
+            grammar_failed: Default::default(),
             right_tab: Default::default(),
             right_hidden: false,
             right_w: None,
@@ -566,6 +571,15 @@ impl Editor {
     /// 解析は今の内容の複製に対して行い、その間の編集は届いた後の `sync` で差分として反映する
     pub fn start_syntax(&mut self) {
         let Some(lang) = self.buf.path.as_deref().and_then(nagi_syntax::Lang::detect) else { return };
+        // 文法をまだダウンロードしていなければ取ってくる（届いたらもう一度ここへ来る）
+        if !lang.available() {
+            if let Some(id) = lang.grammar_id() {
+                if self.settings.bool("editor.grammar_download") && !self.grammar_failed.contains(id) {
+                    self.install_grammar(id);
+                }
+            }
+            return;
+        }
         let mut snap = self.buf.snapshot();
         let (tx, rx) = std::sync::mpsc::channel();
         let waker = self.waker.clone();
@@ -1549,6 +1563,7 @@ impl Editor {
             "Refs" | "References" => self.find_references(),
             "Idea" | "IntelliJ" => self.open_in_intellij(),
             "Make" | "make" => self.make(arg),
+            "GrammarInstall" => self.grammar_install_command(arg),
             "GitHunk" => self.open_hunk_popup(),
             "Git" | "G" | "Gcommit" => self.open_commit_panel(),
             "Gdiff" | "Gd" => self.diff_current(),

@@ -81,6 +81,7 @@ pub static SCHEMA: &[Item] = &[
     pitem("editor.final_newline", "エディタ", "保存時に最後に改行を入れる", B, "false", ""),
     pitem("editor.new_newline", "エディタ", "新しいファイルの改行", SKind::Choice(&[("lf", "LF"), ("crlf", "CRLF")]), "lf", ""),
     pitem("editor.new_bom", "エディタ", "新しいファイルに BOM を付ける", B, "false", ""),
+    item("editor.grammar_download", "エディタ", "文法を自動でダウンロード", B, "true", "C・Go・C# など 21 言語の文法（色分け・定義へ移動）は、初めて開いたときに GitHub から取ってくる（1 言語 60〜510KB）。オフなら :GrammarInstall で"),
     item("editor.autoread", "エディタ", "外部での変更", SKind::Choice(&[("auto", "自動で読み直す（変えていなければ）"), ("ask", "知らせるだけ"), ("off", "何もしない")]), "auto", ""),
     item("editor.scroll_ms", "エディタ", "スムーズスクロールの時間（ms）", SKind::Int(0, 1000), "110", "0 ならスクロールを滑らかにしない"),
     item("editor.repeat_delay", "エディタ", "押しっぱなし: 繰り返すまで（ms）", SKind::Int(50, 1000), "250", "hjkl などの移動のキー"),

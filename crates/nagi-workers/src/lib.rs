@@ -5,6 +5,7 @@ pub mod db;
 pub mod drivers;
 pub mod files;
 pub mod git;
+pub mod grammars;
 pub mod grep;
 pub mod index;
 pub mod jdk;

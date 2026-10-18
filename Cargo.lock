@@ -187,9 +187,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.8.0"
+version = "1.2.67"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6651c9ed80effdc7db0ff72512157f901af5e3549e341e24b1dd4887d836d838"
+checksum = "e17dd265a7d0f31ef544e1b20e03add05d3b45b491b633b10d67145d2acc1a38"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -967,6 +967,7 @@ dependencies = [
  "tree-sitter-typescript",
  "tree-sitter-vim",
  "tree-sitter-yaml",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -996,6 +997,7 @@ dependencies = [
  "notify",
  "oracle",
  "portable-pty",
+ "regex",
  "rusqlite",
  "serde_json",
  "vt100",

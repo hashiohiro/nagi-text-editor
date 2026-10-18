@@ -1,0 +1,69 @@
+# 文法を 1 つだけ入れた DLL（nagi は exe を小さく保つため、使われることの少ない言語の文法を持たず、
+# 初めてその言語のファイルを開いたときに GitHub のリリースからダウンロードして読み込む）。
+#
+# nagi のワークスペースには入れない（ふだんのビルドで 21 個の文法を作らないように）。作り方は build.sh。
+[package]
+name = "nagi-grammar"
+version = "1.0.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+path = "lib.rs"
+
+[workspace]
+
+[dependencies]
+tree-sitter-language = "0.1.9"
+tree-sitter-c = { version = "=0.24.2", optional = true }
+tree-sitter-cpp = { version = "=0.23.4", optional = true }
+tree-sitter-go = { version = "=0.25.0", optional = true }
+tree-sitter-c-sharp = { version = "=0.23.5", optional = true }
+tree-sitter-php = { version = "=0.25.1", optional = true }
+tree-sitter-ruby = { version = "=0.23.1", optional = true }
+tree-sitter-lua = { version = "=0.5.0", optional = true }
+tree-sitter-scala = { version = "=0.26.3", optional = true }
+tree-sitter-swift = { version = "=0.7.4", optional = true }
+tree-sitter-dart = { version = "=0.2.0", optional = true }
+tree-sitter-zig = { version = "=1.1.2", optional = true }
+tree-sitter-haskell = { version = "=0.24.1", optional = true }
+tree-sitter-elixir = { version = "=0.3.5", optional = true }
+tree-sitter-r = { version = "=1.3.0", optional = true }
+tree-sitter-sequel = { version = "=0.3.11", optional = true }
+tree-sitter-toml-ng = { version = "=0.7.0", optional = true }
+tree-sitter-xml = { version = "=0.7.0", optional = true }
+tree-sitter-make = { version = "=1.1.1", optional = true }
+tree-sitter-cmake = { version = "=0.7.5", optional = true }
+tree-sitter-dockerfile = { version = "=0.2.0", optional = true }
+tree-sitter-groovy = { version = "=0.1.2", optional = true }
+
+# 1 つの DLL に 1 つの文法（--features c など）
+[features]
+c = ["dep:tree-sitter-c"]
+cpp = ["dep:tree-sitter-cpp"]
+go = ["dep:tree-sitter-go"]
+csharp = ["dep:tree-sitter-c-sharp"]
+php = ["dep:tree-sitter-php"]
+ruby = ["dep:tree-sitter-ruby"]
+lua = ["dep:tree-sitter-lua"]
+scala = ["dep:tree-sitter-scala"]
+swift = ["dep:tree-sitter-swift"]
+dart = ["dep:tree-sitter-dart"]
+zig = ["dep:tree-sitter-zig"]
+haskell = ["dep:tree-sitter-haskell"]
+elixir = ["dep:tree-sitter-elixir"]
+r = ["dep:tree-sitter-r"]
+sql = ["dep:tree-sitter-sequel"]
+toml = ["dep:tree-sitter-toml-ng"]
+xml = ["dep:tree-sitter-xml"]
+make = ["dep:tree-sitter-make"]
+cmake = ["dep:tree-sitter-cmake"]
+dockerfile = ["dep:tree-sitter-dockerfile"]
+groovy = ["dep:tree-sitter-groovy"]
+
+[profile.release]
+panic = "abort"
+strip = true
+lto = true
+codegen-units = 1
