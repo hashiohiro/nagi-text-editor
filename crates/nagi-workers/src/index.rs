@@ -56,6 +56,11 @@ impl Index {
         self.files.len()
     }
 
+    /// ファイル（根からの相対パス、/ 区切り）の最初の型の定義の種類（木のアイコン用。Java のクラス・インタフェースなど）
+    pub fn file_type_kind(&self, rel: &str) -> Option<DefKind> {
+        self.files.get(rel)?.defs.iter().find(|d| d.kind.is_type()).map(|d| d.kind)
+    }
+
     pub fn def_count(&self) -> usize {
         self.by_name.values().map(Vec::len).sum()
     }

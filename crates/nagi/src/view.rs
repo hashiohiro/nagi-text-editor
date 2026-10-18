@@ -120,6 +120,20 @@ impl Painter<'_> {
         self.out.push(Instance::fill(col as f32 * cell.w, y, self.bar, cell.h, CURSOR));
     }
 
+    /// 文字を `scale` 倍に縮めて px の位置 (x, y) から描く（アイコンの中の文字用）
+    fn small_text(&mut self, s: &str, x: f32, y: f32, scale: f32, color: [f32; 4]) {
+        let cw = self.fonts.cell().w;
+        let mut x = x;
+        for g in s.graphemes(true) {
+            if let Some(key) = self.fonts.glyph_for(g, 1) {
+                if let Some(a) = self.r.glyph(self.fonts, key) {
+                    self.out.push(Instance { rect: [x + a.left * scale, y + a.top * scale, a.uv[2] * scale, a.uv[3] * scale], uv: a.uv, color, kind: if a.color { 2 } else { 1 } });
+                }
+            }
+            x += cw * scale;
+        }
+    }
+
     fn width(&self, s: &str) -> usize {
         nagi_text::graphemes(self.fonts, s).map(|(_, _, w)| w).sum()
     }
@@ -613,7 +627,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     }
     if let (Some(r), Some(t)) = (ed.tree_rect(), &ed.tree) {
         let git = ed.tree_git_states();
-        draw_tree(&mut p, t, r, ed.mode == Mode::List && ed.list_side == crate::editor::Side::Left, &git);
+        draw_tree(&mut p, t, r, ed.mode == Mode::List && ed.list_side == crate::editor::Side::Left, &git, ed.nav.index.as_ref());
     }
     if let (Some(r), Some(c)) = (ed.commit_rect(), &ed.commit) {
         draw_commit_panel(&mut p, ed, c, r);
@@ -2075,6 +2089,7 @@ fn draw_tree(
     r: Rect,
     focused: bool,
     git: &std::collections::HashMap<std::path::PathBuf, nagi_workers::git::FileState>,
+    index: Option<&nagi_workers::index::Index>,
 ) {
     use nagi_workers::git::FileState;
     let cell = p.fonts.cell();
@@ -2096,6 +2111,7 @@ fn draw_tree(
             p.out.push(Instance::fill(x, y, w, cell.h, MATCH_BG));
         }
         let mark = if row.dir { if t.is_expanded(&row.path) { "▾ " } else { "▸ " } } else { "  " };
+        let icon_col = r.x + row.depth * 2 + 2;
         let state = git.get(&row.path).copied();
         let fg = match state {
             _ if reversed => BG,
@@ -2106,10 +2122,118 @@ fn draw_tree(
             Some(FileState::Deleted) => STATUS_FG,
             None => FG,
         };
-        let label = format!("{}{mark}{}{}", "  ".repeat(row.depth), row.name, if row.dir { "/" } else { "" });
-        p.text(&label, r.x, y, fg);
+        let label = format!("{}{mark}", "  ".repeat(row.depth));
+        p.text(&label, r.x, y, if reversed { BG } else { STATUS_FG });
+        if icon_col + 3 < r.x + r.w {
+            draw_tree_icon(p, &tree_icon(row, index, &t.root), icon_col, y);
+        }
+        p.text(&row.name, icon_col + 2, y, fg);
     }
     p.cols = saved;
+}
+
+/// 木のアイコン
+enum TreeIcon {
+    /// フォルダ（色）
+    Folder([f32; 4]),
+    /// 種類の分かるファイル（文字・地の色・文字の色）
+    Badge(&'static str, [f32; 4], [f32; 4]),
+    /// ふつうのファイル（紙の形）
+    Page,
+}
+
+/// 行のアイコン（IntelliJ と同じ考え方: フォルダはソース・テスト・除外で色を変え、ファイルは種類の文字と色）
+fn tree_icon(row: &crate::tree_panel::Row, index: Option<&nagi_workers::index::Index>, root: &std::path::Path) -> TreeIcon {
+    let name = row.name.to_ascii_lowercase();
+    if row.dir {
+        let rel = row.path.strip_prefix(root).map(|r| r.to_string_lossy().replace('\\', "/").to_ascii_lowercase()).unwrap_or_default();
+        let color = if matches!(name.as_str(), "target" | "out" | "dist" | "build" | "node_modules" | "bin" | ".angular" | ".next") {
+            rgb(0xc98a4b)
+        } else if rel.ends_with("src/test/java") || rel.ends_with("src/test/kotlin") || matches!(name.as_str(), "test" | "tests" | "__tests__" | "e2e" | "cypress" | "spec") {
+            rgb(0x62b543)
+        } else if rel.ends_with("src/main/java") || rel.ends_with("src/main/kotlin") || (name == "src" && !row.path.join("main").is_dir()) {
+            rgb(0x548af7)
+        } else if rel.ends_with("src/main/resources") || rel.ends_with("src/test/resources") {
+            rgb(0xd9a343)
+        } else {
+            rgb(0x8c9aa6)
+        };
+        return TreeIcon::Folder(color);
+    }
+    let dark = BG;
+    let white = rgb(0xffffff);
+    let ext = name.rsplit_once('.').map_or("", |x| x.1);
+    let b = |l: &'static str, c: u32, light: bool| TreeIcon::Badge(l, rgb(c), if light { dark } else { white });
+    match (name.as_str(), ext) {
+        ("pom.xml", _) => b("m", 0xc71a36, false),
+        ("package.json", _) => b("n", 0xcb3837, false),
+        ("dockerfile", _) => b("D", 0x2496ed, false),
+        (".gitignore" | ".gitattributes", _) => b("G", 0xf05033, false),
+        (_, "java") => {
+            let rel = row.path.strip_prefix(root).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default();
+            match index.and_then(|i| i.file_type_kind(&rel)) {
+                Some(nagi_syntax::defs::DefKind::Interface) => b("I", 0x62b543, true),
+                Some(nagi_syntax::defs::DefKind::Enum) => b("E", 0xd9a343, true),
+                Some(nagi_syntax::defs::DefKind::Class) => b("C", 0x3592c4, false),
+                _ => b("J", 0xe76f00, false),
+            }
+        }
+        (_, "kt" | "kts") => b("K", 0xa97bff, false),
+        (_, "ts" | "mts" | "cts") => b("TS", 0x3178c6, false),
+        (_, "tsx") => b("TS", 0x61dafb, true),
+        (_, "js" | "mjs" | "cjs") => b("JS", 0xf1e05a, true),
+        (_, "jsx") => b("JS", 0x61dafb, true),
+        (_, "html" | "htm") => b("<>", 0xe44d26, false),
+        (_, "css") => b("#", 0x3d8fd1, false),
+        (_, "scss" | "sass") => b("S", 0xcd6799, false),
+        (_, "json" | "jsonc") => b("{}", 0xcbcb41, true),
+        (_, "md" | "markdown") => b("M", 0x519aba, false),
+        (_, "xml" | "xsd" | "wsdl") => b("<>", 0xe37933, false),
+        (_, "yml" | "yaml") => b("Y", 0xcb171e, false),
+        (_, "properties" | "ini" | "toml" | "conf" | "cfg" | "env") => b("P", 0x8c9aa6, true),
+        (_, "sql") => b("Q", 0xe38c00, true),
+        (_, "rs") => b("R", 0xdea584, true),
+        (_, "py") => b("Py", 0x3572a5, false),
+        (_, "sh" | "bash" | "bat" | "cmd" | "ps1") => b(">", 0x89e051, true),
+        (_, "png" | "jpg" | "jpeg" | "gif" | "svg" | "ico" | "webp") => b("◩", 0x62b543, true),
+        (_, "vim") => b("V", 0x199f4b, false),
+        _ => TreeIcon::Page,
+    }
+}
+
+/// アイコンを列 `col`・行の y に描く（2 列ぶん。中は 16px ほど）
+fn draw_tree_icon(p: &mut Painter, icon: &TreeIcon, col: usize, y: f32) {
+    let cell = p.fonts.cell();
+    let s = (cell.h * 0.62).round().clamp(10.0, 26.0);
+    let x = col as f32 * cell.w + ((2.0 * cell.w - s) / 2.0).max(0.0) - 2.0;
+    let y = y + ((cell.h - s) / 2.0).round();
+    let px = (s / 16.0).max(1.0).round();
+    match icon {
+        TreeIcon::Folder(c) => {
+            // つまみ（左上）と本体
+            p.out.push(Instance::fill(x, y + px, s * 0.45, px * 2.0, *c));
+            p.out.push(Instance::fill(x, y + px * 3.0, s, s - px * 4.0, *c));
+        }
+        TreeIcon::Badge(label, bg, fg) => {
+            p.out.push(Instance::fill(x, y, s, s, *bg));
+            let n = label.chars().count() as f32;
+            let scale = if n >= 2.0 { (s * 0.95 / (2.0 * cell.w)).min(0.5) } else { 0.62 };
+            let tw = cell.w * scale * n;
+            p.small_text(label, x + (s - tw) / 2.0, y + (s - cell.h * scale) / 2.0, scale, *fg);
+        }
+        TreeIcon::Page => {
+            // 紙の形（枠と、右上の折り返し）
+            let c = rgb(0x8c9aa6);
+            let (w, h) = (s * 0.75, s);
+            let x = x + (s - w) / 2.0;
+            p.out.push(Instance::fill(x, y, w - px * 3.0, px, c));
+            p.out.push(Instance::fill(x, y, px, h, c));
+            p.out.push(Instance::fill(x + w - px, y + px * 3.0, px, h - px * 3.0, c));
+            p.out.push(Instance::fill(x, y + h - px, w, px, c));
+            p.out.push(Instance::fill(x + w - px * 3.0, y, px, px * 3.0, c));
+            p.out.push(Instance::fill(x + w - px * 3.0, y + px * 3.0 - px, px * 3.0, px, c));
+        }
+    }
 }
 
 /// 全文検索のパネル。1 行目は見出し（検索語と件数）、2 行目から `path:行: 本文`（ripgrep の vimgrep と同じ形）
