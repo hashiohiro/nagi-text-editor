@@ -321,6 +321,8 @@ pub struct Editor {
     pub appearance_changed: bool,
     /// JDK のダウンロード（版, 進み具合）
     pub jdk_download: Option<(u32, nagi_workers::drivers::Download)>,
+    /// 言語のツールのダウンロード（種類）
+    pub tool_download: Option<(String, nagi_workers::drivers::Download)>,
     pub right_tab: crate::right_panel::RightTab,
     pub right_hidden: bool,
     pub right_w: Option<usize>,
@@ -478,6 +480,7 @@ impl Editor {
             auto_complete_at: None,
             appearance_changed: false,
             jdk_download: None,
+            tool_download: None,
             right_tab: Default::default(),
             right_hidden: false,
             right_w: None,

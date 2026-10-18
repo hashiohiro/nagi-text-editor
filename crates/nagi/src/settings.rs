@@ -23,7 +23,11 @@ pub enum SKind {
     Font,
     /// JDK のフォルダ（入っているものから選ぶか、ダウンロードする）
     Jdk,
+    /// 言語のツールの bin のフォルダ（nagi_workers::toolchains の種類。入っているものから選ぶか、ダウンロードする）
+    Tool(&'static str),
 }
+
+const TOOL_HELP: &str = "Enter で入っているものから選ぶかダウンロード。空なら PATH のもの。WSL のプロジェクトでは WSL の中のものを使う";
 
 /// 項目 1 つ
 pub struct Item {
@@ -121,6 +125,17 @@ pub static SCHEMA: &[Item] = &[
     pitem("maven.path", "ビルド・実行", "Maven: mvn の場所", T, "", "空なら PATH の mvn"),
     pitem("maven.use_wrapper", "ビルド・実行", "Maven: Wrapper（mvnw）を使う", B, "true", "設定ファイルもそろっているときだけ"),
     pitem("maven.options", "ビルド・実行", "Maven: 追加のオプション", T, "", "いつも付ける（-o・-T 4 など）"),
+    item("toolchain.python", "ビルド・実行", "Python", SKind::Tool("python"), "", TOOL_HELP),
+    item("toolchain.node", "ビルド・実行", "Node.js", SKind::Tool("node"), "", TOOL_HELP),
+    item("toolchain.go", "ビルド・実行", "Go", SKind::Tool("go"), "", TOOL_HELP),
+    item("toolchain.rust", "ビルド・実行", "Rust（cargo）", SKind::Tool("rust"), "", TOOL_HELP),
+    item("toolchain.dotnet", "ビルド・実行", ".NET SDK", SKind::Tool("dotnet"), "", TOOL_HELP),
+    item("toolchain.clang", "ビルド・実行", "C/C++（clang）", SKind::Tool("clang"), "", TOOL_HELP),
+    item("toolchain.cmake", "ビルド・実行", "CMake", SKind::Tool("cmake"), "", TOOL_HELP),
+    item("toolchain.zig", "ビルド・実行", "Zig", SKind::Tool("zig"), "", TOOL_HELP),
+    item("toolchain.dart", "ビルド・実行", "Dart", SKind::Tool("dart"), "", TOOL_HELP),
+    item("toolchain.php", "ビルド・実行", "PHP", SKind::Tool("php"), "", TOOL_HELP),
+
     item("tools.extra_path", "ツール", "追加の PATH", T, "", "gradle・npm・cargo などの場所（; で区切る）"),
     item("git.path", "ツール", "Git: git の場所", T, "", "空なら PATH の git"),
     item("git.wsl", "ツール", "Git: WSL のプロジェクトは WSL の git", B, "true", ""),
@@ -325,6 +340,12 @@ impl crate::editor::Editor {
             let jdk = self.settings.text("maven.jdk").filter(|j| self.settings.bool("build.jdk_env") && Path::new(j).join("bin").is_dir());
             if let Some(j) = &jdk {
                 extra.insert(0, Path::new(j).join("bin").display().to_string());
+            }
+            // 言語のツール（設定で選んだ bin のフォルダを PATH の頭に。WSL の中のコマンドには届かない）
+            for t in &nagi_workers::toolchains::TOOLS {
+                if let Some(b) = self.settings.text(&format!("toolchain.{}", t.id)).filter(|b| Path::new(b).is_dir()) {
+                    extra.insert(0, b);
+                }
             }
             let extra = extra.join(";");
             let path = if extra.is_empty() { base.clone() } else { format!("{extra};{base}") };

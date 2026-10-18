@@ -220,8 +220,11 @@ fn shell_line(name: &str, cmd: &str, cwd: &Path, env: &[(String, String)]) -> Re
     if let Some((distro, linux)) = nagi_workers::wsl::split_unc(cwd) {
         let q = |v: &str| format!("'{}'", v.replace('\'', "'\\''"));
         let exports: String = env.iter().filter(|(k, _)| k != "JAVA_HOME").map(|(k, v)| format!("export {k}={}; ", q(v))).collect();
-        let line = format!("{exports}{cmd}");
-        return Ok(format!("wsl.exe -d {distro} --cd {} sh -lc \"{}\"", linux, line.replace('"', "\\\"")));
+        // 対話のシェルでだけ見えるツール（nvm の node など）の場所も PATH に（試験では WSL を呼ばない）
+        let path = if cfg!(test) { String::new() } else { nagi_workers::wsl::path_prefix(&distro) };
+        let line = format!("{path}{exports}{cmd}");
+        // --exec: 既定のシェルを通さない（$ や && を外側のシェルが先に読まないように）
+        return Ok(format!("wsl.exe -d {distro} --cd {} --exec sh -lc \"{}\"", linux, line.replace('"', "\\\"")));
     }
     let dir = std::env::temp_dir().join("nagi-run");
     std::fs::create_dir_all(&dir).map_err(|e| format!("一時フォルダを作れません: {e}"))?;
@@ -267,7 +270,7 @@ mod tests {
         let text = std::fs::read_to_string(file).unwrap();
         assert_eq!(text, "@echo off\r\nchcp 65001 >nul\r\ncd /d \"C:\\work\\shop\"\r\nset \"TZ=Asia/Tokyo\"\r\nnpm run dev\r\n");
         let w = shell_line("x", "echo \"a\"", Path::new(r"\\wsl.localhost\kali-linux\home\me\os"), &[("A".into(), "it's".into())]).unwrap();
-        assert_eq!(nagi_workers::term::split_args(&w), ["wsl.exe", "-d", "kali-linux", "--cd", "/home/me/os", "sh", "-lc", "export A='it'\\''s'; echo \"a\""]);
+        assert_eq!(nagi_workers::term::split_args(&w), ["wsl.exe", "-d", "kali-linux", "--cd", "/home/me/os", "--exec", "sh", "-lc", "export A='it'\\''s'; echo \"a\""]);
     }
 
     /// 構成を選んで動かすと、ターミナルの欄に「▶ 名前」の窓ができ、もう一度動かすと同じ窓を作り直す

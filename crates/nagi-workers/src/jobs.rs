@@ -105,7 +105,9 @@ pub fn run(command: &str, cwd: &Path, waker: Waker) -> std::io::Result<Job> {
 /// 環境変数を足して動かす
 pub fn run_env(command: &str, cwd: &Path, env: &[(String, String)], waker: Waker) -> std::io::Result<Job> {
     // WSL のプロジェクトは WSL の中のシェルで動かす（ログインシェルにして PATH を読む）
-    let mut cmd = match crate::wsl::command_in(cwd, "sh", &["-lc", command]) {
+    // 対話のシェルでだけ見えるツール（nvm の node など）も使えるように、その場所を PATH に足す
+    let wsl_line = crate::wsl::split_unc(cwd).map(|(d, _)| format!("{}{command}", crate::wsl::path_prefix(&d)));
+    let mut cmd = match crate::wsl::command_in(cwd, "sh", &["-lc", wsl_line.as_deref().unwrap_or(command)]) {
         Some(c) => c,
         None => {
             let mut cmd = Command::new("cmd");

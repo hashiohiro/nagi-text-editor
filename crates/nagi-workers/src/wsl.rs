@@ -70,9 +70,46 @@ pub fn resolve_typed(path: &str) -> PathBuf {
 pub fn command_in(cwd: &Path, program: &str, args: &[&str]) -> Option<Command> {
     let (distro, linux) = split_unc(cwd)?;
     let mut cmd = Command::new("wsl.exe");
-    cmd.args(["-d", &distro, "--cd", &linux, "--", program]).args(args);
+    // --exec: 既定のシェルを通さない（-- だと $ や && を外側のシェルが先に読んでしまう）
+    cmd.args(["-d", &distro, "--cd", &linux, "--exec", program]).args(args);
     hide(&mut cmd);
     Some(cmd)
+}
+
+/// 対話のシェル（~/.bashrc）でだけ PATH に入るツール（nvm の node・pyenv・sdkman など）のフォルダを、
+/// コマンドの頭で PATH に足す文（`export PATH='…':"$PATH"; `。足すものが無ければ空）。ディストリビューションごとに 1 度だけ調べる
+pub fn path_prefix(distro: &str) -> String {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(Default::default);
+    if let Some(v) = cache.lock().ok().and_then(|m| m.get(distro).cloned()) {
+        return v;
+    }
+    const CMDS: &str = "python3 python pip node npm npx deno bun go cargo rustc dotnet gcc g++ clang cmake make zig dart php ruby bundle lua luac ghc stack cabal mix elixir swift sbt scala java mvn gradle kotlinc";
+    let script = format!("for c in {CMDS}; do command -v \"$c\"; done");
+    let mut cmd = Command::new("wsl.exe");
+    cmd.args(["-d", distro, "--exec", "bash", "-ic", &script]).stdin(std::process::Stdio::null());
+    hide(&mut cmd);
+    let out = cmd.output().map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+    let v = prefix_from(&out);
+    if let Ok(mut m) = cache.lock() {
+        m.insert(distro.to_string(), v.clone());
+    }
+    v
+}
+
+/// `command -v` の出力から、いつもの場所でないフォルダを PATH に足す文に
+fn prefix_from(out: &str) -> String {
+    const STD: &[&str] = &["/usr/bin", "/bin", "/usr/sbin", "/sbin", "/usr/local/bin", "/usr/local/sbin"];
+    let mut dirs: Vec<&str> = Vec::new();
+    for l in out.lines().map(str::trim).filter(|l| l.starts_with('/')) {
+        let Some((d, _)) = l.rsplit_once('/') else { continue };
+        if !STD.contains(&d) && !d.starts_with("/mnt/") && !dirs.contains(&d) {
+            dirs.push(d);
+        }
+    }
+    if dirs.is_empty() { String::new() } else { format!("export PATH='{}':\"$PATH\"; ", dirs.join(":").replace('\'', "")) }
 }
 
 /// WSL のパスなら Linux のパス（シェルに渡す用）、それ以外はそのまま
@@ -105,5 +142,11 @@ mod tests {
         assert_eq!(split_unc(Path::new(r"C:\work")), None);
         assert_eq!(to_unc("Ubuntu", "/home/me/proj"), PathBuf::from(r"\\wsl.localhost\Ubuntu\home\me\proj"));
         assert_eq!(shell_path(Path::new(r"\\wsl.localhost\Ubuntu\home\me\pom.xml")), "/home/me/pom.xml");
+    }
+
+    #[test]
+    fn prefix() {
+        assert_eq!(prefix_from("/usr/bin/python3\n/home/me/.nvm/versions/node/v22/bin/node\n/home/me/.nvm/versions/node/v22/bin/npm\n/mnt/c/x/go.exe\n"), "export PATH='/home/me/.nvm/versions/node/v22/bin':\"$PATH\"; ");
+        assert_eq!(prefix_from("/usr/bin/gcc\n"), "");
     }
 }

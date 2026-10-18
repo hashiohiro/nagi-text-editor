@@ -82,6 +82,8 @@ pub struct SettingsDialog {
     pub cat_rows: RefCell<Vec<(usize, usize, usize, usize)>>,
     pub item_rows: RefCell<Vec<(usize, usize, usize)>>,
     pub buttons: RefCell<Vec<(usize, usize, usize, SButton)>>,
+    /// 言語のツールの見つかったもの（種類 → 説明の行。開いたときに裏で調べる。WSL のプロジェクトなら WSL の中も）
+    pub tool_info: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>,
 }
 
 impl SettingsDialog {
@@ -115,6 +117,7 @@ impl SettingsDialog {
         match it.kind {
             SKind::Bool => if self.work.bool(it.key) { "✓ オン".into() } else { "  オフ".into() },
             SKind::Choice(c) => c.iter().find(|x| x.0 == v).map_or(v.clone(), |x| x.1.to_string()),
+            SKind::Tool(_) if v.is_empty() => "（自動: PATH から）".into(),
             _ if v.is_empty() => "（既定）".into(),
             _ => v,
         }
@@ -149,8 +152,10 @@ impl SettingsDialog {
         let Some(it) = self.current() else { return };
         match it.kind {
             SKind::Bool | SKind::Choice(_) => self.cycle(1),
-            SKind::Font | SKind::Jdk => {
-                let items: Vec<ComboItem> = if it.kind == SKind::Font {
+            SKind::Font | SKind::Jdk | SKind::Tool(_) => {
+                let items: Vec<ComboItem> = if let SKind::Tool(id) = it.kind {
+                    tool_items(id)
+                } else if it.kind == SKind::Font {
                     self.fonts
                         .get_or_insert_with(nagi_text::font_families)
                         .iter()
@@ -171,15 +176,15 @@ impl SettingsDialog {
         }
     }
 
-    /// コンボボックスで選んだものに決める。ダウンロードを選んだら、その版を返す（Editor が始める）
-    fn choose_combo(&mut self, index: Option<usize>) -> Option<u32> {
+    /// コンボボックスで選んだものに決める。ダウンロードを選んだら、何をかを返す（Editor が始める。JDK は版、ツールは tool:種類）
+    fn choose_combo(&mut self, index: Option<usize>) -> Option<String> {
         let (Some(it), Some(c)) = (self.current(), self.combo.take()) else { return None };
         self.focus = SFocus::Items;
         let shown = c.shown();
         let pick = index.or_else(|| shown.get(c.sel).copied());
         let value = pick.and_then(|i| c.items.get(i)).map(|f| f.value.clone())?;
         if let Some(v) = value.strip_prefix("download:") {
-            return v.parse().ok();
+            return Some(v.to_string());
         }
         self.set(it, &value);
         None
@@ -229,7 +234,80 @@ fn jdk_items() -> Vec<ComboItem> {
     v
 }
 
+/// 言語のツールのコンボボックスの一覧: 自動・入っているもの・ダウンロード
+fn tool_items(id: &str) -> Vec<ComboItem> {
+    use nagi_workers::toolchains;
+    let mut v = vec![ComboItem { label: "自動（PATH から探す）".into(), value: String::new(), tag: String::new() }];
+    let Some(t) = toolchains::def(id) else { return v };
+    if !cfg!(test) {
+        for f in toolchains::installed(id) {
+            v.push(ComboItem { label: format!("{}  {}", if f.version.is_empty() { "?" } else { &f.version }, f.bin.display()), value: f.bin.display().to_string(), tag: f.source.into() });
+        }
+    }
+    if let Some(d) = t.download {
+        v.push(ComboItem { label: format!("＋ ダウンロード: {d}"), value: format!("download:tool:{id}"), tag: "最新".into() });
+    }
+    v
+}
+
+/// 言語のツールの説明の行を裏で調べる（Windows で見つかったもの、WSL のプロジェクトなら WSL の中のもの）
+fn probe_tools(root: &std::path::Path, info: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, String>>>, waker: nagi_workers::Waker) {
+    use nagi_workers::toolchains::{self, TOOLS};
+    let wsl = nagi_workers::wsl::split_unc(root).map(|(d, _)| d);
+    let _ = std::thread::Builder::new().name("probe-tools".into()).spawn(move || {
+        if let Some(d) = &wsl {
+            for (id, path, ver) in toolchains::wsl_report(d) {
+                let cmd = toolchains::def(id).map_or("", |t| t.wsl);
+                let s = if path.is_empty() { format!("WSL（{d}）: {cmd} は入っていません。このプロジェクトでは WSL の中のものを使う") } else { format!("WSL（{d}）: {cmd} {ver}（{path}）を使う") };
+                if let Ok(mut m) = info.lock() {
+                    m.insert(id.to_string(), s);
+                }
+            }
+            waker();
+            return;
+        }
+        for t in &TOOLS {
+            let s = match toolchains::installed(t.id).into_iter().next() {
+                Some(f) => format!("PATH など: {} {}（{}）", t.label, f.version, f.bin.join(t.exe).display()),
+                None => format!("{} は見つかりません（Enter でダウンロード）", t.label),
+            };
+            if let Ok(mut m) = info.lock() {
+                m.insert(t.id.to_string(), s);
+            }
+            waker();
+        }
+    });
+}
+
 impl Editor {
+    /// コンボボックスで選んだダウンロードを始める（数なら JDK の版、tool:種類 なら言語のツール）
+    pub(crate) fn start_download(&mut self, what: &str) {
+        match what.strip_prefix("tool:") {
+            Some(id) => self.start_tool_download(id),
+            None => {
+                if let Ok(v) = what.parse::<u32>() {
+                    self.start_jdk_download(v);
+                }
+            }
+        }
+    }
+
+    /// 言語のツールをダウンロードし始める。進み具合は状態の行に、終わったら設定に入れる
+    pub(crate) fn start_tool_download(&mut self, id: &str) {
+        let label = nagi_workers::toolchains::def(id).map_or(id, |t| t.label);
+        if self.tool_download.is_some() {
+            self.message = "ほかのツールをダウンロードしています".into();
+            return;
+        }
+        if cfg!(test) {
+            self.message = format!("（試験）{label} のダウンロード");
+            return;
+        }
+        let waker = self.waker.clone().unwrap_or_else(|| std::sync::Arc::new(|| {}));
+        self.tool_download = Some((id.to_string(), nagi_workers::toolchains::download(id, waker)));
+        self.message = format!("{label} の最新版を調べてダウンロードします…");
+    }
+
     /// JDK（Eclipse Temurin の `version`）をダウンロードし始める。進み具合は状態の行に、終わったら設定に入れる
     pub(crate) fn start_jdk_download(&mut self, version: u32) {
         if self.jdk_download.is_some() {
@@ -247,6 +325,46 @@ impl Editor {
 
     /// ダウンロードの進み具合を受け取る。変わったら true
     pub fn poll_jdk_download(&mut self) -> bool {
+        self.poll_tool_download() | self.poll_jdk_only()
+    }
+
+    fn poll_tool_download(&mut self) -> bool {
+        use nagi_workers::drivers::DlMsg;
+        let Some((id, d)) = &self.tool_download else { return false };
+        let id = id.clone();
+        let label = nagi_workers::toolchains::def(&id).map_or(id.clone(), |t| t.label.to_string());
+        let mut changed = false;
+        let mut done = None;
+        while let Ok(m) = d.rx.try_recv() {
+            changed = true;
+            match m {
+                DlMsg::Progress(got, _) => self.message = format!("{label} をダウンロードしています… {} MB", got / 1024 / 1024),
+                DlMsg::Extracting => self.message = format!("{label} を展開・インストールしています…"),
+                DlMsg::Done(r) => done = Some(r),
+            }
+        }
+        if let Some(r) = done {
+            self.tool_download = None;
+            let key = format!("toolchain.{id}");
+            match r {
+                Ok(path) => {
+                    let p = path.display().to_string();
+                    let old = self.settings.clone();
+                    self.settings.set(&key, &p, false);
+                    let _ = self.settings.save();
+                    self.apply_settings(Some(&old));
+                    if let Some(d) = &mut self.settings_dialog {
+                        d.work.set(&key, &p, false);
+                    }
+                    self.message = format!("{label} を入れました: {p}（設定にしました。ターミナル・実行の構成・:Make で使う）");
+                }
+                Err(e) => self.message = format!("{label} をダウンロードできません: {e}"),
+            }
+        }
+        changed
+    }
+
+    fn poll_jdk_only(&mut self) -> bool {
         use nagi_workers::drivers::DlMsg;
         let Some((ver, d)) = &self.jdk_download else { return false };
         let ver = *ver;
@@ -303,7 +421,12 @@ impl Editor {
             cat_rows: RefCell::new(Vec::new()),
             item_rows: RefCell::new(Vec::new()),
             buttons: RefCell::new(Vec::new()),
+            tool_info: Default::default(),
         };
+        if !cfg!(test) {
+            let waker = self.waker.clone().unwrap_or_else(|| std::sync::Arc::new(|| {}));
+            probe_tools(&self.nav_root(), d.tool_info.clone(), waker);
+        }
         self.settings_dialog = Some(d);
         self.mode = Mode::Settings;
         self.message.clear();
@@ -429,7 +552,7 @@ impl Editor {
                     }
                     Key::Enter => {
                         if let Some(v) = d.choose_combo(None) {
-                            self.start_jdk_download(v);
+                            self.start_download(&v);
                         }
                     }
                     Key::Esc if normal || d.combo.as_ref().is_some_and(|c| c.filter.text().is_empty()) => {
@@ -543,7 +666,7 @@ impl Editor {
             match hit {
                 Some(i) => {
                     if let Some(v) = d.choose_combo(Some(i)) {
-                        self.start_jdk_download(v);
+                        self.start_download(&v);
                     }
                 }
                 None => {

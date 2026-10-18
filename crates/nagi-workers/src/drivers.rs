@@ -76,7 +76,7 @@ pub struct Download {
     pub rx: Receiver<DlMsg>,
 }
 
-fn system_tool(name: &str) -> PathBuf {
+pub(crate) fn system_tool(name: &str) -> PathBuf {
     let root = std::env::var_os("SystemRoot").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
     let p = root.join("System32").join(name);
     if p.is_file() { p } else { PathBuf::from(name) }

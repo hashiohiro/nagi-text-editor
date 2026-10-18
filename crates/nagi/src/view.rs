@@ -3011,6 +3011,16 @@ fn draw_settings_dialog(p: &mut Painter, ed: &Editor, d: &crate::settings_dialog
                 Some(j) => format!("java: {}", j.join("bin").join("java.exe").display()),
                 None => "java: 見つかりません（Enter でダウンロード）".into(),
             }
+        } else if let SKind::Tool(id) = it.kind {
+            // 使うもの: 設定したもの、無ければ裏で調べた結果（WSL のプロジェクトなら WSL の中のもの）
+            let info = d.tool_info.lock().ok().and_then(|m| m.get(id).cloned());
+            let exe = nagi_workers::toolchains::def(id).map_or("", |t| t.exe);
+            match (d.work.text(it.key), info) {
+                (_, Some(i)) if i.starts_with("WSL") => i,
+                (Some(b), _) => format!("使う: {}", std::path::Path::new(&b).join(exe).display()),
+                (None, Some(i)) => i,
+                (None, None) => "調べています…".into(),
+            }
         } else {
             desc
         };
