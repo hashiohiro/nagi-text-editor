@@ -119,6 +119,8 @@ pub struct GlyphKey {
 
 pub struct Fonts {
     px: f32,
+    /// 行の高さの倍率（1.0 で文字の高さそのまま）
+    line: f32,
     cell: CellSize,
     faces: Vec<Face>,
     /// MapCharacters で追加した face（ファミリー名 → faces の添字）
@@ -140,21 +142,27 @@ impl Fonts {
                 Face { font, scale: 1.0, baseline: 0.0, color }
             })
             .collect();
-        let cell = cell_metrics(&faces[0], px);
+        let cell = cell_metrics(&faces[0], px, 1.0);
         for f in faces.iter_mut() {
             fit_face(f, px, cell);
         }
-        Self { px, cell, faces, extra: HashMap::new(), pick_cache: FastMap::default(), ctx: ScaleContext::new(), ambiguous_wide: false }
+        Self { px, line: 1.0, cell, faces, extra: HashMap::new(), pick_cache: FastMap::default(), ctx: ScaleContext::new(), ambiguous_wide: false }
     }
 
     pub fn cell(&self) -> CellSize {
         self.cell
     }
 
+    /// 行の高さの倍率（設定の「行の高さ」）。セルの高さを変え、文字は上下の真ん中に置く
+    pub fn set_line_height(&mut self, line: f32) {
+        self.line = line.clamp(0.8, 2.0);
+        self.set_px(self.px);
+    }
+
     /// 文字の大きさを変える（表示倍率が変わったとき）。描いたグリフは作り直しになる
     pub fn set_px(&mut self, px: f32) {
         self.px = px;
-        self.cell = cell_metrics(&self.faces[0], px);
+        self.cell = cell_metrics(&self.faces[0], px, self.line);
         for f in self.faces.iter_mut() {
             fit_face(f, px, self.cell);
         }
@@ -270,12 +278,12 @@ fn is_color(f: &FontData) -> bool {
     [b"COLR", b"CBDT", b"sbix"].iter().any(|tag| r.table(u32::from_be_bytes(**tag)).is_some())
 }
 
-fn cell_metrics(primary: &Face, px: f32) -> CellSize {
+fn cell_metrics(primary: &Face, px: f32, line: f32) -> CellSize {
     let font = primary.font_ref();
     let m = font.metrics(&[]).scale(px);
     let gid = font.charmap().map('0');
     let adv = font.glyph_metrics(&[]).scale(px).advance_width(gid);
-    CellSize { w: adv.round().max(1.0), h: (m.ascent + m.descent + m.leading).round().max(1.0) }
+    CellSize { w: adv.round().max(1.0), h: ((m.ascent + m.descent + m.leading) * line).round().max(1.0) }
 }
 
 /// 副フォントを主フォントのセル高さに収める。主フォントは等倍・ascent 基準。

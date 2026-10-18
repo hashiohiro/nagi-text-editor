@@ -317,6 +317,8 @@ pub struct Editor {
     pub rc_clipboard: bool,
     /// 入力補完を自動で出す時刻（設定の「打っている間に自動で出す」）
     pub auto_complete_at: Option<std::time::Instant>,
+    /// 設定の外観（フォント・大きさ・行の高さ）が変わった（App がフォントを作り直す）
+    pub appearance_changed: bool,
     pub right_tab: crate::right_panel::RightTab,
     pub right_hidden: bool,
     pub right_w: Option<usize>,
@@ -472,6 +474,7 @@ impl Editor {
             settings_dialog: None,
             rc_clipboard: false,
             auto_complete_at: None,
+            appearance_changed: false,
             right_tab: Default::default(),
             right_hidden: false,
             right_w: None,

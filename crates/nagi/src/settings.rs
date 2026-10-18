@@ -278,7 +278,20 @@ impl Settings {
 impl crate::editor::Editor {
     /// 設定を動いている nagi に効かせる（`old` は前の設定。変わった項目だけ効かせる）
     pub(crate) fn apply_settings(&mut self, old: Option<&Settings>) {
-        let _ = old;
+        // 外観: 配色・強調の色・タブの名前は描き方へ、フォント・大きさ・行の高さが変わったら App が作り直す
+        crate::view::set_appearance(&self.settings.get("appearance.theme"), &self.settings.get("appearance.accent"), self.settings.get("appearance.tab_names") == "always");
+        if let Some(o) = old {
+            if ["appearance.font", "appearance.font_ja", "appearance.font_size", "appearance.line_height"].iter().any(|k| o.get(k) != self.settings.get(k)) {
+                self.appearance_changed = true;
+            }
+        }
+        // 欄の大きさを覚えていれば、まだ決めていない欄に入れる
+        if self.settings.bool("appearance.remember_panels") {
+            let num = |k: &str| self.settings.global.get(k).and_then(|v| v.parse::<usize>().ok());
+            self.left_w = self.left_w.or(num("state.left_width"));
+            self.right_w = self.right_w.or(num("state.right_width"));
+            self.bottom_h = self.bottom_h.or(num("state.bottom_height"));
+        }
         self.sync_clipboard();
         if !self.settings.bool("vim.hlsearch") {
             self.search.highlight = false;
@@ -310,6 +323,21 @@ impl crate::editor::Editor {
                     None => std::env::remove_var("NAGI_DRIVERS_DIR"),
                 }
             }
+        }
+    }
+
+    /// ドラッグで変えた欄の大きさを覚える（設定の「欄の大きさを覚える」）
+    pub(crate) fn remember_panel_sizes(&mut self) {
+        if !self.settings.bool("appearance.remember_panels") {
+            return;
+        }
+        for (k, v) in [("state.left_width", self.left_w), ("state.right_width", self.right_w), ("state.bottom_height", self.bottom_h)] {
+            if let Some(v) = v {
+                self.settings.global.insert(k.to_string(), v.to_string());
+            }
+        }
+        if let Err(e) = self.settings.save() {
+            self.message = format!("欄の大きさを覚えられません: {e}");
         }
     }
 

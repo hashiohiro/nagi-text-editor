@@ -18,6 +18,52 @@ const fn rgb(hex: u32) -> [f32; 4] {
 
 // 見た目はターミナルの Vim と同じにする（architecture.md §9 の原則）。地は単色、強調は反転だけ。
 pub const BG: [f32; 4] = rgb(0x0c0c0c);
+
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
+
+/// 配色（設定の「配色」: 0 ダーク・1 ブラック・2 ダークグレー・3 ライト）と強調の色（0xRRGGBB）。設定を適用したときに入れる
+static THEME: AtomicU8 = AtomicU8::new(0);
+static ACCENT: AtomicU32 = AtomicU32::new(DEFAULT_ACCENT);
+const DEFAULT_ACCENT: u32 = 0x87afd7;
+/// 欄のタブの名前をいつも出すか（設定の「欄のタブの名前」）
+static TAB_NAMES: AtomicBool = AtomicBool::new(false);
+
+/// 設定の外観（配色・強調の色・タブの名前）を描き方に入れる
+pub fn set_appearance(theme: &str, accent: &str, tab_names_always: bool) {
+    let t = match theme {
+        "black" => 1,
+        "dim" => 2,
+        "light" => 3,
+        _ => 0,
+    };
+    THEME.store(t, Ordering::Relaxed);
+    let a = u32::from_str_radix(accent.trim().trim_start_matches('#'), 16).ok().filter(|v| *v <= 0xffffff).unwrap_or(DEFAULT_ACCENT);
+    ACCENT.store(a, Ordering::Relaxed);
+    TAB_NAMES.store(tab_names_always, Ordering::Relaxed);
+}
+
+/// 描いた色を配色で置き換える（ダークの色を基準に、灰色は明るさを、色のあるものは濃さを変える）
+pub fn theme_color(c: [f32; 4]) -> [f32; 4] {
+    let default_accent = rgb(DEFAULT_ACCENT);
+    let near = |a: f32, b: f32| (a - b).abs() < 0.002;
+    if near(c[0], default_accent[0]) && near(c[1], default_accent[1]) && near(c[2], default_accent[2]) {
+        let mut a = rgb(ACCENT.load(Ordering::Relaxed));
+        a[3] = c[3];
+        return a;
+    }
+    let gray = near(c[0], c[1]) && near(c[1], c[2]);
+    let map = |f: &dyn Fn(f32) -> f32| [f(c[0]), f(c[1]), f(c[2]), c[3]];
+    match THEME.load(Ordering::Relaxed) {
+        // ブラック: 暗い灰色をもっと暗く（地は真っ黒）
+        1 if gray && c[0] < 0.3 => map(&|v| ((v - 0.047) * 1.15).max(0.0)),
+        // ダークグレー: 暗い灰色を持ち上げる（地は #1e1e1e ほど）
+        2 if gray && c[0] < 0.35 => map(&|v| 0.118 + v * 0.75),
+        // ライト: 灰色は明るさを反転、色のあるものは濃くする（白地で読めるように）
+        3 if gray => map(&|v| (1.0 - v * 0.92).clamp(0.0, 1.0)),
+        3 => map(&|v| v * 0.6),
+        _ => c,
+    }
+}
 const FG: [f32; 4] = rgb(0xcccccc);
 const LINE_NO: [f32; 4] = rgb(0x4e4e4e);
 const TILDE: [f32; 4] = rgb(0x3a3a3a);
@@ -746,15 +792,18 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     let name = ed.buf.path.as_ref().map_or("[No Name]".to_string(), |p| p.display().to_string());
     let keys = format!("{}{}", ed.pending_keys.iter().map(|k| k.label()).collect::<String>(), ed.showcmd);
     // 選んでいる実行の構成（Shift+F10 で動かすもの）
+    // （設定の「状態の行」で出すものを選べる）
+    let st = &ed.settings;
     let keys = match &ed.run_selected {
-        Some(r) => format!("{keys}   ▶ {r}"),
-        None => keys,
+        Some(r) if st.bool("appearance.status_run") => format!("{keys}   ▶ {r}"),
+        _ => keys,
     };
     // git のブランチ（main ↑1）
     let keys = match ed.git_branch_label() {
-        Some(b) => format!("{keys}   {b}"),
-        None => keys,
+        Some(b) if st.bool("appearance.status_branch") => format!("{keys}   {b}"),
+        _ => keys,
     };
+    let name = if st.bool("appearance.status_path") { name } else { String::new() };
     // 分割中は位置を窓ごとの状態行に出すので、最下行には入力中のキーだけを出す
     let ruler = if split {
         format!("{keys} ")
@@ -771,7 +820,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
                     "sass" => Some("Sass"),
                     _ => None,
                 }
-            }).map_or(String::new(), |n| format!("{n}   ")),
+            }).filter(|_| st.bool("appearance.status_lang")).map_or(String::new(), |n| format!("{n}   ")),
             ed.cursor.line + 1,
             ruler_col(ed)
         )
@@ -986,6 +1035,12 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         p.cols = saved;
     }
     *ed.tab_hits.borrow_mut() = std::mem::take(&mut p.tab_hits);
+    // 配色（設定）: 描いた色を置き換える
+    if THEME.load(Ordering::Relaxed) != 0 || ACCENT.load(Ordering::Relaxed) != DEFAULT_ACCENT {
+        for i in p.out.iter_mut().filter(|i| i.kind != 2) {
+            i.color = theme_color(i.color);
+        }
+    }
     // 入力欄の縦棒の位置（IME の候補の窓をそこに出す）
     ed.prompt_caret.set(p.caret_at);
     p.out
@@ -1136,6 +1191,7 @@ fn draw_icon_tabs(p: &mut Painter, r: Rect, tabs: &[(TabIcon, &'static str, bool
     let y = r.y as f32 * cell.h;
     let tw = crate::tree_panel::TAB_W;
     let mut x = r.x;
+    let mut name = "";
     for &(icon, label, on) in tabs {
         if x + tw + 3 > r.x + r.w {
             break;
@@ -1145,12 +1201,18 @@ fn draw_icon_tabs(p: &mut Painter, r: Rect, tabs: &[(TabIcon, &'static str, bool
         if on {
             p.out.push(Instance::fill(x as f32 * cell.w + cell.w * 0.5, y + cell.h - 2.0, (tw - 1) as f32 * cell.w, 2.0, if focused { GIT_MOD } else { STATUS_FG }));
         }
-        // 名前は出さず、マウスを載せたときに出す
+        // 名前は（設定で「いつも」でなければ）出さず、マウスを載せたときに出す
         p.tab_hits.push((r.y, x, x + tw, label));
+        if on {
+            name = label;
+        }
         x += tw;
     }
     let saved = p.cols;
     p.cols = (r.x + r.w).saturating_sub(3);
+    if TAB_NAMES.load(Ordering::Relaxed) && !name.is_empty() {
+        x = p.text(&format!(" {name}"), x, y, STATUS_FG);
+    }
     if !extra.is_empty() {
         p.text(&format!(" {extra}"), x, y, LINE_NO);
     }

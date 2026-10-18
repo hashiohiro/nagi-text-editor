@@ -89,7 +89,30 @@ use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use winit::window::{Window, WindowId};
 
 /// 論理ピクセルでのフォントサイズ（表示スケールを掛けて使う）
+/// 文字の大きさの既定（px。設定の「文字の大きさ」が 0 のとき）
 const FONT_PX: f64 = 14.0;
+
+/// 設定の文字の大きさ（pt）を px に（0 なら既定）
+fn font_px(s: &settings::Settings) -> f64 {
+    match s.int("appearance.font_size") {
+        0 => FONT_PX,
+        pt => pt as f64 * 96.0 / 72.0,
+    }
+}
+
+/// 設定のフォントの名前（英数字・日本語）
+fn font_names(s: &settings::Settings) -> Vec<String> {
+    vec![s.get("appearance.font"), s.get("appearance.font_ja")]
+}
+
+/// 名前のフォントを読む。英数字のフォントが読めなければ既定のもので
+fn load_font_chain(names: &[String]) -> Vec<FontData> {
+    let mut chain: Vec<FontData> = names.iter().filter_map(|n| nagi_text::load_by_name(n)).collect();
+    if chain.is_empty() || nagi_text::load_by_name(&names[0]).is_none() {
+        chain = nagi_text::DEFAULT_FONTS[..2].iter().filter_map(|n| nagi_text::load_by_name(n)).collect();
+    }
+    chain
+}
 
 struct Opts {
     file: Option<PathBuf>,
@@ -223,6 +246,9 @@ struct App {
     ed: Option<Editor>,
     modifiers: ModifiersState,
     scale: f64,
+    /// 文字の大きさ（px。表示倍率をかける前。設定の「文字の大きさ」）と、読んだフォントの名前
+    font_px: f64,
+    font_names: Vec<String>,
     mouse: (f64, f64),
     /// IME を許可しているか（案1: Insert だけ許可。ADR 0006）
     ime_allowed: bool,
@@ -287,7 +313,11 @@ impl App {
         let chain = p.fonts.recv().unwrap();
         let (buf, partial) = p.file.recv().unwrap();
         self.rc = p.rc.recv().unwrap();
-        let mut fonts = Fonts::new(chain, (FONT_PX * self.scale).round() as f32);
+        let st = settings::Settings::load(None);
+        self.font_px = font_px(&st);
+        let mut fonts = Fonts::new(chain, (self.font_px * self.scale).round() as f32);
+        fonts.set_line_height(st.int("appearance.line_height") as f32 / 100.0);
+        self.font_names = font_names(&st);
         // 題名は最初の描画で（プロジェクトの根が決まってから）付ける
         window.set_title(&title_for(buf.path.as_deref(), None));
         self.title_path = (None, None);
@@ -413,7 +443,7 @@ impl App {
     fn set_scale(&mut self, scale: f64) {
         self.scale = scale;
         if let (Some(f), Some(r)) = (&mut self.fonts, &mut self.renderer) {
-            f.set_px((FONT_PX * scale).round() as f32);
+            f.set_px((self.font_px * scale).round() as f32);
             r.clear_glyphs();
             view::prefetch_ascii(f, r);
             self.prefetched_top = None;
@@ -421,7 +451,35 @@ impl App {
         self.draw();
     }
 
+    /// 設定の外観（フォント・大きさ・行の高さ）が変わったら、フォントを作り直す（表示倍率が変わったときと同じ道筋）
+    fn reload_fonts(&mut self) {
+        let Some(ed) = &self.ed else { return };
+        let names = font_names(&ed.settings);
+        let px = font_px(&ed.settings);
+        let line = ed.settings.int("appearance.line_height") as f32 / 100.0;
+        if names != self.font_names {
+            let chain = load_font_chain(&names);
+            if !chain.is_empty() {
+                self.fonts = Some(Fonts::new(chain, (px * self.scale).round() as f32));
+                self.font_names = names;
+            }
+        }
+        self.font_px = px;
+        if let (Some(f), Some(r)) = (&mut self.fonts, &mut self.renderer) {
+            f.set_line_height(line);
+            f.set_px((px * self.scale).round() as f32);
+            r.clear_glyphs();
+            view::prefetch_ascii(f, r);
+            self.prefetched_top = None;
+        }
+        self.sync_screen();
+    }
+
     fn draw(&mut self) -> [Duration; 4] {
+        // 設定を適用して外観が変わったら、フォントを作り直す
+        if self.ed.as_mut().is_some_and(|e| std::mem::take(&mut e.appearance_changed)) {
+            self.reload_fonts();
+        }
         let (Some(r), Some(f), Some(ed)) = (&mut self.renderer, &mut self.fonts, &mut self.ed) else { return Default::default() };
         let t0 = Instant::now();
         // 構文木の更新は待ちの前に済ませる（待っている間に前のフレームが出る）
@@ -454,7 +512,7 @@ impl App {
             }
         }
         let t3 = Instant::now();
-        if let Err(e) = r.draw(&insts, view::BG) {
+        if let Err(e) = r.draw(&insts, view::theme_color(view::BG)) {
             eprintln!("draw: {e}");
         }
         [t1 - t0, t2 - t1, t3 - t2, t3.elapsed()]
@@ -1442,7 +1500,12 @@ impl ApplicationHandler for App {
                         }
                     }
                     self.press = None;
-                    self.sep_drag = None;
+                    // 区切りをドラッグし終えたら、欄の大きさを覚える（設定）
+                    if self.sep_drag.take().is_some() {
+                        if let Some(ed) = &mut self.ed {
+                            ed.remember_panel_sizes();
+                        }
+                    }
                     self.autoscroll_deadline = None;
                 }
             },
@@ -1554,7 +1617,8 @@ fn main() {
     spawn("font")
         .spawn(move || {
             // 起動時に読むのは主フォントと日本語フォントだけ（S2）。残りは必要になったとき MapCharacters で解決する。
-            let chain: Vec<FontData> = nagi_text::DEFAULT_FONTS[..2].iter().filter_map(|n| nagi_text::load_by_name(n)).collect();
+            // 設定のフォント（英数字・日本語）。読めなければ既定のもの
+            let chain = load_font_chain(&font_names(&settings::Settings::load(None)));
             clock::mark(format!("font: {} faces", chain.len()));
             ftx.send(chain).unwrap();
         })
@@ -1612,6 +1676,8 @@ fn main() {
         ed: None,
         modifiers: ModifiersState::empty(),
         scale: 1.0,
+        font_px: FONT_PX,
+        font_names: Vec::new(),
         mouse: (0.0, 0.0),
         ime_allowed: false,
         rc: Rc::default(),
