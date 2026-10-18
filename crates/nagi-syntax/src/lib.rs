@@ -61,7 +61,7 @@ pub enum Lang {
 }
 
 /// 言語の表（1 行に 1 言語。並びは enum Lang と同じ）。言語を足すときはここと enum に 1 行ずつ
-pub(crate) const LANGS: [Spec; 38] = [
+pub(crate) static LANGS: [Spec; 38] = [
     Spec { lang: Lang::Rust, name: "Rust", exts: &["rs"], files: &[], source: Source::Download("rust"), query: include_str!("../queries/rust/highlights.scm"), fences: &["rust", "rs"] },
     Spec { lang: Lang::TypeScript, name: "TypeScript", exts: &["ts", "mts", "cts"], files: &[], source: Source::Download("typescript"), query: include_str!("../queries/typescript/highlights.scm"), fences: &["ts", "typescript"] },
     Spec { lang: Lang::Tsx, name: "TSX", exts: &["tsx"], files: &[], source: Source::Download("tsx"), query: include_str!("../queries/tsx/highlights.scm"), fences: &["tsx"] },
