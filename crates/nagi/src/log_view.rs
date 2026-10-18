@@ -357,37 +357,14 @@ impl Editor {
             }
             return;
         }
-        let last = l.visible.len().saturating_sub(1);
-        let step = |l: &mut LogView, d: isize| {
-            // グラフだけの行は飛ばす
-            let mut i = l.selected as isize;
-            loop {
-                i += d;
-                if i < 0 || i as usize > last {
-                    return;
-                }
-                if l.rows[l.visible[i as usize]].commit.is_some() {
-                    l.selected = i as usize;
-                    return;
-                }
-            }
-        };
+        // 移動は一覧の共通の動き（list.rs）。グラフだけの行は飛ばす
+        let n = l.visible.len();
+        let to = if key == Key::Char('g') { Some(0) } else { crate::list::step(key, l.selected, n, rows) };
+        if let Some(to) = to {
+            l.selected = crate::list::snap(l.selected, to, n, |i| l.rows[l.visible[i]].commit.is_some());
+            return;
+        }
         match key {
-            Key::Char('j') | Key::Down => step(l, 1),
-            Key::Char('k') | Key::Up => step(l, -1),
-            Key::Ctrl('d') => (0..rows / 2).for_each(|_| step(l, 1)),
-            Key::Ctrl('u') => (0..rows / 2).for_each(|_| step(l, -1)),
-            Key::Char('G') => {
-                l.selected = last;
-                step(l, -1);
-                step(l, 1);
-            }
-            Key::Char('g') => {
-                l.selected = 0;
-                if l.visible.first().is_some_and(|&i| l.rows[i].commit.is_none()) {
-                    step(l, 1);
-                }
-            }
             Key::Char('/') => l.filter = Some(crate::vim_field::VimField::new(&l.filter_text, false)),
             Key::Tab | Key::Enter | Key::Char('l') => {
                 if l.detail.as_ref().is_some_and(|d| !d.files.is_empty()) {
@@ -458,8 +435,7 @@ impl Editor {
         let cw = w.saturating_sub(bw + dw + 2);
         let dx = cx + cw + 1;
         if col >= cx && col < cx + cw {
-            let k = l.top + row - 1;
-            if k < l.visible.len() && l.rows[l.visible[k]].commit.is_some() {
+            if let Some(k) = crate::list::row_at(l.top, row, 1, l.visible.len()).filter(|&k| l.rows[l.visible[k]].commit.is_some()) {
                 l.selected = k;
                 l.focus_files = false;
                 if clicks >= 2 && l.detail.as_ref().is_some_and(|d| !d.files.is_empty()) {

@@ -33,6 +33,25 @@ pub fn step_typing(key: Key, sel: usize, len: usize) -> Option<usize> {
     }
 }
 
+/// 押した行の一覧の番号（`row` は欄の中の行、上の `head` 行は見出し。見出しや一覧の外なら None）
+pub fn row_at(scroll: usize, row: usize, head: usize, len: usize) -> Option<usize> {
+    let i = scroll + row.checked_sub(head)?;
+    (i < len).then_some(i)
+}
+
+/// 選べない行（見出し・グラフだけの行）を飛ばす: `from` から `to` へ動いた先が選べなければ、動いた向きに次の選べる行へ。
+/// その向きに無ければ逆向きに、どちらにも無ければ `from` のまま
+pub fn snap(from: usize, to: usize, len: usize, ok: impl Fn(usize) -> bool) -> usize {
+    if len == 0 {
+        return from;
+    }
+    let to = to.min(len - 1);
+    let fwd = (to..len).find(|&i| ok(i));
+    let back = (0..=to).rev().find(|&i| ok(i));
+    let pick = if to >= from { fwd.or(back) } else { back.or(fwd) };
+    pick.unwrap_or(from)
+}
+
 /// 選んでいる行 `sel` が、`h` 行の見える範囲に入るように先頭 `top` を送る
 pub fn fit(sel: usize, top: &mut usize, h: usize) {
     let h = h.max(1);
@@ -61,5 +80,21 @@ mod tests {
         assert_eq!(top, 3);
         fit(1, &mut top, 5);
         assert_eq!(top, 1);
+    }
+
+    #[test]
+    fn rows_and_headers() {
+        // 見出し 1 行・3 行目まで送った一覧
+        assert_eq!(row_at(3, 0, 1, 10), None);
+        assert_eq!(row_at(3, 1, 1, 10), Some(3));
+        assert_eq!(row_at(3, 8, 1, 10), None);
+        // 0 と 3 は見出し。下へは次の行へ、上の端の見出しでは動かない、末尾へは手前へ
+        let ok = |i: usize| i != 0 && i != 3;
+        assert_eq!(snap(2, 3, 6, ok), 4);
+        assert_eq!(snap(1, 0, 6, ok), 1);
+        assert_eq!(snap(4, 3, 6, ok), 2);
+        // 読み込み中（行が無い）なら行を見ない
+        let empty: Vec<bool> = Vec::new();
+        assert_eq!(snap(0, 1, 0, |i| empty[i]), 0);
     }
 }

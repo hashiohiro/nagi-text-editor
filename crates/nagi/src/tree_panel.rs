@@ -418,11 +418,8 @@ impl Editor {
         self.set_state(State::List);
         let waker = self.waker_or_noop();
         let Some(t) = &mut self.tree else { return };
-        if row == 0 {
-            return;
-        }
-        let i = t.scroll + row - 1;
-        let Some(r) = t.rows.get(i).cloned() else { return };
+        let Some(i) = crate::list::row_at(t.scroll, row, 1, t.rows.len()) else { return };
+        let r = t.rows[i].clone();
         t.selected = i;
         if r.dir {
             // フォルダは 1 回のクリックで開閉する

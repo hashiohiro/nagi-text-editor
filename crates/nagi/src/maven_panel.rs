@@ -206,10 +206,7 @@ impl Editor {
 
     pub(crate) fn maven_click(&mut self, row: usize, clicks: u32) {
         let Some(m) = &mut self.maven else { return };
-        let i = m.scroll + row - 1;
-        if i >= m.rows.len() {
-            return;
-        }
+        let Some(i) = crate::list::row_at(m.scroll, row, 1, m.rows.len()) else { return };
         m.selected = i;
         self.focus_right(RightTab::Maven);
         let folder = matches!(self.maven.as_ref().and_then(|m| m.rows.get(i)).map(|r| &r.kind), Some(RowKind::Folder(_)));

@@ -496,8 +496,7 @@ impl Editor {
         if row < head {
             return;
         }
-        let i = t.scroll + row - head;
-        if i < t.rows.len() {
+        if let Some(i) = crate::list::row_at(t.scroll, row, head, t.rows.len()) {
             t.row = i;
         }
         let mut x = 7;

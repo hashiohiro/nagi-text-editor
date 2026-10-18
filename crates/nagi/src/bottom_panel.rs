@@ -224,8 +224,7 @@ impl Editor {
         self.list_side = Side::Bottom;
         self.set_state(State::List);
         let n = self.problem_rows().len();
-        let i = self.problems.scroll + row;
-        if i < n {
+        if let Some(i) = crate::list::row_at(self.problems.scroll, row, 0, n) {
             self.problems.selected = i;
             if clicks >= 2 {
                 self.problems_key(Key::Enter);

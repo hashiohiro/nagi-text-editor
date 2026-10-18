@@ -113,20 +113,6 @@ impl BranchPopup {
         self.selected = self.entries.iter().position(|x| !matches!(x, Entry::Header(_))).unwrap_or(0);
     }
 
-    fn step(&mut self, d: isize) {
-        let n = self.entries.len() as isize;
-        let mut i = self.selected as isize;
-        loop {
-            i += d;
-            if i < 0 || i >= n {
-                return;
-            }
-            if !matches!(self.entries[i as usize], Entry::Header(_)) {
-                self.selected = i as usize;
-                return;
-            }
-        }
-    }
 
     pub fn selected_branch(&self) -> Option<&Branch> {
         match self.entries.get(self.selected)? {
@@ -379,8 +365,12 @@ impl Editor {
         }
         match key {
             Key::Esc => self.close_branches(),
-            Key::Down | Key::Ctrl('n') | Key::Tab => p.step(1),
-            Key::Up | Key::Ctrl('p') => p.step(-1),
+            // 移動は一覧の共通の動き（list.rs）。見出しの行は飛ばす
+            Key::Down | Key::Ctrl('n') | Key::Tab | Key::Up | Key::Ctrl('p') => {
+                if let Some(to) = crate::list::step_typing(key, p.selected, p.entries.len()) {
+                    p.selected = crate::list::snap(p.selected, to, p.entries.len(), |i| !matches!(p.entries[i], Entry::Header(_)));
+                }
+            }
             Key::Right | Key::Ctrl('l') => {
                 if let Some(b) = p.selected_branch().cloned() {
                     let mut ops = vec![Op::Checkout, Op::NewFrom];

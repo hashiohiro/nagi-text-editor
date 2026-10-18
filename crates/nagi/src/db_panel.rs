@@ -1439,10 +1439,7 @@ impl Editor {
             self.focus_right(RightTab::Database);
             return;
         }
-        let i = p.scroll + row.saturating_sub(2);
-        if i >= p.rows.len() {
-            return;
-        }
+        let Some(i) = crate::list::row_at(p.scroll, row.max(2), 2, p.rows.len()) else { return };
         p.selected = i;
         self.focus_right(RightTab::Database);
         match self.db_selected() {

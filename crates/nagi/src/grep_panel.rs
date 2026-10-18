@@ -520,8 +520,7 @@ impl Editor {
             self.focus_panel();
             return;
         }
-        let i = g.scroll + row - 1;
-        if i < g.hits.len() {
+        if let Some(i) = crate::list::row_at(g.scroll, row, 1, g.hits.len()) {
             g.select(i);
         }
         g.anchor = None;
