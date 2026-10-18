@@ -69,6 +69,7 @@ mod normal;
 mod stats;
 mod view;
 mod list;
+mod commands;
 mod notify;
 mod ui;
 mod grammars;

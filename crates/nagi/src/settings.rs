@@ -459,4 +459,24 @@ mod tests {
         assert!(!s.global.contains_key("editor.indent_width"));
         assert_eq!(render(&HashMap::from([("x.unknown".to_string(), "1".to_string())]), "h").lines().last(), Some("x.unknown = 1"), "知らないキーも残す");
     }
+
+    /// ソースの中で読んでいる設定のキー（settings.get("…") など）が、すべて表（SCHEMA）にある（打ち間違いを見つける。ADR 0016）
+    #[test]
+    fn keys_in_source_exist() {
+        let re = regex::Regex::new(r#"settings\.(?:get|bool|text|list|int)\("([a-z_.]+)"\)"#).unwrap();
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut bad = Vec::new();
+        let mut n = 0;
+        for e in std::fs::read_dir(&dir).unwrap().flatten() {
+            let text = std::fs::read_to_string(e.path()).unwrap_or_default();
+            for c in re.captures_iter(&text) {
+                n += 1;
+                if schema(&c[1]).is_none() {
+                    bad.push(format!("{}: {}", e.file_name().to_string_lossy(), &c[1]));
+                }
+            }
+        }
+        assert!(n > 30, "読んでいるキーを見つけられない（{n}）");
+        assert!(bad.is_empty(), "表に無いキー: {bad:?}");
+    }
 }

@@ -34,41 +34,6 @@ pub enum Source {
 }
 
 /// コマンドパレットの項目（説明, Ex コマンド）
-const COMMANDS: &[(&str, &str)] = &[
-    ("設定（Ctrl+Alt+S）", "Settings"),
-    ("実行の構成を選んで実行（Alt+Shift+F10）", "RunConfigs"),
-    ("実行の構成を追加・編集", "RunEdit"),
-    ("ファイルを開く", "Files"),
-    ("バッファを切り替える", "Buffers"),
-    ("最近のファイル", "Recent"),
-    ("全文検索", "Grep"),
-    ("ファイルツリーの表示切替", "Tree"),
-    ("保存", "w"),
-    ("すべて保存", "wa"),
-    ("閉じる", "q"),
-    ("すべて閉じて終了", "qa"),
-    ("保存せずに終了", "qa!"),
-    ("次のバッファ", "bn"),
-    ("前のバッファ", "bp"),
-    ("バッファを閉じる", "bd"),
-    ("開いているバッファの一覧", "ls"),
-    ("上下に分割", "split"),
-    ("左右に分割", "vsplit"),
-    ("新しいバッファを上下に分割して開く", "new"),
-    ("ほかの窓を閉じる", "only"),
-    ("窓を閉じる", "close"),
-    ("次の検索結果", "cn"),
-    ("前の検索結果", "cp"),
-    ("検索結果のパネルへ", "copen"),
-    ("検索結果のパネルを閉じる", "cclose"),
-    ("検索の強調を消す", "noh"),
-    ("ファイルを読み直す（変更を捨てる）", "e!"),
-    ("プロジェクトを開く（最近のプロジェクト・IntelliJ・Eclipse）", "Project"),
-    ("設定（ideavimrc）を読み直す", "source"),
-    ("入力の遅延の計測を表示", "NagiStats"),
-    ("入力の遅延の計測を消す", "NagiStats!"),
-];
-
 impl Source {
     pub fn label(self) -> &'static str {
         match self {
@@ -254,8 +219,12 @@ impl Editor {
             // 場所の一覧は呼んだ側が set_locations で入れる
             Source::Definitions | Source::Symbols | Source::Types | Source::Outline => {}
             Source::Commands => {
-                for (label, cmd) in COMMANDS {
-                    f.items.push(format!("{label}  :{cmd}"));
+                // コマンドの表（commands.rs）から
+                for (cmd, help) in crate::commands::listed() {
+                    f.items.push(format!("{help}  :{cmd}"));
+                }
+                for (help, cmd) in crate::commands::PALETTE_EXTRA {
+                    f.items.push(format!("{help}  :{cmd}"));
                 }
             }
             Source::RunConfigs => f.items = self.run_list_items(),
@@ -591,7 +560,7 @@ mod tests {
         e.set_screen(100, 40);
         e.open_finder(Source::Commands);
         // 日本語の説明で絞って実行する（IME で打った語）
-        e.ime_commit("左右");
+        e.ime_commit("左右に分割");
         assert_eq!(e.finder.as_ref().unwrap().hits.len(), 1);
         keys(&mut e, "<CR>");
         assert!(e.is_split());

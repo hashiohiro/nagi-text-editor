@@ -10,108 +10,13 @@ use nagi_vim::Key;
 
 use crate::editor::Editor;
 
-/// コマンドと説明（候補の一覧に出す順）
-const EX_COMMANDS: &[(&str, &str)] = &[
-    ("w", "保存（:w 名前 で名前を付けて）"),
-    ("wa", "すべて保存"),
-    ("q", "閉じる"),
-    ("q!", "保存せずに閉じる"),
-    ("qa", "すべて閉じて終了"),
-    ("wq", "保存して閉じる"),
-    ("x", "変更があれば保存して閉じる"),
-    ("e", "ファイルを開く"),
-    ("e!", "読み直す（変更を捨てる）"),
-    ("saveas", "名前を付けて保存（名前ごと変える）"),
-    ("b", "バッファへ（番号か名前）"),
-    ("bn", "次のバッファ"),
-    ("bp", "前のバッファ"),
-    ("bd", "バッファを閉じる"),
-    ("ls", "バッファの一覧"),
-    ("sp", "上下に分割"),
-    ("vs", "左右に分割"),
-    ("new", "新しいバッファを上下に"),
-    ("vnew", "新しいバッファを左右に"),
-    ("only", "ほかの窓を閉じる"),
-    ("close", "窓を閉じる"),
-    ("s", "置換（:s/検索/置換/フラグ）"),
-    ("g", "当たる行ごとに実行（:g/検索/コマンド）"),
-    ("v", "当たらない行ごとに実行"),
-    ("normal", "ノーマルモードのキーを流す"),
-    ("d", "行を消す"),
-    ("y", "行を取る"),
-    ("m", "行を移す"),
-    ("t", "行を写す"),
-    ("j", "行をつなぐ"),
-    ("noh", "検索の強調を消す"),
-    ("marks", "マークの一覧"),
-    ("delmarks", "マークを消す"),
-    ("earlier", "時間をさかのぼって戻す"),
-    ("later", "時間を進める"),
-    ("Files", "ファイルを開く（ファインダー）"),
-    ("Buffers", "バッファを選ぶ（ファインダー）"),
-    ("Recent", "最近のファイル"),
-    ("Commands", "コマンドパレット"),
-    ("Grep", "全文検索"),
-    ("Tree", "ファイルツリー"),
-    ("Symbols", "シンボル検索"),
-    ("Types", "型の検索"),
-    ("Outline", "ファイルの構造"),
-    ("Refs", "参照を探す"),
-    ("Make", "診断のコマンドを動かす"),
-    ("eslint", "eslint の診断"),
-    ("cn", "次の結果"),
-    ("cp", "前の結果"),
-    ("copen", "結果のパネルへ"),
-    ("cclose", "結果のパネルを閉じる"),
-    ("Idea", "IntelliJ で開く"),
-    ("source", "設定（ideavimrc）を読み直す"),
-    ("NagiStats", "入力の遅延の計測"),
-    ("Git", "コミット（左の欄のコミットのタブ）"),
-    ("Gcommit", "コミット（変更の一覧とメッセージ）"),
-    ("Gdiff", "今のファイルと HEAD の差分"),
-    ("Gblame", "行ごとのコミット（出す・消す）"),
-    ("Glog", "グラフ付きの履歴"),
-    ("Ghistory", "今のファイルの履歴"),
-    ("Gbranches", "ブランチ"),
-    ("Gbranch", "ブランチを作る（名前 [起点]）"),
-    ("Gpush", "push（送る前に確かめる）"),
-    ("Gpull", "pull"),
-    ("Gfetch", "フェッチ"),
-    ("Maven", "Maven（右の欄）。後にゴールを書けば実行"),
-    ("Settings", "設定（Ctrl+Alt+S）。後に語を書けばその項目を探す"),
-    ("Run", "実行の構成を動かす（Shift+F10）。後に名前を書けばその構成（IntelliJ の構成と .nagi/run.conf）"),
-    ("RunConfigs", "実行の構成を選んで動かす（Alt+Shift+F10）"),
-    ("RunStop", "動いている構成を止める（Ctrl+F2）"),
-    ("RunEdit", "実行の構成の画面（追加・編集・削除。後に名前を書けばその構成を選んで）。:RunEdit! はファイルを開く"),
-    ("RunAdd", "実行の構成を足す（:RunAdd 名前 = コマンド）"),
-    ("Terminal", "ターミナル（下の欄。Alt+F12）。後に cmd・powershell・bash・wsl を書けばそのシェルで新しい窓"),
-    ("Problems", "問題（下の欄。Alt+6）"),
-    ("Output", "実行の出力（下の欄のログ。Alt+4）"),
-    ("TreeSync", "プロジェクトの木を開いているファイルに合わせる・合わせない（切り替え）"),
-    ("MarkdownPreview", "Markdown のプレビュー（右の欄）を出す・閉じる"),
-    ("Project", "プロジェクトを開く（最近のプロジェクト・IntelliJ・Eclipse）。後にフォルダを書けばそこを開く"),
-    ("Db", "データベース（右の欄）"),
-    ("DbAdd", "接続先を足す（名前 jdbc:URL [利用者]）"),
-    ("DbRun", "SQL コンソールでカーソルのある文を実行"),
-    ("DbSchema", "スキーマを切り替える"),
-    ("DbExport", "結果を書き出す（csv / tsv / insert）"),
-    ("DbCommit", "コミット"),
-    ("DbRollback", "ロールバック"),
-    ("DbTx", "トランザクションの自動・手動を切り替える"),
-    ("DbLogout", "Salesforce の保存したログインを消す"),
-    ("DbNew", "新しいクエリを開く（Ctrl+Enter で実行）"),
-    ("GitHunk", "カーソルの変更の差分"),
-    ("GitStage", "カーソルの変更をステージ"),
-    ("GitRevert", "カーソルの変更を戻す"),
-];
-
 /// 打った名前に合うコマンド（大文字小文字は区別しない）。頭が合うものを先に、途中に含むものを後に。
 /// 日本語を打ったら説明文からも探す。打った名前とまったく同じ 1 件だけなら（`force` でなければ）出さない
 pub fn match_commands(body: &str, force: bool) -> Vec<(String, String)> {
     let low = body.to_lowercase();
     let mut head = Vec::new();
     let mut mid = Vec::new();
-    for (c, d) in EX_COMMANDS {
+    for (c, d) in crate::commands::listed() {
         let lc = c.to_lowercase();
         if lc.starts_with(&low) {
             head.push((c.to_string(), d.to_string()));
@@ -126,20 +31,6 @@ pub fn match_commands(body: &str, force: bool) -> Vec<(String, String)> {
     head
 }
 
-/// 実行するコマンド名: 知っている名前と大文字小文字だけ違うなら、その名前に直す（:gblame → Gblame）
-pub fn canonical_cmd(name: &str) -> &str {
-    if name.is_empty() || EX_COMMANDS.iter().any(|(c, _)| *c == name) {
-        return name;
-    }
-    let mut hits = EX_COMMANDS.iter().filter(|(c, _)| c.eq_ignore_ascii_case(name));
-    match (hits.next(), hits.next()) {
-        (Some((c, _)), None) => c,
-        _ => name,
-    }
-}
-
-/// ファイル名を取るコマンド
-const FILE_ARG: &[&str] = &["e", "edit", "w", "write", "w!", "sp", "split", "vs", "vsplit", "saveas", "sav", "tabe"];
 
 /// 一覧に出す件数の上限
 pub const MAX_SHOWN: usize = 10;
@@ -171,7 +62,7 @@ impl Editor {
     pub(crate) fn update_cmd_complete(&mut self) {
         let text = self.cmdline.text[..self.cmdline.cursor].to_string();
         // ファイル名の候補が要るのに一覧がまだ無ければ、裏で集め始める（届いたら poll_cmd_files で出し直す）
-        let wants_files = text.split_once(' ').is_some_and(|(n, _)| FILE_ARG.contains(&n.trim_start_matches(|c: char| !c.is_ascii_alphabetic())));
+        let wants_files = text.split_once(' ').is_some_and(|(n, _)| crate::commands::args_of(n.trim_start_matches(|c: char| !c.is_ascii_alphabetic())) == crate::commands::Args::File);
         let root = self.finder_root();
         if wants_files && !self.file_cache.contains_key(&root) && self.cmd_files.is_none() {
             let waker = self.waker();
@@ -221,9 +112,11 @@ impl Editor {
             Some((name, arg)) => {
                 let start = body_at + name.len() + 1;
                 // スキーマ・書き出しの形
-                let fixed: Option<Vec<String>> = match canonical_cmd(name) {
-                    "DbSchema" => Some(self.db_schema_names()),
-                    "DbExport" => Some(vec!["csv".into(), "tsv".into(), "insert".into()]),
+                // 引数の種類は commands.rs の表から
+                let kind = crate::commands::args_of(name);
+                let fixed: Option<Vec<String>> = match kind {
+                    crate::commands::Args::Schema => Some(self.db_schema_names()),
+                    crate::commands::Args::Choice(list) => Some(list.iter().map(|s| s.to_string()).collect()),
                     _ => None,
                 };
                 if let Some(list) = fixed {
@@ -231,7 +124,7 @@ impl Editor {
                     let items: Vec<(String, String)> = list.into_iter().filter(|s| s.to_lowercase().starts_with(&low)).map(|s| (s, String::new())).collect();
                     return (!items.is_empty()).then(|| CmdComplete { items, sel: None, start, original: arg.to_string(), rows: Default::default() });
                 }
-                if matches!(name, "b" | "buffer" | "bd" | "bdelete") {
+                if kind == crate::commands::Args::Buffer {
                     let low = arg.to_lowercase();
                     let items: Vec<(String, String)> = self
                         .buffer_list()
@@ -243,7 +136,7 @@ impl Editor {
                         .collect();
                     return (!items.is_empty()).then(|| CmdComplete { items, sel: None, start, original: arg.to_string(), rows: Default::default() });
                 }
-                if FILE_ARG.contains(&name) {
+                if kind == crate::commands::Args::File {
                     // プロジェクトのファイル（ファインダーで集めた一覧）をファジーに。まだ無ければ裏で集める
                     let root = self.finder_root();
                     let files = self.file_cache.get(&root)?;
@@ -415,7 +308,7 @@ mod tests {
         assert_eq!(names(&e), vec!["Gblame"], "途中に含むものも出す");
         keys(&mut e, "<C-u>GIT");
         assert!(names(&e).starts_with(&["Git".to_string(), "GitHunk".into(), "GitStage".into(), "GitRevert".into()]), "{:?}", names(&e));
-        assert_eq!(canonical_cmd("git"), "Git");
+        assert_eq!(crate::commands::find("git").map(|c| c.0.names[0]), Some("Git"));
         // 日本語なら説明文から
         keys(&mut e, "<C-u>ブランチ");
         assert!(names(&e).contains(&"Gbranches".to_string()));
@@ -427,8 +320,8 @@ mod tests {
         // 小文字のまま実行できる
         keys(&mut e, "<CR>");
         assert!(!e.notify.text.contains("E492"), "{}", e.notify.text);
-        assert_eq!(canonical_cmd("gblame"), "Gblame");
-        assert_eq!(canonical_cmd("w"), "w");
+        assert_eq!(crate::commands::find("gblame").map(|c| c.0.names[0]), Some("Gblame"));
+        assert_eq!(crate::commands::find("w").map(|c| c.0.names[0]), Some("w"));
         // Insert の Ctrl+Space は単語の候補
         let mut e = Editor::new(Buffer::from_str("alpha\nal"), None);
         keys(&mut e, "GA<C-Space>");

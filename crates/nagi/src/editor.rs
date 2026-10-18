@@ -1436,7 +1436,7 @@ impl Editor {
         ok
     }
 
-    fn write(&mut self) -> bool {
+    pub(crate) fn write(&mut self) -> bool {
         self.tidy_before_save();
         match self.buf.save() {
             Ok(n) => {
@@ -1473,168 +1473,13 @@ impl Editor {
         self.ex(cmd)
     }
 
+    /// `:` の行を動かす（コマンドは commands.rs の表）
     fn ex(&mut self, cmd: &str) -> Effect {
-        let cmd = cmd.trim_start_matches(':').trim();
-        // 範囲を取るコマンド（:s :g :d :normal など）と :{行}
-        if let Some(e) = self.ex_ranged(cmd) {
-            return e;
-        }
-        let (name, arg) = cmd.split_once(char::is_whitespace).map_or((cmd, ""), |(n, a)| (n, a.trim()));
-        // 大文字小文字を区別せずにコマンド名を探す（:gblame → Gblame）
-        let name = crate::cmdline_complete::canonical_cmd(name);
-        match name {
-            "" => {}
-            "w" | "write" | "w!" | "write!" if !arg.is_empty() => {
-                self.write_as(arg, name.ends_with('!'), false);
-            }
-            "sav" | "saveas" | "sav!" | "saveas!" if !arg.is_empty() => {
-                self.write_as(arg, name.ends_with('!'), true);
-            }
-            // 名前を書かない :saveas と、名前の無いバッファの :w はダイアログで選ぶ
-            "sav" | "saveas" | "sav!" | "saveas!" => return Effect::SaveDialog,
-            "w" | "write" | "w!" | "write!" | "wq" | "x" if self.buf.path.is_none() => return Effect::SaveDialog,
-            "browse" if arg.starts_with('w') || arg.starts_with("sav") => return Effect::SaveDialog,
-            "w" | "write" | "w!" | "write!" => {
-                self.write();
-            }
-            // 分割中の :q は今の窓だけを閉じる（バッファは隠れたまま残る）
-            "q" | "quit" | "q!" | "quit!" | "clo" | "close" if self.is_split() => self.close_window(self.cur_win),
-            // :wq 名前 は名前を付けて保存してから
-            "wq" | "x" | "xit" | "wq!" if !arg.is_empty() && !self.write_as(arg, name.ends_with('!'), false) => {}
-            "wq" | "x" | "xit" if self.is_split() => {
-                if self.write() {
-                    self.close_window(self.cur_win);
-                }
-            }
-            "clo" | "close" => self.notify.error("E444: 最後のウィンドウは閉じられません"),
-            "on" | "only" => self.only_window(),
-            "sp" | "split" | "vs" | "vsplit" => {
-                self.split(name.starts_with('v'));
-                if !arg.is_empty() {
-                    self.edit_file(PathBuf::from(arg));
-                }
-            }
-            "new" | "vne" | "vnew" => {
-                self.split(name.starts_with('v'));
-                self.new_empty_buffer();
-            }
-            "q" | "quit" | "qa" | "qall" | "quitall" if self.buf.dirty => self.notify.error("E37: 変更が保存されていません（:q! で破棄して終了）"),
-            "q" | "quit" | "qa" | "qall" | "quitall" if !self.dirty_docs().is_empty() => {
-                let i = self.dirty_docs()[0];
-                self.notify.error(format!("E162: バッファ {} の変更が保存されていません（:qa! で破棄して終了）", i + 1));
-            }
-            "q" | "quit" | "q!" | "quit!" | "qa" | "qall" | "quitall" | "qa!" | "qall!" | "quitall!" => return Effect::Quit,
-            "wq" | "x" | "xit" => {
-                if self.write() && self.dirty_docs().is_empty() {
-                    return Effect::Quit;
-                }
-                if let Some(&i) = self.dirty_docs().first() {
-                    self.notify.error(format!("E162: バッファ {} の変更が保存されていません", i + 1));
-                }
-            }
-            "wa" | "wall" => {
-                self.write_all();
-            }
-            "wqa" | "wqall" | "xa" | "xall" => {
-                if self.write_all() {
-                    return Effect::Quit;
-                }
-            }
-            // フォルダならプロジェクトとして開く（IntelliJ・Eclipse の設定を読む）
-            "e" | "edit" if !arg.is_empty() && std::path::Path::new(arg).is_dir() => self.open_project(PathBuf::from(arg)),
-            "e" | "edit" if !arg.is_empty() => self.edit_file(PathBuf::from(arg)),
-            "MarkdownPreview" | "MdPreview" => self.toggle_md_preview(),
-            "Terminal" | "term" => self.terminal_command(arg),
-            "Run" => self.run_command(arg),
-            "Settings" | "Preferences" => self.open_settings(arg),
-            "RunConfigs" => self.open_run_chooser(),
-            "RunStop" => self.run_stop(),
-            // :RunEdit は画面、:RunEdit! はファイル（.nagi/run.conf）をそのまま開く
-            "RunEdit!" => self.run_edit(),
-            "RunEdit" => self.open_run_dialog((!arg.is_empty()).then_some(arg)),
-            "RunAdd" => self.run_add(arg),
-            "Problems" => self.select_bottom_tab(crate::result_grid::BottomKind::Problems),
-            "Output" => self.select_bottom_tab(crate::result_grid::BottomKind::Output),
-            "TreeSync" => {
-                self.tree_sync = !self.tree_sync;
-                self.notify.info(if self.tree_sync { "木を開いているファイルに合わせます" } else { "木を開いているファイルに合わせません" });
-                self.sync_tree();
-            }
-            "Project" | "project" if arg.is_empty() => self.pick_project(),
-            "Project" | "project" => self.open_project(PathBuf::from(arg)),
-            "e!" | "edit!" => self.reload(),
-            "ls" | "buffers" | "files" => self.list_buffers(),
-            "Files" => self.open_finder(crate::finder::Source::Files),
-            "Buffers" => self.open_finder(crate::finder::Source::Buffers),
-            "Recent" | "History" => self.open_finder(crate::finder::Source::Recent),
-            "Commands" | "Palette" => self.open_finder(crate::finder::Source::Commands),
-            "Symbols" => self.symbol_search(false),
-            "Types" | "Classes" => self.symbol_search(true),
-            "Outline" => self.outline(),
-            "Refs" | "References" => self.find_references(),
-            "Idea" | "IntelliJ" => self.open_in_intellij(),
-            "Make" | "make" => self.make(arg),
-            "GrammarInstall" => self.grammar_install_command(arg),
-            "messages" | "mes" | "Messages" => self.show_messages(),
-            "Licenses" | "License" => self.open_licenses(),
-            "GitHunk" => self.open_hunk_popup(),
-            "Git" | "G" | "Gcommit" => self.open_commit_panel(),
-            "Gdiff" | "Gd" => self.diff_current(),
-            "Gblame" | "Gb" => self.toggle_blame(),
-            "Glog" | "Gl" => self.open_log(false),
-            "Ghistory" | "Gfilelog" => self.open_log(true),
-            "Gbranch" => self.git_new_branch(arg),
-            "Gbranches" | "Gbr" => self.open_branches(),
-            "Maven" | "Mvn" if arg.is_empty() => self.open_maven(),
-            "Maven" | "Mvn" => self.maven_run(arg),
-            "Db" | "Database" => self.open_db_panel(),
-            "DbAdd" => self.db_add(arg),
-            "DbRun" => self.db_run_at_cursor(),
-            "DbSchema" => self.db_set_schema(arg),
-            "DbExport" => self.db_export(arg),
-            "DbCommit" => self.db_tx_command("commit"),
-            "DbRollback" => self.db_tx_command("rollback"),
-            "DbTx" => self.db_tx_command("toggle"),
-            "DbLogout" => self.db_logout(),
-            "DbNew" | "DbQuery" => self.db_new_query_command(),
-            "Gpull" => self.run_git_job("pull ", &["pull", "--no-edit"]),
-            "Gfetch" => self.run_git_job("フェッチ", &["fetch", "--all", "--prune"]),
-            "Gpush" => self.push_from_anywhere(),
-            "GitStage" => self.stage_hunk(),
-            "GitRevert" => self.revert_hunk(),
-            "eslint" | "Lint" => self.make("npx eslint -f unix ."),
-            "Grep" | "grep" | "Rg" | "rg" => self.open_grep(arg),
-            "cn" | "cnext" => self.next_hit(true, arg.parse().unwrap_or(1)),
-            "cp" | "cprevious" | "cN" | "cNext" => self.next_hit(false, arg.parse().unwrap_or(1)),
-            "ccl" | "cclose" => self.close_grep(),
-            "Tree" | "Explore" | "Ex" | "NERDTreeToggle" => self.toggle_tree(),
-            "cope" | "copen" => self.focus_panel(),
-            "b" | "buffer" if !arg.is_empty() => self.goto_buffer(arg),
-            "bn" | "bnext" => self.cycle_buffer(true, arg.parse().unwrap_or(1)),
-            "bp" | "bprevious" | "bN" | "bNext" => self.cycle_buffer(false, arg.parse().unwrap_or(1)),
-            "bd" | "bdelete" | "bw" | "bwipeout" => self.delete_buffer(arg, false),
-            "bd!" | "bdelete!" | "bw!" | "bwipeout!" => self.delete_buffer(arg, true),
-            "action" => self.action(arg),
-            "source" | "so" => return Effect::ReloadRc,
-            "NagiStats" => return Effect::Stats { reset: false },
-            "NagiStats!" => return Effect::Stats { reset: true },
-            "echo" => self.notify.info(arg.trim_matches(['"', '\'']).to_string()),
-            "noh" | "nohlsearch" => self.search.highlight = false,
-            // ideavimrc の `O`: `:call append(expand('.'), '')`（現在行の下に空行を足す）
-            "call" if arg.starts_with("append(") => self.append_blank_line(),
-            "marks" => self.list_marks(),
-            "earlier" | "ea" => self.undo_time(false, arg.parse().unwrap_or(1)),
-            "later" | "lat" => self.undo_time(true, arg.parse().unwrap_or(1)),
-            "delm" | "delmarks" => self.delete_marks(arg, false),
-            "delm!" | "delmarks!" => self.delete_marks(arg, true),
-            n if n.starts_with('!') => self.notify.info(format!("未実装: 外部コマンド（{cmd}）")),
-            _ => self.notify.error(format!("E492: エディタのコマンドではありません: {cmd}")),
-        }
-        Effect::None
+        crate::commands::run(self, cmd)
     }
 
     /// IdeaVim の `:action <IntelliJ のアクション名>` を Nagi の機能に振り分ける
-    fn action(&mut self, name: &str) {
+    pub(crate) fn action(&mut self, name: &str) {
         match nagi_vim::action::ideavim(name) {
             Some((Some("jump.last_change"), _)) => self.jump_last_change(),
             Some((Some("search.buffer"), _)) => self.start_search(true, false, ""),
@@ -1703,7 +1548,7 @@ impl Editor {
     }
 
     /// 現在行の下に空行を足す（ideavimrc の `O` = `:call append(expand('.'), '')`）。カーソルは動かさない
-    fn append_blank_line(&mut self) {
+    pub(crate) fn append_blank_line(&mut self) {
         let at = self.buf.line_start(self.cursor.line) + self.buf.line(self.cursor.line).len();
         let nl = self.buf.newline();
         self.hist.begin();
