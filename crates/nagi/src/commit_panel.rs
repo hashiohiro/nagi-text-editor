@@ -35,7 +35,7 @@ pub struct CommitPanel {
     pub confirm_push: Option<(String, Vec<String>)>,
     /// 戻す前の確認（項目の番号）
     pub confirm_revert: Option<usize>,
-    running: Option<(Job, nagi_core::task::Task<Result<String, String>>)>,
+    running: Option<(Job, nagi_core::task::Task<nagi_core::Result<String>>)>,
     pub busy_label: Option<String>,
 }
 
@@ -95,7 +95,7 @@ pub fn buttons(w: usize) -> [(&'static str, usize, usize, bool); 2] {
     [(push, px, pw, true), (main, mx, mw, false)]
 }
 
-fn run_git<F: FnOnce() -> Result<String, String> + Send + 'static>(waker: Option<std::sync::Arc<dyn Fn() + Send + Sync>>, f: F) -> nagi_core::task::Task<Result<String, String>> {
+fn run_git<F: FnOnce() -> nagi_core::Result<String> + Send + 'static>(waker: Option<std::sync::Arc<dyn Fn() + Send + Sync>>, f: F) -> nagi_core::task::Task<nagi_core::Result<String>> {
     let rx = nagi_core::task::spawn("git-job", waker.unwrap_or_else(nagi_core::task::no_waker), move |ctx| {
         ctx.send(f());
     });
@@ -183,7 +183,7 @@ impl Editor {
                 self.notify.info("変更を戻しました");
                 self.refresh_git();
             }
-            (_, Err(e)) => self.notify.error(format!("git: {}", e.lines().last().unwrap_or(""))),
+            (_, Err(e)) => self.notify.error(format!("git: {}", e.last_line())),
         }
         true
     }

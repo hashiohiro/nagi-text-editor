@@ -195,7 +195,7 @@ impl Form {
     }
 
     /// 入力から接続先を作る
-    pub fn source(&self) -> Result<DataSource, String> {
+    pub fn source(&self) -> nagi_core::Result<DataSource> {
         let name = self.get("名前");
         if name.is_empty() {
             return Err("名前を入れてください".into());
@@ -635,7 +635,7 @@ impl Editor {
                 Ok(format!("{} につないでいます…", s.name))
             }
             Err(e) => {
-                p.conns[i].error = Some(e.clone());
+                p.conns[i].error = Some(e.to_string());
                 Err(e)
             }
         };
@@ -710,7 +710,7 @@ impl Editor {
                         self.db_begin_connect(i);
                     }
                     Err(e) => {
-                        p.conns[i].error = Some(e.clone());
+                        p.conns[i].error = Some(e.to_string());
                         self.notify.info(e);
                     }
                 }

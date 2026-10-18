@@ -2,19 +2,19 @@
 
 /// SHA-256
 #[cfg(windows)]
-pub fn sha256(data: &[u8]) -> Result<[u8; 32], String> {
+pub fn sha256(data: &[u8]) -> crate::Result<[u8; 32]> {
     use windows_sys::Win32::Security::Cryptography::{BCRYPT_SHA256_ALG_HANDLE, BCryptHash};
     let mut out = [0u8; 32];
     // SAFETY: 入力と出力の長さをそのまま渡す
     let st = unsafe { BCryptHash(BCRYPT_SHA256_ALG_HANDLE, std::ptr::null(), 0, data.as_ptr(), data.len() as u32, out.as_mut_ptr(), 32) };
     if st != 0 {
-        return Err(format!("SHA-256 を計算できません（{st:#x}）"));
+        return Err(format!("SHA-256 を計算できません（{st:#x}）").into());
     }
     Ok(out)
 }
 
 #[cfg(not(windows))]
-pub fn sha256(_: &[u8]) -> Result<[u8; 32], String> {
+pub fn sha256(_: &[u8]) -> crate::Result<[u8; 32]> {
     Err("この OS では使えません".into())
 }
 

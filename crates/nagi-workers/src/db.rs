@@ -122,7 +122,7 @@ pub enum Req {
     Ddl(String, String, String),
 }
 
-type R<T> = Result<T, String>;
+type R<T> = nagi_core::Result<T>;
 
 /// ドライバーごとの中身
 pub(crate) trait Backend {
@@ -173,8 +173,8 @@ struct OracleDb {
     conn: oracle::Connection,
 }
 
-fn oe(e: oracle::Error) -> String {
-    e.to_string().lines().next().unwrap_or("").to_string()
+fn oe(e: oracle::Error) -> nagi_core::Error {
+    nagi_core::Error::new(e.to_string().lines().next().unwrap_or(""))
 }
 
 impl OracleDb {
@@ -340,7 +340,7 @@ impl Backend for OracleDb {
                 let st = c.execute(&strip_semicolon(s), &[]).map_err(oe)?;
                 let n = st.row_count().map_err(oe)?;
                 if n != 1 {
-                    return Err(format!("{} 文目が {n} 行を変えようとしました（1 行のはず）。すべて取り消しました", k + 1));
+                    return Err(format!("{} 文目が {n} 行を変えようとしました（1 行のはず）。すべて取り消しました", k + 1).into());
                 }
                 total += 1;
             }
@@ -387,8 +387,8 @@ struct SqliteDb {
     auto: bool,
 }
 
-fn se(e: rusqlite::Error) -> String {
-    e.to_string()
+fn se(e: rusqlite::Error) -> nagi_core::Error {
+    nagi_core::Error::of(e)
 }
 
 fn sqlite_value(v: rusqlite::types::ValueRef) -> Option<String> {
@@ -514,12 +514,12 @@ impl Backend for SqliteDb {
                 Ok(n) => n,
                 Err(e) => {
                     let _ = self.conn.execute_batch("ROLLBACK TO nagi_batch; RELEASE nagi_batch");
-                    return Err(se(e));
+                    return Err(se(e).into());
                 }
             };
             if n != 1 {
                 let _ = self.conn.execute_batch("ROLLBACK TO nagi_batch; RELEASE nagi_batch");
-                return Err(format!("{} 文目が {n} 行を変えようとしました（1 行のはず）。すべて取り消しました", k + 1));
+                return Err(format!("{} 文目が {n} 行を変えようとしました（1 行のはず）。すべて取り消しました", k + 1).into());
             }
             total += 1;
         }
@@ -565,7 +565,7 @@ pub struct Client {
 
 impl Client {
     /// 裏のスレッドで `url` につなぎ始める（つながったら Reply::Connected が届く）
-    pub fn connect(url: &str, user: &str, pass: &str, waker: Waker) -> Result<Client, String> {
+    pub fn connect(url: &str, user: &str, pass: &str, waker: Waker) -> nagi_core::Result<Client> {
         let kind = Kind::of(url).ok_or_else(|| format!("この種類の接続はまだ使えません（Oracle・SQLite・Salesforce）: {}", url.split(':').take(2).collect::<Vec<_>>().join(":")))?;
         let (tx, req_rx) = channel::<Req>();
         let (reply_tx, rx) = channel::<Reply>();
@@ -594,7 +594,7 @@ impl Client {
                         d
                     }
                     Err(e) => {
-                        send(Reply::Error(e));
+                        send(Reply::Error(e.to_string()));
                         return;
                     }
                 };
@@ -618,7 +618,7 @@ impl Client {
                         Req::Rollback => db.rollback().map(|_| Reply::Done),
                         Req::Ddl(s, n, k) => db.ddl(&s, &n, &k).map(Reply::Ddl),
                     };
-                    if !send(r.unwrap_or_else(Reply::Error)) {
+                    if !send(r.unwrap_or_else(|e| Reply::Error(e.to_string()))) {
                         return;
                     }
                 }

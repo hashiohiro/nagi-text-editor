@@ -4,6 +4,7 @@
 //! あればそれを、無ければ PATH などにあるもの（ODPI-C の既定の探し方）を使う。どちらにも無ければ、
 //! 初めてつなぐときに UI が確かめてからダウンロードする（Windows に入っている curl.exe と tar.exe を使う）。
 
+use nagi_core::Context;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::Mutex;
@@ -42,7 +43,7 @@ pub fn oracle_ready() -> bool {
 static INIT: Mutex<bool> = Mutex::new(false);
 
 /// Oracle のクライアントを読み込む（1 度だけ。失敗したら次にまた試す）
-pub fn init_oracle() -> Result<(), String> {
+pub fn init_oracle() -> nagi_core::Result<()> {
     let mut done = INIT.lock().map_err(|e| e.to_string())?;
     if *done {
         return Ok(());
@@ -58,7 +59,7 @@ pub fn init_oracle() -> Result<(), String> {
             Ok(())
         }
         Err(e) if e.to_string().contains("DPI-1047") => Err("Oracle のドライバー（Instant Client）がありません。接続先の上で Enter を押すとダウンロードできます".into()),
-        Err(e) => Err(e.to_string().lines().next().unwrap_or("").to_string()),
+        Err(e) => Err(e.to_string().lines().next().unwrap_or("").to_string().into()),
     }
 }
 
@@ -68,7 +69,7 @@ pub enum DlMsg {
     /// (受け取ったバイト, 全体のバイト。分からなければ 0)
     Progress(u64, u64),
     Extracting,
-    Done(Result<PathBuf, String>),
+    Done(nagi_core::Result<PathBuf>),
 }
 
 pub struct Download {
@@ -81,7 +82,7 @@ pub struct Polled {
     /// 最後の進み具合（「ダウンロードしています… 12 / 63 MB」「展開しています…」）
     pub status: Option<String>,
     /// 終わっていればその結果
-    pub done: Option<Result<PathBuf, String>>,
+    pub done: Option<nagi_core::Result<PathBuf>>,
 }
 
 impl Download {
@@ -126,7 +127,7 @@ pub fn download_and_extract(url: &str, expect: u64, dest: &Path, find: Box<dyn F
         let send = |m: DlMsg| {
             ctx.send(m);
         };
-        let run = || -> Result<PathBuf, String> {
+        let run = || -> nagi_core::Result<PathBuf> {
             std::fs::create_dir_all(&dest).map_err(|e| format!("{} を作れません: {e}", dest.display()))?;
             let zip = dest.join("download.zip");
             let _ = std::fs::remove_file(&zip);
@@ -144,15 +145,15 @@ pub fn download_and_extract(url: &str, expect: u64, dest: &Path, find: Box<dyn F
                 if let Some(mut e) = child.stderr.take() {
                     let _ = std::io::Read::read_to_string(&mut e, &mut err);
                 }
-                return Err(format!("ダウンロードできません: {}", err.trim()));
+                return Err(format!("ダウンロードできません: {}", err.trim()).into());
             }
             send(DlMsg::Extracting);
             let out = hidden(Command::new(crate::sys::system_tool("tar.exe")).arg("-xf").arg(&zip).arg("-C").arg(&dest)).output().map_err(|e| format!("tar.exe を起動できません: {e}"))?;
             let _ = std::fs::remove_file(&zip);
             if !out.status.success() {
-                return Err(format!("展開できません: {}", String::from_utf8_lossy(&out.stderr).trim()));
+                return Err(format!("展開できません: {}", String::from_utf8_lossy(&out.stderr).trim()).into());
             }
-            find(&dest).ok_or_else(|| format!("展開したものの中に {what} がありません"))
+            find(&dest).with_context(|| format!("展開したものの中に {what} がありません"))
         };
         send(DlMsg::Done(run()));
     });

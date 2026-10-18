@@ -53,7 +53,7 @@ pub struct Launcher {
     /// o（フォルダを開く）・g（git から取得）の入力
     pub ask: Option<(Ask, VimField)>,
     /// git clone の実行中（URL, 結果）
-    pub cloning: Option<(String, nagi_core::task::Task<Result<PathBuf, String>>)>,
+    pub cloning: Option<(String, nagi_core::task::Task<nagi_core::Result<PathBuf>>)>,
     pending_d: bool,
     pub message: String,
     /// 描いた一覧の (画面の行, hits の添字)。クリックで使う

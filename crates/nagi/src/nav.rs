@@ -261,14 +261,14 @@ impl Editor {
     }
 
     /// 実装の一覧（名前, 場所）と索引の根。見つからなければ伝える文
-    fn find_implementations(&mut self) -> Result<(Vec<(String, nagi_workers::index::Loc)>, PathBuf), String> {
+    fn find_implementations(&mut self) -> nagi_core::Result<(Vec<(String, nagi_workers::index::Loc)>, PathBuf)> {
         let Some((name, word_at)) = self.word_at_cursor() else {
             return Err("E348: カーソルの下に識別子がありません".into());
         };
         self.ensure_syntax();
         let Some(idx) = self.nav.index.as_ref() else {
             return Err(match &self.nav.progress {
-                Some((a, b)) => format!("索引を作っています（{a}/{b}）。しばらくしてからもう一度"),
+                Some((a, b)) => format!("索引を作っています（{a}/{b}）。しばらくしてからもう一度").into(),
                 None => "索引がありません".into(),
             });
         };
@@ -287,11 +287,11 @@ impl Editor {
             };
             (ty, Some(name.as_str()))
         };
-        let Some(ty) = ty else { return Err(format!("{name} の型が分かりません")) };
+        let Some(ty) = ty else { return Err(format!("{name} の型が分かりません").into()) };
         let locs = r.implementations(&ty, member);
         let root = idx.root.clone();
         if locs.is_empty() {
-            return Err(format!("実装が見つかりません: {}{name}", if is_type { String::new() } else { format!("{ty}.") }));
+            return Err(format!("実装が見つかりません: {}{name}", if is_type { String::new() } else { format!("{ty}.") }).into());
         }
         Ok((locs, root))
     }

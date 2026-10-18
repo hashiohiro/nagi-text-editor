@@ -217,7 +217,7 @@ impl Editor {
 
 /// ターミナルの窓で動かすコマンドの行。Windows は作業フォルダと環境変数も書いた .cmd を作って `cmd.exe /C` で、
 /// WSL は `wsl.exe -d <名前> --cd <フォルダ> sh -lc "…"` で
-fn shell_line(name: &str, cmd: &str, cwd: &Path, env: &[(String, String)]) -> Result<String, String> {
+fn shell_line(name: &str, cmd: &str, cwd: &Path, env: &[(String, String)]) -> nagi_core::Result<String> {
     if let Some((distro, linux)) = nagi_workers::wsl::split_unc(cwd) {
         let q = |v: &str| format!("'{}'", v.replace('\'', "'\\''"));
         let exports: String = env.iter().filter(|(k, _)| k != "JAVA_HOME").map(|(k, v)| format!("export {k}={}; ", q(v))).collect();

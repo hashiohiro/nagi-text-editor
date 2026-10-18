@@ -38,7 +38,7 @@ pub struct GrepJob {
 
 /// `root` 以下で `pattern` を探す。大文字小文字は区別しない。`regex` でなければ文字どおりに探す。
 /// パターンが正しくなければ Err（正規表現の誤り）
-pub fn search(root: &Path, pattern: &str, regex: bool, waker: Waker) -> Result<GrepJob, String> {
+pub fn search(root: &Path, pattern: &str, regex: bool, waker: Waker) -> nagi_core::Result<GrepJob> {
     let matcher = RegexMatcherBuilder::new().case_insensitive(true).fixed_strings(!regex).build(pattern).map_err(|e| e.to_string())?;
     let root: PathBuf = root.to_path_buf();
     let rx = nagi_core::task::spawn("grep", waker, move |ctx| {

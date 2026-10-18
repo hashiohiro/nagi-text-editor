@@ -13,6 +13,8 @@ const LT: LineType = LineType::LF_CR;
 pub const TAB_WIDTH: usize = 4;
 
 mod history;
+pub mod error;
+pub use error::{Context, Error, Result};
 pub mod hash;
 pub mod log;
 pub mod task;

@@ -204,14 +204,14 @@ impl Lang {
     }
 
     /// 言語ごとに 1 回だけコンパイルしたクエリ
-    pub fn highlights(self) -> &'static Result<Query, String> {
-        static Q: [OnceLock<Result<Query, String>>; LANGS.len()] = [const { OnceLock::new() }; LANGS.len()];
-        static MISSING: OnceLock<Result<Query, String>> = OnceLock::new();
+    pub fn highlights(self) -> &'static nagi_core::Result<Query> {
+        static Q: [OnceLock<nagi_core::Result<Query>>; LANGS.len()] = [const { OnceLock::new() }; LANGS.len()];
+        static MISSING: OnceLock<nagi_core::Result<Query>> = OnceLock::new();
         // 文法がまだ無ければ覚えない（ダウンロードした後に作る）
         let Some(language) = self.language() else {
             return MISSING.get_or_init(|| Err("文法がまだダウンロードされていません".into()));
         };
-        Q[self as usize].get_or_init(|| Query::new(&language, self.spec().query).map_err(|e| format!("{e}")))
+        Q[self as usize].get_or_init(|| Query::new(&language, self.spec().query).map_err(nagi_core::Error::of))
     }
 }
 

@@ -91,7 +91,7 @@ pub fn default_shell() -> String {
 
 impl Term {
     /// `cwd` でシェルを動かす（rows × cols）
-    pub fn spawn(shell: &str, cwd: &Path, rows: u16, cols: u16, waker: Waker) -> Result<Term, String> {
+    pub fn spawn(shell: &str, cwd: &Path, rows: u16, cols: u16, waker: Waker) -> nagi_core::Result<Term> {
         let (rows, cols) = (rows.max(2), cols.max(10));
         let pair = native_pty_system().openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }).map_err(|e| e.to_string())?;
         // 空白で区切る。"C:\Program Files\..." のように引用符で囲めば 1 つ（中の \" は "）

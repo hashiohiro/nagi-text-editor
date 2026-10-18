@@ -341,7 +341,7 @@ pub struct Editor {
     /// ブランチのポップアップ（開いている間だけ）
     pub branch_popup: Option<crate::branches::BranchPopup>,
     /// 裏で動かしているフェッチ・pull（見出し, 結果）
-    pub git_job: Option<(String, nagi_core::task::Task<Result<String, String>>)>,
+    pub git_job: Option<(String, nagi_core::task::Task<nagi_core::Result<String>>)>,
     /// 履歴の画面（開いている間だけ）
     pub log: Option<crate::log_view::LogView>,
     /// blame（出している間だけ）

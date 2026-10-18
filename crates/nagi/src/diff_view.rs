@@ -194,7 +194,7 @@ impl Editor {
             let patch = nagi_workers::git::hunk_patch(&rel, h.old.start, &o, h.new.start, &n, new_file);
             match nagi_workers::git::apply_cached(&root, &patch) {
                 Ok(()) => self.notify.info("変更をステージしました"),
-                Err(e) => self.notify.error(format!("ステージできません: {}", e.lines().next().unwrap_or(""))),
+                Err(e) => self.notify.error(format!("ステージできません: {}", e.first_line())),
             }
             self.refresh_status();
             return;

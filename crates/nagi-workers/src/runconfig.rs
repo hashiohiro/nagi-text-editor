@@ -520,11 +520,11 @@ fn quote(s: &str) -> String {
 }
 
 /// 言語のツールのコマンド（WSL のプロジェクトでは Linux のコマンド名・パス）
-fn tool_command(tool: &str, target: &str, args: &str, cwd: &Path, wsl: bool) -> Result<String, String> {
+fn tool_command(tool: &str, target: &str, args: &str, cwd: &Path, wsl: bool) -> nagi_core::Result<String> {
     let (t, a) = (target.trim(), args.trim());
     let def = tool_def(tool).ok_or_else(|| format!("知らないツールです: {tool}"))?;
     if def.4 && t.is_empty() {
-        return Err(format!("{}が空です", def.2.split('（').next().unwrap_or(def.2)));
+        return Err(format!("{}が空です", def.2.split('（').next().unwrap_or(def.2)).into());
     }
     let tail = |c: String| if a.is_empty() { c } else { format!("{c} {a}") };
     Ok(match tool {
@@ -586,7 +586,7 @@ fn prop(name: &str, value: &str) -> String {
 }
 
 /// 構成を動かすコマンドに直す
-pub fn launch(cfg: &RunConfig, root: &Path) -> Result<Launch, String> {
+pub fn launch(cfg: &RunConfig, root: &Path) -> nagi_core::Result<Launch> {
     let cmd = |cmd: String, cwd: PathBuf, env: Vec<(String, String)>| Ok(Launch::Command { cmd, cwd, env });
     match &cfg.kind {
         Kind::Maven { goals, profiles, options, workdir, pom } => {
@@ -660,7 +660,7 @@ pub fn launch(cfg: &RunConfig, root: &Path) -> Result<Launch, String> {
             let wsl = crate::wsl::split_unc(root).is_some();
             cmd(tool_command(tool, target, args, &cwd, wsl)?, cwd, env.clone())
         }
-        Kind::Unsupported { type_name } => Err(format!("この種類の構成はまだ動かせません（{type_name}）")),
+        Kind::Unsupported { type_name } => Err(format!("この種類の構成はまだ動かせません（{type_name}）").into()),
     }
 }
 

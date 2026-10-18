@@ -1,6 +1,7 @@
 //! nagi の設定のうち、裏の処理（Maven・git・JDK・ターミナル・ブラウザ）が読むもの。UI（nagi の設定の画面）が
 //! 適用するたびに `set` で入れ替える。入れていなければ既定（PATH の mvn・git、Wrapper を使う、UTF-8 で始める）。
 
+use nagi_core::Context;
 use std::path::PathBuf;
 use std::sync::RwLock;
 
@@ -45,7 +46,7 @@ pub fn set(c: Config) {
 }
 
 /// URL を開く（設定のブラウザ、無ければ既定のブラウザ）
-pub fn open_url(url: &str) -> Result<(), String> {
+pub fn open_url(url: &str) -> nagi_core::Result<()> {
     let mut cmd = match get().browser {
         Some(b) => {
             let mut c = std::process::Command::new(b);
@@ -59,5 +60,5 @@ pub fn open_url(url: &str) -> Result<(), String> {
         }
     };
     crate::sys::no_window(&mut cmd);
-    cmd.spawn().map(|_| ()).map_err(|e| format!("ブラウザを開けません: {e}"))
+    cmd.spawn().map(|_| ()).context("ブラウザを開けません")
 }

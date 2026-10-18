@@ -31,7 +31,7 @@ pub struct Blame {
     /// 行ごとのコミット（commits の番号）
     pub lines: Vec<usize>,
     pub commits: Vec<CommitInfo>,
-    rx: Option<nagi_core::task::Task<Result<(Vec<usize>, Vec<CommitInfo>), String>>>,
+    rx: Option<nagi_core::task::Task<nagi_core::Result<(Vec<usize>, Vec<CommitInfo>)>>>,
 }
 
 /// `git blame --porcelain` を読む
@@ -146,7 +146,7 @@ impl Editor {
                 b.commits = commits;
             }
             Err(e) => {
-                self.notify.info(format!("blame: {}", e.lines().next().unwrap_or("")));
+                self.notify.info(format!("blame: {}", e.first_line()));
                 self.blame = None;
             }
         }

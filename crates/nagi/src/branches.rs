@@ -75,7 +75,7 @@ pub struct BranchPopup {
     pub naming: Option<(Naming, crate::vim_field::VimField)>,
     /// 削除の確認（名前, 強制か）
     pub confirm_delete: Option<(String, bool)>,
-    rx: Option<nagi_core::task::Task<Result<Vec<Branch>, String>>>,
+    rx: Option<nagi_core::task::Task<nagi_core::Result<Vec<Branch>>>>,
 }
 
 impl BranchPopup {
@@ -190,7 +190,7 @@ impl Editor {
                     p.branches = b;
                     p.rebuild();
                 }
-                Err(e) => self.notify.error(format!("git: {}", e.lines().last().unwrap_or(""))),
+                Err(e) => self.notify.error(format!("git: {}", e.last_line())),
             }
             changed = true;
         }
@@ -203,7 +203,7 @@ impl Editor {
         let Ok(r) = rx.try_recv() else { return false };
         match r {
             Ok(_) => self.notify.info(format!("{label}しました")),
-            Err(e) => self.notify.error(format!("{label}できません: {}", e.lines().last().unwrap_or(""))),
+            Err(e) => self.notify.error(format!("{label}できません: {}", e.last_line())),
         }
         self.git_job = None;
         self.refresh_git();
@@ -229,7 +229,7 @@ impl Editor {
         let r = nagi_workers::git::git(&root, args);
         match &r {
             Ok(_) => self.notify.info(ok),
-            Err(e) => self.notify.error(format!("git: {}", e.lines().last().unwrap_or(""))),
+            Err(e) => self.notify.error(format!("git: {}", e.last_line())),
         }
         self.refresh_git();
         r.is_ok()
@@ -318,13 +318,13 @@ impl Editor {
                     self.notify.info(format!("ブランチ {name} を消しました"));
                     self.open_branches();
                 }
-                Some(Err(e)) if !force && e.contains("not fully merged") => {
+                Some(Err(e)) if !force && e.to_string().contains("not fully merged") => {
                     self.notify.info(format!("{name} はマージしていません。それでも消しますか（y で強制的に消す）"));
                     if let Some(p) = &mut self.branch_popup {
                         p.confirm_delete = Some((name, true));
                     }
                 }
-                Some(Err(e)) => self.notify.error(format!("git: {}", e.lines().last().unwrap_or(""))),
+                Some(Err(e)) => self.notify.error(format!("git: {}", e.last_line())),
                 None => {}
             }
             return;

@@ -20,7 +20,7 @@ const MAX_DIFF_BYTES: usize = 2 << 20;
 pub struct GitState {
     pub root: Option<PathBuf>,
     pub status: Option<Status>,
-    status_rx: Option<nagi_core::task::Task<Result<Status, String>>>,
+    status_rx: Option<nagi_core::task::Task<nagi_core::Result<Status>>>,
     /// 管理されているファイルのあるフォルダ（根からの相対パス、/ 区切り）。木で管理対象外のフォルダを赤にする
     pub tracked_dirs: Option<HashSet<String>>,
     tracked_rx: Option<nagi_core::task::Task<HashSet<String>>>,
@@ -393,7 +393,7 @@ impl Editor {
         let patch = nagi_workers::git::hunk_patch(&rel, h.old.start, &o, h.new.start, &n, new_file);
         match nagi_workers::git::apply_cached(&root, &patch) {
             Ok(()) => self.notify.info(format!("変更をステージしました（{} 行）", h.new.len().max(h.old.len()))),
-            Err(e) => self.notify.error(format!("ステージできません: {}", e.lines().next().unwrap_or(""))),
+            Err(e) => self.notify.error(format!("ステージできません: {}", e.first_line())),
         }
         self.git.popup = None;
         self.refresh_status();

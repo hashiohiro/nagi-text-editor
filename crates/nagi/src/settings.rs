@@ -5,6 +5,7 @@
 //! 変えたい項目だけ）。どちらも `キー = 値` の 1 行に 1 つ（`#` で始まる行は注釈）。既定値のままの項目は書かない。
 //! 試験では全体のファイルを読み書きしない（使っている人の設定を変えないため）。
 
+use nagi_core::Context;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
@@ -276,7 +277,7 @@ impl Settings {
     }
 
     /// ファイルに書く（試験では全体を書かない）
-    pub fn save(&self) -> Result<(), String> {
+    pub fn save(&self) -> nagi_core::Result<()> {
         if !cfg!(test) {
             if let Some(p) = global_path() {
                 write(&p, &render(&self.global, "nagi の設定"))?;
@@ -403,11 +404,11 @@ impl crate::editor::Editor {
     }
 }
 
-fn write(p: &Path, text: &str) -> Result<(), String> {
+fn write(p: &Path, text: &str) -> nagi_core::Result<()> {
     if let Some(d) = p.parent() {
         std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
     }
-    std::fs::write(p, text).map_err(|e| format!("{}: {e}", p.display()))
+    std::fs::write(p, text).context(format!("{}", p.display()))
 }
 
 #[cfg(test)]

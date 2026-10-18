@@ -52,7 +52,7 @@ mod tests {
         format!("file:///{}", p.trim_start_matches("//?/").trim_start_matches('/'))
     }
 
-    fn wait(d: Download) -> Result<PathBuf, String> {
+    fn wait(d: Download) -> nagi_core::Result<PathBuf> {
         loop {
             if let crate::drivers::DlMsg::Done(r) = d.rx.recv_timeout(std::time::Duration::from_secs(30)).unwrap() {
                 break r;

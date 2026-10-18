@@ -203,7 +203,7 @@ impl Editor {
         }
         match nagi_workers::grep::search(&g.root, &g.query.text, g.regex, waker) {
             Ok(job) => g.job = Some(job),
-            Err(e) => g.error = Some(e),
+            Err(e) => g.error = Some(e.to_string()),
         }
     }
 

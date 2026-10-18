@@ -6,12 +6,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 /// git を `root` で動かし、標準出力を返す。失敗したら標準エラー（無ければ終了コード）
-pub fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>, String> {
+pub fn git(root: &Path, args: &[&str]) -> nagi_core::Result<Vec<u8>> {
     git_input(root, args, None)
 }
 
 /// 標準入力を渡して git を動かす（パッチの適用・コミットのメッセージ）
-pub fn git_input(root: &Path, args: &[&str], input: Option<&[u8]>) -> Result<Vec<u8>, String> {
+pub fn git_input(root: &Path, args: &[&str], input: Option<&[u8]>) -> nagi_core::Result<Vec<u8>> {
     // 出力を英語と UTF-8 の決まった形にする（読み取りがずれないように）
     let base = ["-c", "core.quotepath=false", "-c", "color.ui=false"];
     // WSL のプロジェクトは WSL の中の git で（Windows の git だと遅く、safe.directory で断られる）
@@ -38,7 +38,7 @@ pub fn git_input(root: &Path, args: &[&str], input: Option<&[u8]>) -> Result<Vec
         Ok(out.stdout)
     } else {
         let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
-        Err(if err.is_empty() { format!("git が失敗しました（{}）", out.status) } else { err })
+        Err(if err.is_empty() { format!("git が失敗しました（{}）", out.status).into() } else { err.into() })
     }
 }
 
@@ -149,7 +149,7 @@ pub fn parse_status(out: &str) -> Status {
     st
 }
 
-pub fn status(root: &Path) -> Result<Status, String> {
+pub fn status(root: &Path) -> nagi_core::Result<Status> {
     git(root, &["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"]).map(|b| parse_status(&text(b)))
 }
 
@@ -164,7 +164,7 @@ pub fn blob_at(root: &Path, rev: &str, rel: &str) -> Option<String> {
 }
 
 /// パッチを index に当てる（変更の単位のステージ）
-pub fn apply_cached(root: &Path, patch: &str) -> Result<(), String> {
+pub fn apply_cached(root: &Path, patch: &str) -> nagi_core::Result<()> {
     git_input(root, &["apply", "--cached", "--unidiff-zero", "-"], Some(patch.as_bytes())).map(|_| ())
 }
 

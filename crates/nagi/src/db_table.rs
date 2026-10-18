@@ -123,7 +123,7 @@ impl TableEditor {
     }
 
     /// 送る SQL（足す → 直す → 消すの順）
-    pub fn statements(&self) -> Result<Vec<String>, String> {
+    pub fn statements(&self) -> nagi_core::Result<Vec<String>> {
         let pk = self.pk();
         if pk.is_empty() && (!self.edits.is_empty() || !self.deleted.is_empty()) {
             return Err("主キーが無いテーブルは直せません（読むだけ）".into());

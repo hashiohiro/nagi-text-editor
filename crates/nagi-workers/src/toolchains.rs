@@ -5,6 +5,7 @@
 //! nagi から起動するもの（ターミナル・実行の構成・:Make）の PATH の頭に足す。
 //! WSL のプロジェクトでは使わない（WSL の中に入っているものを使う。`wsl_report` で何が入っているかを見せる）。
 
+use nagi_core::Context;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -164,22 +165,22 @@ pub fn installed(id: &str) -> Vec<Found> {
 }
 
 /// URL の中身（Windows の curl.exe。GitHub の API のために User-Agent を付ける）
-fn fetch_text(url: &str) -> Result<String, String> {
+fn fetch_text(url: &str) -> nagi_core::Result<String> {
     let out = hidden(Command::new(crate::sys::system_tool("curl.exe")).args(["-sSfL", "--retry", "2", "-A", "nagi", url])).output().map_err(|e| format!("curl.exe を起動できません: {e}"))?;
     if !out.status.success() {
-        return Err(format!("{url} を読めません: {}", String::from_utf8_lossy(&out.stderr).trim()));
+        return Err(format!("{url} を読めません: {}", String::from_utf8_lossy(&out.stderr).trim()).into());
     }
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-fn json(url: &str) -> Result<serde_json::Value, String> {
-    serde_json::from_str(&fetch_text(url)?).map_err(|e| format!("{url} の JSON を読めません: {e}"))
+fn json(url: &str) -> nagi_core::Result<serde_json::Value> {
+    serde_json::from_str(&fetch_text(url)?).context(format!("{url} の JSON を読めません"))
 }
 
 use crate::sys::version_key;
 
 /// GitHub のいちばん新しいリリースの中で `pick` が選ぶ添付ファイル（名前から版を返す）の URL と版
-fn github_asset(repo: &str, pick: impl Fn(&str) -> Option<String>) -> Result<(String, String), String> {
+fn github_asset(repo: &str, pick: impl Fn(&str) -> Option<String>) -> nagi_core::Result<(String, String)> {
     let j = json(&format!("https://api.github.com/repos/{repo}/releases/latest"))?;
     let mut best: Option<(String, String)> = None;
     for a in j["assets"].as_array().into_iter().flatten() {
@@ -190,7 +191,7 @@ fn github_asset(repo: &str, pick: impl Fn(&str) -> Option<String>) -> Result<(St
             }
         }
     }
-    best.map(|(v, u)| (u, v)).ok_or_else(|| format!("{repo} のリリースに Windows 用のものがありません"))
+    best.map(|(v, u)| (u, v)).with_context(|| format!("{repo} のリリースに Windows 用のものがありません"))
 }
 
 /// ダウンロードできる版 1 つ
@@ -232,7 +233,7 @@ fn minor(v: &str) -> String {
 }
 
 /// ダウンロードできる版（新しいものから。系列ごとにいちばん新しいもの）
-pub fn releases(id: &str) -> Result<Vec<Release>, String> {
+pub fn releases(id: &str) -> nagi_core::Result<Vec<Release>> {
     let out = match id {
         "python" => {
             let j = json("https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest")?;
@@ -321,17 +322,17 @@ pub fn releases(id: &str) -> Result<Vec<Release>, String> {
         }
         // rustup のツールチェーン（プロジェクトごとの版は rust-toolchain.toml で）
         "rust" => vec![rel("stable", "", "rustup"), rel("beta", "", "rustup"), rel("nightly", "", "rustup")],
-        _ => return Err(format!("{id} はダウンロードできません")),
+        _ => return Err(format!("{id} はダウンロードできません").into()),
     };
     if out.is_empty() {
-        return Err(format!("{id} の Windows 用の版が見つかりません"));
+        return Err(format!("{id} の Windows 用の版が見つかりません").into());
     }
     Ok(out)
 }
 
 /// いちばん新しい版の (zip の URL, 版)
-pub fn resolve(id: &str) -> Result<(String, String), String> {
-    releases(id)?.into_iter().next().map(|r| (r.url, r.version)).ok_or_else(|| format!("{id} の版がありません"))
+pub fn resolve(id: &str) -> nagi_core::Result<(String, String)> {
+    releases(id)?.into_iter().next().map(|r| (r.url, r.version)).with_context(|| format!("{id} の版がありません"))
 }
 
 /// 版 `release`（None ならいちばん新しいもの）をダウンロードして `tools\<種類>-<版>` に置く（裏のスレッド）。Done で bin のフォルダ
@@ -377,7 +378,7 @@ pub fn download(id: &str, release: Option<Release>, waker: Waker) -> Download {
 }
 
 /// rustup-init.exe を取ってきて、stable を ~\.cargo に入れる（PATH は書き換えない。nagi の設定で渡す）
-fn install_rustup(channel: &str, send: &dyn Fn(DlMsg)) -> Result<PathBuf, String> {
+fn install_rustup(channel: &str, send: &dyn Fn(DlMsg)) -> nagi_core::Result<PathBuf> {
     let home = std::env::var_os("CARGO_HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(std::env::var_os("USERPROFILE").unwrap_or_default()).join(".cargo"));
     // rustup が入っていれば、そのツールチェーンを足すだけ（既定は変えない。プロジェクトの版は rust-toolchain.toml で）
     let rustup = home.join("bin").join("rustup.exe");
@@ -385,7 +386,7 @@ fn install_rustup(channel: &str, send: &dyn Fn(DlMsg)) -> Result<PathBuf, String
         send(DlMsg::Extracting);
         let out = hidden(Command::new(&rustup).args(["toolchain", "install", channel, "--profile", "default"])).output().map_err(|e| format!("rustup を起動できません: {e}"))?;
         if !out.status.success() {
-            return Err(String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or("rustup が失敗しました").to_string());
+            return Err(String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or("rustup が失敗しました").to_string().into());
         }
         return Ok(home.join("bin"));
     }
@@ -400,7 +401,7 @@ fn install_rustup(channel: &str, send: &dyn Fn(DlMsg)) -> Result<PathBuf, String
     let out = hidden(Command::new(&exe).args(["-y", "--no-modify-path", "--default-toolchain", channel, "--profile", "default"])).output().map_err(|e| format!("rustup-init.exe を起動できません: {e}"))?;
     let _ = std::fs::remove_file(&exe);
     if !out.status.success() {
-        return Err(String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or("rustup が失敗しました").to_string());
+        return Err(String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or("rustup が失敗しました").to_string().into());
     }
     Ok(home.join("bin"))
 }

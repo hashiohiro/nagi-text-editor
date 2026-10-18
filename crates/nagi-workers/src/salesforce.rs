@@ -24,7 +24,7 @@ pub const REDIRECT: &str = "http://localhost:1717/OauthRedirect";
 pub const API: &str = "v62.0";
 const LOGIN_TIMEOUT: Duration = Duration::from_secs(300);
 
-type R<T> = Result<T, String>;
+type R<T> = nagi_core::Result<T>;
 
 /// JDBC 風の URL（`salesforce:https://login.salesforce.com`）からログインの URL
 pub fn login_url(url: &str) -> String {
@@ -46,7 +46,7 @@ fn curl(config: &str) -> R<(u16, String)> {
     let (body, code) = text.rsplit_once('\n').unwrap_or(("", &text));
     let code: u16 = code.trim().parse().unwrap_or(0);
     if code == 0 {
-        return Err(format!("つなげません: {}", String::from_utf8_lossy(&out.stderr).trim()));
+        return Err(format!("つなげません: {}", String::from_utf8_lossy(&out.stderr).trim()).into());
     }
     Ok((code, body.to_string()))
 }
@@ -87,7 +87,7 @@ fn random(n: usize) -> R<Vec<u8>> {
     let mut buf = vec![0u8; n];
     let st = unsafe { BCryptGenRandom(std::ptr::null_mut(), buf.as_mut_ptr(), n as u32, BCRYPT_USE_SYSTEM_PREFERRED_RNG) };
     if st != 0 {
-        return Err(format!("乱数を作れません（{st:#x}）"));
+        return Err(format!("乱数を作れません（{st:#x}）").into());
     }
     Ok(buf)
 }
@@ -153,7 +153,7 @@ fn load_refresh(url: &str, user: &str) -> Option<String> {
 fn open_browser(url: &str) -> R<()> {
     // 自動テスト: ブラウザの代わりに curl でログイン画面の転送をたどる（偽の Salesforce が戻り先へ転送する）
     if std::env::var("NAGI_SF_BROWSER").as_deref() == Ok("curl") {
-        return crate::sys::no_window(Command::new(crate::sys::system_tool("curl.exe")).args(["-s", "-L", "-o", "NUL", url])).stdout(Stdio::null()).stderr(Stdio::null()).spawn().map(|_| ()).map_err(|e| e.to_string());
+        return crate::sys::no_window(Command::new(crate::sys::system_tool("curl.exe")).args(["-s", "-L", "-o", "NUL", url])).stdout(Stdio::null()).stderr(Stdio::null()).spawn().map(|_| ()).map_err(nagi_core::Error::of);
     }
     crate::config::open_url(url)
 }
@@ -359,7 +359,7 @@ fn browser_login(login: &str, user: &str, note: &dyn Fn(String)) -> R<(String, S
             if ok {
                 return Ok((code.unwrap(), verifier));
             }
-            return Err(err.unwrap_or_else(|| "state が合いません".into()));
+            return Err(err.unwrap_or_else(|| "state が合いません".into()).into());
         }
         std::thread::sleep(Duration::from_millis(100));
     }
@@ -371,7 +371,7 @@ fn token_request(login: &str, form: &str) -> R<Value> {
     let (code, body) = curl(&config)?;
     let v: Value = serde_json::from_str(&body).map_err(|_| format!("トークンの応答を読めません（{code}）"))?;
     if code != 200 {
-        return Err(format!("ログインできません: {}", v.get("error_description").and_then(Value::as_str).unwrap_or(&body)));
+        return Err(format!("ログインできません: {}", v.get("error_description").and_then(Value::as_str).unwrap_or(&body)).into());
     }
     Ok(v)
 }
@@ -429,7 +429,7 @@ impl SalesforceDb {
             let v: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
             if code >= 400 {
                 let msg = v.get(0).and_then(|e| e.get("message")).and_then(Value::as_str).map(String::from).unwrap_or(body);
-                return Err(msg);
+                return Err(msg.into());
             }
             return Ok(v);
         }

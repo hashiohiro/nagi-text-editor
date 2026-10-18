@@ -47,7 +47,7 @@ fn compile(pat: &str, case: Option<bool>) -> Option<Regex> {
 
 impl Editor {
     /// 1 つの位置（`.` `$` 数字 `'x` と `+N` `-N`）。何も無ければ None
-    fn parse_addr<'a>(&self, s: &'a str) -> Result<(Option<usize>, &'a str), String> {
+    fn parse_addr<'a>(&self, s: &'a str) -> nagi_core::Result<(Option<usize>, &'a str)> {
         let last = self.buf.line_count().saturating_sub(1);
         let mut rest = s;
         let mut base: Option<usize> = None;
@@ -84,7 +84,7 @@ impl Editor {
     }
 
     /// 範囲（行は 0 始まり）と残り。範囲が無ければ None
-    pub(crate) fn parse_range<'a>(&self, s: &'a str) -> Result<(Option<(usize, usize)>, &'a str), String> {
+    pub(crate) fn parse_range<'a>(&self, s: &'a str) -> nagi_core::Result<(Option<(usize, usize)>, &'a str)> {
         let s = s.trim_start();
         if let Some(r) = s.strip_prefix('%') {
             return Ok((Some((0, self.buf.line_count().saturating_sub(1))), r));

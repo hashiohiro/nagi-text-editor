@@ -42,7 +42,7 @@ pub enum Confirm {
     CherryPick(String),
 }
 
-type Rx<T> = Option<nagi_core::task::Task<Result<T, String>>>;
+type Rx<T> = Option<nagi_core::task::Task<nagi_core::Result<T>>>;
 
 pub struct LogView {
     /// 下の欄の「Git」タブに収めている（全画面でない）
@@ -122,7 +122,7 @@ pub fn pretty_graph(g: &str) -> String {
         .collect()
 }
 
-fn spawn<T: Send + 'static>(waker: Option<std::sync::Arc<dyn Fn() + Send + Sync>>, f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Rx<T> {
+fn spawn<T: Send + 'static>(waker: Option<std::sync::Arc<dyn Fn() + Send + Sync>>, f: impl FnOnce() -> nagi_core::Result<T> + Send + 'static) -> Rx<T> {
     let rx = nagi_core::task::spawn("git-log", waker.unwrap_or_else(nagi_core::task::no_waker), move |ctx| {
         ctx.send(f());
     });
@@ -253,7 +253,7 @@ impl Editor {
                     l.rows = rows;
                     l.refilter();
                 }
-                Err(e) => self.notify.error(format!("git log: {}", e.lines().next().unwrap_or(""))),
+                Err(e) => self.notify.error(format!("git log: {}", e.first_line())),
             }
             changed = true;
         }
@@ -321,7 +321,7 @@ impl Editor {
                     let a: Vec<&str> = args.iter().map(String::as_str).collect();
                     match nagi_workers::git::git(&root, &a) {
                         Ok(_) => self.notify.info(label.to_string()),
-                        Err(e) => self.notify.error(format!("git: {}", e.lines().last().unwrap_or(""))),
+                        Err(e) => self.notify.error(format!("git: {}", e.last_line())),
                     }
                     self.refresh_git();
                 }
@@ -517,7 +517,7 @@ impl Editor {
         }
         match nagi_workers::git::git(&root, &args) {
             Ok(_) => self.notify.info(format!("ブランチ {name} を作ってチェックアウトしました")),
-            Err(e) => self.notify.error(format!("git: {}", e.lines().last().unwrap_or(""))),
+            Err(e) => self.notify.error(format!("git: {}", e.last_line())),
         }
         self.refresh_git();
         if self.log.is_some() {

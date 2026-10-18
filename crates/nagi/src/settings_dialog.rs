@@ -89,7 +89,7 @@ pub struct SettingsDialog {
     waker: nagi_workers::Waker,
 }
 
-pub type Releases = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, Result<Vec<nagi_workers::toolchains::Release>, String>>>>;
+pub type Releases = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, nagi_core::Result<Vec<nagi_workers::toolchains::Release>>>>>;
 
 /// 版を調べている間の一覧の行の値
 const RELEASES_WAIT: &str = "download:wait";
@@ -255,7 +255,7 @@ impl SettingsDialog {
         if m.contains_key(id) || cfg!(test) {
             return;
         }
-        m.insert(id.to_string(), Err(String::new()));
+        m.insert(id.to_string(), Err(String::new().into()));
         let (rs, id) = (self.releases.clone(), id.to_string());
         let waker = self.waker.clone();
         nagi_core::task::detach("releases", move || {

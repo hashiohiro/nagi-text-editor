@@ -456,7 +456,7 @@ impl Editor {
         match runconfig::launch(&c, &self.nav_root()) {
             Ok(runconfig::Launch::Command { cmd, .. }) => cmd,
             Ok(runconfig::Launch::Open(url)) => format!("ブラウザで開く: {url}"),
-            Err(e) => e,
+            Err(e) => e.to_string(),
         }
     }
 }
