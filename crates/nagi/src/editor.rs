@@ -299,8 +299,8 @@ pub struct Editor {
     pub grep_other: Option<crate::grep_panel::GrepPanel>,
     /// 下の欄の「問題」
     pub problems: crate::bottom_panel::ProblemsView,
-    /// 下の欄の「ターミナル」
-    pub terminal: Option<crate::terminal::TermView>,
+    /// 下の欄の「ターミナル」の窓たち
+    pub terminals: crate::terminal::Terminals,
     pub right_tab: crate::right_panel::RightTab,
     pub right_hidden: bool,
     pub right_w: Option<usize>,
@@ -442,7 +442,7 @@ impl Editor {
             bottom_kind: Default::default(),
             grep_other: None,
             problems: Default::default(),
-            terminal: None,
+            terminals: Default::default(),
             right_tab: Default::default(),
             right_hidden: false,
             right_w: None,
@@ -1412,7 +1412,7 @@ impl Editor {
             "e" | "edit" if !arg.is_empty() && std::path::Path::new(arg).is_dir() => self.open_project(PathBuf::from(arg)),
             "e" | "edit" if !arg.is_empty() => self.edit_file(PathBuf::from(arg)),
             "MarkdownPreview" | "MdPreview" => self.toggle_md_preview(),
-            "Terminal" | "term" => self.select_bottom_tab(crate::result_grid::BottomKind::Terminal),
+            "Terminal" | "term" => self.terminal_command(arg),
             "Problems" => self.select_bottom_tab(crate::result_grid::BottomKind::Problems),
             "Output" => self.select_bottom_tab(crate::result_grid::BottomKind::Output),
             "TreeSync" => {

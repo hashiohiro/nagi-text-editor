@@ -810,7 +810,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         }
         Mode::Terminal => {
             let end = p.text(if ed.message.is_empty() { "-- ターミナル --" } else { &ed.message }, 0, y, FG);
-            let help = "Ctrl-\\ n 本文へ  Alt+F12 隠す  ホイールでさかのぼる ";
+            let help = "Ctrl-\\ の後: n 本文へ  c 新しい窓（シェルを選ぶ）  1〜9 切り替え  x 閉じる   Alt+F12 隠す ";
             let pc = cols.saturating_sub(p.width(help));
             if end + 2 <= pc {
                 p.text(help, pc, y, STATUS_FG);
@@ -2810,15 +2810,44 @@ fn term_color(c: vt100::Color, default: [f32; 4]) -> [f32; 4] {
     }
 }
 
-/// ターミナル（下の欄）。シェルの画面をそのまま描き、移っていればカーソル（四角）と IME の位置
+/// ターミナル（下の欄）。1 行目に窓の並び、2 行目からシェルの画面。移っていればカーソル（四角）と IME の位置
 fn draw_terminal(p: &mut Painter, ed: &Editor, r: Rect, focused: bool) {
     let cell = p.fonts.cell();
-    let Some(t) = &ed.terminal else {
-        p.text(" シェルを起動していません（Enter で起動）", r.x, r.y as f32 * cell.h, STATUS_FG);
-        return;
-    };
+    let ts = &ed.terminals;
     let saved = p.cols;
     p.cols = r.x + r.w;
+    // 窓の並び（今の窓は明るく下線、＋で新しい窓）
+    let y0 = r.y as f32 * cell.h;
+    let mut x = r.x;
+    for (label, target) in crate::terminal::strip_items(ts) {
+        let on = target == Some(ts.active) && !ts.list.is_empty();
+        let end = p.text(&label, x, y0, if on { FG } else { STATUS_FG });
+        if on {
+            p.out.push(Instance::fill(x as f32 * cell.w, y0 + cell.h - 2.0, (end - x) as f32 * cell.w, 2.0, if focused { GIT_MOD } else { STATUS_FG }));
+        }
+        x = p.text("│", end, y0, LINE_NO);
+    }
+    let r = Rect { x: r.x, y: r.y + 1, w: r.w, h: r.h.saturating_sub(1) };
+    // シェルを選んでいる
+    if let Some(sel) = ts.chooser {
+        p.text(" 新しい窓のシェル（j/k・数字で選んで Enter、Esc でやめる）", r.x, r.y as f32 * cell.h, STATUS_FG);
+        for (k, (label, cmd)) in crate::terminal::available_shells().iter().enumerate() {
+            let y = (r.y + 1 + k) as f32 * cell.h;
+            if k == sel {
+                p.out.push(Instance::fill(r.x as f32 * cell.w, y, r.w as f32 * cell.w, cell.h, if focused { FG } else { MATCH_BG }));
+            }
+            let rev = k == sel && focused;
+            let c = p.text(&format!("  {} {label}", k + 1), r.x, y, if rev { BG } else { FG });
+            p.text(&format!("   {cmd}"), c, y, if rev { BG } else { LINE_NO });
+        }
+        p.cols = saved;
+        return;
+    }
+    let Some(t) = ts.current() else {
+        p.text(" 窓がありません（Enter で開く、c でシェルを選ぶ）", r.x, r.y as f32 * cell.h, STATUS_FG);
+        p.cols = saved;
+        return;
+    };
     let x0 = r.x + 1;
     t.term.with_screen(|s| {
         let (rows, cols) = s.size();
@@ -2877,7 +2906,7 @@ fn draw_terminal(p: &mut Painter, ed: &Editor, r: Rect, focused: bool) {
     if t.exited {
         let y = (r.y + r.h.saturating_sub(1)) as f32 * cell.h;
         p.out.push(Instance::fill(r.x as f32 * cell.w, y, r.w as f32 * cell.w, cell.h, MATCH_BG));
-        p.text(" シェルが終わりました。Enter で起動し直す ", r.x, y, FG);
+        p.text(&format!(" {} が終わりました。Enter で起動し直す（Ctrl-\\ x で閉じる） ", t.name), r.x, y, FG);
     }
     p.cols = saved;
 }

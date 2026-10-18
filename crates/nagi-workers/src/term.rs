@@ -37,9 +37,17 @@ impl Term {
     pub fn spawn(shell: &str, cwd: &Path, rows: u16, cols: u16, waker: Waker) -> Result<Term, String> {
         let (rows, cols) = (rows.max(2), cols.max(10));
         let pair = native_pty_system().openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 }).map_err(|e| e.to_string())?;
-        let mut parts = shell.split_whitespace();
-        let mut cmd = CommandBuilder::new(parts.next().unwrap_or("powershell.exe"));
-        for a in parts {
+        // 先頭は "C:\Program Files\..." のように引用符で囲んだパスでもよい
+        let shell = shell.trim();
+        let (prog, rest) = match shell.strip_prefix('"').and_then(|s| s.split_once('"')) {
+            Some((p, r)) => (p.to_string(), r.to_string()),
+            None => match shell.split_once(char::is_whitespace) {
+                Some((p, r)) => (p.to_string(), r.to_string()),
+                None => (shell.to_string(), String::new()),
+            },
+        };
+        let mut cmd = CommandBuilder::new(if prog.is_empty() { "powershell.exe" } else { prog.as_str() });
+        for a in rest.split_whitespace() {
             cmd.arg(a);
         }
         if shell.to_ascii_lowercase().contains("powershell") || shell.to_ascii_lowercase().contains("pwsh") {

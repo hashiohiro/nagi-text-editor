@@ -1,20 +1,109 @@
-//! 下の欄の「ターミナル」（IntelliJ の Terminal、Alt+F12）。ConPTY でシェル（PowerShell）を動かす。
+//! 下の欄の「ターミナル」（IntelliJ の Terminal、Alt+F12）。ConPTY でシェルを動かす。窓（セッション）を
+//! いくつも開け、それぞれ PowerShell・コマンドプロンプト・Git Bash・WSL から選ぶ。
 //!
-//! 欄に移ると、キーをそのままシェルへ送る（Vim の割り当ては通さない）。本文へ戻るのは `Ctrl-\ n`（Vim の
-//! ターミナルと同じ。シェルが Esc を使うため）、本文のクリック、Alt+F12（欄を隠す）。日本語は IME で打てる。
-//! 作業フォルダはプロジェクトの根。シェルが終わったら Enter で起動し直す。マウスのホイールで遡って見られる。
+//! 1 行目に窓の並び（「1 PowerShell │ 2 コマンドプロンプト │ ＋」。押して切り替え、＋で新しい窓）、2 行目から画面。
+//! 欄に移ると、キーをそのままシェルへ送る（Vim の割り当ては通さない）。`Ctrl-\` の後に:
+//! n 本文へ（Vim のターミナルと同じ。シェルが Esc を使うため）、c 新しい窓（シェルを選ぶ）、1〜9 切り替え、x 閉じる。
+//! 最後に選んだシェルを覚え、次からはそれで開く。日本語は IME で打てる。シェルが終わったら Enter で起動し直す。
 
 use nagi_vim::Key;
 use nagi_workers::term::Term;
 
 use crate::editor::{Editor, Mode};
+use crate::panes::Rect;
 use crate::result_grid::BottomKind;
 
 pub struct TermView {
     pub term: Term,
-    /// Ctrl-\ を押した（次の n で本文へ）
-    pending_escape: bool,
+    /// 窓の名前（PowerShell・コマンドプロンプトなど）
+    pub name: String,
+    /// 起動したコマンド（起動し直す用）
+    pub cmd: String,
     pub exited: bool,
+}
+
+/// ターミナルの窓たち
+#[derive(Default)]
+pub struct Terminals {
+    pub list: Vec<TermView>,
+    pub active: usize,
+    /// Ctrl-\ を押した（次のキーで操作）
+    pending: bool,
+    /// シェルを選んでいる（選んでいる行）
+    pub chooser: Option<usize>,
+}
+
+impl Terminals {
+    pub fn current(&self) -> Option<&TermView> {
+        self.list.get(self.active)
+    }
+
+    fn current_mut(&mut self) -> Option<&mut TermView> {
+        self.list.get_mut(self.active)
+    }
+}
+
+/// 使えるシェル（名前, コマンド）
+pub fn available_shells() -> Vec<(String, String)> {
+    let in_path = |exe: &str| std::env::var_os("PATH").and_then(|p| std::env::split_paths(&p).map(|d| d.join(exe)).find(|f| f.is_file()));
+    let mut v = Vec::new();
+    let pf = std::env::var_os("ProgramFiles").map(std::path::PathBuf::from).unwrap_or_else(|| "C:\\Program Files".into());
+    if let Some(p) = in_path("pwsh.exe").or_else(|| Some(pf.join("PowerShell").join("7").join("pwsh.exe")).filter(|p| p.is_file())) {
+        v.push(("PowerShell 7".into(), format!("\"{}\"", p.display())));
+    }
+    v.push(("Windows PowerShell".into(), "powershell.exe".into()));
+    v.push(("コマンドプロンプト".into(), "cmd.exe".into()));
+    let git_bash = pf.join("Git").join("bin").join("bash.exe");
+    if git_bash.is_file() {
+        v.push(("Git Bash".into(), format!("\"{}\" --login -i", git_bash.display())));
+    }
+    if in_path("wsl.exe").is_some() {
+        v.push(("WSL".into(), "wsl.exe".into()));
+    }
+    v
+}
+
+/// `:Terminal 名前` の名前からシェルを選ぶ（cmd・powershell・pwsh・bash・wsl。前方一致）
+pub fn shell_by_name(name: &str) -> Option<(String, String)> {
+    let n = name.trim().to_ascii_lowercase();
+    let key = |label: &str| -> &'static str {
+        match label {
+            "PowerShell 7" => "pwsh",
+            "Windows PowerShell" => "powershell",
+            "コマンドプロンプト" => "cmd",
+            "Git Bash" => "bash",
+            _ => "wsl",
+        }
+    };
+    available_shells().into_iter().find(|(l, _)| key(l).starts_with(&n) || l.to_ascii_lowercase().starts_with(&n) || (n == "ps" && key(l).contains("powershell")))
+}
+
+/// 最後に選んだシェルの記録（`%LOCALAPPDATA%\nagi\terminal-shell.txt`）
+fn shell_file() -> Option<std::path::PathBuf> {
+    std::env::var_os("LOCALAPPDATA").map(|d| std::path::PathBuf::from(d).join("nagi").join("terminal-shell.txt"))
+}
+
+fn remember_shell(label: &str) {
+    if cfg!(test) {
+        return;
+    }
+    if let Some(f) = shell_file() {
+        if let Some(d) = f.parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        let _ = std::fs::write(f, label);
+    }
+}
+
+/// 既定のシェル（NAGI_SHELL、最後に選んだもの、無ければ一番上）
+fn default_shell() -> (String, String) {
+    if let Some(s) = std::env::var_os("NAGI_SHELL") {
+        let s = s.to_string_lossy().into_owned();
+        return (s.split_whitespace().next().unwrap_or("shell").trim_end_matches(".exe").to_string(), s);
+    }
+    let shells = available_shells();
+    let last = shell_file().and_then(|f| std::fs::read_to_string(f).ok()).unwrap_or_default();
+    shells.iter().find(|(l, _)| *l == last.trim()).cloned().unwrap_or_else(|| shells[0].clone())
 }
 
 /// キーを端末に送る並びに直す（`app_cursor` は矢印を ESC O の形にする）
@@ -59,76 +148,167 @@ pub fn key_bytes(key: Key, app_cursor: bool) -> Option<Vec<u8>> {
     }
 }
 
+/// 窓の並びの項目（表示, 押したら: Some(窓の番号) か None（＋））
+pub fn strip_items(t: &Terminals) -> Vec<(String, Option<usize>)> {
+    let mut v: Vec<(String, Option<usize>)> = t.list.iter().enumerate().map(|(i, s)| (format!(" {} {}{} ", i + 1, s.name, if s.exited { "（終了）" } else { "" }), Some(i))).collect();
+    v.push((" ＋ ".into(), None));
+    v
+}
+
 impl Editor {
-    /// ターミナルのタブを出して移る（まだならシェルを起動する）
+    /// シェルの画面の矩形（下の欄の中身の 2 行目から。1 行目は窓の並び）
+    pub fn terminal_rect(&self) -> Option<Rect> {
+        let r = self.bottom_content_rect()?;
+        Some(Rect { x: r.x, y: r.y + 1, w: r.w, h: r.h.saturating_sub(1) })
+    }
+
+    /// ターミナルのタブを出して移る（窓が無ければ既定のシェルで開く）
     pub(crate) fn open_terminal(&mut self) {
         self.bottom_hidden = false;
         self.bottom_kind = BottomKind::Terminal;
         self.mode = Mode::Terminal;
         self.pending_keys.clear();
         self.rows = self.text_rows(self.active_rect());
-        if self.terminal.as_ref().is_none_or(|t| t.exited) {
-            self.start_terminal();
+        if self.terminals.list.is_empty() {
+            let (name, cmd) = default_shell();
+            self.new_terminal(&name, &cmd);
         }
     }
 
-    fn start_terminal(&mut self) {
-        let r = self.bottom_content_rect();
-        let (rows, cols) = r.map_or((10, 80), |r| (r.h as u16, r.w.saturating_sub(1) as u16));
+    /// `:Terminal 名前`: そのシェルで新しい窓を開く（名前が無ければタブを出すだけ）
+    pub(crate) fn terminal_command(&mut self, arg: &str) {
+        if arg.trim().is_empty() {
+            self.select_bottom_tab(BottomKind::Terminal);
+            return;
+        }
+        match shell_by_name(arg) {
+            Some((name, cmd)) => {
+                self.bottom_hidden = false;
+                self.bottom_kind = BottomKind::Terminal;
+                self.mode = Mode::Terminal;
+                self.rows = self.text_rows(self.active_rect());
+                self.new_terminal(&name, &cmd);
+            }
+            None => {
+                let names: Vec<String> = available_shells().into_iter().map(|s| s.0).collect();
+                self.message = format!("シェルが見つかりません: {arg}（使えるもの: {}）", names.join("・"));
+            }
+        }
+    }
+
+    /// 新しい窓を開いて移る
+    pub(crate) fn new_terminal(&mut self, name: &str, cmd: &str) {
+        let (rows, cols) = self.terminal_rect().map_or((10, 80), |r| (r.h as u16, r.w.saturating_sub(1) as u16));
         let cwd = self.nav_root();
         let waker = self.waker.clone().unwrap_or_else(|| std::sync::Arc::new(|| {}));
-        let shell = nagi_workers::term::default_shell();
-        match Term::spawn(&shell, &cwd, rows, cols, waker) {
-            Ok(term) => self.terminal = Some(TermView { term, pending_escape: false, exited: false }),
+        match Term::spawn(cmd, &cwd, rows, cols, waker) {
+            Ok(term) => {
+                self.terminals.list.push(TermView { term, name: name.to_string(), cmd: cmd.to_string(), exited: false });
+                self.terminals.active = self.terminals.list.len() - 1;
+                self.terminals.chooser = None;
+                remember_shell(name);
+            }
             Err(e) => {
-                self.message = format!("シェルを起動できません（{shell}）: {e}");
-                self.mode = Mode::Normal;
+                self.message = format!("{name} を起動できません（{cmd}）: {e}");
             }
         }
     }
 
     /// 欄の大きさに合わせ、シェルが終わったかを見る（描く前に呼ぶ）
     pub(crate) fn sync_terminal(&mut self) {
-        let r = (self.bottom_kind == BottomKind::Terminal).then(|| self.bottom_content_rect()).flatten();
-        let Some(t) = &mut self.terminal else { return };
-        if let Some(r) = r {
-            t.term.resize(r.h as u16, r.w.saturating_sub(1) as u16);
-        }
-        if !t.exited && t.term.exited() {
-            t.exited = true;
+        let r = (self.bottom_kind == BottomKind::Terminal).then(|| self.terminal_rect()).flatten();
+        for t in &mut self.terminals.list {
+            if let Some(r) = r {
+                t.term.resize(r.h as u16, r.w.saturating_sub(1) as u16);
+            }
+            if !t.exited && t.term.exited() {
+                t.exited = true;
+            }
         }
     }
 
     pub(crate) fn terminal_key(&mut self, key: Key) {
-        let Some(t) = &mut self.terminal else {
-            if key == Key::Enter {
-                self.start_terminal();
-            } else {
-                self.mode = Mode::Normal;
+        // シェルを選んでいる
+        if let Some(sel) = self.terminals.chooser {
+            let shells = available_shells();
+            let last = shells.len().saturating_sub(1);
+            match key {
+                Key::Char('j') | Key::Down | Key::Tab => self.terminals.chooser = Some((sel + 1).min(last)),
+                Key::Char('k') | Key::Up => self.terminals.chooser = Some(sel.saturating_sub(1)),
+                Key::Char(c @ '1'..='9') if (c as usize - '1' as usize) <= last => {
+                    let (n, c) = shells[c as usize - '1' as usize].clone();
+                    self.new_terminal(&n, &c);
+                }
+                Key::Enter => {
+                    let (n, c) = shells[sel.min(last)].clone();
+                    self.new_terminal(&n, &c);
+                }
+                Key::Esc | Key::Char('q') | Key::Ctrl('c') => {
+                    self.terminals.chooser = None;
+                    if self.terminals.list.is_empty() {
+                        self.mode = Mode::Normal;
+                    }
+                }
+                _ => {}
             }
             return;
-        };
-        // Ctrl-\ n（と Ctrl-\ Ctrl-n）で本文へ。Ctrl-\ を 2 回で Ctrl-\ そのものを送る
-        if std::mem::take(&mut t.pending_escape) {
+        }
+        if self.terminals.list.is_empty() {
+            match key {
+                Key::Enter => self.open_terminal(),
+                Key::Char('c') => self.terminals.chooser = Some(0),
+                _ => self.mode = Mode::Normal,
+            }
+            return;
+        }
+        // Ctrl-\ の後: n 本文へ、c 新しい窓、1〜9 切り替え、x 閉じる、Ctrl-\ そのもの
+        if std::mem::take(&mut self.terminals.pending) {
             match key {
                 Key::Char('n') | Key::Ctrl('n') | Key::Char('k') | Key::Ctrl('k') => {
                     self.mode = Mode::Normal;
                     return;
                 }
+                Key::Char('c') => {
+                    self.terminals.chooser = Some(0);
+                    return;
+                }
+                Key::Char(c @ '1'..='9') => {
+                    let i = c as usize - '1' as usize;
+                    if i < self.terminals.list.len() {
+                        self.terminals.active = i;
+                    }
+                    return;
+                }
+                Key::Char('x') => {
+                    self.close_terminal();
+                    return;
+                }
                 Key::Ctrl('\\') => {
-                    t.term.write(&[0x1c]);
+                    if let Some(t) = self.terminals.current_mut() {
+                        t.term.write(&[0x1c]);
+                    }
                     return;
                 }
                 _ => {}
             }
         } else if key == Key::Ctrl('\\') {
-            t.pending_escape = true;
+            self.terminals.pending = true;
             return;
         }
+        let clip = self.clipboard;
+        let Some(t) = self.terminals.current_mut() else { return };
         if t.exited {
             if key == Key::Enter {
-                self.terminal = None;
-                self.start_terminal();
+                let (name, cmd) = (t.name.clone(), t.cmd.clone());
+                let i = self.terminals.active;
+                self.terminals.list.remove(i);
+                self.new_terminal(&name, &cmd);
+                // 同じ場所に置き直す
+                let new = self.terminals.list.pop();
+                if let Some(n) = new {
+                    self.terminals.list.insert(i, n);
+                    self.terminals.active = i;
+                }
             }
             return;
         }
@@ -137,7 +317,7 @@ impl Editor {
             t.term.set_scrollback(0);
         }
         if key == Key::Paste {
-            let text = match &self.clipboard {
+            let text = match &clip {
                 Some(cb) => (cb.get)(),
                 None => crate::clipboard::get(),
             };
@@ -152,9 +332,22 @@ impl Editor {
         }
     }
 
+    /// 今の窓を閉じる（シェルを止める）
+    pub(crate) fn close_terminal(&mut self) {
+        let i = self.terminals.active;
+        if i < self.terminals.list.len() {
+            let mut t = self.terminals.list.remove(i);
+            t.term.kill();
+        }
+        self.terminals.active = self.terminals.active.min(self.terminals.list.len().saturating_sub(1));
+        if self.terminals.list.is_empty() {
+            self.mode = Mode::Normal;
+        }
+    }
+
     /// IME の確定・貼り付け（貼り付けは括弧付きの形に対応）
     pub(crate) fn terminal_input(&mut self, text: &str) {
-        let Some(t) = &mut self.terminal else { return };
+        let Some(t) = self.terminals.current_mut() else { return };
         if t.exited {
             return;
         }
@@ -166,16 +359,45 @@ impl Editor {
         }
     }
 
-    pub(crate) fn terminal_click(&mut self) {
+    /// 欄の中を押した（中身の行・列。0 行目は窓の並び）
+    pub(crate) fn terminal_click(&mut self, row: usize, col: usize) {
         self.mode = Mode::Terminal;
-        if self.terminal.is_none() {
-            self.start_terminal();
+        if row == 0 {
+            let mut x = 0;
+            for (label, target) in strip_items(&self.terminals) {
+                let w = nagi_core::display_col(&label, label.len(), false) + 1;
+                if col >= x && col < x + w {
+                    match target {
+                        Some(i) => self.terminals.active = i,
+                        None => self.terminals.chooser = Some(0),
+                    }
+                    return;
+                }
+                x += w;
+            }
+            return;
+        }
+        if let Some(sel) = self.terminals.chooser {
+            // 選択肢の行（画面の 2 行目から）
+            let n = available_shells().len();
+            let i = row.saturating_sub(2);
+            if row >= 2 && i < n {
+                if i == sel {
+                    self.terminal_key(Key::Enter);
+                } else {
+                    self.terminals.chooser = Some(i);
+                }
+            }
+            return;
+        }
+        if self.terminals.list.is_empty() {
+            self.open_terminal();
         }
     }
 
     /// ホイール: さかのぼる（正で上へ）
     pub(crate) fn terminal_scroll(&mut self, lines: isize) {
-        if let Some(t) = &self.terminal {
+        if let Some(t) = self.terminals.current() {
             let now = t.term.scrollback() as isize;
             t.term.set_scrollback((now + lines).max(0) as usize);
         }
@@ -198,36 +420,75 @@ mod tests {
         assert_eq!(key_bytes(Key::Alt('b'), false).unwrap(), b"\x1bb");
     }
 
-    /// シェルを起動して打ち、Ctrl-\ n で本文へ戻る
     #[test]
-    fn terminal_tab_runs_shell() {
+    fn shells_list() {
+        let s = available_shells();
+        assert!(s.iter().any(|(l, _)| l == "コマンドプロンプト"));
+        assert!(s.iter().any(|(l, _)| l == "Windows PowerShell"));
+        assert_eq!(shell_by_name("cmd").map(|s| s.0).as_deref(), Some("コマンドプロンプト"));
+        assert_eq!(shell_by_name("powershell").map(|s| s.0).as_deref(), Some("Windows PowerShell"));
+    }
+
+    fn wait_text(e: &mut Editor, want: &str) {
+        let start = std::time::Instant::now();
+        loop {
+            e.sync_terminal();
+            let text = e.terminals.current().unwrap().term.with_screen(|s| s.contents());
+            if text.matches(want).count() >= 2 {
+                return;
+            }
+            assert!(start.elapsed().as_secs() < 20, "{text:?}");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    /// 既定のシェルで開いて打ち、Ctrl-\ c でコマンドプロンプトの窓を足し、Ctrl-\ 1 で戻り、Ctrl-\ n で本文へ
+    #[test]
+    fn terminal_tab_and_sessions() {
         unsafe { std::env::set_var("NAGI_SHELL", "cmd.exe /Q /K prompt $G") };
         let mut e = Editor::new(Buffer::from_str("x\n"), None);
         e.set_screen(120, 40);
         e.toggle_bottom_tab(BottomKind::Terminal);
         assert_eq!(e.mode, Mode::Terminal);
-        assert!(e.terminal.is_some(), "{}", e.message);
+        assert_eq!(e.terminals.list.len(), 1, "{}", e.message);
         for k in nagi_vim::parse_keys("echo nagi-tab-ok<CR>", " ") {
             e.key(k);
         }
-        let start = std::time::Instant::now();
-        loop {
-            e.sync_terminal();
-            let text = e.terminal.as_ref().unwrap().term.with_screen(|s| s.contents());
-            if text.matches("nagi-tab-ok").count() >= 2 {
-                break;
-            }
-            assert!(start.elapsed().as_secs() < 15, "{text:?}");
-            std::thread::sleep(std::time::Duration::from_millis(20));
+        wait_text(&mut e, "nagi-tab-ok");
+        // 欄の大きさに合わせている（1 行目は窓の並び）
+        let r = e.terminal_rect().unwrap();
+        assert_eq!(e.terminals.current().unwrap().term.with_screen(|s| s.size()), (r.h as u16, (r.w - 1) as u16));
+        // 新しい窓: シェルを選ぶ（コマンドプロンプト）
+        e.key(Key::Ctrl('\\'));
+        e.key(Key::Char('c'));
+        assert!(e.terminals.chooser.is_some());
+        let i = available_shells().iter().position(|(l, _)| l == "コマンドプロンプト").unwrap();
+        e.terminals.chooser = Some(i);
+        e.key(Key::Enter);
+        assert_eq!((e.terminals.list.len(), e.terminals.active), (2, 1));
+        assert_eq!(e.terminals.list[1].name, "コマンドプロンプト");
+        for k in nagi_vim::parse_keys("echo second-ok<CR>", " ") {
+            e.key(k);
         }
-        // 欄の大きさに合わせている
-        let r = e.bottom_content_rect().unwrap();
-        assert_eq!(e.terminal.as_ref().unwrap().term.with_screen(|s| s.size()), (r.h as u16, (r.w - 1) as u16));
+        wait_text(&mut e, "second-ok");
+        // 1 番へ戻る、2 番を閉じる
+        e.key(Key::Ctrl('\\'));
+        e.key(Key::Char('2'));
+        e.key(Key::Ctrl('\\'));
+        e.key(Key::Char('x'));
+        assert_eq!(e.terminals.list.len(), 1);
+        assert_eq!(e.terminals.current().unwrap().name, "cmd");
+        // 本文へ
         e.key(Key::Ctrl('\\'));
         e.key(Key::Char('n'));
         assert_eq!(e.mode, Mode::Normal);
-        // 本文のキーは本文へ
         e.key(Key::Char('x'));
         assert_eq!(e.buf.line(0), "");
+        // :Terminal cmd で開く
+        for k in nagi_vim::parse_keys(":Terminal cmd<CR>", " ") {
+            e.key(k);
+        }
+        assert_eq!(e.terminals.list.len(), 2);
+        assert_eq!(e.mode, Mode::Terminal);
     }
 }

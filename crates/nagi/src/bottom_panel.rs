@@ -259,7 +259,7 @@ impl Editor {
             BottomKind::Git => {
                 self.mode = Mode::Log;
             }
-            BottomKind::Terminal => self.terminal_click(),
+            BottomKind::Terminal => self.terminal_click(row, col),
             BottomKind::Grep | BottomKind::Output => self.panel_click(row, clicks),
         }
     }
