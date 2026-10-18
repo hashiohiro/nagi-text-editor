@@ -2405,8 +2405,10 @@ fn draw_completion(p: &mut Painter, ed: &Editor, c: &crate::complete::Completion
                 let mut b = [0u8; 4];
                 let mc = match mark {
                     'K' => rgb(0xd7af5f),
-                    'F' | 'T' => FINDER_MATCH,
-                    'V' => rgb(0xaf87d7),
+                    'F' | 'T' | 'c' | 'I' | 'e' => FINDER_MATCH,
+                    'V' | 'f' => rgb(0xaf87d7),
+                    'm' => rgb(0xd7af87),
+                    'v' => STATUS_FG,
                     _ => fg,
                 };
                 let x = p.text(" ", col, y, fg);

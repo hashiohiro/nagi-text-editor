@@ -21,6 +21,7 @@ mod jumplist;
 mod read_view;
 mod run_configs;
 mod run_dialog;
+mod smart_complete;
 mod autoread;
 mod bottom_panel;
 mod terminal;

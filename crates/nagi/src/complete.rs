@@ -29,6 +29,8 @@ pub struct Completion {
     pub sel: Option<usize>,
     /// 候補ごとの印と補足（SQL の補完の型と表の名前。ふつうの補完では空）
     pub notes: Vec<(char, String)>,
+    /// IntelliJ のような補完（Ctrl+Space。打つたびに絞り込む）なら、その中身（smart_complete.rs）
+    pub smart: Option<crate::smart_complete::SmartState>,
 }
 
 fn word_char(c: char) -> bool {
@@ -115,7 +117,7 @@ impl Editor {
         }
         let items = cands.iter().map(|c| c.0.clone()).collect();
         let notes = cands.into_iter().map(|c| (c.1, c.2)).collect();
-        self.completion = Some(Completion { start, original: prefix, items, sel: if auto { None } else { Some(0) }, notes });
+        self.completion = Some(Completion { start, original: prefix, items, sel: if auto { None } else { Some(0) }, notes, smart: None });
         if !auto {
             self.apply_completion();
         }
@@ -173,7 +175,7 @@ impl Editor {
             self.message = "-- 補完の候補はありません".into();
             return;
         }
-        self.completion = Some(Completion { start, original: prefix, items, sel: Some(0), notes: Vec::new() });
+        self.completion = Some(Completion { start, original: prefix, items, sel: Some(0), notes: Vec::new(), smart: None });
         self.apply_completion();
     }
 

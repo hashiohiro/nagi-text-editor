@@ -883,8 +883,17 @@ impl Editor {
     }
 
     fn insert(&mut self, key: Key) {
-        // 補完（Ctrl-n / Ctrl-p）の途中なら先に扱う
-        // Ctrl+Space は Ctrl-n と同じく単語の候補を出す（IntelliJ の基本の補完と同じキー）
+        // IntelliJ のような補完（Ctrl+Space）: 一覧を出している間のキーは先に扱う
+        if self.completion.as_ref().is_some_and(|c| c.smart.is_some()) {
+            if self.smart_key(key) {
+                return;
+            }
+        } else if key == Key::Ctrl(' ') && self.console_source().is_none() {
+            self.completion = None;
+            self.start_smart_completion();
+            return;
+        }
+        // 補完（Ctrl-n / Ctrl-p）の途中なら先に扱う。SQL コンソールでは Ctrl+Space も Ctrl-n と同じ
         let key = if key == Key::Ctrl(' ') { Key::Ctrl('n') } else { key };
         if (self.completion.is_some() || matches!(key, Key::Ctrl('n') | Key::Ctrl('p'))) && self.completion_key(key) {
             return;
@@ -1679,7 +1688,13 @@ impl Editor {
             }
         }
         match self.mode {
-            Mode::Insert => self.insert_text(text),
+            Mode::Insert => {
+                // IME で確定した文字は補完の語ではないので、一覧は閉じる
+                if self.completion.as_ref().is_some_and(|c| c.smart.is_some()) {
+                    self.completion = None;
+                }
+                self.insert_text(text)
+            }
             Mode::Search => {
                 self.query.insert(text);
                 self.update_incsearch();

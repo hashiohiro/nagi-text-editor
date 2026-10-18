@@ -70,6 +70,11 @@ impl Index {
         self.by_name.iter().flat_map(|(n, v)| v.iter().map(move |l| (n.as_str(), l)))
     }
 
+    /// ファイル（根からの相対パス、/ 区切り）の定義（出てくる順）
+    pub fn defs_in(&self, rel: &str) -> &[Entry] {
+        self.files.get(rel).map_or(&[], |f| f.defs.as_slice())
+    }
+
     /// 識別子の名前の一覧（補完用）
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.by_name.keys().map(String::as_str)
@@ -813,6 +818,43 @@ impl<'a> Ranker<'a> {
             Some(t) => Hier::Outside(t),
             None => Hier::Unknown,
         }
+    }
+
+    /// 型 `ty` のメンバー（メソッド・フィールド・定数）と、親の型（extends・implements）のメンバー。
+    /// 索引はメンバーと型の結びつきを持たないので、型の定義のあるファイルで、その型の定義の後から次の型の定義の前までにあるものとみなす。
+    /// (名前, 種類, 持っている型, 引数の数（メソッドで分かれば）, private か)。同じ名前は先（子の型）のもの。コンストラクタは除く
+    pub fn members(&mut self, ty: &str) -> Vec<(String, DefKind, String, Option<usize>, bool)> {
+        let mut out: Vec<(String, DefKind, String, Option<usize>, bool)> = Vec::new();
+        let mut todo = vec![(ty.to_string(), 0)];
+        let mut seen = std::collections::HashSet::new();
+        while let Some((t, depth)) = todo.pop() {
+            if depth > 5 || !seen.insert(t.clone()) {
+                continue;
+            }
+            let Some(idx) = self.idx else { break };
+            let types: Vec<Loc> = idx.lookup(&t).iter().filter(|l| l.kind.is_type()).cloned().collect();
+            for tl in types {
+                let defs = idx.defs_in(&tl.path).to_vec();
+                let start = defs.iter().position(|d| d.name == t && d.kind.is_type() && d.line == tl.line).unwrap_or(0);
+                for d in defs.iter().skip(start + 1) {
+                    if d.kind.is_type() {
+                        break;
+                    }
+                    if matches!(d.kind, DefKind::Method | DefKind::Function | DefKind::Field | DefKind::Constant) && d.name != t && !out.iter().any(|o| o.0 == d.name) {
+                        let params = matches!(d.kind, DefKind::Method | DefKind::Function)
+                            .then(|| self.param_count(&Loc { path: tl.path.clone(), line: d.line, col: d.col, kind: d.kind }).map(|p| p.0))
+                            .flatten();
+                        // 宣言の行の名前より前に private があるか（Java・Kotlin・TypeScript）
+                        let private = self.lines(&tl.path).and_then(|l| l.get(d.line as usize).map(|s| s[..(d.col as usize).min(s.len())].split_whitespace().any(|w| w == "private"))).unwrap_or(false);
+                        out.push((d.name.clone(), d.kind, t.clone(), params, private));
+                    }
+                }
+                for s in self.supers_in(&tl.path, &t) {
+                    todo.insert(0, (s, depth + 1));
+                }
+            }
+        }
+        out
     }
 
     /// 受け手の型の名前（this なら今のファイルで `at` を囲む型）
