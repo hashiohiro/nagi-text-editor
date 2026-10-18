@@ -75,7 +75,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc;
 
-use editor::{Clipboard, Editor, Effect, Mode};
+use editor::{Editor, Effect, Mode};
 use nagi_vim::{Feed, Key as VKey, Matcher, Rc};
 use std::time::{Duration, Instant};
 use nagi_core::Buffer;
@@ -468,7 +468,7 @@ impl App {
     /// 設定（vimrc）を読み直して反映する（`:source` と、設定ファイルが書き換わったとき）
     fn reload_rc(&mut self) {
         let t = Instant::now();
-        self.rc = nagi_vim::load_rc();
+        self.rc = nagi_vim::load_rc_from(self.ed.as_ref().and_then(|e| e.settings.text("vim.rc_path")).as_deref());
         self.apply_rc();
         let n = self.rc.keymap.normal.len();
         let us = t.elapsed().as_micros();
@@ -480,8 +480,8 @@ impl App {
     /// 設定（vimrc）の内容をエディタに反映する
     fn apply_rc(&mut self) {
         let Some(ed) = &mut self.ed else { return };
-        let clip = self.rc.has("clipboard=unnamedplus") || self.rc.has("clipboard=unnamed");
-        ed.clipboard = clip.then_some(Clipboard { get: clipboard::get, set: clipboard::set });
+        ed.rc_clipboard = self.rc.has("clipboard=unnamedplus") || self.rc.has("clipboard=unnamed");
+        ed.sync_clipboard();
     }
 
     fn on_key(&mut self, ev: KeyEvent, el: &ActiveEventLoop) {
@@ -1538,7 +1538,7 @@ fn main() {
     let (rtx, rc) = mpsc::channel();
     spawn("rc")
         .spawn(move || {
-            let rc = nagi_vim::load_rc();
+            let rc = nagi_vim::load_rc_from(settings::Settings::load(None).text("vim.rc_path").as_deref());
             clock::mark(format!("rc: {} mappings from {:?}", rc.keymap.normal.len(), rc.sources.first()));
             rtx.send(rc).unwrap();
         })

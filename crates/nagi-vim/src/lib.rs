@@ -12,4 +12,4 @@ mod rc;
 
 pub use key::{Key, parse_keys};
 pub use map::{Feed, Keymap, Matcher};
-pub use rc::{Rc, load_rc, parse_rc};
+pub use rc::{Rc, load_rc, load_rc_from, parse_rc};

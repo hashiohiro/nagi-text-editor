@@ -279,6 +279,28 @@ impl crate::editor::Editor {
     /// 設定を動いている nagi に効かせる（`old` は前の設定。変わった項目だけ効かせる）
     pub(crate) fn apply_settings(&mut self, old: Option<&Settings>) {
         let _ = old;
+        self.sync_clipboard();
+        if !self.settings.bool("vim.hlsearch") {
+            self.search.highlight = false;
+        }
+    }
+
+    /// ヤンク・削除をいつもクリップボードへ送るか（.ideavimrc の clipboard=unnamed か、設定の「クリップボード」）
+    pub(crate) fn sync_clipboard(&mut self) {
+        // 試験では OS のクリップボードを触らない（試験が入れた偽物のまま）
+        if cfg!(test) {
+            return;
+        }
+        let on = self.rc_clipboard || self.settings.get("vim.clipboard") == "unnamed";
+        self.clipboard = on.then_some(crate::editor::Clipboard { get: crate::clipboard::get, set: crate::clipboard::set });
+    }
+
+    /// "+ と "* のクリップボード（いつも OS。試験では入れた偽物だけ）
+    pub(crate) fn plus_clipboard(&self) -> Option<crate::editor::Clipboard> {
+        if cfg!(test) {
+            return self.clipboard;
+        }
+        Some(self.clipboard.unwrap_or(crate::editor::Clipboard { get: crate::clipboard::get, set: crate::clipboard::set }))
     }
 }
 

@@ -751,7 +751,9 @@ impl Editor {
         }
         // 無名レジスタ。clipboard=unnamedplus なら OS のクリップボードも
         self.registers.insert('"', (text.clone(), linewise));
-        if let Some(cb) = &self.clipboard {
+        // "+ と "* はいつも OS のクリップボードへ（clipboard=unnamed でなくても）
+        let cb = if matches!(reg, Some('+') | Some('*')) { self.plus_clipboard() } else { self.clipboard };
+        if let Some(cb) = cb {
             if matches!(reg, None | Some('+') | Some('*')) {
                 (cb.set)(&text.replace("\r\n", "\n").replace('\n', "\r\n"));
             }
@@ -769,7 +771,7 @@ impl Editor {
             (t, lw)
         };
         match reg {
-            Some('+') | Some('*') => self.clipboard.as_ref().and_then(|cb| (cb.get)()).map(from_clip).unwrap_or_default(),
+            Some('+') | Some('*') => self.plus_clipboard().and_then(|cb| (cb.get)()).map(from_clip).unwrap_or_default(),
             Some(c) => self.registers.get(&c.to_ascii_lowercase()).cloned().unwrap_or_default(),
             None => match self.clipboard.as_ref().and_then(|cb| (cb.get)()) {
                 Some(t) => from_clip(t),

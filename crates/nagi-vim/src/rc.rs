@@ -34,11 +34,21 @@ fn expand_path(p: &str) -> PathBuf {
     }
 }
 
-/// 設定を探して読む: `~/.config/nagi/nagi.vim` があればそれ、無ければ `~/.ideavimrc`
+/// 設定を探して読む: `~/.config/nagi/nagi.vim` があればそれ、無ければ `~/.ideavimrc`・`~/_vimrc`・`~/.vimrc` の順
 pub fn load_rc() -> Rc {
+    load_rc_from(None)
+}
+
+/// 設定を読む（`path` が空でなければそのファイル。nagi の設定の「Vim の設定ファイル」）
+pub fn load_rc_from(path: Option<&str>) -> Rc {
     let mut rc = Rc { leader: "\\".into(), ..Default::default() };
-    let own = home().join(".config").join("nagi").join("nagi.vim");
-    let path = if own.exists() { own } else { home().join(".ideavimrc") };
+    let path = match path.map(str::trim).filter(|p| !p.is_empty()) {
+        Some(p) => expand_path(p),
+        None => {
+            let own = home().join(".config").join("nagi").join("nagi.vim");
+            [own, home().join(".ideavimrc"), home().join("_vimrc"), home().join(".vimrc")].into_iter().find(|p| p.exists()).unwrap_or_else(|| home().join(".ideavimrc"))
+        }
+    };
     if path.exists() {
         source(&mut rc, &path, 0);
     }

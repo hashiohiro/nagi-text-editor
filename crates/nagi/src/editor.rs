@@ -313,6 +313,8 @@ pub struct Editor {
     /// 設定（settings.rs）
     pub settings: crate::settings::Settings,
     pub settings_dialog: Option<crate::settings_dialog::SettingsDialog>,
+    /// .ideavimrc に clipboard=unnamed があるか（設定の「クリップボード」と合わせて決める）
+    pub rc_clipboard: bool,
     pub right_tab: crate::right_panel::RightTab,
     pub right_hidden: bool,
     pub right_w: Option<usize>,
@@ -466,6 +468,7 @@ impl Editor {
             run_dialog: None,
             settings: crate::settings::Settings::load(None),
             settings_dialog: None,
+            rc_clipboard: false,
             right_tab: Default::default(),
             right_hidden: false,
             right_w: None,
@@ -999,10 +1002,22 @@ impl Editor {
 
     /// 今の検索語（入力中ならその語、Normal なら最後に確定した語）
     fn active_pattern(&self) -> Option<(String, bool)> {
-        match self.mode {
-            Mode::Search | Mode::Replace if !self.query.text.is_empty() => Some((self.query.text.clone(), self.search.regex)),
-            Mode::Search | Mode::Replace => None,
-            _ => self.search.last.as_ref().map(|(p, r, _)| (p.clone(), *r)),
+        let (p, regex) = match self.mode {
+            Mode::Search | Mode::Replace if !self.query.text.is_empty() => (self.query.text.clone(), self.search.regex),
+            Mode::Search | Mode::Replace => return None,
+            _ => self.search.last.as_ref().map(|(p, r, _)| (p.clone(), *r))?,
+        };
+        Some(self.case_pattern(p, regex))
+    }
+
+    /// 設定の ignorecase・smartcase で大文字小文字を区別するときは、正規表現の (?-i) を付ける
+    /// （検索の土台は区別しない作りなので、区別するときだけ正規表現にして印を付ける）
+    pub(crate) fn case_pattern(&self, p: String, regex: bool) -> (String, bool) {
+        let ignore = self.settings.bool("vim.ignorecase") && !(self.settings.bool("vim.smartcase") && p.chars().any(char::is_uppercase));
+        if ignore {
+            (p, regex)
+        } else {
+            (format!("(?-i){}", if regex { p } else { regex::escape(&p) }), true)
         }
     }
 
@@ -1123,6 +1138,10 @@ impl Editor {
 
     /// 入力のたびに、最寄りの一致へカーソルを動かす（incsearch）
     pub(crate) fn update_incsearch(&mut self) {
+        // 設定の incsearch がオフなら、打っている間は動かない（Enter で探す）
+        if !self.settings.bool("vim.incsearch") {
+            return;
+        }
         let Some((origin, top)) = self.search.origin else { return };
         self.refresh_matches();
         let at = self.buf.line_start(origin.line) + origin.byte;
@@ -1183,7 +1202,7 @@ impl Editor {
                 }
                 self.mode = Mode::Normal;
                 self.search.last = Some((pattern.clone(), self.search.regex, self.search.forward));
-                self.search.highlight = true;
+                self.search.highlight = self.settings.bool("vim.hlsearch");
                 if let Some((from, _)) = self.search.origin.take() {
                     if self.search.current.is_some() {
                         self.push_jump_from(from);
@@ -1233,7 +1252,7 @@ impl Editor {
             self.message = "E35: 前回の検索パターンがありません".into();
             return None;
         };
-        self.search.highlight = true;
+        self.search.highlight = self.settings.bool("vim.hlsearch");
         self.refresh_matches();
         let fwd = forward != reverse;
         let mut at = self.abs();
@@ -1329,7 +1348,8 @@ impl Editor {
             return self.repl.text.clone();
         }
         let matched = self.buf.slice_string(s, e);
-        match compile_search(&self.query.text, true) {
+        let (pat, _) = self.case_pattern(self.query.text.clone(), true);
+        match compile_search(&pat, true) {
             Some(re) => re.replace(&matched, self.repl.text.as_str()).into_owned(),
             None => self.repl.text.clone(),
         }
