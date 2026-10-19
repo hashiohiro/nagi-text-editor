@@ -1,11 +1,11 @@
 # nagi
 
-A lightweight IDE for Windows with Vim keybindings. It looks like a terminal but does more than one:
+A lightweight IDE for Windows with optional Vim keybindings. It looks like a terminal but does more than one:
 a GPU-rendered (Direct3D 11) editor with tree-sitter highlighting, go-to-definition without LSP,
 project search, git, a terminal panel, run configurations, and database consoles.
 
 - Single executable (`nagi.exe`). No installer.
-- Vim keybindings (reads your `.ideavimrc`).
+- Standard editing keys by default (Shift+arrows to select, Ctrl+C / V / Z, IntelliJ-style shortcuts); everything in the panels also works with the mouse (right-click menus). Vim keybindings are optional (Settings → Vim; reads your `.ideavimrc`).
 - Syntax highlighting and go-to-definition for 39 languages:
 
   | | Languages |
