@@ -563,14 +563,14 @@ impl Editor {
     }
 }
 
-/// 画面の 1 行（セルごとの (文字, 全角, 全角の続き) と、次の行へ折り返したか）
+/// 画面の 1 行（セルごとの (文字, 全角, 全角の続き) と、次の行へ折り返したか）。何も書かれていないセルの文字は空
 struct Row {
     cells: Vec<(String, bool, bool)>,
     wrapped: bool,
 }
 
 fn read_row(s: &vt100::Screen, row: u16) -> Row {
-    let cells = (0..s.size().1).map(|col| s.cell(row, col).map_or((" ".to_string(), false, false), |c| (if c.has_contents() { c.contents().to_string() } else { " ".to_string() }, c.is_wide(), c.is_wide_continuation()))).collect();
+    let cells = (0..s.size().1).map(|col| s.cell(row, col).map_or((String::new(), false, false), |c| (c.contents().to_string(), c.is_wide(), c.is_wide_continuation()))).collect();
     Row { cells, wrapped: s.row_wrapped(row) }
 }
 
@@ -597,7 +597,9 @@ pub fn copy_lines(s: &mut vt100::Screen, (r0, c0): (i64, u16), (r1, c1): (i64, u
     join_rows(&rows, c0, c1)
 }
 
-/// 行を 1 つの文字にする（最初の行は `c0` の列から、最後の行は `c1` の列まで）。折り返した行はつなぎ、行末の空白は落とす。
+/// 行を 1 つの文字にする（最初の行は `c0` の列から、最後の行は `c1` の列まで）。シェルが出したとおりに戻す:
+/// 折り返した行はつなぎ（長いコマンドが途中で切れない）、改行は `\n`（シェルの出したまま。貼ったスクリプトに `\r` が混ざらない）、
+/// 書かれた空白は行末でも残し、何も書かれていない行末だけを落とす。
 /// 全角の文字が行の端の 1 列に入らずに次の行へ送られたときの、端の空き（ConPTY は空白を書く）も落とす
 fn join_rows(rows: &[Row], c0: u16, c1: u16) -> String {
     let mut out = String::new();
@@ -607,21 +609,18 @@ fn join_rows(rows: &[Row], c0: u16, c1: u16) -> String {
         let (from, to) = (if i == 0 { c0 as usize } else { 0 }, if i == last { (c1 as usize + 1).min(cols) } else { cols });
         let wrapped = i < last && r.wrapped;
         let pad = wrapped && rows[i + 1].cells.first().is_some_and(|c| c.1) && r.cells.last().is_some_and(|c| !c.2 && c.0.trim().is_empty());
-        let mut line = String::new();
+        // 折り返していない行は、書かれたいちばん後ろのセルまで
+        let to = if wrapped { to } else { (from..to).rev().find(|&c| !r.cells[c].0.is_empty() || r.cells[c].2).map_or(from, |c| c + 1) };
         for col in from..to.max(from) {
             let (text, _, cont) = &r.cells[col];
             if *cont || (pad && col == cols - 1) {
                 continue;
             }
-            line.push_str(text);
+            // 書かれていないセル（カーソルを動かして飛ばしたところ）は空白
+            out.push_str(if text.is_empty() { " " } else { text });
         }
-        if wrapped {
-            out.push_str(&line);
-        } else {
-            out.push_str(line.trim_end());
-            if i < last {
-                out.push_str("\r\n");
-            }
+        if !wrapped && i < last {
+            out.push('\n');
         }
     }
     out
@@ -811,14 +810,19 @@ mod tests {
         let copy = |bytes: &str| {
             let mut p = vt100::Parser::new(4, 9, 0);
             p.process(bytes.as_bytes());
-            copy_text(p.screen(), (0, 0), (3, 8)).trim_end().to_string()
+            // 下の何も無い行も選んでいるので、その改行は落として比べる
+            copy_text(p.screen(), (0, 0), (3, 8)).trim_end_matches('\n').to_string()
         };
         assert_eq!(copy("abcd日本 語x"), "abcd日本語x");
         // 行の端の本当の空白は残す
         assert_eq!(copy("abcdefgh ijk"), "abcdefgh ijk");
         assert_eq!(copy("abcdefghi jk"), "abcdefghi jk");
-        // 折り返していない行は改行、行末の空白は落とす、全角は 1 文字
-        assert_eq!(copy("ab  \r\n日本\r\n\r\nz"), "ab\r\n日本\r\n\r\nz");
+        // 折り返していない行は \n（シェルの出したまま）、書かれた空白は行末でも残す、全角は 1 文字
+        assert_eq!(copy("ab  \r\n日本\r\n\r\nz"), "ab  \n日本\n\nz");
+        // 長い 1 行のコマンド（ワンライナー）は折り返してもつながり、空白も崩れない
+        assert_eq!(copy("for i in 1  2; do echo \"$i\"; done"), "for i in 1  2; do echo \"$i\"; done");
+        // 字下げ、カーソルを動かして飛ばした空き（ConPTY は空白をそうして書くことがある）は空白、消した行末（ESC[K）は落とす
+        assert_eq!(copy("  if x\r\n\x1b[4Cy\r\nab   \x1b[3D\x1b[K"), "  if x\n    y\nab");
         // 途中の列から
         let mut p = vt100::Parser::new(2, 9, 0);
         p.process("abcd日本 語x".as_bytes());
@@ -872,7 +876,7 @@ mod tests {
         let (a, b) = e.terminals.sel_ordered().unwrap();
         let got = e.terminals.current().unwrap().term.with_screen_mut(|s| copy_lines(s, a, b));
         let first = 60 - h;
-        let want = format!("{}\r\n{}\r\nl", &format!("l{first}")[2..], (first + 1..60).map(|i| format!("l{i}")).collect::<Vec<_>>().join("\r\n"));
+        let want = format!("{}\n{}\nl", &format!("l{first}")[2..], (first + 1..60).map(|i| format!("l{i}")).collect::<Vec<_>>().join("\n"));
         assert_eq!(got, want);
         assert_eq!(e.terminals.current().unwrap().term.scrollback(), h as usize, "コピーしても見ている位置は変わらない");
         e.terminals.sel = None;
