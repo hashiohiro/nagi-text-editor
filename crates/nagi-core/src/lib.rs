@@ -405,9 +405,13 @@ pub fn grapheme_width(g: &str, ambiguous_wide: bool) -> usize {
     if ambiguous_wide { g.width_cjk() } else { g.width() }.clamp(1, 2)
 }
 
-/// 行内 byte オフセット `byte` の表示列
+/// 行内 byte オフセット `byte` の表示列（文字の途中なら、その文字の頭までの列。落ちない）
 pub fn display_col(line: &str, byte: usize, ambiguous_wide: bool) -> usize {
-    line[..byte.min(line.len())].graphemes(true).map(|g| grapheme_width(g, ambiguous_wide)).sum()
+    let mut b = byte.min(line.len());
+    while !line.is_char_boundary(b) {
+        b -= 1;
+    }
+    line[..b].graphemes(true).map(|g| grapheme_width(g, ambiguous_wide)).sum()
 }
 
 /// 表示列 `col` を含む書記素の開始 byte（行末を越えたら最後の書記素）
@@ -673,6 +677,7 @@ mod tests {
     #[test]
     fn wide_columns() {
         assert_eq!(display_col("a漢b", 4, false), 3);
+        assert_eq!(display_col("a漢b", 2, false), 1, "文字の途中（漢の 2 byte 目）は、その文字の頭まで");
         assert_eq!(byte_at_col("a漢b", 2, false), 1);
         assert_eq!(byte_at_col("a漢b", 3, false), 4);
     }

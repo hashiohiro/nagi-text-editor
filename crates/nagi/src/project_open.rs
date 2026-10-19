@@ -279,8 +279,9 @@ impl Editor {
             self.edit_file(f.path.clone());
             if self.buf.path.as_deref().is_some_and(|b| b == f.path) {
                 self.cursor.line = f.line.min(self.buf.line_count().saturating_sub(1));
-                let len = self.buf.line(self.cursor.line).len();
-                self.cursor.byte = f.col.min(len);
+                // IntelliJ の列は文字の数（byte ではない）。日本語の行で byte として使うと文字の途中になる
+                let text = self.buf.line(self.cursor.line);
+                self.cursor.byte = text.char_indices().nth(f.col).map_or(text.len(), |(b, _)| b);
                 self.clamp_normal();
                 self.scroll_into_view();
             }
@@ -329,11 +330,11 @@ mod tests {
             std::env::set_var("NAGI_INDEX_DIR", d.join("cache"));
         }
         std::fs::write(d.join(".idea/misc.xml"), "<project><component><output url=\"file://$PROJECT_DIR$/out\" /></component></project>").unwrap();
-        std::fs::write(d.join("src/A.java"), "class A {\n  void run() {}\n}\n").unwrap();
+        std::fs::write(d.join("src/A.java"), "class A {\n  /* 日本語 */ void run() {}\n}\n").unwrap();
         std::fs::write(d.join("out/A.java"), "class A {}\n").unwrap();
         std::fs::write(
             d.join(".idea/workspace.xml"),
-            "<project><component name=\"FileEditorManager\"><leaf><file current-in-tab=\"true\"><entry file=\"file://$PROJECT_DIR$/src/A.java\"><provider><state><caret line=\"1\" column=\"7\" /></state></provider></entry></file></leaf></component></project>",
+            "<project><component name=\"FileEditorManager\"><leaf><file current-in-tab=\"true\"><entry file=\"file://$PROJECT_DIR$/src/A.java\"><provider><state><caret line=\"1\" column=\"9\" /></state></provider></entry></file></leaf></component></project>",
         )
         .unwrap();
         let cwd = std::env::current_dir().unwrap();
@@ -344,7 +345,8 @@ mod tests {
         std::env::set_current_dir(&cwd).unwrap();
         assert_eq!(std::path::absolute(&opened).unwrap(), std::path::absolute(&d).unwrap());
         assert!(e.buf.path.as_ref().unwrap().ends_with("A.java"), "{:?} {}", e.buf.path, e.notify.text);
-        assert_eq!((e.cursor.line, e.cursor.byte), (1, 7));
+        // IntelliJ の列 9 は 9 文字目（「*/」の *）。byte では「  /* 」5 + 日本語 9 + 空白 1 = 15（byte として 9 を使うと「本」の途中）
+        assert_eq!((e.cursor.line, e.cursor.byte), (1, 15));
         assert!(e.notify.text.contains("IntelliJ"), "{}", e.notify.text);
         assert!(e.tree.is_some(), "木を出す");
         // 索引は出力先（out）を見ない
