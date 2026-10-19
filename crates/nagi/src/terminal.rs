@@ -462,9 +462,15 @@ impl Editor {
         }
     }
 
+    /// 離した。ドラッグせずに（範囲を選ばずに）離したところが URL なら開く（IntelliJ のターミナルと同じ）
     pub(crate) fn terminal_release(&mut self) {
-        self.terminals.anchor = None;
-        self.terminals.drag_at = None;
+        let (anchor, at) = (self.terminals.anchor.take(), self.terminals.drag_at.take());
+        let at = at.filter(|_| anchor.is_some() && self.terminals.sel.is_none());
+        let url = at.and_then(|cell| self.terminals.current().and_then(|t| t.term.with_screen(|s| link_at(s, cell))));
+        if let Some(url) = url {
+            crate::run_configs::open_url(&url);
+            self.notify.info(format!("開きました: {url}"));
+        }
     }
 
     /// 右クリック: 選んでいればコピー、選んでいなければ貼り付け（Windows Terminal と同じ）
@@ -626,6 +632,72 @@ fn join_rows(rows: &[Row], c0: u16, c1: u16) -> String {
     out
 }
 
+/// 画面に見えている URL（URL, 載っているセルの (行, 列)）。折り返した行はつないで探す（長い URL が 2 行にまたがっても 1 つ）
+pub fn links(s: &vt100::Screen) -> Vec<(String, Vec<(u16, u16)>)> {
+    let (rows, cols) = s.size();
+    let mut out = Vec::new();
+    let mut row = 0;
+    while row < rows {
+        // 折り返しでつながった行をまとめる（文字と、文字の頭の byte → セル）
+        let mut text = String::new();
+        let mut at: Vec<(usize, (u16, u16))> = Vec::new();
+        loop {
+            for col in 0..cols {
+                let Some(c) = s.cell(row, col) else { break };
+                if c.is_wide_continuation() {
+                    continue;
+                }
+                at.push((text.len(), (row, col)));
+                text.push_str(if c.has_contents() { c.contents() } else { " " });
+            }
+            row += 1;
+            if !s.row_wrapped(row - 1) || row >= rows {
+                break;
+            }
+        }
+        for (start, end) in url_spans(&text) {
+            let cells = at.iter().filter(|(b, _)| *b >= start && *b < end).map(|(_, c)| *c).collect();
+            out.push((text[start..end].to_string(), cells));
+        }
+    }
+    out
+}
+
+/// 画面のセルに載っている URL
+pub fn link_at(s: &vt100::Screen, cell: (u16, u16)) -> Option<String> {
+    links(s).into_iter().find(|(_, cells)| cells.contains(&cell)).map(|(u, _)| u)
+}
+
+/// 文字の中の URL の範囲（byte）。空白・引用符・山括弧・ASCII でない文字（「https://… を開く」の日本語）で終わり、
+/// 後ろに付いた句読点と対にならない閉じ括弧は外す
+pub fn url_spans(text: &str) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(i) = ["https://", "http://", "file://"].iter().filter_map(|p| text[from..].find(p)).min() {
+        let start = from + i;
+        let rest = &text[start..];
+        let mut end = start + rest.find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>' | '`') || !c.is_ascii()).unwrap_or(rest.len());
+        loop {
+            let url = &text[start..end];
+            let trim = match url.chars().last() {
+                Some('.' | ',' | ';' | ':' | '!' | '?') => true,
+                Some(')') => url.matches(')').count() > url.matches('(').count(),
+                Some(']') => url.matches(']').count() > url.matches('[').count(),
+                _ => false,
+            };
+            if !trim {
+                break;
+            }
+            end -= 1;
+        }
+        if text[start..end].split_once("://").is_some_and(|(_, host)| !host.is_empty()) {
+            out.push((start, end));
+        }
+        from = end.max(start + 1);
+    }
+    out
+}
+
 /// ホイールの 1 回分のマウスの報告（上なら 64、下なら 65 のボタン。`cell` はシェルの画面の (行, 列)）
 pub fn wheel_bytes(up: bool, (row, col): (u16, u16), enc: vt100::MouseProtocolEncoding) -> Vec<u8> {
     let b = if up { 64u32 } else { 65 };
@@ -654,7 +726,7 @@ impl crate::component::Component for TerminalComponent {
         if ed.terminals.current().is_some_and(|t| t.name.starts_with(crate::run_configs::RUN_PREFIX)) {
             crate::component::Status::new("-- 実行 --", "Esc エディタへ   Ctrl+C 止める   Ctrl+F5 もう一度   Ctrl-\\ x 閉じる   Alt+F12 隠す ")
         } else {
-            crate::component::Status::new("-- ターミナル --", "Ctrl-\\ の後: n 本文へ  c 新しい窓（シェルを選ぶ）  1〜9 切り替え  x 閉じる   Alt+F12 隠す ")
+            crate::component::Status::new("-- ターミナル --", "クリックで URL を開く   Ctrl-\\ の後: n 本文へ  c 新しい窓（シェルを選ぶ）  1〜9 切り替え  x 閉じる   Alt+F12 隠す ")
         }
     }
 
@@ -718,6 +790,8 @@ pub(crate) mod draw {
         let x0 = r.x + 1;
         t.term.with_screen(|s| {
             let (rows, cols) = s.size();
+            // URL は下線（押すと開く）
+            let link_cells: std::collections::HashSet<(u16, u16)> = crate::terminal::links(s).into_iter().flat_map(|(_, c)| c).collect();
             let back = s.scrollback() as i64;
             let scrolled = back > 0;
             for row in 0..rows.min(r.h as u16) {
@@ -743,7 +817,7 @@ pub(crate) mod draw {
                     let text = if c.has_contents() { c.contents().to_string() } else { " ".to_string() };
                     let width = if c.is_wide() { 2 } else { 1 };
                     let bg = (bg != BG).then_some(bg);
-                    items.push(Item { g: Cow::Owned(text), width, fg, bg, underline: c.underline() });
+                    items.push(Item { g: Cow::Owned(text), width, fg, bg, underline: c.underline() || link_cells.contains(&(row, col)) });
                 }
                 p.draw(&items, x0, y);
             }
@@ -827,6 +901,49 @@ mod tests {
         let mut p = vt100::Parser::new(2, 9, 0);
         p.process("abcd日本 語x".as_bytes());
         assert_eq!(copy_text(p.screen(), (0, 2), (1, 0)), "cd日本語");
+    }
+
+    /// 文字の中の URL（後ろの句読点・閉じ括弧・日本語は入れない）。折り返して 2 行にまたがっても 1 つ
+    #[test]
+    fn finds_links() {
+        let urls = |t: &str| url_spans(t).into_iter().map(|(a, b)| t[a..b].to_string()).collect::<Vec<_>>();
+        assert_eq!(urls("see https://example.com/a?b=1&c=2."), ["https://example.com/a?b=1&c=2"]);
+        assert_eq!(urls("(http://x.org/wiki/A_(b)) と https://y.jp/を開く"), ["http://x.org/wiki/A_(b)", "https://y.jp/"]);
+        assert_eq!(urls("\"file:///C:/tmp/a.txt\", http://"), ["file:///C:/tmp/a.txt"]);
+        assert!(urls("no links here").is_empty());
+        let mut p = vt100::Parser::new(3, 12, 0);
+        p.process(b"go https://example.com/x end");
+        let l = links(p.screen());
+        assert_eq!(l.len(), 1);
+        assert_eq!(l[0].0, "https://example.com/x");
+        assert_eq!(link_at(p.screen(), (1, 2)).as_deref(), Some("https://example.com/x"), "2 行目のセルでも");
+        assert_eq!(link_at(p.screen(), (0, 0)), None);
+    }
+
+    /// ドラッグせずにクリックして離すと、そこの URL を開く。ドラッグして範囲を選んだときは開かない
+    #[test]
+    fn click_opens_link() {
+        unsafe { std::env::set_var("NAGI_SHELL", "cmd.exe /Q /K prompt $G") };
+        let mut e = Editor::new(Buffer::from_str("x\n"), None);
+        e.set_screen(120, 40);
+        e.toggle_bottom_tab(BottomKind::Terminal);
+        for k in nagi_vim::parse_keys("echo see https://example.com/nagi-ok<CR>", " ") {
+            e.key(k);
+        }
+        wait_text(&mut e, "https://example.com/nagi-ok");
+        let r = e.terminal_rect().unwrap();
+        let row = e.terminals.current().unwrap().term.with_screen(|s| (0..s.size().0).find(|&i| s.contents_between(i, 0, i, 40).starts_with("see ")).unwrap()) as usize;
+        // ドラッグして選んだら開かない
+        assert!(e.terminal_press(r.y + row, r.x + 1 + 6));
+        e.terminal_drag(r.y + row, r.x + 1 + 12);
+        e.terminal_release();
+        assert!(!e.notify.text.contains("開きました"), "{}", e.notify.text);
+        e.terminals.sel = None;
+        // クリックだけなら開く
+        assert!(e.terminal_press(r.y + row, r.x + 1 + 10));
+        e.terminal_release();
+        assert_eq!(e.notify.text, "開きました: https://example.com/nagi-ok");
+        e.close_terminal();
     }
 
     #[test]

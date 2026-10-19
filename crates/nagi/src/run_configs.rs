@@ -219,7 +219,7 @@ impl Editor {
 
 
 /// URL を既定のブラウザで開く
-fn open_url(url: &str) {
+pub(crate) fn open_url(url: &str) {
     #[cfg(not(test))]
     {
         let _ = nagi_workers::config::open_url(url);
