@@ -3,7 +3,7 @@
 //! 木のテーブルの上で o（ダブルクリック）で開く。WHERE / ORDER BY（f / F）、並べ替え（s）、ページ送り（< >）。
 //! i（Enter）で値を直し（c なら空にしてから）、x で NULL、o で行を足し、dd で行を消す（もう一度で取り消し）、u で 1 つ戻す。
 //! 直した値は青、足した行は緑、消した行は赤。Ctrl+Enter で作った SQL（INSERT・UPDATE・DELETE）を見せ、
-//! y で 1 つのトランザクションで送る（どの文も 1 行だけを変えなければ全部取り消す）。行は主キーで見分けるので、
+//! 確認の窓で「はい」なら 1 つのトランザクションで送る（どの文も 1 行だけを変えなければ全部取り消す）。行は主キーで見分けるので、
 //! 主キーの無いテーブルは読むだけ。
 
 use std::collections::{BTreeSet, HashMap};
@@ -343,28 +343,24 @@ impl Editor {
         self.state() == State::DbTable && self.db_table.as_ref().is_some_and(|t| t.editing.as_ref().is_some_and(|f| f.is_insert()) || t.filter_edit.as_ref().is_some_and(|f| f.1.is_insert()))
     }
 
+    /// 確かめた変更を送る
+    fn db_table_send(&mut self) {
+        let Some(te) = &mut self.db_table else { return };
+        let stmts = te.preview.take().unwrap_or_default();
+        te.busy = true;
+        let i = te.src;
+        if let Some(c) = self.db.as_mut().map(|p| &mut p.conns[i]) {
+            c.send_batch(stmts);
+        }
+        self.notify.info("送信しています…");
+    }
+
     pub(crate) fn db_table_key(&mut self, key: Key) {
         let half = (self.windows_rows() / 2).max(1);
         let Some(te) = &mut self.db_table else {
             self.set_state(State::Normal);
             return;
         };
-        // 送る前の確認
-        if te.preview.is_some() {
-            if key == Key::Char('y') {
-                let stmts = te.preview.take().unwrap_or_default();
-                te.busy = true;
-                let i = te.src;
-                if let Some(c) = self.db.as_mut().map(|p| &mut p.conns[i]) {
-                    c.send_batch(stmts);
-                }
-                self.notify.info("送信しています…");
-            } else {
-                te.preview = None;
-                self.notify.info("送信をやめました（変更は残っています）");
-            }
-            return;
-        }
         // 値の入力中（Vim 風。Enter か Tab で決める、ノーマルの Esc でやめる）
         if te.editing.is_some() {
             let out = if key == Key::Tab { FieldOut::Submit } else { self.feed_field(key, |e| e.db_table.as_mut().and_then(|t| t.editing.as_mut())) };
@@ -467,8 +463,14 @@ impl Editor {
             (_, Key::Ctrl('m')) => match te.statements() {
                 Ok(s) if s.is_empty() => self.notify.info("送る変更はありません"),
                 Ok(s) => {
-                    self.notify.info(format!("{} 件の変更を送りますか（y で送る・ほかのキーでやめる）", s.len()));
+                    let q = format!("{} 件の変更を送りますか（送る文は上に出ています）", s.len());
                     te.preview = Some(s);
+                    self.ask_or(q, |e| e.db_table_send(), |e| {
+                        if let Some(te) = &mut e.db_table {
+                            te.preview = None;
+                        }
+                        e.notify.info("送信をやめました（変更は残っています）");
+                    });
                 }
                 Err(e) => self.notify.error(e),
             },
@@ -671,7 +673,7 @@ pub(crate) mod draw {
         }
         // 送る前の確認（右下に SQL）
         if let Some(stmts) = &te.preview {
-            let lines: Vec<String> = std::iter::once(format!(" 送信する変更（{} 件） — {src}", stmts.len())).chain(stmts.iter().map(|s| format!(" {s}"))).chain(std::iter::once(" y で送る ・ ほかのキーでやめる".to_string())).collect();
+            let lines: Vec<String> = std::iter::once(format!(" 送信する変更（{} 件） — {src}", stmts.len())).chain(stmts.iter().map(|s| format!(" {s}"))).collect();
             let w = lines.iter().map(|l| p.width(l)).max().unwrap_or(20).min(r.w.saturating_sub(4)) + 2;
             let h = lines.len().min(r.h.saturating_sub(4));
             let bx = (r.x + r.w).saturating_sub(w + 2);

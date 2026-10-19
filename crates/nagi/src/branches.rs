@@ -74,7 +74,6 @@ pub struct BranchPopup {
     pub ops: Option<(Vec<Op>, usize)>,
     pub naming: Option<(Naming, crate::vim_field::VimField)>,
     /// 削除の確認（名前, 強制か）
-    pub confirm_delete: Option<(String, bool)>,
     rx: Option<nagi_core::task::Task<nagi_core::Result<Vec<Branch>>>>,
 }
 
@@ -150,7 +149,7 @@ impl Editor {
                 .map(|b| parse_refs(&String::from_utf8_lossy(&b)));
             ctx.send(r);
         });
-        let mut p = BranchPopup { query: Prompt::default(), branches: Vec::new(), entries: Vec::new(), selected: 0, ops: None, naming: None, confirm_delete: None, rx: Some(rx) };
+        let mut p = BranchPopup { query: Prompt::default(), branches: Vec::new(), entries: Vec::new(), selected: 0, ops: None, naming: None, rx: Some(rx) };
         p.rebuild();
         self.branch_popup = Some(p);
         self.set_state(State::Branches);
@@ -279,11 +278,28 @@ impl Editor {
                 }
             }
             Op::Delete => {
-                if let Some(p) = &mut self.branch_popup {
-                    p.confirm_delete = Some((b.name.clone(), false));
-                }
-                self.notify.info(format!("ブランチ {} を消しますか（y で消す）", b.name));
+                let name = b.name.clone();
+                self.ask(format!("ブランチ {name} を消しますか"), move |e| e.delete_branch(name, false));
             }
+        }
+    }
+
+    /// ブランチを消す（マージしていなければ、もう一度確かめてから強制的に）
+    fn delete_branch(&mut self, name: String, force: bool) {
+        let flag = if force { "-D" } else { "-d" };
+        let root = self.git.root.clone();
+        let r = root.map(|r| nagi_workers::git::git(&r, &["branch", flag, &name]));
+        match r {
+            Some(Ok(_)) => {
+                self.notify.info(format!("ブランチ {name} を消しました"));
+                self.open_branches();
+            }
+            Some(Err(e)) if !force && e.to_string().contains("not fully merged") => {
+                let n = name.clone();
+                self.ask(format!("{name} はマージしていません。それでも消しますか"), move |e| e.delete_branch(n, true));
+            }
+            Some(Err(e)) => self.notify.error(format!("git: {}", e.last_line())),
+            None => {}
         }
     }
 
@@ -293,31 +309,6 @@ impl Editor {
             self.set_state(State::Normal);
             return;
         };
-        // 削除の確認
-        if let Some((name, force)) = p.confirm_delete.take() {
-            if key != Key::Char('y') {
-                self.notify.info("消すのをやめました");
-                return;
-            }
-            let flag = if force { "-D" } else { "-d" };
-            let root = self.git.root.clone();
-            let r = root.map(|r| nagi_workers::git::git(&r, &["branch", flag, &name]));
-            match r {
-                Some(Ok(_)) => {
-                    self.notify.info(format!("ブランチ {name} を消しました"));
-                    self.open_branches();
-                }
-                Some(Err(e)) if !force && e.to_string().contains("not fully merged") => {
-                    self.notify.info(format!("{name} はマージしていません。それでも消しますか（y で強制的に消す）"));
-                    if let Some(p) = &mut self.branch_popup {
-                        p.confirm_delete = Some((name, true));
-                    }
-                }
-                Some(Err(e)) => self.notify.error(format!("git: {}", e.last_line())),
-                None => {}
-            }
-            return;
-        }
         // 名前を打っている
         if p.naming.is_some() {
             use crate::vim_field::FieldOut;

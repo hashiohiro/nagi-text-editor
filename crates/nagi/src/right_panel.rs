@@ -392,7 +392,6 @@ pub(crate) mod draw {
                     format!(" Oracle Instant Client Basic Light（約 {} MB）", nagi_workers::drivers::ORACLE_CLIENT_SIZE_MB),
                     format!(" 置き場所: {}", nagi_workers::drivers::drivers_dir().join("oracle").display()),
                     format!(" {} に同意のうえ", nagi_workers::drivers::ORACLE_LICENSE),
-                    " y でダウンロード ・ ほかのキーでやめる".to_string(),
                 ];
                 draw_panel_box(p, r, &lines, 0);
             } else if let Some(f) = &d.form {

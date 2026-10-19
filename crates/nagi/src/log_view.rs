@@ -61,7 +61,7 @@ pub struct Detail {
     pub files: Vec<(char, String)>,
 }
 
-/// 確かめてから行う操作（y で進める）
+/// 確かめてから行う操作（確認の窓で「はい」なら log_do）
 #[derive(Clone, Debug)]
 pub enum Confirm {
     Checkout(String),
@@ -106,7 +106,6 @@ pub struct LogView {
     pub filter: Option<crate::vim_field::VimField>,
     /// ファイルの履歴なら、そのパス
     pub path: Option<String>,
-    pub confirm: Option<Confirm>,
     pub loading: bool,
     /// ブランチの列で選んでいるもの（branches の番号）
     pub branch_sel: Option<usize>,
@@ -330,7 +329,6 @@ impl Editor {
             filter_text: String::new(),
             filter: None,
             path: path.or(range.map(|r| if r.contains("..") { format!("比較 {r}") } else { format!("ブランチ {r}") })),
-            confirm: None,
             loading: true,
             rx_log,
             rx_branches,
@@ -400,7 +398,7 @@ impl Editor {
         let docked = self.log.as_ref().is_some_and(|l| l.docked);
         let rows = self.log_rows();
         // 下の欄に収めているとき: Esc は本文へ戻るだけ、q は欄を隠す（どちらも履歴は残す）。Ctrl-w k も本文へ
-        if docked && self.log.as_ref().is_some_and(|l| l.filter.is_none() && l.confirm.is_none() && !l.focus_files) {
+        if docked && self.log.as_ref().is_some_and(|l| l.filter.is_none() && !l.focus_files) {
             match key {
                 Key::Esc => {
                     self.set_state(State::Normal);
@@ -417,14 +415,6 @@ impl Editor {
             self.set_state(State::Normal);
             return;
         };
-        if let Some(c) = l.confirm.take() {
-            if key == Key::Char('y') {
-                self.log_do(c);
-            } else {
-                self.notify.info("やめました");
-            }
-            return;
-        }
         if l.filter.is_some() {
             use crate::vim_field::FieldOut;
             let out = self.feed_field(key, |e| e.log.as_mut().and_then(|l| l.filter.as_mut()));
@@ -501,7 +491,6 @@ impl Editor {
         self.set_state(State::Log);
         let (bw, dw) = self.log_cols_for(w);
         let Some(l) = &mut self.log else { return };
-        l.confirm = None;
         if row == 0 {
             return;
         }
@@ -575,7 +564,7 @@ impl Editor {
         self.update_cmd_complete();
     }
 
-    /// 確かめてから行う（知らせに何をするかを出し、y で log_do）
+    /// 確かめてから行う（確認の窓で「はい」なら log_do）
     pub(crate) fn log_ask(&mut self, c: Confirm) {
         let s = |h: &str| h[..7.min(h.len())].to_string();
         let cur = self.git.status.as_ref().map(|s| s.branch.clone()).unwrap_or_default();
@@ -595,10 +584,7 @@ impl Editor {
             Confirm::DeleteBranch(b, true) => format!("ブランチ {b} はマージされていません。それでも消しますか"),
             Confirm::CheckoutRebase(b, onto) => format!("{b} をチェックアウトして {onto} の上へリベースしますか"),
         };
-        self.notify.warn(format!("{q}（y で進める）"));
-        if let Some(l) = &mut self.log {
-            l.confirm = Some(c);
-        }
+        self.ask(q, move |e| e.log_do(c));
     }
 
     /// 確かめた操作を行い、git の状態と履歴を読み直す
@@ -1175,7 +1161,6 @@ mod tests {
             filter_text: String::new(),
             filter: None,
             path: None,
-            confirm: None,
             loading: false,
             rx_log: None,
             rx_branches: None,
@@ -1350,9 +1335,11 @@ mod tests {
         assert_eq!(e.state(), State::Menu);
         let i = e.menu.as_ref().unwrap().items.iter().position(|it| it.label == "コミットを消す").unwrap();
         e.menu_run(i);
-        assert_eq!(e.state(), State::Log, "メニューを閉じたら履歴へ");
-        assert!(e.notify.text.contains("y で進める"), "{}", e.notify.text);
+        // 確認の窓（はい・いいえ）。y で答える
+        assert_eq!(e.state(), State::Menu);
+        assert!(e.menu.as_ref().unwrap().title.as_deref().is_some_and(|t| t.contains("消しますか")));
         e.key(Key::Char('y'));
+        assert_eq!(e.state(), State::Log, "答えたら履歴へ戻る");
         assert_eq!(g(&["log", "--format=%s"]), "add c\nadd a", "{}", e.notify.text);
         // メッセージを編集（:Greword）
         let head = g(&["rev-parse", "--short", "HEAD"]);

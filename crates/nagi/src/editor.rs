@@ -989,10 +989,6 @@ impl Editor {
             self.paste_clipboard();
             return Effect::None;
         }
-        // データを変える SQL の確認（y で実行）
-        if self.db_confirm_key(key) {
-            return Effect::None;
-        }
         // SQL コンソールの Ctrl+Enter（Ctrl-m として届く）: カーソルのある文を流す
         if key == Key::Ctrl('m') && matches!(self.state(), State::Normal | State::Insert | State::Visual { .. }) && self.console_source().is_some() {
             self.db_run_at_cursor();

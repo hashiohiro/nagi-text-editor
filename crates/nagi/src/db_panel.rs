@@ -257,8 +257,6 @@ pub struct DbPanel {
     pub form: Option<Form>,
     /// コンソールのファイル → 接続先
     pub consoles: HashMap<PathBuf, usize>,
-    /// データを変える文の確認（接続先, SQL）
-    pub confirm: Option<(usize, String)>,
     /// つながったら流す SQL（接続先 → SQL）
     pub then: HashMap<usize, String>,
 }
@@ -616,7 +614,6 @@ impl Editor {
                 download: None,
                 form: None,
                 consoles: HashMap::new(),
-                confirm: None,
                 then: HashMap::new(),
             };
             p.rebuild();
@@ -675,13 +672,15 @@ impl Editor {
         let Some(p) = &mut self.db else { return };
         let s = p.sources[i].clone();
         if Kind::of(&s.url) == Some(Kind::Oracle) && !drivers::oracle_ready() {
+            // 何を・どこへ・どの条件で置くかは右の欄に出し、確認の窓で答える
             p.setup_ask = Some(i);
-            self.notify.info(format!(
-                "Oracle のドライバー（Instant Client Basic Light、約 {} MB）が要ります。{} に置きます（{}）。y でダウンロード",
-                drivers::ORACLE_CLIENT_SIZE_MB,
-                drivers::drivers_dir().join("oracle").display(),
-                drivers::ORACLE_LICENSE
-            ));
+            let q = format!("Oracle のドライバー（約 {} MB）をダウンロードしますか", drivers::ORACLE_CLIENT_SIZE_MB);
+            self.ask_or(q, move |e| e.db_download_driver(i), |e| {
+                if let Some(p) = &mut e.db {
+                    p.setup_ask = None;
+                }
+                e.notify.info("やめました");
+            });
             return;
         }
         if matches!(Kind::of(&s.url), Some(Kind::Sqlite | Kind::Salesforce)) {
@@ -1018,10 +1017,10 @@ impl Editor {
             return;
         }
         let changes = !is_read_only(&sql);
-        if changes && !p.conns[i].manual && p.confirm.is_none() {
+        if changes && !p.conns[i].manual {
             let head: String = sql.split_whitespace().take(4).collect::<Vec<_>>().join(" ");
-            self.notify.info(format!("データを変える文です（{head} …）。{} で実行しますか（y で実行。Tx を手動にすると確かめません）", p.sources[i].name));
-            p.confirm = Some((i, sql));
+            let q = format!("データを変える文です（{head} …）。{} で実行しますか（Tx を手動にすると確かめません）", p.sources[i].name);
+            self.ask_or(q, move |e| e.db_run(i, sql), |e| e.notify.info("実行をやめました"));
             return;
         }
         self.db_run(i, sql);
@@ -1054,29 +1053,15 @@ impl Editor {
         }
     }
 
-    /// 確認（ドライバーのダウンロード、データを変える文）の答え。扱ったら true
-    pub(crate) fn db_confirm_key(&mut self, key: Key) -> bool {
-        if let Some(i) = self.db.as_mut().and_then(|p| p.setup_ask.take()) {
-            if key == Key::Char('y') {
-                let waker = self.waker();
-                let p = self.db.as_mut().unwrap();
-                p.download = Some((i, drivers::download_oracle(waker), "ダウンロードを始めます…".into()));
-                p.expanded.insert(format!("s{i}"));
-                p.rebuild();
-                self.notify.info("Oracle のドライバーをダウンロードしています…");
-            } else {
-                self.notify.info("やめました");
-            }
-            return true;
-        }
-        let Some(p) = &mut self.db else { return false };
-        let Some((i, sql)) = p.confirm.take() else { return false };
-        if key == Key::Char('y') {
-            self.db_run(i, sql);
-        } else {
-            self.notify.info("実行をやめました");
-        }
-        true
+    /// Oracle のドライバーをダウンロードする（確認の窓で「はい」）
+    fn db_download_driver(&mut self, i: usize) {
+        let waker = self.waker();
+        let Some(p) = &mut self.db else { return };
+        p.setup_ask = None;
+        p.download = Some((i, drivers::download_oracle(waker), "ダウンロードを始めます…".into()));
+        p.expanded.insert(format!("s{i}"));
+        p.rebuild();
+        self.notify.info("Oracle のドライバーをダウンロードしています…");
     }
 
     /// 今のバッファが SQL コンソールなら、その接続先
@@ -2005,7 +1990,7 @@ pub(crate) mod tests {
         keys(&mut e, "c");
         assert_eq!(e.console_source(), Some(i));
         keys(&mut e, "Gocreate table item(id integer primary key, name text)<Esc><C-m>");
-        assert!(e.notify.text.contains("データを変える文"), "{}", e.notify.text);
+        assert!(e.menu.as_ref().and_then(|m| m.title.as_deref()).is_some_and(|t| t.contains("データを変える文")), "確認の窓");
         keys(&mut e, "y");
         wait(&mut e, &|e| e.db.as_ref().unwrap().conns[i].objects.get("main").is_some_and(|o| !o.tables.is_empty()));
         // 手動 Tx では確かめずに流し、未コミットを数える。ロールバックで消える

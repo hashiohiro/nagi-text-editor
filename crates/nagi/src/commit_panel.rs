@@ -34,7 +34,6 @@ pub struct CommitPanel {
     /// 送るコミットの確認（ブランチの行き先, コミットの一覧）
     pub confirm_push: Option<(String, Vec<String>)>,
     /// 戻す前の確認（項目の番号）
-    pub confirm_revert: Option<usize>,
     running: Option<(Job, nagi_core::task::Task<nagi_core::Result<String>>)>,
     pub busy_label: Option<String>,
 }
@@ -122,7 +121,6 @@ impl Editor {
                 msg: crate::vim_field::VimField::new("", true),
                 amend: false,
                 confirm_push: None,
-                confirm_revert: None,
                 running: None,
                 busy_label: None,
             });
@@ -253,9 +251,17 @@ impl Editor {
             Some(u) => format!("{branch} → {u}"),
             None => format!("{branch} → origin/{branch}（新しく作る）"),
         };
+        let q = format!("{} 件のコミットを送りますか（{dest}）", log.len());
         if let Some(p) = &mut self.commit {
             p.confirm_push = Some((dest, log));
         }
+        // 送るコミットは一覧の場所に出し、確認の窓で答える
+        self.ask_or(q, |e| e.push(), |e| {
+            if let Some(p) = &mut e.commit {
+                p.confirm_push = None;
+            }
+            e.notify.info("プッシュをやめました");
+        });
     }
 
     fn push(&mut self) {
@@ -349,25 +355,6 @@ impl Editor {
             self.set_state(State::Normal);
             return Effect::None;
         };
-        // 送る前の確認
-        if p.confirm_push.is_some() {
-            match key {
-                Key::Enter | Key::Char('y') => self.push(),
-                _ => {
-                    p.confirm_push = None;
-                    self.notify.info("プッシュをやめました");
-                }
-            }
-            return Effect::None;
-        }
-        if let Some(i) = p.confirm_revert.take() {
-            if key == Key::Char('y') {
-                self.revert_item(i);
-            } else {
-                self.notify.info("戻すのをやめました");
-            }
-            return Effect::None;
-        }
         let last = p.items.len().saturating_sub(1);
         let moved = crate::list::step(key, p.selected, p.items.len(), 10);
         match key {
@@ -393,8 +380,9 @@ impl Editor {
             Key::Char('P') => self.commit(true),
             Key::Char('u') => {
                 if !p.items.is_empty() {
-                    p.confirm_revert = Some(p.selected);
-                    self.notify.info(format!("{} の変更を戻しますか（y で戻す）", p.items[p.selected].change.path));
+                    let i = p.selected;
+                    let q = format!("{} の変更を戻しますか", p.items[i].change.path);
+                    self.ask(q, move |e| e.revert_item(i));
                 }
             }
             Key::Char('r') => {
@@ -562,7 +550,6 @@ pub(crate) mod draw {
             for (k, s) in list.iter().take(l.list_h.saturating_sub(3)).enumerate() {
                 p.text(&format!("   {s}"), r.x, row_y(l.list + 2 + k), FG);
             }
-            p.text(" Enter / y で送る   Esc でやめる", r.x, row_y(l.list + l.list_h - 1), FG);
         } else {
             // 一覧（見出しの行を含めて並べる）
             let tracked = c.tracked();
@@ -718,7 +705,7 @@ mod tests {
         assert!(p.msg.text().is_empty());
         // b の変更を戻す（確認してから）
         keys(&mut e, "u");
-        assert!(e.notify.text.contains("y で戻す"));
+        assert_eq!(e.state(), State::Menu, "確認の窓");
         keys(&mut e, "y");
         wait(&mut e);
         wait(&mut e);
