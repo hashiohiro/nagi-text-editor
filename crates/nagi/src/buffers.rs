@@ -373,7 +373,7 @@ mod tests {
         assert!(e.notify.text.contains("1#+ a.txt") && e.notify.text.contains("2% b.txt"), "{}", e.notify.text);
     }
 
-    /// 隠れたバッファに変更があれば `:q` `:bd` は止め、`!` なら進む
+    /// 隠れたバッファに変更があれば `:qa` `:bd` は止め、`!` なら進む
     #[test]
     fn quit_and_delete_check_hidden_changes() {
         let (a, b) = files();
@@ -381,17 +381,51 @@ mod tests {
         e.rows = 5;
         keys(&mut e, "x");
         keys(&mut e, &format!(":e {}<CR>", b.display()));
-        assert!(matches!(keys(&mut e, ":q<CR>"), Some(Effect::None)));
+        assert!(matches!(keys(&mut e, ":qa<CR>"), Some(Effect::None)));
         assert!(e.notify.text.starts_with("E162"), "{}", e.notify.text);
         keys(&mut e, ":bd 1<CR>");
         assert!(e.notify.text.starts_with("E89"), "{}", e.notify.text);
         keys(&mut e, ":bd! 1<CR>");
         assert_eq!(e.buffer_list().len(), 1);
-        assert!(matches!(keys(&mut e, ":q<CR>"), Some(Effect::Quit)));
+        assert!(matches!(keys(&mut e, ":qa<CR>"), Some(Effect::Quit)));
         // 最後の 1 本を消すと空のバッファになる
         keys(&mut e, ":bd<CR>");
         assert_eq!(e.buffer_list().len(), 1);
         assert_eq!(e.buf.len_bytes(), 0);
+    }
+
+    /// `:q` `:wq` は今のバッファを閉じるだけで、nagi は終えない（最後の 1 つなら空のバッファになる）
+    #[test]
+    fn quit_closes_buffer_not_app() {
+        // 保存するので、ほかの試験とは別のフォルダで
+        let dir = std::env::temp_dir().join(format!("nagi-quit-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (a, b) = (dir.join("a.txt"), dir.join("b.txt"));
+        std::fs::write(&a, "a1\na2\na3\n").unwrap();
+        std::fs::write(&b, "b1\nb2\n").unwrap();
+        let mut e = Editor::new(Buffer::open(&a).unwrap(), None);
+        e.rows = 5;
+        keys(&mut e, "x");
+        keys(&mut e, &format!(":e {}<CR>", b.display()));
+        // b を閉じて a（変更あり）へ
+        assert!(matches!(keys(&mut e, ":q<CR>"), Some(Effect::None)));
+        assert_eq!(e.buffer_list().len(), 1);
+        assert_eq!(e.buf.path.as_deref(), Some(a.as_path()));
+        // 変更があれば止める
+        assert!(matches!(keys(&mut e, ":q<CR>"), Some(Effect::None)));
+        assert!(e.notify.text.starts_with("E37"), "{}", e.notify.text);
+        assert_eq!(e.buf.path.as_deref(), Some(a.as_path()));
+        // :wq は保存して閉じる（最後の 1 つなので空のバッファになる）
+        assert!(matches!(keys(&mut e, ":wq<CR>"), Some(Effect::None)));
+        assert_eq!(std::fs::read_to_string(&a).unwrap(), "1\na2\na3\n");
+        assert_eq!(e.buffer_list().len(), 1);
+        assert_eq!(e.buf.len_bytes(), 0);
+        // :q! は捨てて閉じる
+        keys(&mut e, &format!(":e {}<CR>", b.display()));
+        keys(&mut e, "x");
+        assert!(matches!(keys(&mut e, ":q!<CR>"), Some(Effect::None)));
+        assert_eq!(std::fs::read_to_string(&b).unwrap(), "b1\nb2\n");
+        assert!(e.buffer_list().iter().all(|(_, p, _, _)| p.as_deref() != Some(b.as_path())));
     }
 }
 

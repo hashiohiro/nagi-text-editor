@@ -83,9 +83,9 @@ pub static COMMANDS: &[Cmd] = &[
     // ファイルと窓（Vim）
     cmd_effect!(["w", "write"], "保存（:w 名前 で名前を付けて）", Args::File, |e, c| write(e, c)),
     cmd!(["wa", "wall"], "すべて保存", Args::None, |e, c| e.write_all()),
-    cmd_effect!(["q", "quit"], "閉じる", Args::None, |e, c| quit(e, c, false)),
+    cmd_effect!(["q", "quit"], "バッファを閉じる（nagi は終わらない。終わるのは :qa）", Args::None, |e, c| quit(e, c, false)),
     cmd_effect!(["qa", "qall", "quitall"], "すべて閉じて終了", Args::None, |e, c| quit(e, c, true)),
-    cmd_effect!(["wq", "x", "xit"], "保存して閉じる", Args::File, |e, c| write_quit(e, c)),
+    cmd_effect!(["wq", "x", "xit"], "保存してバッファを閉じる", Args::File, |e, c| write_quit(e, c)),
     cmd_effect!(["wqa", "wqall", "xa", "xall"], "すべて保存して終了", Args::None, |e, c| if e.write_all() { Effect::Quit } else { NONE }),
     cmd!(["e", "edit"], "ファイルを開く（:e! は読み直す）", Args::File, |e, c| edit(e, c)),
     cmd_effect!(["saveas", "sav"], "名前を付けて保存（名前ごと変える）", Args::File, |e, c| {
@@ -356,10 +356,19 @@ fn write(e: &mut Editor, c: &Call) -> Effect {
     NONE
 }
 
-/// `:q` `:qa`（`all` なら全体を終える）。分割中の :q は今の窓だけ、変更が残っていれば止める（! で破棄）
+/// `:q` `:qa`。`:q` は今のバッファを閉じ（最後の 1 つなら空のバッファになる）、nagi は終えない。分割中は今の窓だけ。
+/// `:qa` は全体を終える。変更が残っていれば止める（! で破棄）
 fn quit(e: &mut Editor, c: &Call, all: bool) -> Effect {
     if !all && e.is_split() {
         e.close_window(e.cur_win);
+        return NONE;
+    }
+    if !all {
+        if e.buf.dirty && !c.bang {
+            e.notify.error(format!("E37: 変更が保存されていません（:{}! で破棄して閉じる）", c.name));
+        } else {
+            e.delete_buffer("", true);
+        }
         return NONE;
     }
     if !c.bang {
@@ -375,7 +384,7 @@ fn quit(e: &mut Editor, c: &Call, all: bool) -> Effect {
     Effect::Quit
 }
 
-/// `:wq [名前]` `:x`。名前があればその名前で保存してから
+/// `:wq [名前]` `:x`。保存して今のバッファを閉じる（nagi は終えない）。名前があればその名前で保存してから
 fn write_quit(e: &mut Editor, c: &Call) -> Effect {
     if !c.arg.is_empty() && !e.write_as(c.arg, c.bang, false) {
         return NONE;
@@ -389,11 +398,8 @@ fn write_quit(e: &mut Editor, c: &Call) -> Effect {
         }
         return NONE;
     }
-    if e.write() && e.dirty_docs().is_empty() {
-        return Effect::Quit;
-    }
-    if let Some(&i) = e.dirty_docs().first() {
-        e.notify.error(format!("E162: バッファ {} の変更が保存されていません", i + 1));
+    if e.write() {
+        e.delete_buffer("", false);
     }
     NONE
 }

@@ -466,7 +466,8 @@ mod tests {
         keys(&mut e, "<C-w>o");
         assert_eq!(e.window_rects().len(), 1);
         assert!(!e.is_split());
-        assert!(matches!(keys(&mut e, ":q<CR>"), Some(Effect::Quit)));
+        // 分割していなくても :q で nagi は終わらない（バッファを閉じる）
+        assert!(matches!(keys(&mut e, ":q<CR>"), Some(Effect::None)));
     }
 
     #[test]
