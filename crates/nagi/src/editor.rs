@@ -1832,6 +1832,8 @@ impl Editor {
     }
 
     pub(crate) fn scroll_into_view(&mut self) {
+        // 横（折りたたみがあっても。縦の送りは折りたたみのときに途中で返る）
+        self.follow_left();
         let rows = self.rows.max(1);
         if !self.folds.is_empty() {
             // 閉じた折りたたみは 1 行として数える
@@ -1857,7 +1859,6 @@ impl Editor {
             }
             return;
         }
-        self.follow_left();
         if self.frac > 0.0 && self.cursor.line <= self.top {
             self.frac = 0.0;
         }
@@ -1985,5 +1986,22 @@ mod tests {
         assert_eq!(e.left, 0, "短い行へ移ると左端へ");
         e.hscroll(1000);
         assert!(e.left <= 101, "見えている行のいちばん長いものまで: {}", e.left);
+    }
+
+    /// 閉じた折りたたみがあっても、行末へ動けば横に送る（縦の送りが途中で返っても）
+    #[test]
+    fn horizontal_scroll_with_closed_fold() {
+        let text = format!("{}\na\nb\nc\n", "x".repeat(100));
+        let mut e = ed(&text);
+        e.set_screen(40, 10);
+        for k in "jVjzf".chars() {
+            e.key(Key::Char(k));
+        }
+        assert!(!e.folds.is_empty(), "{}", e.notify.text);
+        for k in "gg$".chars() {
+            e.key(Key::Char(k));
+        }
+        e.scroll_into_view();
+        assert!(e.left > 0, "left {}", e.left);
     }
 }
