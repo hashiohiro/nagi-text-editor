@@ -270,6 +270,19 @@ impl Atlas {
         g
     }
 
+    /// 白黒の字の置き場所を決める（送るのは呼んだ側。insert_rasterized でまとめて）
+    fn place(&mut self, ctx: &ID3D11DeviceContext, img: &nagi_text::GlyphImage) -> Option<(AtlasGlyph, u32, u32)> {
+        let (x, y) = loop {
+            if let Some(p) = self.mono_shelf.alloc(img.width, img.height) {
+                break p;
+            }
+            if !self.grow(ctx, false) {
+                return None;
+            }
+        };
+        Some((AtlasGlyph { uv: [x as f32, y as f32, img.width as f32, img.height as f32], left: img.left as f32, top: img.top as f32, color: false }, x, y))
+    }
+
     fn upload(&mut self, ctx: &ID3D11DeviceContext, img: &nagi_text::GlyphImage) -> Option<AtlasGlyph> {
         if img.width == 0 || img.height == 0 {
             return None;
@@ -400,13 +413,39 @@ impl Renderer {
 
     /// 先に（GPU の準備を待つ間に）ラスタライズしておいたグリフをアトラスに載せる
     pub fn insert_rasterized(&mut self, images: Vec<(GlyphKey, Option<nagi_text::GlyphImage>)>) {
+        // 白黒の字は置き場所だけ先に決め、手元の 1 枚に並べてから 1 回で送る（1 字ずつ送るとドライバーの一時領域が残る）
+        // まとめて送るのは空のアトラスへ置くときだけ（行の範囲を 0 で上書きするので、先に置いた字を消さない）
+        let batch = self.atlas.mono_shelf.x == 0 && self.atlas.mono_shelf.y == 0;
+        let mut placed: Vec<(u32, u32, nagi_text::GlyphImage)> = Vec::new();
         for (key, img) in images {
             if self.atlas.map.contains_key(&key) {
                 continue;
             }
-            let g = img.and_then(|img| self.atlas.upload(&self.gpu.ctx, &img));
+            let g = match img {
+                Some(img) if batch && !img.color && img.width > 0 && img.height > 0 => match self.atlas.place(&self.gpu.ctx, &img) {
+                    Some((g, x, y)) => {
+                        placed.push((x, y, img));
+                        Some(g)
+                    }
+                    None => None,
+                },
+                img => img.and_then(|img| self.atlas.upload(&self.gpu.ctx, &img)),
+            };
             self.atlas.map.insert(key, g);
         }
+        let (Some(top), Some(bottom)) = (placed.iter().map(|p| p.1).min(), placed.iter().map(|p| p.1 + p.2.height).max()) else { return };
+        let w = self.atlas.mono_shelf.size;
+        let mut sheet = vec![0u8; (w * (bottom - top)) as usize];
+        for (x, y, img) in &placed {
+            for r in 0..img.height {
+                let src = &img.data[(r * img.width) as usize..((r + 1) * img.width) as usize];
+                let at = ((y - top + r) * w + x) as usize;
+                sheet[at..at + img.width as usize].copy_from_slice(src);
+            }
+        }
+        // 並べた行の範囲の、字のない所も 0 で上書きする（空のアトラスに上から順に置いたので、この範囲にほかの字は無い）
+        let bx = D3D11_BOX { left: 0, top, front: 0, right: w, bottom, back: 1 };
+        unsafe { self.gpu.ctx.UpdateSubresource(&self.atlas.mono.tex, 0, Some(&bx), sheet.as_ptr().cast(), w, 0) };
     }
 
     /// waitable object を待つ（前フレームの表示が進むまで）。入力処理の前に呼ぶと入力の締め切りを遅らせられる。
