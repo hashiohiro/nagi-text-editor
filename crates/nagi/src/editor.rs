@@ -882,6 +882,7 @@ impl Editor {
             || self.db_typing()
             || self.db_table_typing()
             || (self.state() == State::List && self.list_side == Side::Bottom && self.db_results.editing.as_ref().is_some_and(|e| e.1.is_insert()))
+            || (self.state() == State::List && self.list_side == Side::Bottom && self.db_results.value_edit.as_ref().is_some_and(|f| f.is_insert()))
     }
 
     pub(crate) fn motion(&self) -> Motion<'_> {
@@ -1654,7 +1655,7 @@ impl Editor {
     /// パネルの入力欄（フォーム・絞り込み・パスワード・WHERE / ORDER BY）にいるか。いる間は <leader> の割り当てを通さない
     pub fn in_text_field(&self) -> bool {
         (self.right_focused() && self.db.as_ref().is_some_and(|p| p.form.is_some() || p.filter.is_some() || p.password.is_some()))
-            || (self.state() == State::List && self.list_side == Side::Bottom && self.db_results.editing.is_some())
+            || (self.state() == State::List && self.list_side == Side::Bottom && (self.db_results.editing.is_some() || self.db_results.value_edit.is_some()))
     }
 
     /// 貼り付けを受ける入力欄にいるか（Vim の Insert の Ctrl-V は別）
@@ -1735,7 +1736,9 @@ impl Editor {
 
     /// 下の欄の結果の表で、WHERE・ORDER BY の欄を直している間の文字
     pub(crate) fn bottom_text(&mut self, text: &str) {
-        if let Some((_, f)) = &mut self.db_results.editing {
+        if let Some(f) = &mut self.db_results.value_edit {
+            f.insert_text(text);
+        } else if let Some((_, f)) = &mut self.db_results.editing {
             f.insert_text(text);
         }
     }

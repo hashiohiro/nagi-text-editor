@@ -15,7 +15,7 @@
 
 use nagi_workers::db::Kind;
 
-use crate::db_panel::ident;
+use crate::db_panel::{ident, quoted};
 use crate::editor::Editor;
 use crate::smart_complete::Cand;
 
@@ -236,6 +236,37 @@ pub fn table_refs(t: &[Tok]) -> Vec<TableRef> {
     out
 }
 
+/// 結果の表を直して書き戻せる文なら、その表 (スキーマ, テーブル)。
+/// 1 つのテーブルからの SELECT で、選ぶのが `*` か列の名前だけ（式・列の別名・結合・集計・WITH・副問い合わせは書き戻せない）
+pub fn edit_target(sql: &str) -> Option<(Option<String>, String)> {
+    let (t, open) = tokenize(sql);
+    let t: Vec<Tok> = t.into_iter().filter(|x| *x != Tok::Punct(';')).collect();
+    if open || t.first()?.upper().as_deref() != Some("SELECT") {
+        return None;
+    }
+    let deny = ["JOIN", "UNION", "INTERSECT", "EXCEPT", "MINUS", "GROUP", "HAVING", "DISTINCT", "CONNECT", "WITH", "PIVOT", "UNPIVOT"];
+    if t.iter().any(|x| x.upper().is_some_and(|u| deny.contains(&u.as_str()))) {
+        return None;
+    }
+    let from = t.iter().position(|x| x.upper().as_deref() == Some("FROM"))?;
+    // 選ぶもの: `*`・`名前`・`a.名前`・`a.*` を , で区切ったもの
+    for item in t[1..from].split(|x| *x == Tok::Punct(',')) {
+        let ok = !item.is_empty()
+            && item.iter().enumerate().all(|(k, x)| if k % 2 == 1 { *x == Tok::Punct('.') } else { x.name().is_some() || (*x == Tok::Punct('*') && k + 1 == item.len()) })
+            && item.len() % 2 == 1;
+        if !ok {
+            return None;
+        }
+    }
+    // FROM の後は 1 つのテーブル（副問い合わせ・, の並びは不可）
+    let refs = table_refs(&t[from..]);
+    if refs.len() != 1 || refs[0].cte || t.get(from + 1) == Some(&Tok::Punct('(')) {
+        return None;
+    }
+    let r = refs.into_iter().next()?;
+    Some((r.schema, r.name))
+}
+
 /// カーソルのある場所
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Ctx {
@@ -381,12 +412,7 @@ impl Editor {
         let kind = p.kind(i);
         let c = &mut p.conns[i];
         // 書かれた (スキーマ, 名前) を、覚えている (スキーマ, テーブル) にする（大文字小文字は区別しない）
-        let resolve = |c: &crate::db_panel::Conn, schema: Option<&str>, name: &str| -> (String, String) {
-            let s = schema.unwrap_or(&c.schema);
-            let s = c.objects.keys().find(|k| k.eq_ignore_ascii_case(s)).cloned().or_else(|| c.schemas.as_ref().and_then(|v| v.iter().find(|k| k.eq_ignore_ascii_case(s)).cloned())).unwrap_or_else(|| s.to_string());
-            let t = c.objects.get(&s).and_then(|o| o.tables.iter().find(|t| t.0.eq_ignore_ascii_case(name)).map(|t| t.0.clone())).unwrap_or_else(|| name.to_string());
-            (s, t)
-        };
+        let resolve = |c: &crate::db_panel::Conn, schema: Option<&str>, name: &str| c.resolve(schema, name);
         let is_schema = |c: &crate::db_panel::Conn, n: &str| c.schemas.as_ref().is_some_and(|v| v.iter().any(|s| s.eq_ignore_ascii_case(n))) || c.objects.keys().any(|s| s.eq_ignore_ascii_case(n));
         // 別名・テーブル名で、文の表を引く
         let ref_of = |q: &str| refs.iter().find(|r| !r.cte && (r.alias.as_deref().is_some_and(|a| a.eq_ignore_ascii_case(q)) || (r.alias.is_none() && r.name.eq_ignore_ascii_case(q))));
@@ -423,11 +449,13 @@ impl Editor {
         let lower = if prefix.is_empty() { first.chars().any(|c| c.is_ascii_lowercase()) } else { prefix.chars().any(|c| c.is_ascii_lowercase()) && !prefix.chars().any(|c| c.is_ascii_uppercase()) };
         let kc = |k: &str| if lower { k.to_lowercase() } else { k.to_string() };
         let mut out: Vec<Cand> = Vec::new();
+        let oracle = kind == Some(Kind::Oracle);
         let mut push = |out: &mut Vec<Cand>, name: String, mark: char, note: String, call: Option<bool>, rank: u8, quote: bool| {
             if out.iter().any(|x| x.name == name && x.mark == mark) {
                 return;
             }
-            let insert = (quote && ident(&name) != name).then(|| ident(&name));
+            // Oracle はスキーマ・テーブル・列の名前をいつも "" で囲む（WITH の名前は書いたとおり）
+            let insert = if quote && oracle && matches!(mark, 'T' | 'V' | 'f' | 'c') && note != "WITH" { Some(quoted(&name)) } else { (quote && ident(&name) != name).then(|| ident(&name)) };
             out.push(Cand { name, mark, note, call, rank, insert });
         };
         let tables = |out: &mut Vec<Cand>, push: &mut dyn FnMut(&mut Vec<Cand>, String, char, String, Option<bool>, u8, bool), s: &str, rank: u8, more: bool| {
@@ -647,5 +675,58 @@ mod tests {
         assert_eq!(e.completion.as_ref().unwrap().items[0], "orders");
         keys(&mut e, "<CR>");
         assert!(e.buf.line(e.cursor.line).ends_with("select * from orders"), "{}", e.buf.line(e.cursor.line));
+    }
+
+    #[test]
+    fn edit_targets() {
+        let t = |s: &str| edit_target(s);
+        assert_eq!(t("select * from emp"), Some((None, "emp".into())));
+        assert_eq!(t("SELECT e.*, id FROM hr.emp e WHERE id > 1 ORDER BY id;"), Some((Some("hr".into()), "emp".into())));
+        assert_eq!(t("select \"Id\", name from \"HR\".\"Emp\""), Some((Some("HR".into()), "Emp".into())));
+        assert_eq!(t("select name as id from emp"), None, "列の別名");
+        assert_eq!(t("select upper(name) from emp"), None, "式");
+        assert_eq!(t("select count(*) from emp"), None);
+        assert_eq!(t("select * from emp join dept on 1 = 1"), None);
+        assert_eq!(t("select * from emp, dept"), None);
+        assert_eq!(t("select distinct name from emp"), None);
+        assert_eq!(t("select * from emp where id in (select id from x)"), None, "副問い合わせ");
+        assert_eq!(t("with a as (select 1) select * from a"), None);
+        assert_eq!(t("update emp set a = 1"), None);
+    }
+
+    /// Oracle はスキーマ・テーブル・列の名前を "" で囲んで入れる（つながずに、読んだことにした名前で）
+    #[test]
+    fn oracle_names_are_quoted() {
+        use nagi_workers::db::{Column, Objects};
+        let mut e = Editor::new(nagi_core::Buffer::from_str("x\n"), None);
+        e.set_screen(160, 50);
+        e.open_db_panel();
+        e.db_add("ora jdbc:oracle:thin:@//db:1521/X");
+        let i = e.db.as_ref().unwrap().sources.len() - 1;
+        let c = &mut e.db.as_mut().unwrap().conns[i];
+        c.schema = "HR".into();
+        c.schemas = Some(vec!["HR".into(), "SCOTT".into()]);
+        c.objects.insert("HR".into(), Objects { tables: vec![("EMP".into(), "TABLE".into())], ..Default::default() });
+        c.columns.insert(("HR".into(), "EMP".into()), vec![Column { name: "EMP_ID".into(), ty: "NUMBER".into(), pk: true, ..Default::default() }]);
+        e.open_console(i, None);
+        let keys = |e: &mut Editor, k: &str| {
+            for key in nagi_vim::parse_keys(k, " ") {
+                e.key(key);
+            }
+        };
+        keys(&mut e, "Goselect * from em");
+        e.start_smart_completion();
+        keys(&mut e, "<CR>");
+        assert!(e.buf.line(e.cursor.line).ends_with("from \"EMP\""), "{}", e.buf.line(e.cursor.line));
+        keys(&mut e, " e where e.");
+        e.start_smart_completion();
+        assert_eq!(e.completion.as_ref().unwrap().items, vec!["EMP_ID"]);
+        keys(&mut e, "<CR>");
+        assert!(e.buf.line(e.cursor.line).ends_with("where e.\"EMP_ID\""), "{}", e.buf.line(e.cursor.line));
+        keys(&mut e, "<Esc>o<CR>select * from sco");
+        e.start_smart_completion();
+        assert_eq!(e.completion.as_ref().unwrap().items[0], "SCOTT");
+        keys(&mut e, "<CR>");
+        assert!(e.buf.line(e.cursor.line).ends_with("from \"SCOTT\""), "{}", e.buf.line(e.cursor.line));
     }
 }

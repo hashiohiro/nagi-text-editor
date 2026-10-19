@@ -44,8 +44,8 @@ enum Expect {
     /// (返す先, 出力に書く SQL, データを変えうる文か)
     Query(Target, String, bool),
     Count(Target),
-    /// まとめて送った文の数
-    Batch(usize),
+    /// まとめて送った (返す先, 文の数)
+    Batch(Target, usize),
     Tx,
     SetSchema(String),
     Ddl(String),
@@ -80,9 +80,9 @@ impl Conn {
         }
     }
 
-    pub(crate) fn send_batch(&mut self, stmts: Vec<String>) {
+    pub(crate) fn send_batch(&mut self, target: Target, stmts: Vec<String>) {
         let n = stmts.len();
-        self.send(Req::Batch(stmts), Expect::Batch(n));
+        self.send(Req::Batch(stmts), Expect::Batch(target, n));
     }
 
     pub(crate) fn send_table_query(&mut self, sql: String, offset: usize, count: Option<String>) {
@@ -104,6 +104,14 @@ impl Conn {
         if self.connected && !s.is_empty() && !self.objects.contains_key(s) && self.requested.insert(format!("o:{s}")) {
             self.send(Req::Objects(s.to_string()), Expect::Objects(s.to_string()));
         }
+    }
+
+    /// 書かれた (スキーマ, 名前) を、覚えている (スキーマ, テーブル) にする（大文字小文字は区別しない。スキーマが無ければ今のスキーマ）
+    pub(crate) fn resolve(&self, schema: Option<&str>, name: &str) -> (String, String) {
+        let s = schema.unwrap_or(&self.schema);
+        let s = self.objects.keys().find(|k| k.eq_ignore_ascii_case(s)).cloned().or_else(|| self.schemas.as_ref().and_then(|v| v.iter().find(|k| k.eq_ignore_ascii_case(s)).cloned())).unwrap_or_else(|| s.to_string());
+        let t = self.objects.get(&s).and_then(|o| o.tables.iter().find(|t| t.0.eq_ignore_ascii_case(name)).map(|t| t.0.clone())).unwrap_or_else(|| name.to_string());
+        (s, t)
     }
 
     pub(crate) fn send_columns(&mut self, s: &str, t: &str) {
@@ -370,6 +378,11 @@ pub fn ident(s: &str) -> String {
     let plain = s.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_') && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$' || c == '#');
     let same_case = s.chars().all(|c| !c.is_ascii_lowercase()) || s.chars().all(|c| !c.is_ascii_uppercase());
     if plain && same_case { s.to_string() } else { format!("\"{}\"", s.replace('"', "\"\"")) }
+}
+
+/// いつも "" で囲んだ名前
+pub fn quoted(s: &str) -> String {
+    format!("\"{}\"", s.replace('"', "\"\""))
 }
 
 /// 値の書き方（NULL か '...'）
@@ -919,7 +932,13 @@ impl Editor {
                     }
                 }
                 match target {
-                    Target::Result(id) => self.db_results.reply(id, reply),
+                    Target::Result(id) => {
+                        let rows = matches!(reply, Reply::Rows { .. });
+                        self.db_results.reply(id, reply);
+                        if rows {
+                            self.result_find_target(i, id);
+                        }
+                    }
                     Target::Table => {
                         if let Some(te) = &mut self.db_table {
                             te.reply(reply);
@@ -936,19 +955,24 @@ impl Editor {
                 }
             },
             (Some(Expect::Count(_)), Reply::Error(_)) => {}
-            (Some(Expect::Batch(n)), reply) => match &reply {
+            (Some(Expect::Batch(target, n)), reply) => match &reply {
                 Reply::Updated { ms, .. } => {
                     if c.manual {
                         c.pending += n;
                     }
                     let manual = c.manual;
                     self.notify.info(format!("{n} 件の変更を送信しました{}", if manual { "（まだコミットしていません）" } else { "" }));
-                    self.db_log(&name, &format!("{n} 件の変更（テーブルの編集）"), &format!("{ms} ms"), false);
-                    self.db_table_reload();
+                    let what = if target == Target::Table { "テーブルの編集" } else { "結果の編集" };
+                    self.db_log(&name, &format!("{n} 件の変更（{what}）"), &format!("{ms} ms"), false);
+                    match target {
+                        Target::Table => self.db_table_reload(),
+                        Target::Result(id) => self.db_results.committed(id, format!("{n} 行を直しました · {ms} ms")),
+                    }
                 }
                 Reply::Error(e) => {
                     self.notify.error(format!("送信できません: {}", e.lines().next().unwrap_or("")));
-                    self.db_log(&name, &format!("{n} 件の変更（テーブルの編集）"), e, true);
+                    let what = if target == Target::Table { "テーブルの編集" } else { "結果の編集" };
+                    self.db_log(&name, &format!("{n} 件の変更（{what}）"), e, true);
                     if let Some(te) = &mut self.db_table {
                         te.busy = false;
                     }
@@ -1133,6 +1157,10 @@ impl Editor {
         let what = if commit { "コミット" } else { "ロールバック" };
         self.notify.info(format!("{what}しました（{n} 件）"));
         self.db_log_line(&format!("{what}しました（{n} 件）"), false);
+        // 結果の表で直して送った値: ロールバックなら前の値に戻して読み直す
+        for id in self.db_results.tx_ended(i, commit) {
+            self.db_requery(id);
+        }
     }
 
     /// 今の接続先（コンソールの接続先、無ければ木で選んでいる接続先）

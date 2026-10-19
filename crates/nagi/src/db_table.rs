@@ -1,7 +1,7 @@
 //! テーブルのデータの編集（DataGrip のテーブルを開いた画面。窓の領域全体に出す）。
 //!
 //! 木のテーブルの上で o（ダブルクリック）で開く。WHERE / ORDER BY（f / F）、並べ替え（s）、ページ送り（< >）。
-//! i（Enter）で値を直し（c なら空にしてから）、x で NULL、o で行を足し、dd で行を消す（もう一度で取り消し）、u で 1 つ戻す。
+//! i（Enter・F2）で値を直し（c なら空にしてから）、x で NULL、o で行を足し、dd で行を消す（もう一度で取り消し）、u で 1 つ戻す。
 //! 直した値は青、足した行は緑、消した行は赤。Ctrl+Enter で作った SQL（INSERT・UPDATE・DELETE）を見せ、
 //! 確認の窓で「はい」なら 1 つのトランザクションで送る（どの文も 1 行だけを変えなければ全部取り消す）。行は主キーで見分けるので、
 //! 主キーの無いテーブルは読むだけ。
@@ -205,6 +205,10 @@ impl TableEditor {
             total: None,
             where_: String::new(),
             order: String::new(),
+            target: None,
+            edits: HashMap::new(),
+            undo: Vec::new(),
+            sent: HashMap::new(),
         }
     }
 
@@ -350,7 +354,7 @@ impl Editor {
         te.busy = true;
         let i = te.src;
         if let Some(c) = self.db.as_mut().map(|p| &mut p.conns[i]) {
-            c.send_batch(stmts);
+            c.send_batch(crate::db_panel::Target::Table, stmts);
         }
         self.notify.info("送信しています…");
     }
@@ -431,7 +435,7 @@ impl Editor {
             (_, Key::Ctrl('d')) => te.row = (te.row + half).min(last_row),
             (_, Key::Ctrl('u')) => te.row = te.row.saturating_sub(half),
             (_, Key::Char('G')) => te.row = last_row,
-            (_, Key::Char('i') | Key::Enter) if !te.cols.is_empty() && te.len() > 0 => {
+            (_, Key::Char('i') | Key::Enter | Key::F(2)) if !te.cols.is_empty() && te.len() > 0 => {
                 if te.at(te.row).0 == RowState::Deleted {
                     self.notify.warn("消す行は直せません（dd で取り消し）");
                 } else {
@@ -455,7 +459,7 @@ impl Editor {
                 te.undo.push(Change::Add);
                 te.row = 0;
             }
-            (_, Key::Char('u')) => {
+            (_, Key::Char('u') | Key::Ctrl('z')) => {
                 if !te.undo_one() {
                     self.notify.info("戻す変更はありません");
                 }
@@ -529,14 +533,14 @@ impl Editor {
 
 /// この部品の入口（component.rs）
 /// Vim を使わないときの状態行の説明
-const PLAIN_HELP: &str = "矢印 移動  Enter 値を直す  右クリック 操作  Ctrl+Enter 送る ";
+const PLAIN_HELP: &str = "矢印 移動  F2・Enter 値を直す  Ctrl+Z 戻す  右クリック 操作  Ctrl+Enter 送る ";
 
 pub struct DbTableComponent;
 
 impl crate::component::Component for DbTableComponent {
     fn status(&self, ed: &crate::editor::Editor) -> Option<crate::component::Status> {
         let n = ed.db_table.as_ref().map_or(0, |t| t.changes());
-        let help = "i 値  c 入れ替え  x NULL  o 行を足す  dd 消す  u 戻す  f/F 絞り込み  s 並べ替え  < > ページ  Ctrl+Enter 送信  q 閉じる ";
+        let help = "i・F2 値  c 入れ替え  x NULL  o 行を足す  dd 消す  u 戻す  f/F 絞り込み  s 並べ替え  < > ページ  Ctrl+Enter 送信  q 閉じる ";
         if n > 0 {
             Some(crate::component::Status { name: format!("-- 編集 --  変更 {n} 件（未送信）"), warn: true, help: help.into(), plain: Some(PLAIN_HELP.into()) })
         } else {
@@ -611,7 +615,7 @@ impl crate::layout::View for DbTableView {
         let _ = (r, row, col);
         ed.set_state(crate::editor::State::DbTable);
         let m = crate::menu::Menu::new(row, col)
-            .keys("値を直す", &[Char('i')])
+            .keys("値を直す（F2）", &[F(2)])
             .keys("値を入れ替える", &[Char('c')])
             .keys("NULL にする", &[Char('x')])
             .keys("行を足す", &[Char('o')])
@@ -637,6 +641,20 @@ pub(crate) mod draw {
     #![allow(unused_imports)]
     use super::*;
     use crate::view::*;
+
+    /// 表（draw_grid）のセルの上に、値を直す欄を出す（`left` は表の左端の列、`row` は画面の行）
+    pub(crate) fn draw_cell_field(p: &mut Painter, f: &VimField, preedit: &str, left: usize, widths: &[usize], hscroll: usize, col: usize, row: usize) {
+        let cell = p.fonts.cell();
+        let mut x = left + 7;
+        for c in hscroll..col {
+            x += widths[c] + 3;
+        }
+        let y = row as f32 * cell.h;
+        let w = (widths.get(col).copied().unwrap_or(10) + 2).max(p.width(&f.text()) + p.width(preedit) + 3);
+        p.out.push(Instance::fill((x - 1) as f32 * cell.w - 1.0, y - 1.0, w as f32 * cell.w + 2.0, cell.h + 2.0, FG));
+        p.out.push(Instance::fill((x - 1) as f32 * cell.w, y, w as f32 * cell.w, cell.h, rgb(0x1f3550)));
+        draw_vim_field(p, f, x, y, preedit);
+    }
 
     /// テーブルのデータの編集（窓の領域全体）
     pub(crate) fn draw_db_table(p: &mut Painter, ed: &Editor, te: &crate::db_table::TableEditor, r: Rect) {
@@ -688,15 +706,7 @@ pub(crate) mod draw {
         // 値の入力欄（選んだセルの上に）
         if let Some(f) = &te.editing {
             if te.row >= te.scroll {
-                let mut x = r.x + 7;
-                for c in te.hscroll..te.col {
-                    x += te.widths[c] + 3;
-                }
-                let y = (r.y + 4 + te.row - te.scroll) as f32 * cell.h;
-                let w = (te.widths.get(te.col).copied().unwrap_or(10) + 2).max(p.width(&f.text()) + p.width(&ed.preedit) + 3);
-                p.out.push(Instance::fill((x - 1) as f32 * cell.w - 1.0, y - 1.0, w as f32 * cell.w + 2.0, cell.h + 2.0, FG));
-                p.out.push(Instance::fill((x - 1) as f32 * cell.w, y, w as f32 * cell.w, cell.h, rgb(0x1f3550)));
-                draw_vim_field(p, f, x, y, &ed.preedit);
+                draw_cell_field(p, f, &ed.preedit, r.x, &te.widths, te.hscroll, te.col, r.y + 4 + te.row - te.scroll);
             }
         }
         // 送る前の確認（右下に SQL）

@@ -240,7 +240,7 @@ impl Editor {
         }
         let row = row - 1;
         match self.bottom_kind {
-            BottomKind::Result => self.result_click(row, col.saturating_sub(1)),
+            BottomKind::Result => self.result_click(row, col.saturating_sub(1), clicks),
             BottomKind::Problems => self.problems_click(row, clicks),
             BottomKind::Git => {
                 let w = self.bottom_content_rect().map_or(0, |r| r.w);
@@ -379,8 +379,9 @@ impl crate::layout::View for BottomView {
                 m.keys("開く", &[Enter]).keys("開いて欄に残る", &[Char('o')]).sep().keys("欄を隠す", &[Char('q')])
             }
             BottomKind::Result => {
-                ed.result_click(prow, pcol.saturating_sub(1));
+                ed.result_click(prow, pcol.saturating_sub(1), 1);
                 let filterable = ed.db_results.active_tab().is_some_and(|t| t.filterable);
+                let editable = ed.db_results.active_tab().is_some_and(|t| t.target.is_some());
                 let m = m.keys("値をコピー", &[Char('y')]).keys("行をコピー", &[Char('Y')]).keys("表全体をコピー（タブ区切り）", &[Char('g'), Char('y')]);
                 let m = if filterable {
                     m.sep()
@@ -393,7 +394,16 @@ impl crate::layout::View for BottomView {
                 } else {
                     m
                 };
-                m.keys("テーブルを編集", &[Char('E')]).sep().keys("閉じる", &[Char('q')])
+                let m = if editable {
+                    m.sep()
+                        .keys("値を直す（F2）", &[F(2)])
+                        .keys("NULL にする", &[Char('x')])
+                        .keys("戻す（Ctrl+Z）", &[Ctrl('z')])
+                        .keys("変更を送る（Ctrl+Enter）", &[Ctrl('m')])
+                } else {
+                    m
+                };
+                m.sep().keys("書き出す（CSV・TSV・INSERT）…", &[Char('E')]).keys("閉じる", &[Char('q')])
             }
             BottomKind::Terminal => {
                 if ed.terminals.list.is_empty() {

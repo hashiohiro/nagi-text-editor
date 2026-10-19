@@ -4,6 +4,10 @@
 //! 表: 行番号、列名と型の 2 行の見出し、WHERE / ORDER BY の絞り込み（f / F）、列で並べ替え（s）、
 //! ページ送り（< >。1 ページ 500 行、件数は数えてから出す）、コピー（y 値・Y 行・gy 表全体をタブ区切り）、
 //! 書き出し（:DbExport csv|tsv|insert）。] [ でタブを替える。
+//! 1 つのテーブルからの SELECT（選ぶのが * か列の名前だけ。主キーの列を含む）なら値を直せる: F2・Enter・i・ダブルクリックで直し、
+//! x で NULL、u・Ctrl+Z で戻す。直した値は青。Ctrl+Enter で UPDATE を確かめて 1 つのトランザクションで送る（主キーで行を見分ける）
+
+use std::collections::HashMap;
 
 use nagi_vim::Key;
 use nagi_workers::db::Reply;
@@ -70,9 +74,68 @@ pub struct ResultTab {
     pub total: Option<i64>,
     pub where_: String,
     pub order: String,
+    /// 直して書き戻せる表 (スキーマ, テーブル)。1 つのテーブルからの SELECT のとき（sql_complete の edit_target）
+    pub target: Option<(String, String)>,
+    /// 直した値 ((行, 列) → 値。None は NULL)。送るまでは青で出す
+    pub edits: HashMap<(usize, usize), Option<String>>,
+    /// 戻す順の (行, 列, 前の直した値。None は直していなかった)
+    pub(crate) undo: Vec<(usize, usize, Option<Option<String>>)>,
+    /// 送った値の、送る前の値（手動の Tx でロールバックしたら戻す）
+    pub(crate) sent: HashMap<(usize, usize), Option<String>>,
 }
 
 impl ResultTab {
+    /// 表に出す値（直していれば直した値）
+    pub fn value(&self, r: usize, c: usize) -> Option<String> {
+        self.edits.get(&(r, c)).cloned().unwrap_or_else(|| self.rows[r][c].clone())
+    }
+
+    pub fn modified(&self, r: usize, c: usize) -> bool {
+        self.edits.contains_key(&(r, c))
+    }
+
+    /// 直した行の数
+    pub fn changes(&self) -> usize {
+        self.edits.keys().map(|k| k.0).collect::<std::collections::BTreeSet<_>>().len()
+    }
+
+    pub fn set_value(&mut self, r: usize, c: usize, v: Option<String>) {
+        let prev = if self.rows[r][c] == v { self.edits.remove(&(r, c)) } else { self.edits.insert((r, c), v) };
+        self.undo.push((r, c, prev));
+    }
+
+    fn undo_one(&mut self) -> bool {
+        let Some((r, c, prev)) = self.undo.pop() else { return false };
+        match prev {
+            Some(v) => self.edits.insert((r, c), v),
+            None => self.edits.remove(&(r, c)),
+        };
+        true
+    }
+
+    /// 送った: 直した値を表に入れる
+    pub fn commit_edits(&mut self) {
+        for ((r, c), v) in self.edits.drain() {
+            let old = std::mem::replace(&mut self.rows[r][c], v);
+            self.sent.entry((r, c)).or_insert(old);
+        }
+        self.undo.clear();
+    }
+
+    /// 送る UPDATE（行は主キー `pk`（表の列の番号）で見分ける。`colname` は表の列の、テーブルでの名前）
+    pub fn statements(&self, name: &str, pk: &[usize], colname: &[String]) -> Vec<String> {
+        let rows: std::collections::BTreeSet<usize> = self.edits.keys().map(|k| k.0).collect();
+        rows.into_iter()
+            .map(|r| {
+                let mut set: Vec<(usize, &Option<String>)> = self.edits.iter().filter(|(k, _)| k.0 == r).map(|(k, v)| (k.1, v)).collect();
+                set.sort_by_key(|x| x.0);
+                let set = set.iter().map(|(c, v)| format!("{} = {}", crate::db_panel::ident(&colname[*c]), crate::db_panel::literal(v))).collect::<Vec<_>>().join(", ");
+                let wh = pk.iter().map(|&c| format!("{} = {}", crate::db_panel::ident(&colname[c]), crate::db_panel::literal(&self.rows[r][c]))).collect::<Vec<_>>().join(" AND ");
+                format!("UPDATE {name} SET {set} WHERE {wh}")
+            })
+            .collect()
+    }
+
     /// 絞り込みと並べ替えを入れた SQL
     pub fn effective_sql(&self) -> String {
         let base = nagi_workers::db::strip_semicolon(&self.base);
@@ -178,6 +241,8 @@ pub struct DbResults {
     next_id: u64,
     /// 絞り込みの欄の入力中（Vim 風）
     pub editing: Option<(Field, VimField)>,
+    /// 値を直している欄（選んだセルの上に出す）
+    pub value_edit: Option<VimField>,
     pending_g: bool,
 }
 
@@ -242,6 +307,10 @@ impl DbResults {
             total: None,
             where_: String::new(),
             order: String::new(),
+            target: None,
+            edits: HashMap::new(),
+            undo: Vec::new(),
+            sent: HashMap::new(),
         });
         self.active = self.tabs.len();
         id
@@ -275,6 +344,9 @@ impl DbResults {
                 t.rows = rows;
                 t.more = more;
                 t.error = false;
+                t.edits.clear();
+                t.undo.clear();
+                t.sent.clear();
                 t.row = t.row.min(t.rows.len().saturating_sub(1));
                 t.col = t.col.min(t.cols.len().saturating_sub(1));
             }
@@ -288,6 +360,34 @@ impl DbResults {
             }
             _ => {}
         }
+    }
+
+    /// 直した値を送った: 表に入れる
+    pub fn committed(&mut self, id: u64, info: String) {
+        if let Some(t) = self.tab_mut(id) {
+            t.commit_edits();
+            t.info = info;
+            t.error = false;
+        }
+    }
+
+    /// 接続先 `src` をコミット・ロールバックした: ロールバックなら送った値を前に戻し、読み直せる結果の番号を返す
+    pub fn tx_ended(&mut self, src: usize, commit: bool) -> Vec<u64> {
+        let mut again = Vec::new();
+        for t in self.tabs.iter_mut().filter(|t| t.src == src && !t.sent.is_empty()) {
+            let sent = std::mem::take(&mut t.sent);
+            if commit {
+                continue;
+            }
+            for ((r, c), v) in sent {
+                t.rows[r][c] = v;
+            }
+            if t.filterable {
+                t.running = true;
+                again.push(t.id);
+            }
+        }
+        again
     }
 
     pub fn set_total(&mut self, id: u64, n: i64) {
@@ -350,9 +450,176 @@ impl Editor {
         self.db_open_text(&format!("{}.{ext}", crate::db_panel::safe_name(&name)), &text);
     }
 
+    /// 結果が届いた: 1 つのテーブルからの SELECT なら、書き戻す表を決め、主キーを知るために列を読んでおく
+    pub(crate) fn result_find_target(&mut self, i: usize, id: u64) {
+        let Some(t) = self.db_results.tab(id) else { return };
+        let Some((schema, name)) = crate::sql_complete::edit_target(&t.base) else { return };
+        if self.db.as_ref().is_some_and(|p| p.kind(i) == Some(nagi_workers::db::Kind::Salesforce)) {
+            return;
+        }
+        let Some(c) = self.db.as_mut().and_then(|p| p.conns.get_mut(i)) else { return };
+        let (s, n) = c.resolve(schema.as_deref(), &name);
+        c.ensure_columns(&s, &n);
+        if let Some(t) = self.db_results.tab_mut(id) {
+            t.target = Some((s, n));
+        }
+    }
+
+    /// 今の結果を書き戻す用意: (テーブルの名前, 主キーの列の番号, 結果の列ごとのテーブルでの名前)。直せなければその訳
+    fn result_plan(&self) -> Result<(String, Vec<usize>, Vec<String>), String> {
+        let t = self.db_results.active_tab().ok_or_else(String::new)?;
+        let Some((s, n)) = &t.target else {
+            return Err("この結果は直せません（1 つのテーブルからの SELECT で、選ぶのが * か列の名前だけのとき直せます）".into());
+        };
+        let Some(cols) = self.db.as_ref().and_then(|p| p.conns.get(t.src)).and_then(|c| c.columns.get(&(s.clone(), n.clone()))) else {
+            return Err("テーブルの列を読んでいます。少し待ってからもう一度".into());
+        };
+        let mut pk = Vec::new();
+        for c in cols.iter().filter(|c| c.pk) {
+            match t.cols.iter().position(|rc| rc.eq_ignore_ascii_case(&c.name)) {
+                Some(k) => pk.push(k),
+                None => return Err(format!("主キーの列 {} が結果に無いので直せません", c.name)),
+            }
+        }
+        if pk.is_empty() {
+            return Err(format!("{n} は主キーが無いので直せません（読むだけ）"));
+        }
+        let names = t.cols.iter().map(|rc| cols.iter().find(|c| c.name.eq_ignore_ascii_case(rc)).map_or(rc.clone(), |c| c.name.clone())).collect();
+        Ok((crate::db_panel::qualified(s, n), pk, names))
+    }
+
+    /// 選んでいるセルの値を直し始める（F2・Enter・ダブルクリック。`empty` なら空から）
+    pub(crate) fn result_begin_edit(&mut self, empty: bool) {
+        if let Err(e) = self.result_plan() {
+            if !e.is_empty() {
+                self.notify.warn(e);
+            }
+            return;
+        }
+        let r = &mut self.db_results;
+        let Some(t) = r.active_tab() else { return };
+        if t.rows.is_empty() || t.cols.is_empty() {
+            return;
+        }
+        let v = if empty { String::new() } else { t.value(t.row, t.col).unwrap_or_default() };
+        r.value_edit = Some(VimField::new(&v, false));
+    }
+
+    /// 選んでいるセルを NULL に
+    pub(crate) fn result_set_null(&mut self) {
+        if let Err(e) = self.result_plan() {
+            self.notify.warn(e);
+            return;
+        }
+        if let Some(t) = self.db_results.active_tab_mut().filter(|t| !t.rows.is_empty()) {
+            let (r, c) = (t.row, t.col);
+            t.set_value(r, c, None);
+        }
+    }
+
+    pub(crate) fn result_undo(&mut self) {
+        if !self.db_results.active_tab_mut().is_some_and(|t| t.undo_one()) {
+            self.notify.info("戻す変更はありません");
+        }
+    }
+
+    /// 直した値を UPDATE にして、確認の窓で「はい」なら 1 つのトランザクションで送る
+    pub(crate) fn result_send(&mut self) {
+        let (name, pk, names) = match self.result_plan() {
+            Ok(x) => x,
+            Err(e) => {
+                self.notify.warn(e);
+                return;
+            }
+        };
+        let Some(t) = self.db_results.active_tab() else { return };
+        let stmts = t.statements(&name, &pk, &names);
+        if stmts.is_empty() {
+            self.notify.info("送る変更はありません");
+            return;
+        }
+        let (id, src) = (t.id, t.src);
+        let first: String = stmts[0].chars().take(160).collect();
+        let q = if stmts.len() == 1 { format!("送りますか: {first}") } else { format!("{} 件の変更を送りますか: {first} …", stmts.len()) };
+        self.ask_or(
+            q,
+            move |e| {
+                if let Some(c) = e.db.as_mut().and_then(|p| p.conns.get_mut(src)).filter(|c| c.connected) {
+                    c.send_batch(crate::db_panel::Target::Result(id), stmts);
+                    e.notify.info("送信しています…");
+                } else {
+                    e.notify.info("まだつないでいません");
+                }
+            },
+            |e| e.notify.info("送信をやめました（変更は残っています）"),
+        );
+    }
+
     /// 結果のパネルにいる間のキー
     pub(crate) fn result_key(&mut self, key: Key) -> crate::editor::Effect {
         let half = (self.panel_rect().map_or(10, |r| r.h) / 2).max(1);
+        // 値の入力中（Vim 風。Enter か Tab で決める、ノーマルの Esc でやめる）
+        if self.db_results.value_edit.is_some() {
+            let out = if key == Key::Tab { FieldOut::Submit } else { self.feed_field(key, |e| e.db_results.value_edit.as_mut()) };
+            let r = &mut self.db_results;
+            match out {
+                FieldOut::Cancel => r.value_edit = None,
+                FieldOut::Submit => {
+                    let v = r.value_edit.take().map(|f| f.text()).unwrap_or_default();
+                    if let Some(t) = r.active_tab_mut() {
+                        let (row, col) = (t.row, t.col);
+                        t.set_value(row, col, Some(v));
+                        if key == Key::Tab {
+                            t.col = (t.col + 1).min(t.cols.len().saturating_sub(1));
+                        }
+                    }
+                }
+                _ => {}
+            }
+            return crate::editor::Effect::None;
+        }
+        // 値を直す操作（結果のタブで）
+        let dirty = self.db_results.active_tab().is_some_and(|t| !t.edits.is_empty());
+        if self.db_results.active > 0 {
+            match key {
+                Key::F(2) | Key::Enter | Key::Char('i') => {
+                    self.result_begin_edit(false);
+                    return crate::editor::Effect::None;
+                }
+                Key::Char('c') => {
+                    self.result_begin_edit(true);
+                    return crate::editor::Effect::None;
+                }
+                Key::Char('x') => {
+                    self.result_set_null();
+                    return crate::editor::Effect::None;
+                }
+                Key::Char('u') | Key::Ctrl('z') => {
+                    self.result_undo();
+                    return crate::editor::Effect::None;
+                }
+                Key::Ctrl('m') => {
+                    self.result_send();
+                    return crate::editor::Effect::None;
+                }
+                // 読み直すと直した値が消えるので、送るか戻すまで止める
+                Key::Char('f' | 'F' | 's' | '>' | '<' | 'R') if dirty => {
+                    self.notify.info("未送信の変更があります（Ctrl+Enter で送るか、u・Ctrl+Z で戻す）");
+                    return crate::editor::Effect::None;
+                }
+                Key::Char('q') if dirty => {
+                    let n = self.db_results.active_tab().map_or(0, |t| t.changes());
+                    let id = self.db_results.active_tab().map_or(0, |t| t.id);
+                    self.ask_or(format!("未送信の変更が {n} 件あります。捨てて閉じますか"), move |e| {
+                        let r = &mut e.db_results;
+                        r.tabs.retain(|t| t.id != id);
+                        r.active = r.active.min(r.tabs.len());
+                    }, |_| {});
+                    return crate::editor::Effect::None;
+                }
+                _ => {}
+            }
+        }
         // 絞り込みの欄の入力中（Vim 風。Enter で決める、ノーマルの Esc でやめる）
         if self.db_results.editing.is_some() {
             let out = self.feed_field(key, |e| e.db_results.editing.as_mut().map(|x| &mut x.1));
@@ -482,10 +749,14 @@ impl Editor {
     }
 
     /// 結果のパネルのクリック（`row` はパネルの中の行、`col` はパネルの左端から）
-    pub(crate) fn result_click(&mut self, row: usize, col: usize) {
+    pub(crate) fn result_click(&mut self, row: usize, col: usize, clicks: u32) {
         self.list_side = Side::Bottom;
         self.set_state(State::List);
         let r = &mut self.db_results;
+        // 値を打っている間は、選び直さない
+        if r.value_edit.is_some() {
+            return;
+        }
         // 1 行目: タブ
         if row == 0 {
             let mut x = 1;
@@ -503,6 +774,10 @@ impl Editor {
         let Some(t) = r.active_tab_mut() else { return };
         let head = if t.filterable { 4 } else { 3 };
         if row == 1 && t.filterable {
+            if !t.edits.is_empty() {
+                self.notify.info("未送信の変更があります（Ctrl+Enter で送るか、u・Ctrl+Z で戻す）");
+                return;
+            }
             let field = if col < 40 { Field::Where } else { Field::Order };
             let f = VimField::new(if field == Field::Where { &t.where_ } else { &t.order }, false);
             r.editing = Some((field, f));
@@ -511,11 +786,14 @@ impl Editor {
         if row < head {
             return;
         }
-        // 行（決める操作は無いので選ぶだけ）と列
+        // 行と列（ダブルクリックで値を直す）
         let len = t.rows.len();
-        crate::list::pick_row(&mut t.row, t.scroll, row, head, len, 1);
+        let pick = crate::list::pick_row(&mut t.row, t.scroll, row, head, len, clicks);
         if let Some(c) = grid_col_at(t.hscroll, &t.widths, col) {
             t.col = c;
+        }
+        if let Some(crate::list::Pick::Accept(_)) = pick {
+            self.result_begin_edit(false);
         }
     }
 }
@@ -545,8 +823,12 @@ pub struct ResultComponent;
 
 impl crate::component::Component for ResultComponent {
     fn status(&self, ed: &crate::editor::Editor) -> Option<crate::component::Status> {
-        let _ = ed;
-        crate::component::Status::keys("-- クエリの結果 --", "hjkl 移動  y 値  Y 行  gy 表全体（タブ区切り）  q 閉じる ", "矢印 移動  右クリック コピー・絞り込み  Esc 窓へ ")
+        let help = "hjkl 移動  i・F2 値を直す  x NULL  u 戻す  Ctrl+Enter 送る  y 値  Y 行  gy 表全体  q 閉じる ";
+        let plain = "矢印 移動  F2・ダブルクリック 値を直す  Ctrl+Z 戻す  Ctrl+Enter 送る  右クリック 操作  Esc 窓へ ";
+        match ed.db_results.active_tab().map_or(0, |t| t.changes()) {
+            0 => crate::component::Status::keys("-- クエリの結果 --", help, plain),
+            n => Some(crate::component::Status { name: format!("-- 編集 --  変更 {n} 行（未送信）"), warn: true, help: help.into(), plain: Some(plain.into()) }),
+        }
     }
 
     fn key(&self, ed: &mut crate::editor::Editor, key: nagi_vim::Key) -> crate::editor::Effect {
@@ -622,9 +904,9 @@ pub(crate) mod draw {
                 if t.cols.is_empty() {
                     p.text(&format!(" {}", t.info), r.x, y, if t.error { DIAG_ERROR } else if t.running { STATUS_FG } else { FG });
                 } else {
-                    let value = |k: usize, c: usize| t.rows[k][c].clone();
+                    let value = |k: usize, c: usize| t.value(k, c);
                     let row_style = |k: usize| ((t.offset + k + 1).to_string(), None);
-                    let cell_bg = |_: usize, _: usize| None;
+                    let cell_bg = |k: usize, c: usize| t.modified(k, c).then_some(rgb(0x1f3550));
                     let g = GridView {
                         cols: &t.cols,
                         types: &t.types,
@@ -639,10 +921,16 @@ pub(crate) mod draw {
                         col: t.col,
                         scroll: t.scroll,
                         hscroll: t.hscroll,
-                        focused,
+                        focused: focused && res.value_edit.is_none(),
                     };
                     let top = ((y - y0) / cell.h) as usize;
                     draw_grid(p, &g, Rect { x: r.x, y: r.y + top, w: r.w, h: r.h.saturating_sub(top) });
+                    // 値の入力欄（選んだセルの上に。表の見出しは 2 行）
+                    if let Some(f) = &res.value_edit {
+                        if t.row >= t.scroll && r.y + top + 2 + t.row - t.scroll < r.y + r.h {
+                            crate::db_table::draw::draw_cell_field(p, f, &ed.preedit, r.x, &t.widths, t.hscroll, t.col, r.y + top + 2 + t.row - t.scroll);
+                        }
+                    }
                 }
             }
         }
@@ -671,5 +959,62 @@ mod tests {
         assert_eq!(t.effective_sql(), "SELECT * FROM (\nselect * from item\n) nagi_q WHERE id > 1 ORDER BY name desc");
         assert_eq!(t.count_sql().unwrap(), "SELECT COUNT(*) FROM (\nselect * from item\n) nagi_q WHERE id > 1");
         assert_eq!(group(12480), "12,480");
+    }
+
+    /// 1 つのテーブルからの SELECT の結果を F2 で直し、Ctrl+Enter で送る（SQLite で）
+    #[test]
+    fn edit_result_and_send() {
+        use crate::db_panel::tests::wait;
+        let mut e = Editor::new(nagi_core::Buffer::from_str("x\n"), None);
+        e.set_screen(160, 50);
+        e.open_db_panel();
+        e.db_add("mem jdbc:sqlite::memory:");
+        let i = e.db.as_ref().unwrap().sources.len() - 1;
+        e.db.as_mut().unwrap().selected = e.db.as_ref().unwrap().rows.iter().position(|r| *r == crate::db_panel::DbRow::Source(i)).unwrap();
+        let keys = |e: &mut Editor, k: &str| {
+            for key in nagi_vim::parse_keys(k, " ") {
+                e.key(key);
+            }
+        };
+        keys(&mut e, "<CR>");
+        wait(&mut e, &|e| e.db.as_ref().unwrap().conns[i].connected);
+        // データを変える文を確かめずに流す（DB は自動コミットのまま）
+        e.db.as_mut().unwrap().conns[i].manual = true;
+        e.db_execute(i, "create table item(id integer primary key, name text)".into());
+        e.db_execute(i, "insert into item values (1, 'a'), (2, 'b')".into());
+        // 式の列があると直せない
+        e.db_execute(i, "select id, upper(name) from item".into());
+        wait(&mut e, &|e| e.db_results.active_tab().is_some_and(|t| t.rows.len() == 2));
+        assert!(e.db_results.active_tab().unwrap().target.is_none());
+        e.db_execute(i, "select * from item order by id".into());
+        wait(&mut e, &|e| e.db_results.active_tab().is_some_and(|t| t.rows.len() == 2 && t.target.is_some()));
+        wait(&mut e, &|e| e.db.as_ref().unwrap().conns[i].columns.contains_key(&("main".into(), "item".into())));
+        e.list_side = Side::Bottom;
+        e.set_state(State::List);
+        // 2 行目の name を F2 で直す（値を消して打つ）
+        keys(&mut e, "jl");
+        e.key(Key::F(2));
+        assert!(e.db_results.value_edit.is_some());
+        keys(&mut e, "<Esc>ccx'y<CR>");
+        let t = e.db_results.active_tab().unwrap();
+        assert_eq!(t.value(1, 1).as_deref(), Some("x'y"));
+        assert!(t.modified(1, 1));
+        assert_eq!(t.statements("item", &[0], &t.cols.clone()), vec!["UPDATE item SET name = 'x''y' WHERE id = '2'"]);
+        // 送ると読み直さずに表へ入る。DB の値も変わっている（ここからは本当に手動の Tx に）
+        e.db.as_mut().unwrap().conns[i].manual = false;
+        e.db_toggle_tx(i);
+        e.key(Key::Ctrl('m'));
+        keys(&mut e, "y");
+        wait(&mut e, &|e| e.db_results.active_tab().is_some_and(|t| t.edits.is_empty() && t.info.contains("直しました")));
+        assert_eq!(e.db_results.active_tab().unwrap().rows[1][1].as_deref(), Some("x'y"));
+        e.db_execute(i, "select name from item where id = 2".into());
+        wait(&mut e, &|e| e.db_results.active_tab().is_some_and(|t| t.rows.len() == 1));
+        assert_eq!(e.db_results.active_tab().unwrap().rows[0][0].as_deref(), Some("x'y"));
+        // 手動の Tx をロールバックすると、直して送った結果の表も前の値に戻る
+        let id = e.db_results.tabs[e.db_results.tabs.len() - 2].id;
+        e.db_commit(i, false);
+        assert_eq!(e.db_results.tab(id).unwrap().rows[1][1].as_deref(), Some("b"));
+        wait(&mut e, &|e| e.db_results.tab(id).is_some_and(|t| !t.running));
+        assert_eq!(e.db_results.tab(id).unwrap().rows[1][1].as_deref(), Some("b"));
     }
 }
