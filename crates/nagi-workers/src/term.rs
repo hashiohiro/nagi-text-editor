@@ -171,6 +171,12 @@ impl Term {
         f(p.screen())
     }
 
+    /// 画面を変えながら読む（さかのぼった行を読むなど。読む間に出力は混ざらない）
+    pub fn with_screen_mut<R>(&self, f: impl FnOnce(&mut vt100::Screen) -> R) -> R {
+        let mut p = self.parser.lock().unwrap_or_else(|e| e.into_inner());
+        f(p.screen_mut())
+    }
+
     /// さかのぼって見る行数（0 で一番下）
     pub fn set_scrollback(&self, rows: usize) {
         if let Ok(mut p) = self.parser.lock() {

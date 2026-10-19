@@ -33,22 +33,25 @@ pub struct Terminals {
     pub chooser: Option<usize>,
     /// 選ぶシェルの一覧（選び始めに 1 度だけ取る。WSL の一覧は wsl.exe を動かすので、描くたびに取ると止まる）
     pub shells: Vec<(String, String)>,
-    /// マウスで選んでいる範囲（画面の (行, 列) の 2 点。始点, 終点）
-    pub sel: Option<((u16, u16), (u16, u16))>,
-    /// ドラッグの始点
-    anchor: Option<(u16, u16)>,
+    /// マウスで選んでいる範囲（中身の (行, 列) の 2 点。始点, 終点）。行はさかのぼっていないときの画面の行で、
+    /// さかのぼった行は負（さかのぼっても選んだ文字に付いて動く）
+    pub sel: Option<((i64, u16), (i64, u16))>,
+    /// ドラッグの始点（中身の (行, 列)）
+    anchor: Option<(i64, u16)>,
+    /// ドラッグしているマウスの位置（画面の (行, 列)。ドラッグしたままホイールで送ったら、終点をここに合わせ直す）
+    drag_at: Option<(u16, u16)>,
 }
 
 impl Terminals {
     /// 選んでいる範囲（前から後ろの順）
-    pub fn sel_ordered(&self) -> Option<((u16, u16), (u16, u16))> {
+    pub fn sel_ordered(&self) -> Option<((i64, u16), (i64, u16))> {
         let (a, b) = self.sel?;
         Some(if a <= b { (a, b) } else { (b, a) })
     }
 
-    /// (行, 列) が選んでいる範囲に入るか
-    pub fn selected(&self, row: u16, col: u16) -> bool {
-        self.sel_ordered().is_some_and(|(a, b)| (row, col) >= a && (row, col) <= b)
+    /// 中身の (行, 列) が選んでいる範囲に入るか
+    pub fn selected(&self, line: i64, col: u16) -> bool {
+        self.sel_ordered().is_some_and(|(a, b)| (line, col) >= a && (line, col) <= b)
     }
 }
 
@@ -405,7 +408,7 @@ impl Editor {
     pub(crate) fn terminal_copy(&mut self) -> bool {
         let Some((a, b)) = self.terminals.sel_ordered() else { return false };
         let Some(t) = self.terminals.current() else { return false };
-        let text = t.term.with_screen(|s| copy_text(s, a, b));
+        let text = t.term.with_screen_mut(|s| copy_lines(s, a, b));
         match &self.clipboard {
             Some(cb) => (cb.set)(&text),
             None => crate::clipboard::set(&text),
@@ -424,29 +427,44 @@ impl Editor {
         Some(((row - r.y) as u16, col.saturating_sub(r.x + 1) as u16))
     }
 
+    /// シェルの画面のセル → 中身の (行, 列)（さかのぼっている分を引く）
+    fn terminal_line(&self, (row, col): (u16, u16)) -> (i64, u16) {
+        let back = self.terminals.current().map_or(0, |t| t.term.scrollback());
+        (row as i64 - back as i64, col)
+    }
+
     /// マウスを押した（シェルの画面の上なら選び始める）。当たれば true
     pub(crate) fn terminal_press(&mut self, row: usize, col: usize) -> bool {
         let Some(cell) = self.terminal_cell(row, col) else { return false };
         self.terminals.sel = None;
-        self.terminals.anchor = Some(cell);
+        self.terminals.anchor = Some(self.terminal_line(cell));
+        self.terminals.drag_at = Some(cell);
         self.set_state(State::Terminal);
         true
     }
 
     /// ドラッグ（範囲を伸ばす。画面の外は端で止める）
     pub(crate) fn terminal_drag(&mut self, row: usize, col: usize) {
-        let Some(a) = self.terminals.anchor else { return };
         let Some(r) = self.terminal_rect() else { return };
         let row = row.clamp(r.y, r.y + r.h.saturating_sub(1));
         if let Some(cell) = self.terminal_cell(row, col) {
-            if cell != a || self.terminals.sel.is_some() {
-                self.terminals.sel = Some((a, cell));
-            }
+            self.terminals.drag_at = Some(cell);
+            self.terminal_extend();
+        }
+    }
+
+    /// 選んでいる範囲の終点をマウスの位置に合わせる（ドラッグ中）
+    fn terminal_extend(&mut self) {
+        let (Some(a), Some(at)) = (self.terminals.anchor, self.terminals.drag_at) else { return };
+        let end = self.terminal_line(at);
+        if end != a || self.terminals.sel.is_some() {
+            self.terminals.sel = Some((a, end));
         }
     }
 
     pub(crate) fn terminal_release(&mut self) {
         self.terminals.anchor = None;
+        self.terminals.drag_at = None;
     }
 
     /// 右クリック: 選んでいればコピー、選んでいなければ貼り付け（Windows Terminal と同じ）
@@ -537,36 +555,71 @@ impl Editor {
         } else {
             let now = t.term.scrollback() as isize;
             t.term.set_scrollback((now + lines).max(0) as usize);
+            // ドラッグしたまま送ったら、範囲を送った先まで伸ばす（始点は選んだ文字のまま）
+            self.terminal_extend();
             return;
         };
         t.term.write(&one.repeat(lines.unsigned_abs()));
     }
 }
 
-/// 画面の (行, 列) の `a` から `b` まで（`b` の列を含む）の文字。折り返した行はつなぎ、行末の空白は落とす。
-/// 全角の文字が行の端の 1 列に入らずに次の行へ送られたときの、端の空き（ConPTY は空白を書く）も落とす
+/// 画面の 1 行（セルごとの (文字, 全角, 全角の続き) と、次の行へ折り返したか）
+struct Row {
+    cells: Vec<(String, bool, bool)>,
+    wrapped: bool,
+}
+
+fn read_row(s: &vt100::Screen, row: u16) -> Row {
+    let cells = (0..s.size().1).map(|col| s.cell(row, col).map_or((" ".to_string(), false, false), |c| (if c.has_contents() { c.contents().to_string() } else { " ".to_string() }, c.is_wide(), c.is_wide_continuation()))).collect();
+    Row { cells, wrapped: s.row_wrapped(row) }
+}
+
+/// 画面の (行, 列) の `a` から `b` まで（`b` の列を含む）の文字（試験用。コピーは copy_lines）
+#[cfg(test)]
 pub fn copy_text(s: &vt100::Screen, (r0, c0): (u16, u16), (r1, c1): (u16, u16)) -> String {
-    let cols = s.size().1;
+    join_rows(&(r0..=r1).map(|r| read_row(s, r)).collect::<Vec<_>>(), c0, c1)
+}
+
+/// 中身の (行, 列) の `a` から `b` までの文字（`Terminals::sel` の行。画面の外のさかのぼった行も、送って読む。読んだら元の位置へ）
+pub fn copy_lines(s: &mut vt100::Screen, (r0, c0): (i64, u16), (r1, c1): (i64, u16)) -> String {
+    let back = s.scrollback();
+    // さかのぼれるいちばん上（古い行は捨てられているので、そこから）
+    s.set_scrollback(usize::MAX);
+    let top = -(s.scrollback() as i64);
+    let (r0, c0) = if r0 < top { (top, 0) } else { (r0, c0) };
+    let r1 = r1.min(s.size().0 as i64 - 1);
+    let mut rows = Vec::new();
+    for line in r0..=r1 {
+        s.set_scrollback((-line).max(0) as usize);
+        rows.push(read_row(s, (line + s.scrollback() as i64) as u16));
+    }
+    s.set_scrollback(back);
+    join_rows(&rows, c0, c1)
+}
+
+/// 行を 1 つの文字にする（最初の行は `c0` の列から、最後の行は `c1` の列まで）。折り返した行はつなぎ、行末の空白は落とす。
+/// 全角の文字が行の端の 1 列に入らずに次の行へ送られたときの、端の空き（ConPTY は空白を書く）も落とす
+fn join_rows(rows: &[Row], c0: u16, c1: u16) -> String {
     let mut out = String::new();
-    for row in r0..=r1 {
-        let (from, to) = (if row == r0 { c0 } else { 0 }, if row == r1 { (c1 + 1).min(cols) } else { cols });
-        let wrapped = row < r1 && s.row_wrapped(row);
-        let pad = wrapped
-            && s.cell(row + 1, 0).is_some_and(|c| c.is_wide())
-            && s.cell(row, cols - 1).is_some_and(|c| !c.is_wide_continuation() && c.contents().trim().is_empty());
+    let last = rows.len().saturating_sub(1);
+    for (i, r) in rows.iter().enumerate() {
+        let cols = r.cells.len();
+        let (from, to) = (if i == 0 { c0 as usize } else { 0 }, if i == last { (c1 as usize + 1).min(cols) } else { cols });
+        let wrapped = i < last && r.wrapped;
+        let pad = wrapped && rows[i + 1].cells.first().is_some_and(|c| c.1) && r.cells.last().is_some_and(|c| !c.2 && c.0.trim().is_empty());
         let mut line = String::new();
-        for col in from..to {
-            let Some(c) = s.cell(row, col) else { break };
-            if c.is_wide_continuation() || (pad && col == cols - 1) {
+        for col in from..to.max(from) {
+            let (text, _, cont) = &r.cells[col];
+            if *cont || (pad && col == cols - 1) {
                 continue;
             }
-            line.push_str(if c.has_contents() { c.contents() } else { " " });
+            line.push_str(text);
         }
         if wrapped {
             out.push_str(&line);
         } else {
             out.push_str(line.trim_end());
-            if row < r1 {
+            if i < last {
                 out.push_str("\r\n");
             }
         }
@@ -666,7 +719,8 @@ pub(crate) mod draw {
         let x0 = r.x + 1;
         t.term.with_screen(|s| {
             let (rows, cols) = s.size();
-            let scrolled = s.scrollback() > 0;
+            let back = s.scrollback() as i64;
+            let scrolled = back > 0;
             for row in 0..rows.min(r.h as u16) {
                 let y = (r.y + row as usize) as f32 * cell.h;
                 let mut items: Vec<Item> = Vec::with_capacity(cols as usize);
@@ -680,7 +734,7 @@ pub(crate) mod draw {
                         std::mem::swap(&mut fg, &mut bg);
                     }
                     // マウスで選んでいる範囲は反転
-                    if ts.selected(row, col) {
+                    if ts.selected(row as i64 - back, col) {
                         fg = BG;
                         bg = FG;
                     }
@@ -799,6 +853,30 @@ mod tests {
         assert_eq!(e.terminals.current().unwrap().term.scrollback(), 3);
         e.terminal_wheel(-3, r.y + 2, r.x + 5);
         assert_eq!(e.terminals.current().unwrap().term.scrollback(), 0);
+        // 範囲を選んだままホイールで送っても、始点は選んだ文字に付いたまま。終点は送った先へ伸び、画面の外の行もコピーできる
+        let row_of = |e: &Editor, want: &str| e.terminals.current().unwrap().term.with_screen(|s| (0..s.size().0).find(|&i| s.contents_between(i, 0, i, 10).trim_end() == want));
+        let start = std::time::Instant::now();
+        // l60 の後のプロンプトまで出きってから（出ると画面が送られる）
+        while row_of(&e, "l60").is_none_or(|r| row_of(&e, ">").is_none_or(|p| p < r)) {
+            assert!(start.elapsed().as_secs() < 20, "l60 が出ない");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let row = row_of(&e, "l60").unwrap() as usize;
+        assert!(e.terminal_press(r.y + row, r.x + 1));
+        e.terminal_drag(r.y + row, r.x + 3);
+        let h = r.h as isize;
+        e.terminal_wheel(h, r.y + row, r.x + 3);
+        assert_eq!(e.terminals.current().unwrap().term.scrollback(), h as usize);
+        assert_eq!(e.terminals.sel_ordered(), Some(((row as i64 - h as i64, 2), (row as i64, 0))), "始点は l60 のまま");
+        e.terminal_release();
+        let (a, b) = e.terminals.sel_ordered().unwrap();
+        let got = e.terminals.current().unwrap().term.with_screen_mut(|s| copy_lines(s, a, b));
+        let first = 60 - h;
+        let want = format!("{}\r\n{}\r\nl", &format!("l{first}")[2..], (first + 1..60).map(|i| format!("l{i}")).collect::<Vec<_>>().join("\r\n"));
+        assert_eq!(got, want);
+        assert_eq!(e.terminals.current().unwrap().term.scrollback(), h as usize, "コピーしても見ている位置は変わらない");
+        e.terminals.sel = None;
+        e.terminal_wheel(-h, r.y + 2, r.x + 5);
         // アプリが代替画面とマウス（SGR）を求める。ConPTY がマウスの要求を通すのは、アプリが VT の入力
         // （ENABLE_VIRTUAL_TERMINAL_INPUT）にしているときだけ（Node の raw モードはそう）
         let ps1 = std::env::temp_dir().join(format!("nagi-vtin-{}.ps1", std::process::id()));
