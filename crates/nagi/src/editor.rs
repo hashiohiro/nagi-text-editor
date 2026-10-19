@@ -383,6 +383,8 @@ pub struct Editor {
     pub rc_clipboard: bool,
     /// 入力補完を自動で出す時刻（設定の「打っている間に自動で出す」）
     pub auto_complete_at: Option<std::time::Instant>,
+    /// SQL の補完で、列・テーブルが届くのを待っている (接続先, 打っている語の始まり)。届いたら一覧を作り直す
+    pub(crate) sql_wait: Option<(usize, usize)>,
     /// 設定の外観（フォント・大きさ・行の高さ）が変わった（App がフォントを作り直す）
     pub appearance_changed: bool,
     /// JDK のダウンロード（版, 進み具合）
@@ -635,6 +637,7 @@ impl Editor {
             settings_dialog: None,
             rc_clipboard: false,
             auto_complete_at: None,
+            sql_wait: None,
             appearance_changed: false,
             jdk_download: None,
             tool_download: None,
@@ -997,13 +1000,12 @@ impl Editor {
             if self.smart_key(key) {
                 return;
             }
-        } else if key == Key::Ctrl(' ') && self.console_source().is_none() {
+        } else if key == Key::Ctrl(' ') {
             self.completion = None;
             self.start_smart_completion();
             return;
         }
-        // 補完（Ctrl-n / Ctrl-p）の途中なら先に扱う。SQL コンソールでは Ctrl+Space も Ctrl-n と同じ
-        let key = if key == Key::Ctrl(' ') { Key::Ctrl('n') } else { key };
+        // 補完（Ctrl-n / Ctrl-p）の途中なら先に扱う
         if (self.completion.is_some() || matches!(key, Key::Ctrl('n') | Key::Ctrl('p'))) && self.completion_key(key) {
             return;
         }
@@ -1030,9 +1032,14 @@ impl Editor {
             }
             Key::Char(c) => {
                 self.insert_text(c.encode_utf8(&mut [0; 4]));
-                // SQL コンソールでは「別名.」の後に列の候補を出す
+                // SQL コンソールでは「別名.」の後にすぐ列の候補を出す（列がまだ無ければ、届いたら出る）
                 if c == '.' && self.console_source().is_some() {
-                    self.start_sql_completion(true);
+                    let msg = self.notify.text.clone();
+                    self.completion = None;
+                    self.start_smart_completion();
+                    if self.completion.is_none() {
+                        self.notify.info(msg);
+                    }
                 }
             }
             _ => {}

@@ -208,6 +208,11 @@ impl crate::layout::View for RightView {
         crate::layout::Click::Done
     }
 
+    /// データベースの木の右クリック: 押した行（接続先・スキーマ・テーブル・列など）のメニュー
+    fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize) -> bool {
+        ed.right_visible() == Some(RightTab::Database) && ed.db_context(row - r.y, (row, col))
+    }
+
     fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, dy: isize, dx: isize) -> bool {
         let _ = (row, col, dx);
         // 1 行目はタブ、2 行目は見出し（view.rs の build と同じ高さ）

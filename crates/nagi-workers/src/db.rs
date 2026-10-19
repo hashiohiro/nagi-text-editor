@@ -25,6 +25,8 @@ pub struct DataSource {
     pub user: String,
     /// どこで見つけたか（ファイルのパス）
     pub origin: String,
+    /// 既定のスキーマ（つないだらここへ切り替える。空なら接続先の既定のまま）
+    pub schema: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1072,7 +1074,7 @@ pub fn detect_sources(root: &Path) -> Vec<DataSource> {
         let module = f.ancestors().find(|a| a.join("pom.xml").is_file() || a.join("build.gradle").is_file()).and_then(|a| a.file_name()).map_or(String::new(), |n| n.to_string_lossy().into_owned());
         let stem = f.file_stem().map_or(String::new(), |s| s.to_string_lossy().into_owned());
         let profile = stem.strip_prefix("application-").map(|p| format!(" ({p})")).unwrap_or_default();
-        out.push(DataSource { name: format!("{module}{profile}"), url, user, origin: f.display().to_string() });
+        out.push(DataSource { name: format!("{module}{profile}"), url, user, origin: f.display().to_string(), schema: String::new() });
     }
     // 同じ接続先（URL と利用者）は 1 つに
     let mut seen = std::collections::HashSet::new();
@@ -1080,7 +1082,7 @@ pub fn detect_sources(root: &Path) -> Vec<DataSource> {
     out
 }
 
-/// 設定ファイル（1 行に `名前 | jdbc:URL | 利用者`）の接続先
+/// 設定ファイル（1 行に `名前 | jdbc:URL | 利用者 | 既定のスキーマ`。利用者・スキーマは省ける）の接続先
 pub fn config_sources(text: &str, origin: &str) -> Vec<DataSource> {
     text.lines()
         .filter(|l| !l.trim().is_empty() && !l.trim_start().starts_with('#'))
@@ -1088,7 +1090,8 @@ pub fn config_sources(text: &str, origin: &str) -> Vec<DataSource> {
             let f: Vec<&str> = l.split('|').map(str::trim).collect();
             let url = f.get(1)?.to_string();
             // jdbc: のほか salesforce: も（保存した Salesforce の接続先を読み飛ばしていた）
-            (url.starts_with("jdbc:") || url.starts_with("salesforce:")).then(|| DataSource { name: f[0].to_string(), url, user: f.get(2).unwrap_or(&"").to_string(), origin: origin.into() })
+            (url.starts_with("jdbc:") || url.starts_with("salesforce:"))
+                .then(|| DataSource { name: f[0].to_string(), url, user: f.get(2).unwrap_or(&"").to_string(), origin: origin.into(), schema: f.get(3).unwrap_or(&"").to_string() })
         })
         .collect()
 }
@@ -1240,6 +1243,8 @@ mod tests {
         assert_eq!(c[0].name, "local");
         assert_eq!((c[1].name.as_str(), c[1].user.as_str()), ("SF 開発", "me@example.com"), "Salesforce の接続先も読む");
         assert_eq!(Kind::of(&c[1].url), Some(Kind::Salesforce));
+        let c = config_sources("dev | jdbc:oracle:thin:@//db:1521/X | APP | HR\nold | jdbc:sqlite::memory: | |\n", "cfg");
+        assert_eq!((c[0].schema.as_str(), c[1].schema.as_str()), ("HR", ""), "4 つ目の欄は既定のスキーマ");
     }
 
     /// SQLite のメモリ DB で、つなぐ・表を作る・行を入れる・読む・木・キー・まとめて送る・トランザクション

@@ -30,6 +30,8 @@ pub struct Cand {
     pub call: Option<bool>,
     /// 同じ一致の度合いの中での順（小さいほど先）
     pub rank: u8,
+    /// 決めたときに入れる文字（名前と違うとき。SQL の "名前" など）
+    pub insert: Option<String>,
 }
 
 /// 補完の一覧の中身（絞り込む前の全部と、出している候補の番号）
@@ -207,7 +209,7 @@ impl Editor {
         let ws = line[..b].char_indices().rev().take_while(|(_, c)| word_char(*c)).last().map_or(b, |(i, _)| i);
         let prefix = line[ws..b].to_string();
         let start = self.buf.line_start(self.cursor.line) + ws;
-        let all = self.smart_candidates(&line, ws, start);
+        let all = if self.console_source().is_some() { self.sql_smart_candidates(start, &prefix) } else { self.smart_candidates(&line, ws, start) };
         if all.is_empty() {
             self.notify.info("-- 補完の候補はありません");
             return;
@@ -243,7 +245,7 @@ impl Editor {
                     continue;
                 }
                 let call = matches!(kind, DefKind::Method | DefKind::Function).then(|| params != Some(0));
-                push(out, Cand { name, mark: mark_of(kind), note: owner, call, rank });
+                push(out, Cand { name, mark: mark_of(kind), note: owner, call, rank, insert: None });
             }
         };
         if member {
@@ -259,7 +261,7 @@ impl Editor {
                 for c in re.captures_iter(&src) {
                     let w = c[1].to_string();
                     let call = src[c.get(0).unwrap().end()..].starts_with('(');
-                    push(&mut out, Cand { name: w, mark: if call { 'm' } else { 'f' }, note: ty.clone().unwrap_or_default(), call: call.then_some(true), rank: 1 });
+                    push(&mut out, Cand { name: w, mark: if call { 'm' } else { 'f' }, note: ty.clone().unwrap_or_default(), call: call.then_some(true), rank: 1, insert: None });
                 }
             }
             return out;
@@ -278,7 +280,7 @@ impl Editor {
         for (_, w) in ws_list.into_iter().filter(|_| words_on) {
             if w.len() > 1 && !all_kws.contains(&w) {
                 let call = src.contains(&format!("{w}("));
-                push(&mut out, Cand { name: w.to_string(), mark: 'v', note: String::new(), call: None, rank: 0 + u8::from(call) * 2 });
+                push(&mut out, Cand { name: w.to_string(), mark: 'v', note: String::new(), call: None, rank: 0 + u8::from(call) * 2, insert: None });
             }
         }
         // プロジェクトの型
@@ -286,12 +288,12 @@ impl Editor {
             let mut types: Vec<(&str, DefKind)> = idx.all().filter(|(_, l)| l.kind.is_type()).map(|(n, l)| (n, l.kind)).collect();
             types.sort_unstable_by(|a, b| a.0.cmp(b.0));
             for (n, k) in types {
-                push(&mut out, Cand { name: n.to_string(), mark: mark_of(k), note: String::new(), call: None, rank: 3 });
+                push(&mut out, Cand { name: n.to_string(), mark: mark_of(k), note: String::new(), call: None, rank: 3, insert: None });
             }
         }
         // 予約語
         for k in kws {
-            push(&mut out, Cand { name: k.to_string(), mark: 'K', note: String::new(), call: None, rank: 4 });
+            push(&mut out, Cand { name: k.to_string(), mark: 'K', note: String::new(), call: None, rank: 4, insert: None });
         }
         out
     }
@@ -299,6 +301,8 @@ impl Editor {
     /// 打った語で絞り込み直す（合うものが無ければ閉じる）
     pub(crate) fn refilter_smart(&mut self) {
         let abs = self.abs();
+        // SQL は大文字小文字を区別しない（Oracle の名前は大文字、打つのは小文字が多い）
+        let case = if self.console_source().is_some() { "none".to_string() } else { self.settings.get("completion.case") };
         let Some(c) = &mut self.completion else { return };
         let Some(st) = &mut c.smart else { return };
         if abs < c.start {
@@ -307,7 +311,6 @@ impl Editor {
         }
         let prefix = self.buf.slice_string(c.start, abs);
         let q = Query::new(&prefix);
-        let case = self.settings.get("completion.case");
         let mut scored: Vec<(u8, u8, i32, usize, usize)> = st
             .all
             .iter()
@@ -385,14 +388,18 @@ impl Editor {
     /// 打ったキーの後に、設定の「自動で出す」の予約をする（語の文字が設定の数だけ並んだとき・`.` の後。続けて打てば待ち直す）
     pub(crate) fn schedule_auto_complete(&mut self, key: Key) {
         self.auto_complete_at = None;
-        if self.state() != crate::editor::State::Insert || self.completion.is_some() || !self.settings.bool("completion.auto") || self.console_source().is_some() {
+        if self.state() != crate::editor::State::Insert || self.completion.is_some() || !self.settings.bool("completion.auto") {
             return;
         }
         let Key::Char(c) = key else { return };
         let line = self.buf.line(self.cursor.line);
         let b = self.cursor.byte.min(line.len());
         let n = line[..b].chars().rev().take_while(|c| word_char(*c)).count();
-        if c == '.' || (word_char(c) && n >= self.settings.int("completion.min_chars") as usize) {
+        // SQL コンソール: FROM・JOIN などの後の空白でも（テーブルの一覧）
+        let sql_table = c == ' '
+            && self.console_source().is_some()
+            && line[..b.saturating_sub(1)].rsplit(|ch: char| !word_char(ch)).next().is_some_and(|w| ["from", "join", "update", "into"].contains(&w.to_ascii_lowercase().as_str()));
+        if c == '.' || sql_table || (word_char(c) && n >= self.settings.int("completion.min_chars") as usize) {
             self.auto_complete_at = Some(std::time::Instant::now() + std::time::Duration::from_millis(self.settings.int("completion.delay_ms") as u64));
         }
     }
@@ -424,9 +431,10 @@ impl Editor {
         let abs = self.abs();
         // すでに後ろに ( があれば括弧は足さない
         let after = self.buf.slice_string(abs, (abs + 1).min(self.buf.len_bytes()));
+        let name = cand.insert.clone().unwrap_or_else(|| cand.name.clone());
         let (text, back) = match cand.call {
-            Some(args) if after != "(" => (format!("{}()", cand.name), usize::from(args)),
-            _ => (cand.name.clone(), 0),
+            Some(args) if after != "(" => (format!("{name}()"), usize::from(args)),
+            _ => (name, 0),
         };
         self.edit(c.start, abs, &text);
         self.set_abs(c.start + text.len() - back);

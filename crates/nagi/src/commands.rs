@@ -241,6 +241,7 @@ pub static COMMANDS: &[Cmd] = &[
     cmd!(["DbAdd"], "接続先を足す（名前 jdbc:URL [利用者]）", Args::Text, |e, c| e.db_add(c.arg)),
     cmd!(["DbRun"], "SQL コンソールでカーソルのある文を実行", Args::None, |e, c| e.db_run_at_cursor()),
     cmd!(["DbSchema"], "スキーマを切り替える", Args::Schema, |e, c| e.db_set_schema(c.arg)),
+    cmd!(["DbDefaultSchema"], "既定のスキーマ（つないだら切り替える。名前を省くと外す）", Args::Schema, |e, c| e.db_default_schema_command(c.arg)),
     cmd!(["DbExport"], "結果を書き出す（csv / tsv / insert）", Args::Choice(&["csv", "tsv", "insert"]), |e, c| e.db_export(c.arg)),
     cmd!(["DbCommit"], "コミット", Args::None, |e, c| e.db_tx_command("commit")),
     cmd!(["DbRollback"], "ロールバック", Args::None, |e, c| e.db_tx_command("rollback")),
