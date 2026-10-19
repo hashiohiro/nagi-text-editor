@@ -1,6 +1,8 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+# 直して取り込んだクレート（[patch.crates-io]）。ワークスペースの試験・点検には入れない
+exclude = ["patches/*"]
 
 [workspace.package]
 version = "0.4.0"
@@ -23,6 +25,11 @@ swash = "=0.2.10"
 unicode-width = "0.2.2"
 unicode-segmentation = "1.13.3"
 ropey = "=2.0.0-beta.1"
+
+# vt100 0.16.2: 幅を縮めると、右端で半分に切れた全角文字が残り、そこへ書くと落ちる（panic = "abort" なので nagi ごと終わる）。
+# Row::resize で truncate と同じく前半を消す（patches/vt100/src/row.rs）。上流で直ったら外す
+[patch.crates-io]
+vt100 = { path = "patches/vt100" }
 
 [profile.release]
 debug = "line-tables-only"

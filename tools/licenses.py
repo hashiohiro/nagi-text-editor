@@ -80,8 +80,8 @@ def shipped(meta, root_name):
         for d in nodes[i]["deps"]:
             if any(k["kind"] is None for k in d["dep_kinds"]):
                 stack.append(d["pkg"])
-    # 自分のクレート（source が無い）は除く
-    return sorted((pk[i] for i in seen if pk[i]["source"]), key=lambda p: (p["name"].lower(), p["version"]))
+    # 自分のクレートは除く（patches/ に直して取り込んだクレートは source が無いが、他人のものなので載せる）
+    return sorted((pk[i] for i in seen if i not in meta["workspace_members"]), key=lambda p: (p["name"].lower(), p["version"]))
 
 
 def license_files(pkg):

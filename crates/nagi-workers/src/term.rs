@@ -208,6 +208,16 @@ impl Drop for Term {
 mod tests {
     use super::*;
 
+    /// 幅を縮めて全角文字が右端で半分に切れても、そこへ書いて落ちない（vt100 は patches/vt100 で直したものを使う）
+    #[test]
+    fn shrink_cuts_wide_char() {
+        let mut p = vt100::Parser::new(5, 10, 100);
+        p.process("abcdefghあ".as_bytes()); // あ は 9・10 列目
+        p.screen_mut().set_size(5, 9); // 9 列に縮める（resize と同じ）→ あ の後半が切れる
+        p.process(b"\x1b[1;9Hx");
+        assert_eq!(p.screen().contents_between(0, 0, 0, 9), "abcdefghx");
+    }
+
     /// cmd を動かして echo の出力が画面に出る。大きさを変えられる。終われば exited
     #[test]
     fn runs_shell_and_reads_screen() {
