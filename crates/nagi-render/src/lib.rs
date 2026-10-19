@@ -16,8 +16,11 @@ use windows::core::{Interface, s};
 static VS: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/grid_vs.cso"));
 static PS: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/grid_ps.cso"));
 
-const MONO_SIZE: u32 = 2048;
-const COLOR_SIZE: u32 = 1024;
+/// アトラスの大きさ（px）。小さく始めて、入りきらなくなったら倍にする（2048 の白黒で 4 MB、1024 のカラーで 4 MB）
+const MONO_START: u32 = 512;
+const MONO_MAX: u32 = 2048;
+const COLOR_START: u32 = 256;
+const COLOR_MAX: u32 = 1024;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default, Debug)]
@@ -175,11 +178,17 @@ impl Shelf {
     }
 }
 
+/// アトラスの 1 枚（テクスチャと、その大きさ）
+struct Tex {
+    tex: ID3D11Texture2D,
+    srv: ID3D11ShaderResourceView,
+}
+
 struct Atlas {
-    mono: ID3D11Texture2D,
-    mono_srv: ID3D11ShaderResourceView,
-    color: ID3D11Texture2D,
-    color_srv: ID3D11ShaderResourceView,
+    device: ID3D11Device,
+    mono: Tex,
+    /// カラーの字（絵文字）を初めて描くときに作る（使わなければメモリを取らない）
+    color: Option<Tex>,
     mono_shelf: Shelf,
     color_shelf: Shelf,
     /// None はラスタライズできなかった（空のグリフ）
@@ -189,44 +198,59 @@ struct Atlas {
     raster_count: u32,
 }
 
+/// 正方形のテクスチャを作る
+fn new_tex(device: &ID3D11Device, size: u32, fmt: DXGI_FORMAT) -> windows::core::Result<Tex> {
+    let (mut t, mut v) = (None, None);
+    unsafe {
+        device.CreateTexture2D(
+            &D3D11_TEXTURE2D_DESC {
+                Width: size,
+                Height: size,
+                MipLevels: 1,
+                ArraySize: 1,
+                Format: fmt,
+                SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
+                Usage: D3D11_USAGE_DEFAULT,
+                BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
+                ..Default::default()
+            },
+            None,
+            Some(&mut t),
+        )?;
+        let t = t.unwrap();
+        device.CreateShaderResourceView(&t, None, Some(&mut v))?;
+        Ok(Tex { tex: t, srv: v.unwrap() })
+    }
+}
+
 impl Atlas {
     fn new(device: &ID3D11Device) -> windows::core::Result<Self> {
-        let tex = |size: u32, fmt| -> windows::core::Result<(ID3D11Texture2D, ID3D11ShaderResourceView)> {
-            let (mut t, mut v) = (None, None);
-            unsafe {
-                device.CreateTexture2D(
-                    &D3D11_TEXTURE2D_DESC {
-                        Width: size,
-                        Height: size,
-                        MipLevels: 1,
-                        ArraySize: 1,
-                        Format: fmt,
-                        SampleDesc: DXGI_SAMPLE_DESC { Count: 1, Quality: 0 },
-                        Usage: D3D11_USAGE_DEFAULT,
-                        BindFlags: D3D11_BIND_SHADER_RESOURCE.0 as u32,
-                        ..Default::default()
-                    },
-                    None,
-                    Some(&mut t),
-                )?;
-                let t = t.unwrap();
-                device.CreateShaderResourceView(&t, None, Some(&mut v))?;
-                Ok((t, v.unwrap()))
-            }
-        };
-        let (mono, mono_srv) = tex(MONO_SIZE, DXGI_FORMAT_R8_UNORM)?;
-        let (color, color_srv) = tex(COLOR_SIZE, DXGI_FORMAT_R8G8B8A8_UNORM)?;
         Ok(Self {
-            mono,
-            mono_srv,
-            color,
-            color_srv,
-            mono_shelf: Shelf { size: MONO_SIZE, x: 0, y: 0, row_h: 0 },
-            color_shelf: Shelf { size: COLOR_SIZE, x: 0, y: 0, row_h: 0 },
+            device: device.clone(),
+            mono: new_tex(device, MONO_START, DXGI_FORMAT_R8_UNORM)?,
+            color: None,
+            mono_shelf: Shelf { size: MONO_START, x: 0, y: 0, row_h: 0 },
+            color_shelf: Shelf { size: COLOR_START, x: 0, y: 0, row_h: 0 },
             map: Default::default(),
             raster_time: Default::default(),
             raster_count: 0,
         })
+    }
+
+    /// 入りきらなくなったら倍の大きさに作り直し、今までの字を左上へ写す（字の位置は px なのでそのまま使える）
+    fn grow(&mut self, ctx: &ID3D11DeviceContext, color: bool) -> bool {
+        let (shelf, max, fmt) = if color { (&mut self.color_shelf, COLOR_MAX, DXGI_FORMAT_R8G8B8A8_UNORM) } else { (&mut self.mono_shelf, MONO_MAX, DXGI_FORMAT_R8_UNORM) };
+        if shelf.size >= max {
+            return false;
+        }
+        let Ok(t) = new_tex(&self.device, shelf.size * 2, fmt) else { return false };
+        let old = if color { self.color.replace(t) } else { Some(std::mem::replace(&mut self.mono, t)) };
+        let new = if color { self.color.as_ref().unwrap() } else { &self.mono };
+        if let Some(old) = old {
+            unsafe { ctx.CopySubresourceRegion(&new.tex, 0, 0, 0, 0, &old.tex, 0, None) };
+        }
+        shelf.size *= 2;
+        true
     }
 
     fn get(&mut self, ctx: &ID3D11DeviceContext, fonts: &mut Fonts, key: GlyphKey) -> Option<AtlasGlyph> {
@@ -250,8 +274,19 @@ impl Atlas {
         if img.width == 0 || img.height == 0 {
             return None;
         }
-        let (shelf, tex, bpp) = if img.color { (&mut self.color_shelf, &self.color, 4) } else { (&mut self.mono_shelf, &self.mono, 1) };
-        let (x, y) = shelf.alloc(img.width, img.height)?;
+        if img.color && self.color.is_none() {
+            self.color = Some(new_tex(&self.device, COLOR_START, DXGI_FORMAT_R8G8B8A8_UNORM).ok()?);
+        }
+        let (x, y) = loop {
+            let shelf = if img.color { &mut self.color_shelf } else { &mut self.mono_shelf };
+            if let Some(p) = shelf.alloc(img.width, img.height) {
+                break p;
+            }
+            if !self.grow(ctx, img.color) {
+                return None;
+            }
+        };
+        let (tex, bpp) = if img.color { (&self.color.as_ref()?.tex, 4) } else { (&self.mono.tex, 1) };
         let bx = D3D11_BOX { left: x, top: y, front: 0, right: x + img.width, bottom: y + img.height, back: 1 };
         unsafe { ctx.UpdateSubresource(tex, 0, Some(&bx), img.data.as_ptr().cast(), img.width * bpp, 0) };
         Some(AtlasGlyph {
@@ -410,10 +445,10 @@ impl Renderer {
             let screen = [
                 self.size.0 as f32,
                 self.size.1 as f32,
-                MONO_SIZE as f32,
-                MONO_SIZE as f32,
-                COLOR_SIZE as f32,
-                COLOR_SIZE as f32,
+                self.atlas.mono_shelf.size as f32,
+                self.atlas.mono_shelf.size as f32,
+                self.atlas.color_shelf.size as f32,
+                self.atlas.color_shelf.size as f32,
                 0.0,
                 0.0,
             ];
@@ -429,7 +464,7 @@ impl Renderer {
             ctx.VSSetShader(&self.gpu.vs, None);
             ctx.VSSetConstantBuffers(0, Some(&[Some(self.gpu.uniform.clone())]));
             ctx.PSSetShader(&self.gpu.ps, None);
-            ctx.PSSetShaderResources(0, Some(&[Some(self.atlas.mono_srv.clone()), Some(self.atlas.color_srv.clone())]));
+            ctx.PSSetShaderResources(0, Some(&[Some(self.atlas.mono.srv.clone()), self.atlas.color.as_ref().map(|c| c.srv.clone())]));
             ctx.PSSetSamplers(0, Some(&[Some(self.gpu.sampler.clone())]));
             ctx.DrawInstanced(4, insts.len() as u32, 0, 0);
             self.swap_chain.Present(0, DXGI_PRESENT(0)).ok()?;

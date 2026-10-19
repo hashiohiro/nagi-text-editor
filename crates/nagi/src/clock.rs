@@ -7,6 +7,8 @@ use windows::Win32::System::SystemInformation::GetSystemTimePreciseAsFileTime;
 use windows::Win32::System::Threading::{GetCurrentProcess, GetProcessTimes};
 
 static MARKS: Mutex<Vec<(String, f64)>> = Mutex::new(Vec::new());
+/// 印を付けたときの private の MB（起動の報告で、どこでメモリが増えたかを見る）
+static MEM: Mutex<Vec<(String, f64)>> = Mutex::new(Vec::new());
 
 fn ft(f: FILETIME) -> i64 {
     ((f.dwHighDateTime as i64) << 32) | f.dwLowDateTime as i64
@@ -23,7 +25,9 @@ pub fn since_process_start_ms() -> f64 {
 pub fn mark(label: impl Into<String>) {
     let t = since_process_start_ms();
     let thread = std::thread::current().name().unwrap_or("?").to_string();
-    MARKS.lock().unwrap().push((format!("[{thread}] {}", label.into()), t));
+    let label = format!("[{thread}] {}", label.into());
+    MEM.lock().unwrap().push((label.clone(), memory_mb().0));
+    MARKS.lock().unwrap().push((label, t));
 }
 
 /// 同じラベルは最初の 1 回だけ記録する
@@ -55,8 +59,10 @@ pub fn report() {
     let mut marks = MARKS.lock().unwrap().clone();
     marks.sort_by(|a, b| a.1.total_cmp(&b.1));
     eprintln!("--- 起動（プロセス生成からの ms）---");
+    let mem = MEM.lock().unwrap().clone();
     for (l, t) in &marks {
-        eprintln!("{t:>9.2}  {l}");
+        let m = mem.iter().find(|(k, _)| k == l).map_or(String::new(), |(_, m)| format!("{m:>7.1}MB"));
+        eprintln!("{t:>9.2} {m}  {l}");
     }
     let (private, ws) = memory_mb();
     eprintln!("memory: private={private:.1}MB working_set={ws:.1}MB");

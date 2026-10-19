@@ -32,6 +32,11 @@ pub(crate) enum Slot {
     Deleted,
 }
 
+/// 構文木を持っておくバッファの数（作業中を含む。窓に出ているものは別に持つ）
+const KEEP_TREES: usize = 4;
+/// これより小さいファイルは、戻ったときにその場で構文木を作り直す（数 ms）
+const SYNC_REPARSE_BYTES: usize = 128 * 1024;
+
 /// 同じファイルかどうかの比較用。相対パスや大文字小文字の違いを吸収する
 fn same_file(a: &Path, b: &Path) -> bool {
     let norm = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf()));
@@ -65,10 +70,43 @@ impl Editor {
         self.docs[self.cur_doc] = Slot::Parked(Box::new(prev));
         self.alt_doc = Some(self.cur_doc);
         self.cur_doc = id;
-        // 脇にある間に外部の変更で読み直したバッファは、構文木を作り直す
+        // 脇にある間に構文木を手放した（trim_trees）・外部の変更で読み直したバッファは、構文木を作り直す
         if self.syntax.is_none() && self.pending_syntax.is_none() {
-            self.start_syntax();
+            self.restore_syntax();
         }
+        self.trim_trees();
+    }
+
+    /// 構文木を作り直す。小さいファイルはその場で（色の無い瞬間を作らない）、大きいファイルは裏で
+    fn restore_syntax(&mut self) {
+        let lang = self.buf.path.as_deref().and_then(nagi_syntax::Lang::detect).filter(|l| l.available());
+        match lang.filter(|_| self.buf.len_bytes() <= SYNC_REPARSE_BYTES).and_then(nagi_syntax::Syntax::new) {
+            Some(mut s) => {
+                s.parse(&mut self.buf);
+                s.waker = self.waker.clone();
+                self.syntax = Some(s);
+            }
+            None => self.start_syntax(),
+        }
+    }
+
+    /// 構文木（1 ファイルあたりソースの約 40 倍。40 ファイルで 37 MB）を持つのは、窓に出ているバッファと最近使った数本だけにする。
+    /// ほかは手放し、戻ったときに作り直す（restore_syntax）
+    fn trim_trees(&mut self) {
+        let id = self.cur_doc;
+        self.doc_recent.retain(|&d| d != id);
+        self.doc_recent.insert(0, id);
+        let shown: Vec<usize> = (0..self.wins.len()).filter_map(|w| self.win_state(w).map(|s| s.doc)).collect();
+        let keep: Vec<usize> = self.doc_recent.iter().copied().take(KEEP_TREES).chain(shown).collect();
+        for (i, slot) in self.docs.iter_mut().enumerate() {
+            if let Slot::Parked(d) = slot {
+                if !keep.contains(&i) {
+                    d.syntax = None;
+                    d.pending_syntax = None;
+                }
+            }
+        }
+        self.doc_recent.retain(|d| matches!(self.docs.get(*d), Some(Slot::Active | Slot::Parked(_))));
     }
 
     /// `d` を Editor の欄へ入れ、出ていたものを返す
@@ -109,6 +147,7 @@ impl Editor {
         self.alt_doc = Some(self.cur_doc);
         self.cur_doc = id;
         self.start_syntax();
+        self.trim_trees();
     }
 
     /// `path` のバッファを探す
@@ -347,6 +386,35 @@ mod tests {
         std::fs::write(&a, "a1\na2\na3\n").unwrap();
         std::fs::write(&b, "b1\nb2\n").unwrap();
         (a, b)
+    }
+
+    /// 構文木を持つのは最近使った数本だけ。手放したバッファへ戻ると、その場で作り直す
+    #[test]
+    fn trees_kept_only_for_recent_buffers() {
+        let (a, _) = files();
+        let dir = a.parent().unwrap().to_path_buf();
+        let mut e = Editor::new(Buffer::from_str(""), None);
+        for i in 0..8 {
+            let p = dir.join(format!("f{i}.json"));
+            std::fs::write(&p, format!("{{\"n\": {i}}}\n")).unwrap();
+            e.edit_file(p);
+            // 裏の解析が届くのを待つ
+            let t = std::time::Instant::now();
+            while e.syntax.is_none() && t.elapsed() < std::time::Duration::from_secs(5) {
+                e.poll_syntax();
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            assert!(e.syntax.is_some(), "f{i}.json の構文木");
+        }
+        let parked_trees = e.docs.iter().filter(|s| matches!(s, Slot::Parked(d) if d.syntax.is_some())).count();
+        assert_eq!(parked_trees, KEEP_TREES - 1, "作業中のほかに最近の {} 本", KEEP_TREES - 1);
+        // いちばん古い f0 へ戻ると、待たずに色が付く
+        let f0 = e.find_doc(&dir.join("f0.json")).unwrap();
+        e.switch_doc(f0);
+        assert!(e.syntax.is_some() && e.pending_syntax.is_none());
+        let parked_trees = e.docs.iter().filter(|s| matches!(s, Slot::Parked(d) if d.syntax.is_some())).count();
+        assert_eq!(parked_trees, KEEP_TREES - 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 切り替えても変更とカーソルは残り、`Ctrl-^` `:bn` `:b 名前` で行き来できる

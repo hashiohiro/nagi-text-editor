@@ -1070,6 +1070,8 @@ pub(crate) fn draw_toggle_buttons(p: &mut Painter, ed: &Editor, cols: usize, sta
         match b {
             // 下の欄は、左右の « » に合わせて縦の二重の山形を線で描く（フォントに揃った字が無いため）
             crate::toggles::Button::ShowBottom | crate::toggles::Button::HideBottom => draw_double_chevron(p, x, y, b == crate::toggles::Button::ShowBottom, color),
+            // 歯車も点で描く（⚙ の字はカラー絵文字のフォントに落ち、それを読むだけで 12 MB 増えた）
+            crate::toggles::Button::Settings => draw_gear(p, x, y, cw, color),
             _ => {
                 p.text(b.glyph(), col, y, color);
             }
@@ -1082,6 +1084,21 @@ pub(crate) fn draw_toggle_buttons(p: &mut Painter, ed: &Editor, cols: usize, sta
             p.out.push(Instance::fill(fx - 1.0, y - 1.0, fw + 2.0, cell.h + 2.0, STATUS_FG));
             p.out.push(Instance::fill(fx, y, fw, cell.h, rgb(0x141414)));
             p.text(&label, lx, y, FG);
+        }
+    }
+}
+
+/// 歯車（設定のボタン）を幅 `w` の枠 (x, y) の真ん中に点で描く
+pub(crate) fn draw_gear(p: &mut Painter, x: f32, y: f32, w: f32, c: [f32; 4]) {
+    const G: [&str; 10] = ["....##....", ".##.##.##.", ".########.", "..##..##..", "####..####", "####..####", "..##..##..", ".########.", ".##.##.##.", "....##...."];
+    let cell = p.fonts.cell();
+    let px = (cell.h * 0.7 / 10.0).max(1.0).round();
+    let (x0, y0) = ((x + (w - px * 10.0) / 2.0).round(), (y + (cell.h - px * 10.0) / 2.0).round());
+    for (r, line) in G.iter().enumerate() {
+        for (k, ch) in line.bytes().enumerate() {
+            if ch == b'#' {
+                p.out.push(Instance::fill(x0 + k as f32 * px, y0 + r as f32 * px, px, px, c));
+            }
         }
     }
 }

@@ -312,6 +312,8 @@ pub struct Editor {
     pub(crate) cur_doc: usize,
     /// 直前のバッファ（`Ctrl-^` `:b#`）
     pub(crate) alt_doc: Option<usize>,
+    /// 最近使ったバッファ（先頭が最近。構文木を持つものを選ぶ。buffers.rs の trim_trees）
+    pub(crate) doc_recent: Vec<usize>,
     /// 窓（作業中のものは `WinSlot::Active` で、カーソルと表示位置はこの構造体の欄にある）
     pub(crate) wins: Vec<crate::panes::WinSlot>,
     pub(crate) cur_win: usize,
@@ -628,6 +630,7 @@ impl Editor {
             docs: vec![crate::buffers::Slot::Active],
             cur_doc: 0,
             alt_doc: None,
+            doc_recent: Vec::new(),
             wins: vec![crate::panes::WinSlot::Active],
             cur_win: 0,
             prev_win: None,

@@ -28,7 +28,8 @@ impl Button {
             Button::ShowBottom => "▴",
             Button::HideRight => "»",
             Button::ShowRight => "«",
-            Button::Settings => "⚙",
+            // 描くのは view.rs の draw_gear（字は使わない）
+            Button::Settings => "",
         }
     }
 

@@ -1213,4 +1213,75 @@ mod tests {
         assert_eq!(Lang::detect(Path::new("CMakeLists.txt")), Some(Lang::CMake));
         assert_eq!(Lang::from_fence("C#"), Some(Lang::CSharp));
     }
+
+    /// プロセスの private の MB（Windows）
+    fn private_mb() -> f64 {
+        #[repr(C)]
+        #[derive(Default)]
+        struct Counters {
+            cb: u32,
+            page_faults: u32,
+            peak_ws: usize,
+            ws: usize,
+            qpp: usize,
+            qp: usize,
+            qnpp: usize,
+            qnp: usize,
+            pagefile: usize,
+            peak_pagefile: usize,
+            private: usize,
+        }
+        #[link(name = "kernel32")]
+        unsafe extern "system" {
+            fn K32GetProcessMemoryInfo(h: isize, c: *mut Counters, cb: u32) -> i32;
+            fn GetCurrentProcess() -> isize;
+        }
+        let mut c = Counters { cb: std::mem::size_of::<Counters>() as u32, ..Default::default() };
+        unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut c, c.cb) };
+        c.private as f64 / 1048576.0
+    }
+
+    /// 1 ファイルあたりのメモリの内訳（cargo test -p nagi-syntax memory_per_file -- --ignored --nocapture）
+    #[test]
+    #[ignore]
+    fn memory_per_file() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../nagi/src");
+        let mut files: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "rs")).collect();
+        files.sort();
+        files.truncate(40);
+        let lang = Lang::Rust;
+        assert!(lang.available(), "Rust の文法が要る");
+        let _ = lang.highlights();
+        let size: u64 = files.iter().map(|f| std::fs::metadata(f).unwrap().len()).sum();
+        let m0 = private_mb();
+        let mut bufs: Vec<Buffer> = files.iter().map(|f| Buffer::open(f).unwrap()).collect();
+        let m1 = private_mb();
+        let syns: Vec<Syntax> = bufs
+            .iter_mut()
+            .map(|b| {
+                let mut s = Syntax::new(lang).unwrap();
+                s.parse(b);
+                s
+            })
+            .collect();
+        let m2 = private_mb();
+        let nodes: usize = syns.iter().map(|s| s.tree.as_ref().map_or(0, |t| t.root_node().descendant_count())).sum();
+        drop(syns);
+        let m3 = private_mb();
+        // 解析器は 1 つを使い回し、木だけを持つ
+        let mut parser = Parser::new();
+        parser.set_language(&lang.language().unwrap()).unwrap();
+        let trees: Vec<Tree> = bufs.iter().map(|b| parse_with(&mut parser, b, None).unwrap()).collect();
+        let m4 = private_mb();
+        drop(parser);
+        let m5 = private_mb();
+        let n = files.len() as f64;
+        eprintln!("files={} source={:.2}MB nodes={nodes}", files.len(), size as f64 / 1048576.0);
+        eprintln!("buffer (rope)        : {:>7.2}MB  ({:.3}MB/file)", m1 - m0, (m1 - m0) / n);
+        eprintln!("syntax (parser+tree) : {:>7.2}MB  ({:.3}MB/file)", m2 - m1, (m2 - m1) / n);
+        eprintln!("after dropping syntax: {:>7.2}MB", m3 - m1);
+        eprintln!("trees + 1 parser     : {:>7.2}MB  ({:.3}MB/file)", m4 - m3, (m4 - m3) / n);
+        eprintln!("trees only           : {:>7.2}MB  ({:.3}MB/file)", m5 - m3, (m5 - m3) / n);
+        drop(trees);
+    }
 }
