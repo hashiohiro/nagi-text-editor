@@ -320,12 +320,13 @@ impl Editor {
             };
             self.list_side = Side::Commit;
             (self.vim, self.focus) = crate::editor::split_state(State::List);
-            let Some(i) = item.filter(|&i| i < p.items.len()) else { return };
-            p.selected = i;
+            let n = p.items.len();
+            let Some(pick) = crate::list::pick(&mut p.selected, item.filter(|&i| i < n), clicks, 2) else { return };
+            let i = p.selected;
             // チェックボックスの上なら切り替え、ダブルクリックで差分
             if (3..6).contains(&col) {
                 p.items[i].checked = !p.items[i].checked;
-            } else if clicks >= 2 {
+            } else if matches!(pick, crate::list::Pick::Accept(_)) {
                 self.commit_list_key(Key::Char('d'));
             }
         } else if row >= l.msg && row < l.msg + l.msg_h {

@@ -206,12 +206,13 @@ impl Editor {
 
     pub(crate) fn maven_click(&mut self, row: usize, clicks: u32) {
         let Some(m) = &mut self.maven else { return };
-        let Some(i) = crate::list::row_at(m.scroll, row, 1, m.rows.len()) else { return };
-        m.selected = i;
+        let len = m.rows.len();
+        let Some(pick) = crate::list::pick_row(&mut m.selected, m.scroll, row, 1, len, clicks) else { return };
+        let i = m.selected;
         self.focus_right(RightTab::Maven);
         let folder = matches!(self.maven.as_ref().and_then(|m| m.rows.get(i)).map(|r| &r.kind), Some(RowKind::Folder(_)));
         // フォルダは 1 回、ゴールはダブルクリックで
-        if folder || clicks >= 2 {
+        if folder || matches!(pick, crate::list::Pick::Accept(_)) {
             self.maven_activate();
         }
     }

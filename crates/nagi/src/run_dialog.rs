@@ -406,7 +406,7 @@ impl Editor {
     }
 
     /// マウス: 画面の (行, 列) を押した
-    pub(crate) fn run_dialog_click(&mut self, row: usize, col: usize) {
+    pub(crate) fn run_dialog_click(&mut self, row: usize, col: usize, clicks: u32) {
         let Some(d) = &mut self.run_dialog else { return };
         let button = d.buttons.at(row, col);
         if let Some(b) = button {
@@ -414,9 +414,14 @@ impl Editor {
             return;
         }
         let item = d.list_rows.at(row, col);
-        if let Some(i) = item {
-            d.select(i);
+        let mut sel = d.selected;
+        if let Some(pick) = crate::list::pick(&mut sel, item, clicks, 2) {
+            d.select(sel);
             d.focus = Focus::List;
+            // ダブルクリックは Enter と同じ（その構成を直す）
+            if matches!(pick, crate::list::Pick::Accept(_)) {
+                self.run_dialog_key(Key::Enter);
+            }
             return;
         }
         // 欄は名前の列から右（一覧より右）
@@ -477,8 +482,7 @@ impl crate::component::Component for RunDialogComponent {
     }
 
     fn click(&self, ed: &mut crate::editor::Editor, row: usize, col: usize, clicks: u32) -> bool {
-        let _ = clicks;
-        ed.run_dialog_click(row, col);
+        ed.run_dialog_click(row, col, clicks);
         true
     }
 }
@@ -730,16 +734,16 @@ mod tests {
         *d.field_rows.borrow_mut() = vec![(10, Focus::Name, 50), (11, Focus::Kind, 50), (12, Focus::Field(0), 50)];
         d.list_rows.set(vec![(5, 0, 30, 0), (6, 0, 30, 1), (12, 0, 30, 0)]);
         // コマンドの「abc」の b の前を押して打つ
-        e.run_dialog_click(12, 56);
+        e.run_dialog_click(12, 56, 1);
         assert_eq!(e.run_dialog.as_ref().unwrap().focus, Focus::Field(0));
         keys(&mut e, "X");
         assert_eq!(e.run_dialog.as_ref().unwrap().fields[0].2.text(), "echo aXbc");
         // 種類を 2 回押すと、2 回目で次の種類へ
-        e.run_dialog_click(11, 50);
-        e.run_dialog_click(11, 50);
+        e.run_dialog_click(11, 50, 1);
+        e.run_dialog_click(11, 50, 1);
         assert_eq!(e.run_dialog.as_ref().unwrap().current().unwrap().kind.id(), Some("maven"));
         // 一覧の 2 行目
-        e.run_dialog_click(6, 1);
+        e.run_dialog_click(6, 1, 1);
         let d = e.run_dialog.as_ref().unwrap();
         assert_eq!((d.selected, d.focus), (1, Focus::List));
     }

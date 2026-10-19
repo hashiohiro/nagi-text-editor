@@ -1430,7 +1430,13 @@ impl ApplicationHandler for App {
                     eprintln!("[{:.1}] {state:?} at {:.0},{:.0}", clock::since_process_start_ms(), self.mouse.0, self.mouse.1);
                     false
                 } => {}
-                ElementState::Pressed => self.on_press(),
+                ElementState::Pressed => {
+                    self.on_press();
+                    // 押して決めた操作（ファインダーのダブルクリックでコマンドを流したなど）の、App がすること
+                    if let Some(eff) = self.ed.as_mut().and_then(|e| e.click_effect.take()) {
+                        self.apply_effect(eff, el);
+                    }
+                }
                 ElementState::Released => {
                     self.list_select = false;
                     if std::mem::take(&mut self.term_select) {

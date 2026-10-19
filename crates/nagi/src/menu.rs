@@ -145,12 +145,14 @@ impl crate::layout::View for MenuView {
     }
 
     fn click(&self, ed: &mut Editor, r: Rect, row: usize, col: usize, clicks: u32) -> crate::layout::Click {
-        let _ = (r, clicks);
+        let _ = r;
         let Some(m) = &ed.menu else { return crate::layout::Click::Pass };
         let b = m.rect(ed.screen.0, ed.screen.1);
         if b.contains(row, col) {
             let i = row - b.y;
-            if m.selectable(i) {
+            let mut sel = m.sel;
+            // OS のメニューと同じく 1 回で決める（区切りの行は何もしない）
+            if let Some(crate::list::Pick::Accept(i)) = crate::list::pick(&mut sel, m.selectable(i).then_some(i), clicks, 1) {
                 ed.menu_run(i);
             }
         } else {

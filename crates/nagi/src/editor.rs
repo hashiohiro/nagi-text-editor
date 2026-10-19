@@ -385,6 +385,8 @@ pub struct Editor {
     pub auto_complete_at: Option<std::time::Instant>,
     /// SQL の補完で、列・テーブルが届くのを待っている (接続先, 打っている語の始まり)。届いたら一覧を作り直す
     pub(crate) sql_wait: Option<(usize, usize)>,
+    /// マウスで決めた操作の、App にしてほしいこと（押した後に App が取り出す。キーなら key の戻り値で返す）
+    pub(crate) click_effect: Option<Effect>,
     /// 設定の外観（フォント・大きさ・行の高さ）が変わった（App がフォントを作り直す）
     pub appearance_changed: bool,
     /// JDK のダウンロード（版, 進み具合）
@@ -638,6 +640,7 @@ impl Editor {
             rc_clipboard: false,
             auto_complete_at: None,
             sql_wait: None,
+            click_effect: None,
             appearance_changed: false,
             jdk_download: None,
             tool_download: None,

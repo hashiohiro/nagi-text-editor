@@ -569,10 +569,24 @@ impl crate::layout::View for DbTableView {
     }
 
     fn click(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, clicks: u32) -> crate::layout::Click {
-        let _ = (col, clicks);
-        // 窓を覆って出ているテーブル: 押したらテーブルへ向く（下の本文へは通さない）
-        let _ = (r, row);
+        // 窓を覆って出ているテーブル: 押したらテーブルへ向き、押したセルを選ぶ（ダブルクリックで直す。Enter と同じ）。下の本文へは通さない
         ed.set_state(crate::editor::State::DbTable);
+        let Some(te) = &mut ed.db_table else { return crate::layout::Click::Done };
+        // 値を打っている間・送る前の確認の間は、選び直さない
+        if te.editing.is_some() || te.preview.is_some() {
+            return crate::layout::Click::Done;
+        }
+        // 描き方（draw_db_table）と同じ割り付け: 見出し 2 行の下に表（表の見出し 2 行）
+        let len = te.len();
+        let pick = crate::list::pick_row(&mut te.row, te.scroll, row - r.y, 4, len, clicks);
+        if pick.is_some() {
+            if let Some(c) = crate::result_grid::grid_col_at(te.hscroll, &te.widths, col - r.x) {
+                te.col = c;
+            }
+        }
+        if let Some(crate::list::Pick::Accept(_)) = pick {
+            ed.db_table_key(nagi_vim::Key::Enter);
+        }
         crate::layout::Click::Done
     }
 
@@ -689,6 +703,37 @@ mod tests {
     }
 
     /// SQLite で: 開く → 値を直す・NULL・行を足す・消す → SQL を見て y で送る → 読み直した中身
+    /// マウスで: セルを押すと選び、ダブルクリックで直し始める（Enter と同じ）
+    #[test]
+    fn click_cells() {
+        let mut e = Editor::new(nagi_core::Buffer::from_str("x\n"), None);
+        e.set_screen(160, 50);
+        e.open_db_panel();
+        e.db_add("mem jdbc:sqlite::memory:");
+        let i = e.db.as_ref().unwrap().sources.len() - 1;
+        e.db.as_mut().unwrap().selected = e.db.as_ref().unwrap().rows.iter().position(|r| *r == crate::db_panel::DbRow::Source(i)).unwrap();
+        keys(&mut e, "<CR>");
+        wait(&mut e, &|e| e.db.as_ref().unwrap().conns[i].connected);
+        for sql in ["create table item(id integer primary key, name text)", "insert into item values (1, 'a'), (2, 'b')"] {
+            e.db.as_mut().unwrap().conns[i].manual = true;
+            e.db_execute(i, sql.into());
+            wait(&mut e, &|e| e.db_results.active_tab().is_some_and(|t| !t.running));
+        }
+        e.db.as_mut().unwrap().conns[i].manual = false;
+        e.db_open_table(i, "main", "item");
+        wait(&mut e, &|e| e.db_table.as_ref().is_some_and(|t| !t.running && !t.rows.is_empty()));
+        let s = crate::layout::Screen { rows: 50, cols: 160 };
+        let (x, _) = e.windows_x();
+        // 表は 2 行目から（見出し 2 行）なので、データの 2 行目は 5 行目。name は 7 列目 + id の幅 + 3 から
+        let name_x = x + 7 + e.db_table.as_ref().unwrap().widths[0] + 3 + 1;
+        crate::layout::press(&mut e, s, 5, name_x, |_| 1);
+        let te = e.db_table.as_ref().unwrap();
+        assert_eq!((te.row, te.col), (1, 1));
+        assert!(te.editing.is_none(), "1 回では直さない");
+        crate::layout::press(&mut e, s, 5, name_x, |_| 2);
+        assert!(e.db_table.as_ref().unwrap().editing.is_some(), "ダブルクリックで直し始める");
+    }
+
     #[test]
     fn edit_and_submit() {
         let mut e = Editor::new(nagi_core::Buffer::from_str("x\n"), None);

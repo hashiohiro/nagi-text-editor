@@ -496,29 +496,32 @@ impl Editor {
         let cw = w.saturating_sub(bw + dw + 2);
         let dx = cx + cw + 1;
         if col >= cx && col < cx + cw {
-            if let Some(k) = crate::list::row_at(l.top, row, 1, l.visible.len()).filter(|&k| l.rows[l.visible[k]].commit.is_some()) {
-                l.selected = k;
+            let hit = crate::list::row_at(l.top, row, 1, l.visible.len()).filter(|&k| l.rows[l.visible[k]].commit.is_some());
+            let pick = crate::list::pick(&mut l.selected, hit, clicks, 2);
+            if pick.is_some() {
                 l.focus_files = false;
-                if clicks >= 2 && l.detail.as_ref().is_some_and(|d| !d.files.is_empty()) {
-                    l.focus_files = true;
-                }
+            }
+            if matches!(pick, Some(crate::list::Pick::Accept(_))) && l.detail.as_ref().is_some_and(|d| !d.files.is_empty()) {
+                l.focus_files = true;
             }
         } else if col >= dx {
             // 右: 見出し 2 行・本文（8 行まで）・「変えたファイル」の後にファイル
             let Some(d) = &l.detail else { return };
             let first = 5 + d.message.lines().count().min(8);
-            if let Some(k) = row.checked_sub(first).filter(|&k| k < d.files.len()) {
+            let n = d.files.len();
+            let pick = crate::list::pick(&mut l.file_sel, row.checked_sub(first).filter(|&k| k < n), clicks, 2);
+            if pick.is_some() {
                 l.focus_files = true;
-                l.file_sel = k;
-                if clicks >= 2 {
-                    self.log_open_file_diff();
-                }
+            }
+            if matches!(pick, Some(crate::list::Pick::Accept(_))) {
+                self.log_open_file_diff();
             }
         } else if col < bw {
             // 左: ブランチ。押すとそのブランチの指すコミットへ、ダブルクリックでそのブランチの履歴だけを出す
             // （IntelliJ と同じ。チェックアウトは右クリックのメニューから）
             l.focus_files = false;
-            let Some(i) = l.branch_at(row - 1) else { return };
+            let mut i = l.branch_sel.unwrap_or(0);
+            let Some(pick) = crate::list::pick(&mut i, l.branch_at(row - 1), clicks, 2) else { return };
             l.branch_sel = Some(i);
             if let Some(k) = l.row_of_ref(&l.branches[i].1) {
                 l.selected = k;
@@ -527,7 +530,7 @@ impl Editor {
                     crate::list::fit(k, &mut l.top, rows);
                 }
             }
-            if clicks >= 2 {
+            if matches!(pick, crate::list::Pick::Accept(_)) {
                 self.log_show_branch(i);
             }
         } else {

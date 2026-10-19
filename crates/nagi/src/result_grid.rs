@@ -511,19 +511,25 @@ impl Editor {
         if row < head {
             return;
         }
-        if let Some(i) = crate::list::row_at(t.scroll, row, head, t.rows.len()) {
-            t.row = i;
-        }
-        let mut x = 7;
-        for c in t.hscroll..t.cols.len() {
-            let w = t.widths[c] + 3;
-            if col >= x && col < x + w {
-                t.col = c;
-                break;
-            }
-            x += w;
+        // 行（決める操作は無いので選ぶだけ）と列
+        let len = t.rows.len();
+        crate::list::pick_row(&mut t.row, t.scroll, row, head, len, 1);
+        if let Some(c) = grid_col_at(t.hscroll, &t.widths, col) {
+            t.col = c;
         }
     }
+}
+
+/// 表（view.rs の draw_grid）の、表の左端から `col` 列目にある列（行番号の欄は 7 列、列は幅 + 3）
+pub fn grid_col_at(hscroll: usize, widths: &[usize], col: usize) -> Option<usize> {
+    let mut x = 7;
+    for (c, w) in widths.iter().enumerate().skip(hscroll) {
+        if col >= x && col < x + w + 3 {
+            return Some(c);
+        }
+        x += w + 3;
+    }
+    None
 }
 
 /// タブの見出し

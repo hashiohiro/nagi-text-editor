@@ -357,6 +357,25 @@ impl Editor {
         }
     }
 
+    /// ファインダーのクリック（画面の行・本文の行数）。候補を押すと選び、ダブルクリックで開く（Enter と同じ）。
+    /// 候補の欄より上を押したら閉じる（ほかの小窓と同じ）
+    pub(crate) fn finder_click(&mut self, row: usize, rows: usize, clicks: u32) {
+        let top = rows - draw::finder_height(rows);
+        let Some(f) = &mut self.finder else { return };
+        if row < top {
+            self.close_finder();
+            return;
+        }
+        // 最下行のすぐ上が一番良い候補（scroll 番目）で、上へ行くほど次の候補
+        let hit = (row < rows).then(|| f.scroll + (rows - 1 - row)).filter(|&i| i < f.hits.len());
+        if let Some(crate::list::Pick::Accept(_)) = crate::list::pick(&mut f.selected, hit, clicks, 2) {
+            let eff = self.accept_finder(None);
+            if !matches!(eff, Effect::None) {
+                self.click_effect = Some(eff);
+            }
+        }
+    }
+
     fn close_finder(&mut self) {
         self.finder = None;
         self.set_state(State::Normal);
@@ -441,6 +460,13 @@ impl crate::layout::View for FinderView {
         }
     }
 
+    fn click(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, clicks: u32) -> crate::layout::Click {
+        let _ = col;
+        // 小窓は画面全体を持つ（r.h は本文の行数）
+        ed.finder_click(row, r.h, clicks);
+        crate::layout::Click::Done
+    }
+
     fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, dy: isize, dx: isize) -> bool {
         let _ = (r, row, col, dx);
         crate::layout::wheel_keys(ed, dy)
@@ -521,6 +547,32 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         panic!("ファイルを集め終わらない");
+    }
+
+    /// マウスで: 候補を押すと選び、ダブルクリックで開く。候補の欄より上を押すと閉じる（Space f a の「すべてを検索」もこのファインダー）
+    #[test]
+    fn click_select_and_double_click_open() {
+        let dir = project("click");
+        let mut e = Editor::new(Buffer::open(&dir.join("README.md")).unwrap(), None);
+        e.buf.path = Some(dir.join("README.md"));
+        e.set_screen(100, 40);
+        e.open_finder(Source::Files);
+        wait_walk(&mut e);
+        let s = crate::layout::Screen { rows: 40, cols: 100 };
+        let f = e.finder.as_ref().unwrap();
+        let second = f.items[f.hits[1].0 as usize].clone();
+        // 最下行のすぐ上の行（本文の最後の行）が一番良い候補、その上が 2 番目
+        crate::layout::press(&mut e, s, 38, 5, |_| 1);
+        assert_eq!(e.finder.as_ref().unwrap().selected, 1, "押した行の候補を選ぶ");
+        assert_eq!(e.state(), State::Finder, "1 回では開かない");
+        crate::layout::press(&mut e, s, 38, 5, |_| 2);
+        assert_eq!(e.state(), State::Normal);
+        assert!(e.buf.path.as_ref().unwrap().ends_with(second.replace('/', std::path::MAIN_SEPARATOR_STR)), "{:?} {second}", e.buf.path);
+        // 候補の欄より上を押すと閉じる
+        e.open_finder(Source::Files);
+        crate::layout::press(&mut e, s, 0, 5, |_| 1);
+        assert!(e.finder.is_none());
+        assert_eq!(e.state(), State::Normal);
     }
 
     #[test]

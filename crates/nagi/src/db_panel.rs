@@ -1393,9 +1393,12 @@ impl Editor {
     /// `at` はメニューを出す画面の位置。出したら true
     pub(crate) fn db_context(&mut self, prow: usize, at: (usize, usize)) -> bool {
         let Some(p) = &mut self.db else { return false };
-        let Some(k) = crate::list::row_at(p.scroll, prow, 2, p.rows.len()).filter(|_| prow >= 2) else { return false };
-        p.selected = k;
-        let row = p.rows[k].clone();
+        // 右クリックは押した行を選ぶだけ（決めない）
+        let len = p.rows.len();
+        if prow < 2 || crate::list::pick_row(&mut p.selected, p.scroll, prow, 2, len, 1).is_none() {
+            return false;
+        }
+        let row = p.rows[p.selected].clone();
         let i = row.source();
         // SQL を作る項目のために、列をいまのうちに読み始める
         if let DbRow::Object(_, s, t, Group::Tables | Group::Views, _) = &row {
@@ -1732,12 +1735,14 @@ impl Editor {
             self.focus_right(RightTab::Database);
             return;
         }
-        let Some(i) = crate::list::row_at(p.scroll, row.max(2), 2, p.rows.len()) else { return };
-        p.selected = i;
+        let len = p.rows.len();
+        let Some(pick) = crate::list::pick_row(&mut p.selected, p.scroll, row.max(2), 2, len, clicks) else { return };
+        let accept = matches!(pick, crate::list::Pick::Accept(_));
         self.focus_right(RightTab::Database);
         match self.db_selected() {
-            Some(DbRow::Object(_, _, _, Group::Tables | Group::Views, _)) if clicks >= 2 => self.db_open_selected(),
-            Some(r) if clicks >= 2 || (r.key().is_some() && !matches!(r, DbRow::Source(_) | DbRow::Object(..))) => self.db_activate(),
+            Some(DbRow::Object(_, _, _, Group::Tables | Group::Views, _)) if accept => self.db_open_selected(),
+            // 開け閉めできる行（接続先・テーブルを除く）は 1 回で、ほかはダブルクリックで
+            Some(r) if accept || (r.key().is_some() && !matches!(r, DbRow::Source(_) | DbRow::Object(..))) => self.db_activate(),
             _ => {}
         }
     }

@@ -156,6 +156,77 @@ mod tests {
     use crate::editor::State;
     use nagi_core::Buffer;
 
+    /// マウスの決まり（ソースを読んで確かめる。崩れたら落ちる）:
+    /// A. 画面に出る部品（View）はクリックを受け取る。押しても何もしない部品は、理由を書いて NO_CLICK に入れる
+    ///    （前はファインダーにクリックが無く、押しても選べず・開けなかった）
+    /// B. 押した行から候補を求める関数（list::row_at・行の表）は、list::pick で選ぶ・決める（どの一覧も同じ動きに）
+    #[test]
+    fn mouse_rules() {
+        const NO_CLICK: &[(&str, &str)] = &[
+            ("BlamePopupView", "blame の枠: カーソルの行のコミットを見せるだけ"),
+            ("HunkPopupView", "変更の差分の小窓: 見せるだけ（戻す・ステージは u / s）"),
+            // 向いている部品（Component::click）が先に受け取り、その中で list::pick を通す
+            ("CmdCompleteView", "クリックは CommandLineComponent::click が受け取る"),
+            ("LauncherView", "クリックは LauncherComponent::click が受け取る"),
+            ("RunDialogView", "クリックは RunDialogComponent::click が受け取る"),
+            ("SettingsView", "クリックは SettingsComponent::click が受け取る"),
+        ];
+        const LOOKUP: &[&str] = &["list::row_at(", "rows.at(row", "row_map.borrow()"];
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut bad = Vec::new();
+        let mut seen = Vec::new();
+        for entry in std::fs::read_dir(&dir).unwrap().flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if !name.ends_with(".rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(entry.path()).unwrap();
+            // 試験のモジュールより前（途中の #[cfg(test)] の関数では切らない）
+            let body = text.split("#[cfg(test)]\nmod ").next().unwrap_or("");
+            let lines: Vec<&str> = body.lines().collect();
+            // A
+            for (k, line) in lines.iter().enumerate() {
+                let Some(ty) = line.strip_prefix("impl crate::layout::View for ").or_else(|| line.strip_prefix("impl View for ")) else { continue };
+                let ty = ty.trim_end_matches('{').trim().to_string();
+                let end = lines[k..].iter().position(|l| *l == "}").map_or(lines.len(), |e| k + e);
+                let has = lines[k..end].iter().any(|l| l.contains("fn click("));
+                let listed = NO_CLICK.iter().any(|(t, _)| *t == ty);
+                if !has && !listed {
+                    bad.push(format!("{name}: {ty} にクリックの処理が無い（一覧なら list::pick で選べるように。押しても何もしないなら NO_CLICK に理由を書く）"));
+                }
+                if has && listed {
+                    bad.push(format!("{name}: {ty} はクリックを受け取るので NO_CLICK から外す"));
+                }
+                seen.push(ty);
+            }
+            // B
+            if name == "list.rs" {
+                continue;
+            }
+            let mut start = 0;
+            let is_fn = |l: &str| {
+                let t = l.trim_start();
+                t.starts_with("fn ") || t.starts_with("pub fn ") || t.starts_with("pub(crate) fn ")
+            };
+            for k in 0..=lines.len() {
+                if k == lines.len() || (k > start && is_fn(lines[k])) {
+                    let chunk = lines[start..k].join("\n");
+                    if LOOKUP.iter().any(|w| chunk.contains(w)) && !chunk.contains("list::pick") {
+                        let head = lines[start].trim();
+                        bad.push(format!("{name}: 「{head}」は押した行の候補を求めているのに list::pick を通していない"));
+                    }
+                    start = k;
+                }
+            }
+        }
+        for (t, _) in NO_CLICK {
+            if !seen.iter().any(|s| s == t) {
+                bad.push(format!("NO_CLICK の {t} はもう無い"));
+            }
+        }
+        assert!(bad.is_empty(), "\n{}", bad.join("\n"));
+    }
+
     #[test]
     fn press_goes_to_the_panel_under_popups() {
         let dir = std::env::temp_dir().join(format!("nagi-layout-{}", std::process::id()));

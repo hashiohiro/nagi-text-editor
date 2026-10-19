@@ -214,7 +214,7 @@ impl Editor {
             self.notify.info("-- 補完の候補はありません");
             return;
         }
-        self.completion = Some(Completion { start, original: prefix, items: Vec::new(), sel: Some(0), notes: Vec::new(), smart: Some(SmartState { all, shown: Vec::new() }) });
+        self.completion = Some(Completion { start, original: prefix, items: Vec::new(), sel: Some(0), notes: Vec::new(), smart: Some(SmartState { all, shown: Vec::new() }), drawn: Default::default() });
         self.refilter_smart();
     }
 

@@ -142,11 +142,11 @@ impl Editor {
     /// プレビューの行のクリック（2 回でリンクを開く）
     pub(crate) fn md_preview_click(&mut self, row: usize, clicks: u32) {
         let Some(pv) = &mut self.md_preview else { return };
-        let Some(i) = crate::list::row_at(pv.scroll, row, 1, pv.lines.len()) else { return };
-        pv.selected = i;
+        let len = pv.lines.len();
+        let Some(pick) = crate::list::pick_row(&mut pv.selected, pv.scroll, row, 1, len, clicks) else { return };
         pv.follow = false;
         self.focus_right(RightTab::Preview);
-        if clicks >= 2 {
+        if matches!(pick, crate::list::Pick::Accept(_)) {
             self.md_preview_key(Key::Enter);
         }
     }

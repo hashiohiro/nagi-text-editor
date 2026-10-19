@@ -712,13 +712,15 @@ impl Editor {
     }
 
     /// マウス: 画面の (行, 列) を押した
-    pub(crate) fn settings_click(&mut self, row: usize, col: usize) {
+    pub(crate) fn settings_click(&mut self, row: usize, col: usize, clicks: u32) {
         let Some(d) = &mut self.settings_dialog else { return };
         // コンボボックスを開いていれば、その行を押すと決める（外を押すと閉じる）
         if d.combo.is_some() {
             let hit = d.combo_rows.at(row, col);
-            match hit {
-                Some(i) => {
+            let mut sel = hit.unwrap_or(0);
+            // 選択肢は 1 回で決める（メニューと同じ）
+            match crate::list::pick(&mut sel, hit, clicks, 1) {
+                Some(crate::list::Pick::Accept(i) | crate::list::Pick::Select(i)) => {
                     if let Some(v) = d.choose_combo(Some(i)) {
                         self.start_download(&v);
                     }
@@ -736,20 +738,24 @@ impl Editor {
             return;
         }
         let cat = d.cat_rows.at(row, col);
-        if let Some(i) = cat {
-            d.cat = i;
-            d.selected = 0;
-            d.top = 0;
-            d.focus = SFocus::Cats;
+        let mut c = d.cat;
+        if let Some(pick) = crate::list::pick(&mut c, cat, clicks, 2) {
+            if c != d.cat {
+                d.selected = 0;
+                d.top = 0;
+            }
+            d.cat = c;
+            // ダブルクリックは Enter と同じ（項目へ）
+            d.focus = if matches!(pick, crate::list::Pick::Accept(_)) { SFocus::Items } else { SFocus::Cats };
             return;
         }
         let item = d.item_rows.borrow().iter().find(|(r, _, _)| *r == row).map(|x| (x.1, x.2));
         if let Some((i, vx)) = item {
             let again = d.selected == i && d.focus == SFocus::Items;
-            d.selected = i;
+            let pick = crate::list::pick(&mut d.selected, Some(i), clicks, 2);
             d.focus = SFocus::Items;
-            // 値の上を押すか、選んでいる項目をもう一度押すと、切り替え・直す
-            if col >= vx || again {
+            // 値の上を押すか、選んでいる項目をもう一度押すか、ダブルクリックで、切り替え・直す
+            if col >= vx || again || matches!(pick, Some(crate::list::Pick::Accept(_))) {
                 d.edit();
             }
         }
@@ -772,8 +778,7 @@ impl crate::component::Component for SettingsComponent {
     }
 
     fn click(&self, ed: &mut crate::editor::Editor, row: usize, col: usize, clicks: u32) -> bool {
-        let _ = clicks;
-        ed.settings_click(row, col);
+        ed.settings_click(row, col, clicks);
         true
     }
 }

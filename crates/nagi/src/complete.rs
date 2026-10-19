@@ -31,6 +31,8 @@ pub struct Completion {
     pub notes: Vec<(char, String)>,
     /// IntelliJ のような補完（Ctrl+Space。打つたびに絞り込む）なら、その中身（smart_complete.rs）
     pub smart: Option<crate::smart_complete::SmartState>,
+    /// 描いた一覧の位置（上の行, 左の列, 幅, 最初の候補の番号, 行数）。押した候補を求める
+    pub drawn: std::cell::Cell<Option<(usize, usize, usize, usize, usize)>>,
 }
 
 fn word_char(c: char) -> bool {
@@ -117,9 +119,32 @@ impl Editor {
         }
         let items = cands.iter().map(|c| c.0.clone()).collect();
         let notes = cands.into_iter().map(|c| (c.1, c.2)).collect();
-        self.completion = Some(Completion { start, original: prefix, items, sel: if auto { None } else { Some(0) }, notes, smart: None });
+        self.completion = Some(Completion { start, original: prefix, items, sel: if auto { None } else { Some(0) }, notes, smart: None, drawn: Default::default() });
         if !auto {
             self.apply_completion();
+        }
+    }
+
+    /// 補完の一覧の `i` 番目を押した: 選び、ダブルクリックで決める（Ctrl+Space の一覧は Enter、Ctrl-n の一覧は Ctrl-y と同じ）
+    pub(crate) fn completion_click(&mut self, i: usize, clicks: u32) {
+        let Some(c) = &mut self.completion else { return };
+        let mut sel = c.sel.unwrap_or(0);
+        let pick = crate::list::pick(&mut sel, (i < c.items.len()).then_some(i), clicks, 2);
+        let smart = c.smart.is_some();
+        if pick.is_some() {
+            c.sel = Some(sel);
+        }
+        match pick {
+            Some(crate::list::Pick::Accept(_)) if smart => {
+                self.smart_key(Key::Enter);
+            }
+            Some(crate::list::Pick::Accept(_)) => {
+                self.apply_completion();
+                self.completion_key(Key::Ctrl('y'));
+            }
+            // Ctrl-n の一覧は、選んだ候補を本文に入れて見せる（Ctrl-n で動かしたときと同じ）
+            Some(crate::list::Pick::Select(_)) if !smart => self.apply_completion(),
+            _ => {}
         }
     }
 
@@ -175,7 +200,7 @@ impl Editor {
             self.notify.info("-- 補完の候補はありません");
             return;
         }
-        self.completion = Some(Completion { start, original: prefix, items, sel: Some(0), notes: Vec::new(), smart: None });
+        self.completion = Some(Completion { start, original: prefix, items, sel: Some(0), notes: Vec::new(), smart: None, drawn: Default::default() });
         self.apply_completion();
     }
 
@@ -218,6 +243,17 @@ impl crate::layout::View for CompletionView {
         (ed.completion.is_some() && ed.state() == crate::editor::State::Insert).then_some(crate::panes::Rect { x: 0, y: 0, w: s.cols, h: s.rows })
     }
 
+    fn click(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, clicks: u32) -> crate::layout::Click {
+        let _ = r;
+        // 一覧の外は本文へ（補完は閉じる）
+        let Some((top, x, w, first, n)) = ed.completion.as_ref().and_then(|c| c.drawn.get()) else { return crate::layout::Click::Pass };
+        if row < top || row >= top + n || col < x || col >= x + w {
+            return crate::layout::Click::Pass;
+        }
+        ed.completion_click(first + row - top, clicks);
+        crate::layout::Click::Done
+    }
+
     fn draw(&self, ed: &crate::editor::Editor, p: &mut crate::view::Painter, r: crate::panes::Rect, s: crate::layout::Screen) {
         let _ = (r, s);
         if let Some(c) = &ed.completion {
@@ -253,6 +289,7 @@ pub(crate) mod draw {
         let col = col.min(cols.saturating_sub(width));
         let below = row + 1 + n <= rows;
         let top = if below { row + 1 } else { row.saturating_sub(n) };
+        c.drawn.set(Some((top, col, width, first, n)));
         for (k, item) in c.items.iter().skip(first).take(n).enumerate() {
             let y = (top + k) as f32 * cell.h;
             let selected = c.sel == Some(first + k);
@@ -292,6 +329,26 @@ mod tests {
         for key in nagi_vim::parse_keys(k, " ") {
             e.key(key);
         }
+    }
+
+    #[test]
+    fn click_items() {
+        // マウスで: 候補を押すと選び（Ctrl-n の一覧は本文に入れて見せる）、ダブルクリックで決める。一覧の外は本文へ
+        let mut e = Editor::new(Buffer::from_str("alpha beta\nAlphabet\nalpine\n"), None);
+        e.set_screen(80, 20);
+        keys(&mut e, "Go al<C-n>");
+        // 描いた位置（描き方が記録する）: 5 行目から 3 件、6 列目から幅 20
+        e.completion.as_ref().unwrap().drawn.set(Some((5, 6, 20, 0, 3)));
+        let s = crate::layout::Screen { rows: 20, cols: 80 };
+        assert!(crate::layout::press(&mut e, s, 6, 8, |_| 1).is_some());
+        assert_eq!(e.completion.as_ref().unwrap().sel, Some(1));
+        assert_eq!(e.buf.line(3), " Alphabet");
+        assert!(crate::layout::press(&mut e, s, 7, 8, |_| 2).is_some());
+        assert_eq!(e.buf.line(3), " alpine");
+        assert!(e.completion.is_none(), "ダブルクリックで決めて閉じる");
+        keys(&mut e, " al<C-n>");
+        e.completion.as_ref().unwrap().drawn.set(Some((5, 6, 20, 0, 3)));
+        assert!(crate::layout::press(&mut e, s, 12, 50, |_| 1).is_none(), "一覧の外は本文へ");
     }
 
     #[test]

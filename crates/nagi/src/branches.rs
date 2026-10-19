@@ -413,6 +413,28 @@ impl Editor {
         }
     }
 
+    /// ブランチの小窓のクリック（画面の行・列と本文の行数）。行を押すと選び、ダブルクリックで Enter と同じ（チェックアウトなど）。
+    /// 小窓の外を押したら閉じる。名前を打っている間・操作の一覧を出している間は、キーで
+    pub(crate) fn branches_click(&mut self, row: usize, col: usize, rows: usize, cols: usize, clicks: u32) {
+        let Some(p) = &mut self.branch_popup else { return };
+        // 描き方（draw_branch_popup）と同じ割り付け: 枠は 2 行目から、1 行目は絞り込み、その下に一覧
+        let (top, w) = (2, 56.min(cols.saturating_sub(4)));
+        let x0 = cols.saturating_sub(w) / 2;
+        let list_h = p.entries.len().min(rows.saturating_sub(8)).max(1);
+        if row < top || row > top + list_h || col < x0 || col >= x0 + w {
+            self.close_branches();
+            return;
+        }
+        if p.naming.is_some() || p.ops.is_some() || row == top {
+            return;
+        }
+        let scroll = (p.selected + 1).saturating_sub(list_h);
+        let hit = Some(scroll + row - top - 1).filter(|&i| i < p.entries.len() && !matches!(p.entries[i], Entry::Header(_)));
+        if let Some(crate::list::Pick::Accept(_)) = crate::list::pick(&mut p.selected, hit, clicks, 2) {
+            self.branches_key(Key::Enter);
+        }
+    }
+
     pub(crate) fn branches_insert(&mut self, text: &str) {
         let Some(p) = &mut self.branch_popup else { return };
         match &mut p.naming {
@@ -464,6 +486,12 @@ impl crate::layout::View for BranchPopupView {
         if let Some(b) = &ed.branch_popup {
             draw::draw_branch_popup(p, b, s.rows, s.cols, &ed.preedit);
         }
+    }
+
+    fn click(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, clicks: u32) -> crate::layout::Click {
+        // 小窓は画面全体を持つ（r は本文の大きさ）
+        ed.branches_click(row, col, r.h, r.w, clicks);
+        crate::layout::Click::Done
     }
 
     fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, dy: isize, dx: isize) -> bool {
@@ -631,5 +659,47 @@ mod tests {
         keys(&mut e, "<CR>y");
         assert!(e.notify.text.contains("消しました"), "{}", e.notify.text);
         assert!(!g(&["branch"]).contains("coupon"));
+    }
+
+    /// マウスで: 行を押すと選び（見出しは選ばない）、ダブルクリックでチェックアウト（Enter と同じ）。小窓の外を押すと閉じる
+    #[test]
+    fn click_select_and_checkout() {
+        let dir = std::env::temp_dir().join(format!("nagi-branches-click-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = |args: &[&str]| String::from_utf8_lossy(&nagi_workers::git::git(&dir, args).unwrap()).trim().to_string();
+        g(&["init", "-q", "-b", "main"]);
+        g(&["config", "user.email", "test@example.com"]);
+        g(&["config", "user.name", "test"]);
+        std::fs::write(dir.join("a.txt"), "a\n").unwrap();
+        g(&["add", "."]);
+        g(&["commit", "-q", "-m", "first"]);
+        g(&["branch", "topic"]);
+        let mut buf = Buffer::open(&dir.join("a.txt")).unwrap();
+        buf.path = Some(dir.join("a.txt"));
+        let mut e = Editor::new(buf, None);
+        e.set_screen(120, 40);
+        e.start_git();
+        e.open_branches();
+        wait(&mut e);
+        let s = crate::layout::Screen { rows: 40, cols: 120 };
+        // 小窓は 2 行目から（1 行目は絞り込み）、幅 56 で真ん中
+        let x = (120 - 56) / 2 + 5;
+        let p = e.branch_popup.as_ref().unwrap();
+        let k = p.entries.iter().position(|en| matches!(en, Entry::Branch(i) if p.branches[*i].name == "topic")).unwrap();
+        let header = p.entries.iter().position(|en| matches!(en, Entry::Header(_))).unwrap();
+        crate::layout::press(&mut e, s, 3 + header, x, |_| 1);
+        assert_ne!(e.branch_popup.as_ref().unwrap().selected, header, "見出しは選ばない");
+        crate::layout::press(&mut e, s, 3 + k, x, |_| 1);
+        assert_eq!(e.branch_popup.as_ref().unwrap().selected, k);
+        assert_eq!(g(&["branch", "--show-current"]), "main", "1 回では何もしない");
+        crate::layout::press(&mut e, s, 3 + k, x, |_| 2);
+        assert_eq!(g(&["branch", "--show-current"]), "topic", "{}", e.notify.text);
+        // 外を押すと閉じる
+        e.open_branches();
+        wait(&mut e);
+        crate::layout::press(&mut e, s, 0, 0, |_| 1);
+        assert!(e.branch_popup.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

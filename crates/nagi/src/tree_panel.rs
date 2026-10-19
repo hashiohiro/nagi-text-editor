@@ -421,9 +421,9 @@ impl Editor {
         self.set_state(State::List);
         let waker = self.waker_or_noop();
         let Some(t) = &mut self.tree else { return };
-        let Some(i) = crate::list::row_at(t.scroll, row, 1, t.rows.len()) else { return };
-        let r = t.rows[i].clone();
-        t.selected = i;
+        let len = t.rows.len();
+        let Some(pick) = crate::list::pick_row(&mut t.selected, t.scroll, row, 1, len, clicks) else { return };
+        let r = t.rows[t.selected].clone();
         if r.dir {
             // フォルダは 1 回のクリックで開閉する
             if t.expanded.contains(&r.path) {
@@ -432,7 +432,7 @@ impl Editor {
             } else {
                 t.expand(&r.path, &waker);
             }
-        } else if clicks >= 2 {
+        } else if matches!(pick, crate::list::Pick::Accept(_)) {
             self.edit_file(r.path);
             self.set_state(State::Normal);
         }

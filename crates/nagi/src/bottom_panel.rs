@@ -224,11 +224,9 @@ impl Editor {
         self.list_side = Side::Bottom;
         self.set_state(State::List);
         let n = self.problem_rows().len();
-        if let Some(i) = crate::list::row_at(self.problems.scroll, row, 0, n) {
-            self.problems.selected = i;
-            if clicks >= 2 {
-                self.problems_key(Key::Enter);
-            }
+        let p = &mut self.problems;
+        if crate::list::pick_row(&mut p.selected, p.scroll, row, 0, n, clicks) == Some(crate::list::Pick::Accept(p.selected)) {
+            self.problems_key(Key::Enter);
         }
     }
 

@@ -62,6 +62,29 @@ pub fn fit(sel: usize, top: &mut usize, h: usize) {
     }
 }
 
+/// 一覧のクリックの結果
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pick {
+    /// 押した候補を選んだ
+    Select(usize),
+    /// 選んだうえで決めた（Enter と同じ）
+    Accept(usize),
+}
+
+/// 一覧のクリック（マウスで選べる一覧は、どれもこれを通す: 押した候補を選び、`accept` 回続けて押したら決める）。
+/// `hit` は押した位置の候補の番号（候補の外なら None）、`clicks` は続けて押した回数。
+/// ふつうの一覧は accept = 2（ダブルクリックで開く）、メニューは 1（OS のメニューと同じく 1 回で決める）
+pub fn pick(sel: &mut usize, hit: Option<usize>, clicks: u32, accept: u32) -> Option<Pick> {
+    let i = hit?;
+    *sel = i;
+    Some(if clicks >= accept { Pick::Accept(i) } else { Pick::Select(i) })
+}
+
+/// よくある形の一覧（上の `head` 行は見出し、`scroll` 番目から並べる）の、欄の中の行 `row` を押した
+pub fn pick_row(sel: &mut usize, scroll: usize, row: usize, head: usize, len: usize, clicks: u32) -> Option<Pick> {
+    pick(sel, row_at(scroll, row, head, len), clicks, 2)
+}
+
 /// ホイール: 先頭 `top` を `n` 行動かし（`len` 行のうち `h` 行が見える）、選んでいる行 `sel` は見える範囲に留める（本文の Vim と同じ）
 pub fn wheel(sel: &mut usize, top: &mut usize, len: usize, h: usize, n: isize) {
     let h = h.max(1);
@@ -95,6 +118,17 @@ mod tests {
         assert_eq!(top, 3);
         fit(1, &mut top, 5);
         assert_eq!(top, 1);
+    }
+
+    #[test]
+    fn picks() {
+        let mut sel = 0;
+        assert_eq!(pick_row(&mut sel, 3, 2, 1, 10, 1), Some(Pick::Select(4)), "見出し 1 行・3 行目から: 欄の 2 行目は 4 番");
+        assert_eq!(sel, 4);
+        assert_eq!(pick_row(&mut sel, 3, 2, 1, 10, 2), Some(Pick::Accept(4)), "ダブルクリックで決める");
+        assert_eq!(pick_row(&mut sel, 3, 0, 1, 10, 2), None, "見出しは押しても何もしない");
+        assert_eq!(sel, 4, "外を押しても選びは変えない");
+        assert_eq!(pick(&mut sel, Some(1), 1, 1), Some(Pick::Accept(1)), "メニューは 1 回で決める");
     }
 
     #[test]

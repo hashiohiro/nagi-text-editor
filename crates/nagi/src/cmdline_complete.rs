@@ -166,14 +166,17 @@ impl Editor {
     }
 
     /// マウス: 画面の (行, 列) が候補の上ならそれを入れる。当たれば true
-    pub(crate) fn cmd_complete_click(&mut self, row: usize, col: usize) -> bool {
-        let hit = self.cmd_complete.as_ref().and_then(|c| c.rows.at(row, col));
-        match hit {
-            Some(i) => {
+    pub(crate) fn cmd_complete_click(&mut self, row: usize, col: usize, clicks: u32) -> bool {
+        let Some(c) = &self.cmd_complete else { return false };
+        let hit = c.rows.at(row, col);
+        let mut sel = c.sel.unwrap_or(0);
+        // 候補は 1 回で入れる（メニューと同じ）
+        match crate::list::pick(&mut sel, hit, clicks, 1) {
+            Some(crate::list::Pick::Accept(i)) => {
                 self.cmd_complete_pick(i);
                 true
             }
-            None => false,
+            _ => false,
         }
     }
 
@@ -237,8 +240,7 @@ impl crate::component::Component for CommandLineComponent {
     }
 
     fn click(&self, ed: &mut crate::editor::Editor, row: usize, col: usize, clicks: u32) -> bool {
-        let _ = clicks;
-        ed.cmd_complete_click(row, col)
+        ed.cmd_complete_click(row, col, clicks)
     }
 }
 
@@ -384,8 +386,8 @@ mod tests {
         let last = c.items.len() - 1;
         let want = c.items[last].0.clone();
         c.rows.set(vec![(30, 1, 40, last)]);
-        assert!(e.cmd_complete_click(30, 5));
+        assert!(e.cmd_complete_click(30, 5, 1));
         assert_eq!(e.cmdline.text, want);
-        assert!(!e.cmd_complete_click(29, 5));
+        assert!(!e.cmd_complete_click(29, 5, 1));
     }
 }

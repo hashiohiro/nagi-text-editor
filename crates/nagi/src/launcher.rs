@@ -476,16 +476,17 @@ impl Editor {
     }
 
     /// 一覧の行のクリック（2 回で開く）
-    pub(crate) fn launcher_click(&mut self, i: usize, clicks: u32) {
+    /// 一覧の画面の行 `row` を押した（1 件 2 行なので、描いたときの行の表で候補を引く）。選び、ダブルクリックで開く
+    pub(crate) fn launcher_click_row(&mut self, row: usize, clicks: u32) {
         let Some(l) = &mut self.launcher else { return };
-        if i >= l.hits.len() {
-            return;
-        }
-        l.selected = i;
-        if clicks >= 2 {
-            self.launcher_key(Key::Enter);
-        } else {
-            self.want_preview();
+        let n = l.hits.len();
+        let hit = l.row_map.borrow().iter().find(|(r, _)| *r == row).map(|x| x.1).filter(|&i| i < n);
+        match crate::list::pick(&mut l.selected, hit, clicks, 2) {
+            Some(crate::list::Pick::Accept(_)) => self.launcher_key(Key::Enter),
+            Some(crate::list::Pick::Select(_)) => {
+                self.want_preview();
+            }
+            None => {}
         }
     }
 }
@@ -506,12 +507,8 @@ impl crate::component::Component for LauncherComponent {
     }
 
     fn click(&self, ed: &mut crate::editor::Editor, row: usize, col: usize, clicks: u32) -> bool {
-        let _ = clicks;
         if !ed.launcher_left_click(row, col) {
-            let hit = ed.launcher.as_ref().and_then(|l| l.row_map.borrow().iter().find(|(r, _)| *r == row).map(|x| x.1));
-            if let Some(i) = hit {
-                ed.launcher_click(i, clicks);
-            }
+            ed.launcher_click_row(row, clicks);
         }
         true
     }

@@ -523,11 +523,13 @@ impl Editor {
             self.focus_panel();
             return;
         }
-        if let Some(i) = crate::list::row_at(g.scroll, row, 1, g.hits.len()) {
-            g.select(i);
+        let mut sel = g.selected;
+        let pick = crate::list::pick_row(&mut sel, g.scroll, row, 1, g.hits.len(), clicks);
+        if pick.is_some() {
+            g.select(sel);
         }
         g.anchor = None;
-        if clicks >= 2 {
+        if matches!(pick, Some(crate::list::Pick::Accept(_))) {
             self.set_state(State::Normal);
             self.open_hit(false);
         } else {
