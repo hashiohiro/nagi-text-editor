@@ -31,6 +31,8 @@ pub struct Terminals {
     pending: bool,
     /// シェルを選んでいる（選んでいる行）
     pub chooser: Option<usize>,
+    /// 選ぶシェルの一覧（選び始めに 1 度だけ取る。WSL の一覧は wsl.exe を動かすので、描くたびに取ると止まる）
+    pub shells: Vec<(String, String)>,
     /// マウスで選んでいる範囲（画面の (行, 列) の 2 点。始点, 終点）
     pub sel: Option<((u16, u16), (u16, u16))>,
     /// ドラッグの始点
@@ -51,6 +53,12 @@ impl Terminals {
 }
 
 impl Terminals {
+    /// シェルを選び始める
+    pub fn open_chooser(&mut self) {
+        self.shells = available_shells();
+        self.chooser = Some(0);
+    }
+
     pub fn current(&self) -> Option<&TermView> {
         self.list.get(self.active)
     }
@@ -281,7 +289,7 @@ impl Editor {
         }
         // シェルを選んでいる
         if let Some(sel) = self.terminals.chooser {
-            let shells = available_shells();
+            let shells = self.terminals.shells.clone();
             let last = shells.len().saturating_sub(1);
             match key {
                 Key::Char('j') | Key::Down | Key::Tab => self.terminals.chooser = Some((sel + 1).min(last)),
@@ -307,7 +315,7 @@ impl Editor {
         if self.terminals.list.is_empty() {
             match key {
                 Key::Enter => self.open_terminal(),
-                Key::Char('c') => self.terminals.chooser = Some(0),
+                Key::Char('c') => self.terminals.open_chooser(),
                 _ => self.set_state(State::Normal),
             }
             return;
@@ -320,7 +328,7 @@ impl Editor {
                     return;
                 }
                 Key::Char('c') => {
-                    self.terminals.chooser = Some(0);
+                    self.terminals.open_chooser();
                     return;
                 }
                 Key::Char(c @ '1'..='9') => {
@@ -486,7 +494,7 @@ impl Editor {
                 if col >= x && col < x + w {
                     match target {
                         Some(i) => self.terminals.active = i,
-                        None => self.terminals.chooser = Some(0),
+                        None => self.terminals.open_chooser(),
                     }
                     return;
                 }
@@ -496,7 +504,7 @@ impl Editor {
         }
         if let Some(sel) = self.terminals.chooser {
             // 選択肢の行（画面の 2 行目から）
-            let n = available_shells().len();
+            let n = self.terminals.shells.len();
             let i = row.saturating_sub(2);
             if row >= 2 && i < n {
                 if i == sel {
@@ -638,7 +646,7 @@ pub(crate) mod draw {
         // シェルを選んでいる
         if let Some(sel) = ts.chooser {
             p.text(" 新しい窓のシェル（j/k・数字で選んで Enter、Esc でやめる）", r.x, r.y as f32 * cell.h, STATUS_FG);
-            for (k, (label, cmd)) in crate::terminal::available_shells().iter().enumerate() {
+            for (k, (label, cmd)) in ts.shells.iter().enumerate() {
                 let y = (r.y + 1 + k) as f32 * cell.h;
                 if k == sel {
                     p.out.push(Instance::fill(r.x as f32 * cell.w, y, r.w as f32 * cell.w, cell.h, if focused { FG } else { MATCH_BG }));
@@ -868,7 +876,7 @@ Start-Sleep 30
         e.key(Key::Ctrl('\\'));
         e.key(Key::Char('c'));
         assert!(e.terminals.chooser.is_some());
-        let i = available_shells().iter().position(|(l, _)| l == "コマンドプロンプト").unwrap();
+        let i = e.terminals.shells.iter().position(|(l, _)| l == "コマンドプロンプト").unwrap();
         e.terminals.chooser = Some(i);
         e.key(Key::Enter);
         assert_eq!((e.terminals.list.len(), e.terminals.active), (2, 1));

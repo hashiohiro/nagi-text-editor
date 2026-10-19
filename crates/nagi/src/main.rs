@@ -252,6 +252,9 @@ struct App {
     renderer: Option<Renderer>,
     fonts: Option<Fonts>,
     ed: Option<Editor>,
+    /// 裏の処理から起こされて、まだ受け取っていない（起こすのは受け取るまで 1 度だけ。
+    /// ターミナルのように何度も起こすものがあっても、描くのが追いつかずにキーが待たされない）
+    woken: Arc<std::sync::atomic::AtomicBool>,
     modifiers: ModifiersState,
     scale: f64,
     /// 文字の大きさ（px。表示倍率をかける前。設定の「文字の大きさ」）と、読んだフォントの名前
@@ -335,8 +338,11 @@ impl App {
         self.apply_rc();
         // 構文解析は裏で行い、終わったらイベントループを起こして色を付ける（大きなファイルでも表示を待たせない）
         if let (Some(ed), Some(proxy)) = (&mut self.ed, self.proxy.take()) {
+            let woken = self.woken.clone();
             ed.waker = Some(Arc::new(move || {
-                let _ = proxy.send_event(());
+                if !woken.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                    let _ = proxy.send_event(());
+                }
             }));
             if partial {
                 // 構文解析は全体が届いてから
@@ -1288,6 +1294,8 @@ fn double_click_time() -> Duration {
 impl ApplicationHandler for App {
     /// 裏の処理（構文解析か、検索の全件数え）が終わった。描き直すと受け取る
     fn user_event(&mut self, _el: &ActiveEventLoop, _event: ()) {
+        // 受け取る前に下ろす（この後に届いた知らせは、次のイベントで受け取る）
+        self.woken.store(false, std::sync::atomic::Ordering::SeqCst);
         if let Some(ed) = &mut self.ed {
             ed.poll_background();
         }
@@ -1620,6 +1628,7 @@ fn main() {
         renderer: None,
         fonts: None,
         ed: None,
+        woken: Default::default(),
         modifiers: ModifiersState::empty(),
         scale: 1.0,
         font_px: FONT_PX,
