@@ -78,7 +78,7 @@ impl Editor {
 
     /// 下の欄を出すボタン（▴）を出すか。出すときは、左の欄を 1 行短くして左下の隅に置く
     pub fn show_bottom_button(&self) -> bool {
-        !self.bottom_visible() && self.diff.is_none() && !self.log_fullscreen() && self.db_table.is_none()
+        !self.bottom_visible() && !self.log_fullscreen()
     }
 
     /// 画面にあるボタン（ボタン, 行, 列）。幅はどれも 1 セル
@@ -86,7 +86,8 @@ impl Editor {
         let mut v = Vec::new();
         match self.left_rect() {
             Some(r) => v.push((Button::HideLeft, r.y, r.x + r.w - 2)),
-            None if self.diff.is_none() && !self.log_fullscreen() && self.db_table.is_none() => v.push((Button::ShowLeft, 0, 0)),
+            // 差分・テーブルを出していても出す（窓の範囲だけを覆うので、欄は出せる）
+            None if !self.log_fullscreen() => v.push((Button::ShowLeft, 0, 0)),
             None => {}
         }
         // 下の欄: ▾・▴ とも画面の左端（左の欄を開いていても）
@@ -100,7 +101,7 @@ impl Editor {
         match self.right_rect() {
             Some(r) => v.push((Button::HideRight, r.y, r.x + r.w - 2)),
             // 右の欄はまだ開いていなくても出す（押すと最後に使ったタブ。初めてならデータベース）
-            None if self.diff.is_none() && !self.log_fullscreen() && self.db_table.is_none() => v.push((Button::ShowRight, 0, self.screen.0.saturating_sub(1))),
+            None if !self.log_fullscreen() => v.push((Button::ShowRight, 0, self.screen.0.saturating_sub(1))),
             None => {}
         }
         v

@@ -101,7 +101,8 @@ impl Editor {
                 return Some(Sep::LogDetail { end: r.x + r.w });
             }
         }
-        if self.diff.is_some() || self.log_fullscreen() {
+        // 全画面の履歴は欄を覆うので区切りは無い（差分・テーブルは窓の範囲だけを覆うので、欄の大きさは変えられる）
+        if self.log_fullscreen() {
             return None;
         }
         if let Some(r) = self.left_rect() {

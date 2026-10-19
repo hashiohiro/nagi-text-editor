@@ -448,6 +448,41 @@ mod tests {
         assert_eq!(rows.iter().map(|r| r.kind).collect::<Vec<_>>(), vec![RowKind::Eq, RowKind::Mod, RowKind::Add]);
     }
 
+    /// 差分は窓の範囲だけを覆う: 欄に移っても残り、欄の大きさを変えられ、隠した欄を出せる。
+    /// `:` から戻ると差分へ。本文に向く（木で開いた・飛んだ）と閉じる（開いたものが覆いの下に隠れない）
+    #[test]
+    fn diff_leaves_panels_usable() {
+        let keys = |e: &mut Editor, k: &str| {
+            for k in nagi_vim::parse_keys(k, " ") {
+                e.key(k);
+            }
+        };
+        let mut e = Editor::new(nagi_core::Buffer::from_str("x\n"), None);
+        e.set_screen(120, 40);
+        e.open_tree();
+        e.show_diff("a".into(), "b".into(), "a\n", "b\n", None);
+        let l = e.left_rect().unwrap();
+        assert_eq!(e.sep_at(5, l.x + l.w), Some(crate::resize::Sep::Left), "差分の間も左の欄の大きさを変えられる");
+        // 欄に移っても差分は残る
+        e.set_state(State::List);
+        assert!(e.diff.is_some());
+        // : から戻ると差分へ
+        e.enter_command("");
+        keys(&mut e, "<Esc>");
+        assert_eq!(e.state(), State::Diff);
+        e.enter_command("");
+        keys(&mut e, "echo 1<CR>");
+        assert_eq!(e.state(), State::Diff);
+        assert!(e.diff.is_some());
+        // 本文に向くと閉じる
+        e.set_state(State::Normal);
+        assert!(e.diff.is_none());
+        // 左の欄を隠していても、差分の間に出すボタンがある
+        e.show_diff("a".into(), "b".into(), "a\n", "b\n", None);
+        e.left_hidden = true;
+        assert!(e.toggle_buttons().iter().any(|b| b.0 == crate::toggles::Button::ShowLeft));
+    }
+
     /// 列のカーソル: h / l で動き、行末で止まり、長い行は左端が付いてくる。押した位置へ置く
     #[test]
     fn column_cursor() {

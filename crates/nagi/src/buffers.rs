@@ -338,7 +338,10 @@ mod tests {
     }
 
     fn files() -> (PathBuf, PathBuf) {
-        let dir = std::env::temp_dir().join(format!("nagi-buffers-{}", std::process::id()));
+        // 試験ごとに別のフォルダ（並べて流すと、ほかの試験が同じファイルを書き直してしまう）
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("nagi-buffers-{}-{n}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let (a, b) = (dir.join("a.txt"), dir.join("b.txt"));
         std::fs::write(&a, "a1\na2\na3\n").unwrap();

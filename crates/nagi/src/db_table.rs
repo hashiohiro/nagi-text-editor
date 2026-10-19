@@ -787,6 +787,11 @@ mod tests {
         assert_eq!(te.rows[1][2], None);
         // 未送信の変更があれば q は 2 回
         keys(&mut e, "x");
+        // 本文に向こうとしても（木でファイルを開いたなど）、未送信の変更があれば閉じずに知らせる
+        e.set_state(State::Normal);
+        assert!(e.db_table.is_some());
+        assert_eq!(e.state(), State::DbTable);
+        assert!(e.notify.text.contains("送っていない変更が 1 件"), "{}", e.notify.text);
         keys(&mut e, "q");
         assert!(e.db_table.is_some());
         keys(&mut e, "q");

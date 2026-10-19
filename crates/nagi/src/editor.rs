@@ -537,7 +537,38 @@ impl Editor {
     /// 入力の状態を変える（部品へ向くなら Vim の状態は Normal に、Vim の状態にするなら部品から離れる）。
     /// パネルを借りている途中なら `(self.vim, self.focus) = split_state(…)` と書く（フィールドだけを借りる）
     pub fn set_state(&mut self, s: State) {
+        // 本文に向くとき（木・検索などで開いた・飛んだ、Esc で本文へ）は、本文を覆っている差分・テーブルを閉じる
+        // （開いたものが覆いの下に隠れないように）。コマンドの行・検索の行から戻るときは閉じない（cmdline_back）
+        let to_text = matches!(s, State::Normal | State::Insert | State::Visual { .. });
+        let s = if to_text && !matches!(self.vim, Mode::Command | Mode::Search | Mode::Replace) && !self.uncover() { State::DbTable } else { s };
         (self.vim, self.focus) = split_state(s);
+    }
+
+    /// 本文を覆っている差分・テーブルを閉じる。テーブルに送っていない変更があれば閉じずに知らせて false（変更を黙って捨てない）
+    fn uncover(&mut self) -> bool {
+        if self.diff.take().is_some() {
+            self.diff_return = None;
+        }
+        match self.db_table.as_ref().map(|t| t.changes()) {
+            Some(0) => self.db_table = None,
+            Some(n) => {
+                self.notify.info(format!("テーブルに送っていない変更が {n} 件あります（Ctrl+Enter で送るか、q で捨てて閉じる）"));
+                return false;
+            }
+            None => {}
+        }
+        true
+    }
+
+    /// コマンドの行・検索の行から戻る先（本文を覆う差分・テーブルがあればそこ、無ければ本文）
+    pub(crate) fn cmdline_back(&self) -> State {
+        if self.db_table.is_some() {
+            State::DbTable
+        } else if self.diff.is_some() {
+            State::Diff
+        } else {
+            State::Normal
+        }
     }
 
     /// UI を起こす関数（裏の処理に渡す。UI の無い試験では何もしない）
@@ -1073,17 +1104,18 @@ impl Editor {
         match key {
             Key::Esc | Key::Ctrl('c') => {
                 self.cmdline = Prompt::default();
-                self.set_state(State::Normal);
+                self.set_state(self.cmdline_back());
                 self.cmd_complete = None;
             }
             Key::Backspace if self.cmdline.text.is_empty() => {
-                self.set_state(State::Normal);
+                self.set_state(self.cmdline_back());
                 self.cmd_complete = None;
             }
             Key::Enter => {
                 self.cmd_complete = None;
                 let line = std::mem::take(&mut self.cmdline).text;
-                self.set_state(State::Normal);
+                self.set_state(self.cmdline_back());
+                let doc = self.cur_doc;
                 // `|` で区切った複数のコマンド（`source ~/.ideavimrc | echo "..."`）。:s の中の | は区切らない
                 let cmds: Vec<String> = if self.keeps_bar(&line) { vec![line] } else { line.split('|').map(str::to_string).collect() };
                 let mut effect = Effect::None;
@@ -1092,6 +1124,10 @@ impl Editor {
                         Effect::None => {}
                         e => effect = e,
                     }
+                }
+                // 差分・テーブルの上から別のファイルへ移った（:e・:b など）なら、本文を見せる
+                if self.cur_doc != doc && matches!(self.state(), State::Diff | State::DbTable) {
+                    self.set_state(State::Normal);
                 }
                 return effect;
             }
