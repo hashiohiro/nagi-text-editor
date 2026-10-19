@@ -625,7 +625,8 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
             p.draw(&items, rect.x + gutter, y);
             continue;
         }
-        if ed.state() == State::Insert {
+        // Vim を使わないときは、選んでいる間もカーソルは縦棒（普通のエディタと同じ）
+        if ed.state() == State::Insert || ed.plain() {
             // 本文の途中に変換中の文字列（下線）を差し込み、カーソルは縦棒
             let at = cursor_item.unwrap_or(items.len());
             let mut pre = p.items(&ed.preedit, FG);
@@ -917,6 +918,8 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
                 ed.notify.text.clone()
             } else {
                 let mode = match ed.state() {
+                    // Vim を使わないときはモードが無い（打てる状態・選んでいる状態を出さない）
+                    _ if ed.plain() => "",
                     State::Insert => "-- INSERT --",
                     State::Visual { block: true, .. } => "-- VISUAL BLOCK --",
                     State::Visual { line: false, .. } => "-- VISUAL --",
@@ -931,7 +934,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             };
             // 何も出していなければ、カーソルの行の診断を出す
             let (left, color) = match ed.diag_at_cursor() {
-                Some(d) if left.is_empty() && ed.state() == State::Normal => (format!("{}: {}", if d.error { "error" } else { "warning" }, d.msg), if d.error { DIAG_ERROR } else { DIAG_WARN }),
+                Some(d) if left.is_empty() && ed.idle() => (format!("{}: {}", if d.error { "error" } else { "warning" }, d.msg), if d.error { DIAG_ERROR } else { DIAG_WARN }),
                 _ => (left, msg_color(ed, FG)),
             };
             let end = status_text(&mut p, &left, !ed.notify.text.is_empty(), y, color);

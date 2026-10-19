@@ -27,6 +27,16 @@ pub enum FieldOut {
 
 pub type Registers = HashMap<char, (String, bool)>;
 
+thread_local! {
+    /// Vim のキー操作を使うか（エディタの設定に合わせる。使わなければ普通の入力欄: Esc で閉じ、Shift+矢印で選ぶ）。
+    /// UI の糸ごと（試験は糸ごとに別の Editor を持つ）
+    static VIM: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+pub fn set_vim(on: bool) {
+    VIM.with(|v| v.set(on));
+}
+
 pub struct VimField {
     pub ed: Box<Editor>,
     pub multiline: bool,
@@ -36,6 +46,12 @@ impl VimField {
     pub fn new(text: &str, multiline: bool) -> VimField {
         let mut ed = Box::new(Editor::new(Buffer::from_str(text), None));
         ed.set_screen(400, 50);
+        if !VIM.with(|v| v.get()) {
+            ed.set_vim(false);
+            let end = ed.buf.len_bytes();
+            ed.set_abs(end);
+            return VimField { ed, multiline };
+        }
         // 最後の行の終わりで Insert
         for k in [Key::Char('G'), Key::Char('A')] {
             ed.key(k);
@@ -55,7 +71,8 @@ impl VimField {
     }
 
     pub fn is_insert(&self) -> bool {
-        self.ed.state() == State::Insert
+        // Vim を使わない欄は、選んでいる間も打てる
+        self.ed.state() == State::Insert || (!self.ed.vim_on && matches!(self.ed.state(), State::Visual { .. }))
     }
 
     /// 最下行に出すモードの名前
@@ -85,6 +102,8 @@ impl VimField {
             Key::Ctrl('m') => return FieldOut::Submit,
             Key::Enter if !self.multiline && (insert || normal) => return FieldOut::Submit,
             Key::Esc if normal => return FieldOut::Cancel,
+            // Vim を使わない欄は、選んでいなければ Esc 1 回で閉じる
+            Key::Esc if !self.ed.vim_on && self.ed.state() == State::Insert => return FieldOut::Cancel,
             // Ex のコマンドラインは入力欄の中では使わない
             Key::Char(':') if normal => return FieldOut::None,
             Key::Paste | Key::Ctrl('v') if insert => {

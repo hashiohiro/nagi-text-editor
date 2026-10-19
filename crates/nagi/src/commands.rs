@@ -147,6 +147,17 @@ pub static COMMANDS: &[Cmd] = &[
     cmd!(["Buffers"], "バッファを選ぶ（ファインダー）", Args::None, |e, c| e.open_finder(crate::finder::Source::Buffers)),
     cmd!(["Recent", "History"], "最近のファイル", Args::None, |e, c| e.open_finder(crate::finder::Source::Recent)),
     cmd!(["Commands", "Palette"], "コマンドパレット", Args::None, |e, c| e.open_finder(crate::finder::Source::Commands)),
+    // 普通のエディタの編集（Vim を使わないときのキーマップ・右クリックのメニューから。plain.rs）
+    cmd!(["Undo"], "元に戻す", Args::None, |e, c| e.plain_undo(false)),
+    cmd!(["Redo"], "やり直す", Args::None, |e, c| e.plain_undo(true)),
+    cmd!(["Copy"], "コピー（選んでいなければ行）", Args::None, |e, c| e.plain_copy(false)),
+    cmd!(["Cut"], "切り取り（選んでいなければ行）", Args::None, |e, c| e.plain_copy(true)),
+    cmd!(["Paste"], "貼り付け", Args::None, |e, c| e.plain_paste()),
+    cmd!(["SelectAll"], "すべて選ぶ", Args::None, |e, c| e.plain_select_all()),
+    cmd!(["DuplicateLine"], "行の複製", Args::None, |e, c| e.plain_duplicate()),
+    cmd!(["DeleteLine"], "行の削除", Args::None, |e, c| e.plain_delete_lines()),
+    cmd!(["CommentLine"], "行コメントを付ける・外す", Args::None, |e, c| e.plain_comment()),
+    cmd!(["GotoLine"], "行へ移動（番号を打つ）", Args::None, |e, c| e.enter_command("")),
     cmd!(["Grep", "grep", "Rg", "rg"], "全文検索", Args::Text, |e, c| e.open_grep(c.arg)),
     cmd!(["Tree", "Explore", "Ex", "NERDTreeToggle"], "ファイルツリー", Args::None, |e, c| e.toggle_tree()),
     cmd!(["TreeSync"], "プロジェクトの木を開いているファイルに合わせる・合わせない（切り替え）", Args::None, |e, c| {

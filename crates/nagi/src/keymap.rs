@@ -93,9 +93,33 @@ pub const ACTIONS: [(&str, Action); 14] = [
     ("keymap.log", Action::Cmd("ToolLog")),
 ];
 
-/// 押したキーの組み合わせに付けた操作（設定で付け替えたものを含む）。どれにも付いていなければ None
+/// Vim のキー操作を使わないときだけ効く組み合わせ（Ctrl+C・V・Z など。Vim では Ctrl+V は矩形選択、Ctrl+R はやり直しなので）。
+/// 既定は IntelliJ と同じ
+pub const PLAIN_ACTIONS: [(&str, Action); 17] = [
+    ("keymap.undo", Action::Cmd("Undo")),
+    ("keymap.redo", Action::Cmd("Redo")),
+    ("keymap.copy", Action::Cmd("Copy")),
+    ("keymap.cut", Action::Cmd("Cut")),
+    ("keymap.paste", Action::Cmd("Paste")),
+    ("keymap.select_all", Action::Cmd("SelectAll")),
+    ("keymap.save", Action::Cmd("w")),
+    ("keymap.find_text", Action::Cmd("Find")),
+    ("keymap.replace", Action::Cmd("Replace")),
+    ("keymap.duplicate", Action::Cmd("DuplicateLine")),
+    ("keymap.delete_line", Action::Cmd("DeleteLine")),
+    ("keymap.comment", Action::Cmd("CommentLine")),
+    ("keymap.goto_line", Action::Cmd("GotoLine")),
+    ("keymap.palette", Action::Cmd("Commands")),
+    ("keymap.goto_file", Action::Cmd("Files")),
+    ("keymap.recent", Action::Cmd("Recent")),
+    ("keymap.find_in_files", Action::Cmd("Grep")),
+];
+
+/// 押したキーの組み合わせに付けた操作（設定で付け替えたものを含む）。どれにも付いていなければ None。
+/// `vim` が false（Vim のキー操作を使わない）なら PLAIN_ACTIONS も見る
 pub fn action_for(settings: &Settings, chord: &Chord) -> Option<Action> {
-    ACTIONS.iter().find(|(k, _)| parse_chord(&settings.get(k)).as_ref() == Some(chord)).map(|a| a.1)
+    let vim = settings.bool("vim.enabled");
+    ACTIONS.iter().chain(PLAIN_ACTIONS.iter().filter(|_| !vim)).find(|(k, _)| parse_chord(&settings.get(k)).as_ref() == Some(chord)).map(|a| a.1)
 }
 
 /// エディタのキー（再生・マクロ・試験で届くもの）を組み合わせに（Alt+1・Ctrl+X・F12 など。文字そのものは None）
@@ -112,7 +136,8 @@ pub fn chord_of_key(key: Key) -> Option<Chord> {
 
 /// 既定のキーの組み合わせが、付け替えで別の操作に移った・外れたか（そのときは元のキーとしては扱わない）
 pub fn default_moved(settings: &Settings, chord: &Chord) -> bool {
-    ACTIONS.iter().any(|(k, _)| {
+    let vim = settings.bool("vim.enabled");
+    ACTIONS.iter().chain(PLAIN_ACTIONS.iter().filter(|_| !vim)).any(|(k, _)| {
         let def = crate::settings::schema(k).map(|i| i.default).unwrap_or("");
         parse_chord(def).as_ref() == Some(chord) && settings.get(k) != def
     })

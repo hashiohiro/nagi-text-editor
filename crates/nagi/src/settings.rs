@@ -90,6 +90,7 @@ pub static SCHEMA: &[Item] = &[
     item("editor.repeat_fast", "エディタ", "押しっぱなし: 速めた間隔（ms）", SKind::Int(5, 200), "16", "1.2 秒押し続けた後"),
     item("editor.squiggles", "エディタ", "問題を波線で出す", B, "true", "エラーは赤、警告は黄色"),
     // Vim
+    item("vim.enabled", "Vim", "Vim のキー操作", B, "false", "オフなら普通のエディタ（打てばそのまま入る・Shift+矢印で選ぶ・Ctrl+C/V/Z）。オンなら Vim のモードと .ideavimrc"),
     item("vim.rc_path", "Vim", "設定ファイル", T, "", "空なら ~\\.ideavimrc（無ければ ~\\_vimrc・~\\.vimrc）"),
     item("vim.ignorecase", "Vim", "検索で大文字小文字を区別しない", B, "true", "ignorecase"),
     item("vim.smartcase", "Vim", "大文字を含めば区別する", B, "true", "smartcase"),
@@ -118,6 +119,24 @@ pub static SCHEMA: &[Item] = &[
     item("keymap.find", "キーマップ", "検索の欄", K, "Alt+3", ""),
     item("keymap.problems", "キーマップ", "問題", K, "Alt+6", ""),
     item("keymap.log", "キーマップ", "ログ", K, "Alt+4", ""),
+    // Vim のキー操作を使わないときだけ効く（keymap.rs の PLAIN_ACTIONS）
+    item("keymap.undo", "キーマップ", "元に戻す", K, "Ctrl+Z", "Vim を使わないとき"),
+    item("keymap.redo", "キーマップ", "やり直す", K, "Ctrl+Shift+Z", "Vim を使わないとき"),
+    item("keymap.copy", "キーマップ", "コピー", K, "Ctrl+C", "Vim を使わないとき。選んでいなければ行"),
+    item("keymap.cut", "キーマップ", "切り取り", K, "Ctrl+X", "Vim を使わないとき。選んでいなければ行"),
+    item("keymap.paste", "キーマップ", "貼り付け", K, "Ctrl+V", "Vim を使わないとき"),
+    item("keymap.select_all", "キーマップ", "すべて選ぶ", K, "Ctrl+A", "Vim を使わないとき"),
+    item("keymap.save", "キーマップ", "保存", K, "Ctrl+S", "Vim を使わないとき"),
+    item("keymap.find_text", "キーマップ", "ファイルの中を検索", K, "Ctrl+F", "Vim を使わないとき"),
+    item("keymap.replace", "キーマップ", "置換", K, "Ctrl+R", "Vim を使わないとき"),
+    item("keymap.duplicate", "キーマップ", "行の複製", K, "Ctrl+D", "Vim を使わないとき"),
+    item("keymap.delete_line", "キーマップ", "行の削除", K, "Ctrl+Y", "Vim を使わないとき"),
+    item("keymap.comment", "キーマップ", "行コメント", K, "Ctrl+/", "Vim を使わないとき"),
+    item("keymap.goto_line", "キーマップ", "行へ移動", K, "Ctrl+G", "Vim を使わないとき"),
+    item("keymap.palette", "キーマップ", "コマンドパレット", K, "Ctrl+Shift+A", "Vim を使わないとき"),
+    item("keymap.goto_file", "キーマップ", "ファイルを開く", K, "Ctrl+Shift+N", "Vim を使わないとき"),
+    item("keymap.recent", "キーマップ", "最近のファイル", K, "Ctrl+E", "Vim を使わないとき"),
+    item("keymap.find_in_files", "キーマップ", "プロジェクトを検索", K, "Ctrl+Shift+F", "Vim を使わないとき"),
     // ツール
     item("terminal.shell", "ツール", "ターミナル: 既定のシェル", T, "", "空なら最後に選んだもの（cmd・powershell・pwsh・bash・wsl、またはコマンド）"),
     item("terminal.start_dir", "ツール", "ターミナル: 始めるフォルダ", SKind::Choice(&[("project", "プロジェクト"), ("file", "開いているファイルのフォルダ"), ("home", "ホーム")]), "project", ""),
@@ -213,7 +232,8 @@ pub fn render(values: &HashMap<String, String>, header: &str) -> String {
 impl Settings {
     /// 全体の設定と、`root` のプロジェクトの上書きを読む（試験では全体を読まない）
     pub fn load(root: Option<&Path>) -> Settings {
-        let global = if cfg!(test) { HashMap::new() } else { global_path().and_then(|p| std::fs::read_to_string(p).ok()).map(|s| parse(&s)).unwrap_or_default() };
+        // 試験は Vim の操作で書いてある（Vim を使わないときの試験は set_vim(false) で）
+        let global = if cfg!(test) { HashMap::from([("vim.enabled".to_string(), "true".to_string())]) } else { global_path().and_then(|p| std::fs::read_to_string(p).ok()).map(|s| parse(&s)).unwrap_or_default() };
         let mut s = Settings { global, project: HashMap::new(), root: None };
         s.set_root(root);
         s
@@ -317,6 +337,7 @@ impl crate::editor::Editor {
             self.log_detail_w = self.log_detail_w.or(num("state.log_detail_width"));
         }
         self.sync_clipboard();
+        self.set_vim(self.settings.bool("vim.enabled"));
         if !self.settings.bool("vim.hlsearch") {
             self.search.highlight = false;
         }

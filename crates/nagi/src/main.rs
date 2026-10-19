@@ -70,6 +70,7 @@ mod stats;
 mod view;
 mod list;
 mod menu;
+mod plain;
 mod layout;
 mod component;
 mod commands;
@@ -634,21 +635,28 @@ impl App {
                 // Ctrl-Enter はコミット（Ctrl-m として渡す）
                 NamedKey::Enter if ctrl => vec![VKey::Ctrl('m')],
                 NamedKey::Enter => vec![VKey::Enter],
-                NamedKey::Tab => vec![VKey::Tab],
-                NamedKey::Backspace => vec![VKey::Backspace],
-                NamedKey::Delete => vec![VKey::Delete],
                 // Shift+Insert は貼り付け（入力欄では Ctrl+V と同じ）
                 NamedKey::Insert if self.modifiers.shift_key() => vec![VKey::Paste],
-                NamedKey::ArrowUp => vec![VKey::Up],
-                NamedKey::ArrowDown => vec![VKey::Down],
-                NamedKey::ArrowLeft => vec![VKey::Left],
-                NamedKey::ArrowRight => vec![VKey::Right],
-                NamedKey::Home => vec![VKey::Home],
-                NamedKey::End => vec![VKey::End],
-                NamedKey::PageUp => vec![VKey::PageUp],
-                NamedKey::PageDown => vec![VKey::PageDown],
-                // F12・Alt+F12・Shift+F10 などはキーマップ（上）で操作にする
-                _ => return,
+                // 移動・削除のキーは修飾（Shift で選ぶ・Ctrl で単語など）を付けて渡す。Vim の操作とパネルは修飾を外して見る
+                n => {
+                    let k = match n {
+                        NamedKey::Tab => VKey::Tab,
+                        NamedKey::Backspace => VKey::Backspace,
+                        NamedKey::Delete => VKey::Delete,
+                        NamedKey::ArrowUp => VKey::Up,
+                        NamedKey::ArrowDown => VKey::Down,
+                        NamedKey::ArrowLeft => VKey::Left,
+                        NamedKey::ArrowRight => VKey::Right,
+                        NamedKey::Home => VKey::Home,
+                        NamedKey::End => VKey::End,
+                        NamedKey::PageUp => VKey::PageUp,
+                        NamedKey::PageDown => VKey::PageDown,
+                        // F12・Alt+F12・Shift+F10 などはキーマップ（上）で操作にする
+                        _ => return,
+                    };
+                    let m = nagi_vim::Mods { shift: self.modifiers.shift_key(), ctrl, alt };
+                    vec![k.with_mods(m).unwrap_or(k)]
+                }
             },
             _ => return,
         };
@@ -737,7 +745,9 @@ impl App {
         // パネルの入力欄にいる間は割り当てを通さない（Space などがそのまま文字になるように）
         let in_field = self.ed.as_ref().is_some_and(|e| e.in_text_field());
         let list_leader = mode == Some(State::List) && !in_field && (!self.matcher.pending().is_empty() || Some(k) == leader);
-        let out = if mode == Some(State::Normal) || list_leader {
+        // Vim のキー操作を使わないときは .ideavimrc の割り当てを通さない
+        let vim = self.ed.as_ref().is_some_and(|e| e.vim_on);
+        let out = if vim && (mode == Some(State::Normal) || list_leader) {
             match self.matcher.feed(&self.rc.keymap, k) {
                 Feed::Pending => {
                     self.map_deadline = Some(Instant::now() + TIMEOUT_LEN);

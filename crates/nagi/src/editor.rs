@@ -264,6 +264,10 @@ pub struct Editor {
     pub focus: Option<Panel>,
     /// 右クリックのメニュー（menu.rs）
     pub(crate) menu: Option<crate::menu::Menu>,
+    /// Vim のキー操作（設定の vim.enabled。オフなら普通のエディタ。plain.rs）
+    pub(crate) vim_on: bool,
+    /// Vim を使わないときの、取り消しをまとめている操作（plain.rs）
+    pub(crate) plain_run: crate::plain::Run,
     /// 状態の行の文・知らせの履歴（notify.rs。self.notify.info・warn・error で書く）
     pub notify: crate::notify::Notify,
     pub cmdline: Prompt,
@@ -468,9 +472,11 @@ impl Editor {
         if !ok {
             return None;
         }
-        if matches!(self.state(), State::Insert | State::Visual { .. }) {
+        // Vim のときは Insert・Visual を抜けてから。使わないときは選んだ所を保つ（コピー・貼り付けなどが使う）
+        if self.vim_on && matches!(self.state(), State::Insert | State::Visual { .. }) {
             self.key(Key::Esc);
         }
+        self.plain_break();
         Some(crate::commands::run(self, cmd))
     }
 
@@ -537,6 +543,8 @@ impl Editor {
     /// 入力の状態を変える（部品へ向くなら Vim の状態は Normal に、Vim の状態にするなら部品から離れる）。
     /// パネルを借りている途中なら `(self.vim, self.focus) = split_state(…)` と書く（フィールドだけを借りる）
     pub fn set_state(&mut self, s: State) {
+        // Vim を使わないときは Normal が無い（打てる状態へ。plain.rs）
+        let s = if s == State::Normal && !self.vim_on { State::Insert } else { s };
         // 本文に向くとき（木・検索などで開いた・飛んだ、Esc で本文へ）は、本文を覆っている差分・テーブルを閉じる
         // （開いたものが覆いの下に隠れないように）。コマンドの行・検索の行から戻るときは閉じない（cmdline_back）
         let to_text = matches!(s, State::Normal | State::Insert | State::Visual { .. });
@@ -588,6 +596,8 @@ impl Editor {
             vim: Mode::Normal,
             focus: None,
             menu: None,
+            vim_on: true,
+            plain_run: Default::default(),
             notify: Default::default(),
             cmdline: Prompt::default(),
             query: Prompt::default(),
@@ -909,6 +919,10 @@ impl Editor {
         self.notify.clear();
     }
 
+    pub(crate) fn leave_insert_pub(&mut self) {
+        self.leave_insert();
+    }
+
     fn leave_insert(&mut self) {
         self.completion = None;
         // 矩形の I A c: 打った文字列をほかの行へ（同じ undo のグループに入れる）
@@ -933,6 +947,10 @@ impl Editor {
         let at = self.abs();
         self.edit(at, at, &text);
         self.set_abs(at + text.len());
+    }
+
+    pub(crate) fn backspace_pub(&mut self) {
+        self.backspace();
     }
 
     fn backspace(&mut self) {
@@ -1008,6 +1026,13 @@ impl Editor {
         }
         // 変更のポップアップを開いている間の u s Esc
         if self.state() == State::Normal && self.hunk_popup_key(key) {
+            self.scroll_into_view();
+            return Effect::None;
+        }
+        // 修飾（Shift・Ctrl）つきの移動を見るのは、Vim を使わないときの本文だけ。ほかは修飾を外して今まで通りに
+        let body = crate::component::focused(self).is_none() && matches!(self.state(), State::Insert | State::Visual { .. });
+        let key = if !self.vim_on && body { key } else { key.base() };
+        if !self.vim_on && body && self.plain_key(key) {
             self.scroll_into_view();
             return Effect::None;
         }
@@ -1791,6 +1816,10 @@ impl Editor {
             return;
         }
         self.leave_panel();
+        if self.plain() {
+            self.plain_select_at(row, col, clicks);
+            return;
+        }
         if self.state() == State::Insert {
             self.key(Key::Esc);
         }

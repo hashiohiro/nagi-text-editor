@@ -387,6 +387,8 @@ impl Editor {
                 let (s, e) = self.lines_range(l1, l2);
                 (s, e, true)
             }
+            // Vim を使わないときは終わりの文字を含まない（普通のエディタの選択。plain.rs）
+            _ if !self.vim_on => (s, e, false),
             _ => (s, e + self.grapheme_len_at(e).max(if e < self.buf.len_bytes() { 1 } else { 0 }), false),
         }
     }
