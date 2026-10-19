@@ -7,6 +7,10 @@
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
+
+mod mmap;
+pub use mmap::FontBytes;
 
 use dwrote::{
     FontCollection, FontFallback, FontStretch, FontStyle, FontWeight, TextAnalysisSource, TextAnalysisSourceMethods,
@@ -21,9 +25,11 @@ use unicode_width::UnicodeWidthStr;
 pub const DEFAULT_FONTS: &[&str] = &["Cascadia Mono", "BIZ UDGothic", "Yu Gothic", "Symbols Nerd Font Mono", "Segoe UI Emoji"];
 
 /// フォントファイルの中身（起動時は別スレッドで読む）
+#[derive(Clone)]
 pub struct FontData {
     pub name: String,
-    pub data: Vec<u8>,
+    /// ファイルの中身（メモリに写したもの。窓どうしで共有する）
+    pub data: Arc<FontBytes>,
     pub index: u32,
 }
 
@@ -52,11 +58,11 @@ pub fn load_by_name(name: &str) -> Option<FontData> {
     Some(FontData { name: name.into(), data, index })
 }
 
-fn load_font(font: &dwrote::Font) -> Option<(Vec<u8>, u32, PathBuf)> {
+fn load_font(font: &dwrote::Font) -> Option<(Arc<FontBytes>, u32, PathBuf)> {
     let face = font.create_font_face();
     let file = face.files().ok()?.into_iter().next()?;
     let path = file.font_file_path().ok()?;
-    let data = std::fs::read(&path).ok()?;
+    let data = FontBytes::open(&path)?;
     Some((data, face.get_index(), path))
 }
 
@@ -77,7 +83,7 @@ struct Face {
 
 impl Face {
     fn font_ref(&self) -> FontRef<'_> {
-        FontRef::from_index(&self.font.data, self.font.index as usize).unwrap()
+        FontRef::from_index(&self.font.data[..], self.font.index as usize).unwrap()
     }
 }
 
@@ -290,7 +296,7 @@ pub fn graphemes<'a>(fonts: &'a Fonts, line: &'a str) -> impl Iterator<Item = (&
 }
 
 fn is_color(f: &FontData) -> bool {
-    let r = FontRef::from_index(&f.data, f.index as usize).unwrap();
+    let r = FontRef::from_index(&f.data[..], f.index as usize).unwrap();
     [b"COLR", b"CBDT", b"sbix"].iter().any(|tag| r.table(u32::from_be_bytes(**tag)).is_some())
 }
 
@@ -321,7 +327,7 @@ impl TextAnalysisSourceMethods for LocaleJa {
     }
 }
 
-fn map_characters(text: &str, base_family: &str) -> Option<(String, Vec<u8>, u32)> {
+fn map_characters(text: &str, base_family: &str) -> Option<(String, Arc<FontBytes>, u32)> {
     let collection = FontCollection::system();
     let fallback = FontFallback::get_system_fallback()?;
     let wide: Vec<u16> = text.encode_utf16().collect();

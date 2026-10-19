@@ -38,6 +38,8 @@ impl Instance {
 }
 
 /// D3D11 デバイスと描画パイプライン。ウィンドウに依存しないので起動時に別スレッドで作れる。
+/// 複製は同じデバイスを指す（2 枚目からの窓は 1 枚目のものを使う。描くたびに状態を全部設定し直すので、窓どうしで干渉しない）
+#[derive(Clone)]
 pub struct Gpu {
     factory: IDXGIFactory2,
     device: ID3D11Device,
@@ -357,6 +359,11 @@ impl Renderer {
         unsafe { self.gpu.device.CreateRenderTargetView(&back, None, Some(&mut rtv))? };
         self.rtv = rtv;
         Ok(())
+    }
+
+    /// この窓が使っている GPU（2 枚目の窓に渡す）
+    pub fn gpu(&self) -> Gpu {
+        self.gpu.clone()
     }
 
     pub fn size(&self) -> (u32, u32) {

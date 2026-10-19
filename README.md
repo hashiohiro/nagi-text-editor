@@ -5,6 +5,7 @@ a GPU-rendered (Direct3D 11) editor with tree-sitter highlighting, go-to-definit
 project search, git, a terminal panel, run configurations, and database consoles.
 
 - Single executable (`nagi.exe`). No installer.
+- Light on memory: about 12 MB for one window. Running `nagi.exe` again opens another window in the same process (about 1.5 MB more) instead of starting a second copy.
 - Standard editing keys by default (Shift+arrows to select, Ctrl+C / V / Z, IntelliJ-style shortcuts); everything in the panels also works with the mouse (right-click menus). Vim keybindings are optional (Settings → Vim; reads your `.ideavimrc`).
 - Syntax highlighting and go-to-definition for 39 languages:
 

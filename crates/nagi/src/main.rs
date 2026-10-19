@@ -80,6 +80,7 @@ mod ui;
 mod grammars;
 mod vim_field;
 mod panes;
+mod instance;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -242,7 +243,8 @@ fn title_for(path: Option<&std::path::Path>, root: Option<&std::path::Path>) -> 
 /// ストライプの幅（セル。全角 1 字がちょうど入る）
 const STRIPE_W: usize = 2;
 
-struct App {
+/// 窓 1 枚分（窓・描画・エディタと、その窓の入力の状態）。App が束ねる
+struct Frame {
     /// 開いている「名前を付けて保存」のダイアログ
     save_dialog: Option<nagi_core::task::Task<Option<std::path::PathBuf>>>,
     /// 題名に出しているパス（バッファを切り替えたら題名を変える）
@@ -294,10 +296,14 @@ struct App {
     /// 上下の先読みを済ませた表示位置
     prefetched_top: Option<usize>,
     /// 裏の処理（構文解析）が終わったことを知らせる
-    proxy: Option<winit::event_loop::EventLoopProxy<()>>,
+    proxy: Option<winit::event_loop::EventLoopProxy<UserEvent>>,
+    /// 閉じた（App が外す。最後の 1 枚なら終わる）
+    closed: bool,
+    /// この窓が次に起きたい時（about_to_wait で決め、App が全部の窓のうち早いものにする）
+    flow: ControlFlow,
 }
 
-impl App {
+impl Frame {
     fn startup(&mut self, el: &ActiveEventLoop) {
         let attrs = Window::default_attributes()
             .with_title(title_for(None, None))
@@ -343,7 +349,7 @@ impl App {
             let woken = self.woken.clone();
             ed.waker = Some(Arc::new(move || {
                 if !woken.swap(true, std::sync::atomic::Ordering::SeqCst) {
-                    let _ = proxy.send_event(());
+                    let _ = proxy.send_event(UserEvent::Wake);
                 }
             }));
             if partial {
@@ -419,7 +425,7 @@ impl App {
             clock::report();
         }
         if self.opts.exit_after_first_frame {
-            el.exit();
+            self.closed = true;
         }
         if let Some(keys) = self.opts.keys.take() {
             for k in nagi_vim::parse_keys(&keys, &self.rc.leader.clone()) {
@@ -662,7 +668,7 @@ impl App {
             _ => return,
         };
         if keys == [VKey::Ctrl('q')] {
-            el.exit();
+            self.closed = true;
             return;
         }
         // 移動のキーを押し始めたら、自分で繰り返す（ほかのキーを押したら止める。OS と同じ）
@@ -778,11 +784,11 @@ impl App {
     }
 
     /// エディタが返した効果（終了・計測・設定の読み直し・保存のダイアログ）を行う。終了したら true
-    fn apply_effect(&mut self, eff: Effect, el: &ActiveEventLoop) -> bool {
+    fn apply_effect(&mut self, eff: Effect, _el: &ActiveEventLoop) -> bool {
         match eff {
             Effect::None => {}
             Effect::Quit => {
-                el.exit();
+                self.closed = true;
                 return true;
             }
             Effect::Stats { reset } => {
@@ -1313,9 +1319,9 @@ fn double_click_time() -> Duration {
     Duration::from_millis(unsafe { windows::Win32::UI::Input::KeyboardAndMouse::GetDoubleClickTime() } as u64)
 }
 
-impl ApplicationHandler for App {
+impl Frame {
     /// 裏の処理（構文解析か、検索の全件数え）が終わった。描き直すと受け取る
-    fn user_event(&mut self, _el: &ActiveEventLoop, _event: ()) {
+    fn user_event(&mut self) {
         // 受け取る前に下ろす（この後に届いた知らせは、次のイベントで受け取る）
         self.woken.store(false, std::sync::atomic::Ordering::SeqCst);
         if let Some(ed) = &mut self.ed {
@@ -1386,14 +1392,15 @@ impl ApplicationHandler for App {
         }
         let auto = self.ed.as_ref().and_then(|e| e.auto_complete_at);
         let deadline = [self.map_deadline, self.snap_deadline, self.autoscroll_deadline, self.replay_deadline, self.held.as_ref().map(|h| h.3), auto].into_iter().flatten().min();
-        el.set_control_flow(if self.scroll_anim.is_some() {
+        let _ = el;
+        self.flow = if self.scroll_anim.is_some() {
             ControlFlow::Poll
         } else {
             match deadline {
                 Some(d) => ControlFlow::WaitUntil(d),
                 None => ControlFlow::Wait,
             }
-        });
+        };
     }
 
     fn resumed(&mut self, el: &ActiveEventLoop) {
@@ -1404,7 +1411,7 @@ impl ApplicationHandler for App {
 
     fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
-            WindowEvent::CloseRequested => el.exit(),
+            WindowEvent::CloseRequested => self.closed = true,
             WindowEvent::Resized(size) => {
                 if let Some(r) = &mut self.renderer {
                     let _ = r.resize(size.width, size.height);
@@ -1595,15 +1602,119 @@ fn main() {
     jumplist::set_app_id();
     clock::mark("main");
     let opts = Opts::parse();
+    // 2 回目の起動は、動いている nagi に窓を足してもらって終わる（instance.rs）。試験用の引数があるときと NAGI_NEW_PROCESS では自分で開く
+    let single = opts.keys.is_none() && opts.replay.is_none() && !opts.startup_report && !opts.exit_after_first_frame && std::env::var_os("NAGI_NEW_PROCESS").is_none();
+    if single && instance::hand_off(opts.file.as_deref()) {
+        return;
+    }
+    let pending = spawn_pending(opts.file.clone(), None);
+    let event_loop = EventLoop::<UserEvent>::with_user_event().build().unwrap();
+    let proxy = event_loop.create_proxy();
+    clock::mark("event loop");
+    event_loop.set_control_flow(ControlFlow::Wait);
+    if single {
+        let p = proxy.clone();
+        instance::serve(move |file| {
+            let _ = p.send_event(UserEvent::Open(file));
+        });
+    }
+    let mut app = App { frames: vec![new_frame(opts, pending, proxy.clone())], proxy };
+    event_loop.run_app(&mut app).unwrap();
+}
+
+/// 裏の処理からイベントループへの知らせ
+#[derive(Debug)]
+enum UserEvent {
+    /// 構文解析・検索などが終わった（全部の窓が受け取りに行く）
+    Wake,
+    /// 2 回目の起動から: 窓を足してこのファイル（None なら起動時と同じ）を開く
+    Open(Option<PathBuf>),
+}
+
+/// 窓を束ねる。窓の数だけ Frame があり、GPU の装置は 1 枚目のものを使い回す
+struct App {
+    frames: Vec<Frame>,
+    proxy: winit::event_loop::EventLoopProxy<UserEvent>,
+}
+
+impl App {
+    /// 閉じた窓を外す。1 枚も無くなったら終わる
+    fn sweep(&mut self, el: &ActiveEventLoop) {
+        self.frames.retain(|f| !f.closed);
+        if self.frames.is_empty() {
+            el.exit();
+        }
+    }
+}
+
+impl ApplicationHandler<UserEvent> for App {
+    fn user_event(&mut self, el: &ActiveEventLoop, event: UserEvent) {
+        match event {
+            UserEvent::Wake => self.frames.iter_mut().for_each(|f| f.user_event()),
+            UserEvent::Open(file) => {
+                let gpu = self.frames.iter().find_map(|f| f.renderer.as_ref().map(|r| r.gpu()));
+                let opts = Opts { file, keys: None, replay: None, startup_report: false, exit_after_first_frame: false };
+                let pending = spawn_pending(opts.file.clone(), gpu);
+                let mut f = new_frame(opts, pending, self.proxy.clone());
+                f.startup(el);
+                self.frames.push(f);
+            }
+        }
+        self.sweep(el);
+    }
+
+    fn new_events(&mut self, el: &ActiveEventLoop, cause: winit::event::StartCause) {
+        for f in &mut self.frames {
+            f.new_events(el, cause);
+        }
+        self.sweep(el);
+    }
+
+    fn about_to_wait(&mut self, el: &ActiveEventLoop) {
+        let mut flow = ControlFlow::Wait;
+        for f in &mut self.frames {
+            f.about_to_wait(el);
+            flow = match (flow, f.flow) {
+                (ControlFlow::Poll, _) | (_, ControlFlow::Poll) => ControlFlow::Poll,
+                (ControlFlow::WaitUntil(a), ControlFlow::WaitUntil(b)) => ControlFlow::WaitUntil(a.min(b)),
+                (ControlFlow::WaitUntil(a), _) | (_, ControlFlow::WaitUntil(a)) => ControlFlow::WaitUntil(a),
+                _ => ControlFlow::Wait,
+            };
+        }
+        el.set_control_flow(flow);
+    }
+
+    fn resumed(&mut self, el: &ActiveEventLoop) {
+        for f in &mut self.frames {
+            f.resumed(el);
+        }
+        self.sweep(el);
+    }
+
+    fn window_event(&mut self, el: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        if let Some(f) = self.frames.iter_mut().find(|f| f.window.as_ref().is_some_and(|w| w.id() == id)) {
+            f.window_event(el, id, event);
+        }
+        self.sweep(el);
+    }
+}
+
+/// 窓 1 枚を作る準備を裏で始める（フォント・開くファイル・.ideavimrc。GPU は渡されなければ作る）
+fn spawn_pending(open: Option<PathBuf>, gpu: Option<Gpu>) -> Pending {
     let spawn = |name: &str| std::thread::Builder::new().name(name.into());
-    let (gtx, gpu) = mpsc::channel();
-    spawn("gpu")
-        .spawn(move || {
-            let g = Gpu::new();
-            clock::mark("gpu: device + pipeline");
-            gtx.send(g).unwrap();
-        })
-        .unwrap();
+    let (gtx, gpu_rx) = mpsc::channel();
+    match gpu {
+        Some(g) => gtx.send(Ok(g)).unwrap(),
+        None => {
+            spawn("gpu")
+                .spawn(move || {
+                    let g = Gpu::new();
+                    clock::mark("gpu: device + pipeline");
+                    gtx.send(g).unwrap();
+                })
+                .unwrap();
+        }
+    }
     let (ftx, fonts) = mpsc::channel();
     spawn("font")
         .spawn(move || {
@@ -1616,7 +1727,7 @@ fn main() {
         .unwrap();
     let (xtx, file) = mpsc::channel();
     let (rest_tx, rest) = mpsc::channel();
-    let path = opts.file.clone();
+    let path = open;
     spawn("file")
         .spawn(move || {
             // 大きなファイルは、先頭部分を読んだところで先に渡して表示し、全体は後から渡す
@@ -1653,14 +1764,16 @@ fn main() {
             rtx.send(rc).unwrap();
         })
         .unwrap();
-    let event_loop = EventLoop::new().unwrap();
-    let proxy = event_loop.create_proxy();
-    clock::mark("event loop");
-    event_loop.set_control_flow(ControlFlow::Wait);
-    let mut app = App {
+    Pending { gpu: gpu_rx, fonts, file, rest, rc }
+}
+
+fn new_frame(opts: Opts, pending: Pending, proxy: winit::event_loop::EventLoopProxy<UserEvent>) -> Frame {
+    Frame {
         opts,
-        pending: Some(Pending { gpu, fonts, file, rest, rc }),
+        pending: Some(pending),
         proxy: Some(proxy),
+        closed: false,
+        flow: ControlFlow::Wait,
         window: None,
         renderer: None,
         fonts: None,
@@ -1692,6 +1805,5 @@ fn main() {
         prefetched_top: None,
         title_path: (None, None),
         save_dialog: None,
-    };
-    event_loop.run_app(&mut app).unwrap();
+    }
 }

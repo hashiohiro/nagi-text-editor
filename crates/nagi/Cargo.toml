@@ -39,4 +39,9 @@ windows = { workspace = true, features = [
     "Win32_System_Variant",
     "Win32_Storage_EnhancedStorage",
     "Win32_UI_Shell_PropertiesSystem",
+    # 2 回目の起動を動いている nagi へ渡す（instance.rs の名前付きパイプ）
+    "Win32_System_Pipes",
+    "Win32_Storage_FileSystem",
+    "Win32_Security",
+    "Win32_System_IO",
 ] }

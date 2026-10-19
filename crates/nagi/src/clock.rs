@@ -67,3 +67,4 @@ pub fn report() {
     let (private, ws) = memory_mb();
     eprintln!("memory: private={private:.1}MB working_set={ws:.1}MB");
 }
+

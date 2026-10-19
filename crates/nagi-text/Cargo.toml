@@ -9,3 +9,5 @@ dwrote.workspace = true
 swash.workspace = true
 unicode-width.workspace = true
 unicode-segmentation.workspace = true
+# フォントのファイルをメモリに写す（読み込むと日本語フォントだけで 5 MB が窓ごとの private になる。mmap.rs）
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Memory"] }
