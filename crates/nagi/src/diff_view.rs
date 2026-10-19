@@ -282,7 +282,7 @@ impl crate::component::Component for DiffComponent {
         let d = ed.diff.as_ref();
         let n = d.map_or(0, |d| d.hunk_rows.len());
         let i = d.map_or(0, |d| d.hunk_rows.iter().rposition(|&r| r <= d.cursor).map_or(0, |i| i + 1));
-        crate::component::Status::new(format!("-- 差分 --   変更 {i}/{n}"), "]c 次  [c 前  h/l 横  s ステージ  u 戻す  Enter 開く  q 閉じる ")
+        crate::component::Status::keys(format!("-- 差分 --   変更 {i}/{n}"), "]c 次  [c 前  h/l 横  s ステージ  u 戻す  Enter 開く  q 閉じる ", "右クリック ステージ・戻す・次の変更  Esc 閉じる ")
     }
 
     fn key(&self, ed: &mut crate::editor::Editor, key: nagi_vim::Key) -> crate::editor::Effect {
@@ -342,6 +342,23 @@ impl crate::layout::View for DiffScreenView {
             let widest = d.rows.iter().skip(d.top).take(body).map(|x| width(&x.left).max(width(&x.right))).max().unwrap_or(0);
             crate::list::hwheel(&mut d.left, widest + 1, tw, dx);
         }
+        true
+    }
+
+    fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize) -> bool {
+        use nagi_vim::Key::*;
+        let _ = (r, row, col);
+        ed.set_state(crate::editor::State::Diff);
+        let m = crate::menu::Menu::new(row, col)
+            .keys("次の変更", &[Char(']'), Char('c')])
+            .keys("前の変更", &[Char('['), Char('c')])
+            .sep()
+            .keys("この変更をステージ", &[Char('s')])
+            .keys("この変更を戻す", &[Char('u')])
+            .sep()
+            .keys("ファイルを開く", &[Enter])
+            .keys("差分を閉じる", &[Char('q')]);
+        ed.open_menu(m);
         true
     }
 }

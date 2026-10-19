@@ -489,6 +489,15 @@ impl crate::layout::View for BranchPopupView {
         let _ = (r, row, col, dx);
         crate::layout::wheel_keys(ed, dy)
     }
+
+    fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize) -> bool {
+        use nagi_vim::Key::*;
+        let _ = (r, row, col);
+        // 押した行を選んで、その操作の一覧を出す（→ と同じ）
+        ed.branches_click(row, col, r.h, r.w, 1);
+        ed.panel_keys(&[Right]);
+        true
+    }
 }
 
 /// 描き方（view.rs の Painter で描く）

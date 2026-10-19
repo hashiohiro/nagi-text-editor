@@ -1484,6 +1484,17 @@ impl ApplicationHandler for App {
                     if layout::context(ed, layout::Screen { rows: ed.screen.1, cols: ed.screen.0 }, row, col) {
                         self.sync_ime();
                         self.draw();
+                    } else if ed.window_at(row, col).is_some_and(|(_, r)| row < r.y + ed.text_rows(r)) && !ed.has_prompt() {
+                        // 本文: 切り取り・コピー・貼り付け・定義へ など
+                        if let Some((w, _)) = ed.window_at(row, col).filter(|(w, _)| *w != ed.cur_win) {
+                            ed.focus_window(w);
+                        }
+                        // 窓の中の位置（mouse_cell と同じ基準）
+                        let rect = ed.active_rect();
+                        let lrow = (self.mouse.1 as f32 / cell.h - rect.y as f32 + ed.frac).floor().max(0.0) as usize;
+                        ed.text_context(lrow, col.saturating_sub(rect.x), (row, col));
+                        self.sync_ime();
+                        self.draw();
                     } else if ed.bottom_kind == result_grid::BottomKind::Terminal && ed.terminal_rect().is_some_and(|r| r.contains(row, col)) {
                         ed.terminal_right_click();
                         self.sync_ime();

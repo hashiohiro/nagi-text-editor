@@ -1025,6 +1025,10 @@ impl Editor {
             self.scroll_into_view();
             return Effect::None;
         }
+        // Vim を使わないとき、一覧のパネル・ダイアログは文字のキーを受けない（plain.rs）
+        if self.plain_drops(key) {
+            return Effect::None;
+        }
         // 修飾（Shift・Ctrl）つきの移動を見るのは、Vim を使わないときの本文だけ。ほかは修飾を外して今まで通りに
         let body = crate::component::focused(self).is_none() && matches!(self.state(), State::Insert | State::Visual { .. });
         let key = if !self.vim_on && body { key } else { key.base() };

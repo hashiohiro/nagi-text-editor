@@ -859,6 +859,22 @@ impl crate::layout::View for SettingsView {
         let _ = (r, row, col, dx);
         crate::layout::wheel_keys(ed, dy)
     }
+
+    fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize) -> bool {
+        use nagi_vim::Key::*;
+        let _ = r;
+        // 押した項目を選んでから（1 回のクリックは選ぶだけ）
+        ed.settings_click(row, col, 1);
+        let m = crate::menu::Menu::new(row, col)
+            .keys("値を直す", &[Enter])
+            .keys("既定に戻す", &[Char('r')])
+            .keys("全体 / このプロジェクトだけ", &[Char('p')])
+            .keys("絞り込み", &[Char('/')])
+            .sep()
+            .keys("閉じる", &[Esc]);
+        ed.open_menu(m);
+        true
+    }
 }
 
 /// 描き方（view.rs の Painter で描く）

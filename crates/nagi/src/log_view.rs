@@ -491,7 +491,11 @@ impl Editor {
         self.set_state(State::Log);
         let (bw, dw) = self.log_cols_for(w);
         let Some(l) = &mut self.log else { return };
+        // 0 行目（「/ で絞り込み」の見出し）を押したら絞り込みの欄を開く
         if row == 0 {
+            if l.filter.is_none() {
+                l.filter = Some(crate::vim_field::VimField::new(&l.filter_text, false));
+            }
             return;
         }
         l.filter = None;
@@ -892,7 +896,7 @@ impl crate::component::Component for LogComponent {
             Some(l) => format!("/{}", l.filter_text),
             None => "-- 履歴 --".into(),
         };
-        crate::component::Status::new(name, "j/k 移動  / 絞り込み  Tab ファイル  Enter 差分  o チェックアウト  b ブランチ  c チェリーピック  y ハッシュ  q 閉じる ")
+        crate::component::Status::keys(name, "j/k 移動  / 絞り込み  Tab ファイル  Enter 差分  o チェックアウト  b ブランチ  c チェリーピック  y ハッシュ  q 閉じる ", "↑↓ 選ぶ  ダブルクリック ファイル  右クリック 操作  Esc 窓へ ")
     }
 
     fn key(&self, ed: &mut crate::editor::Editor, key: nagi_vim::Key) -> crate::editor::Effect {
@@ -971,7 +975,7 @@ pub(crate) mod draw {
         let n = l.visible.iter().filter(|&&i| l.rows[i].commit.is_some()).count();
         let head = format!(
             " {}{}   {} 件{}",
-            if l.filter_text.is_empty() { "/ で絞り込み".to_string() } else { format!("/{}", l.filter_text) },
+            if l.filter_text.is_empty() { "絞り込み（/）".to_string() } else { format!("/{}", l.filter_text) },
             l.path.as_ref().map_or(String::new(), |p| format!("   ファイル: {p}")),
             n,
             if l.loading { " …" } else { "" }

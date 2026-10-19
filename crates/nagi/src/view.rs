@@ -872,9 +872,11 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             let left = if notified { ed.notify.text.as_str() } else { st.name.as_str() };
             let color = if notified { msg_color(ed, FG) } else if st.warn { DIAG_WARN } else { FG };
             let end = status_text(&mut p, left, notified, y, color);
-            let pc = cols.saturating_sub(p.width(&st.help));
-            if !st.help.is_empty() && end + 2 <= pc {
-                p.text(&st.help, pc, y, STATUS_FG);
+            // Vim を使わないときは矢印・Enter・右クリックで書いた説明
+            let help = if ed.plain() { st.plain.as_deref().unwrap_or(&st.help) } else { &st.help };
+            let pc = cols.saturating_sub(p.width(help));
+            if !help.is_empty() && end + 2 <= pc {
+                p.text(help, pc, y, STATUS_FG);
             }
         }
         State::Command => prompt_line(&mut p, ":", &ed.cmdline.text, ed.cmdline.cursor, &ed.preedit, y, true),

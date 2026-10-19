@@ -29,6 +29,23 @@ impl Editor {
         !self.vim_on
     }
 
+    /// Vim を使わないとき、このキーを受けないか: 一覧のパネル・ダイアログでは文字のキーを受けない（操作はマウス・右クリックの
+    /// メニュー・矢印・Enter・Esc・Tab・Space・Ctrl の組み合わせで）。入力欄に打っている間は受ける
+    pub(crate) fn plain_drops(&self, key: Key) -> bool {
+        use crate::editor::Panel;
+        if self.vim_on || !matches!(key, Key::Char(c) if c != ' ') {
+            return false;
+        }
+        if !matches!(self.focus, Some(Panel::List | Panel::Log | Panel::Diff | Panel::DbTable | Panel::Settings | Panel::RunDialog)) {
+            return false;
+        }
+        let typing = self.has_prompt()
+            || self.in_text_field()
+            || self.log.as_ref().is_some_and(|l| l.filter.is_some() && self.state() == State::Log)
+            || self.db_table.as_ref().is_some_and(|t| (t.editing.is_some() || t.filter_edit.is_some()) && self.state() == State::DbTable);
+        !typing
+    }
+
     /// 本文で何もしていない（Vim なら Normal、使わないなら打てる状態で選んでいない）。
     /// 変更の差分・blame の小窓、カーソルの診断の文はこのときに出す
     pub fn idle(&self) -> bool {
@@ -358,6 +375,36 @@ impl Editor {
         self.set_state(State::Visual { line: false, block: false });
     }
 
+    /// 本文の右クリック（窓の中の行・列と、メニューを出す画面の位置）。選んでいる所の外なら、そこへカーソルを移してから
+    pub(crate) fn text_context(&mut self, row: usize, col: usize, at: (usize, usize)) {
+        let pos = self.pos_at(row, col);
+        let abs = self.buf.line_start(pos.line) + pos.byte;
+        let inside = self.plain_selection().is_some_and(|(s, e)| abs >= s && abs < e);
+        if !inside {
+            self.click(row, col);
+        }
+        let run = |name: &'static str| move |e: &mut Editor| {
+            e.shortcut(name);
+        };
+        let m = crate::menu::Menu::new(at.0, at.1)
+            .item("切り取り", run("Cut"))
+            .item("コピー", run("Copy"))
+            .item("貼り付け", run("Paste"))
+            .item("すべて選ぶ", run("SelectAll"))
+            .sep()
+            .item("定義へ", run("GotoDefinition"))
+            .item("実装へ", run("GotoImplementation"))
+            .item("使っている所", run("Refs"))
+            .sep()
+            .item("行コメント", run("CommentLine"))
+            .item("行のコミット（blame）", run("Gblame"))
+            .item("HEAD との差分", run("Gdiff"))
+            .sep()
+            // どのコマンドもマウスからたどれるように
+            .item("コマンドパレット…", run("Commands"));
+        self.open_menu(m);
+    }
+
     // ---------------------------------------------------------------- コマンドの表から（キーマップ・メニュー）
 
     /// 選んだ所をコピー（選んでいなければ今の行）
@@ -637,5 +684,49 @@ mod tests {
         e.key(shift(Nav::Home));
         assert_eq!((e.cursor.line, e.cursor.byte), (0, 0));
         assert_eq!(e.plain_selected_text().as_deref(), Some("abc"));
+    }
+
+    /// パネルでは文字のキーを受けず、右クリックのメニューからは同じ操作ができる。確認は窓で答える
+    #[test]
+    fn panels_take_no_letters_but_menus_work() {
+        let dir = std::env::temp_dir().join(format!("nagi-plain-tree-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("a.txt"), "one\n").unwrap();
+        let mut buf = Buffer::open(&dir.join("a.txt")).unwrap();
+        buf.path = Some(dir.join("a.txt"));
+        let mut e = Editor::new(buf, None);
+        e.set_screen(120, 40);
+        e.set_vim(false);
+        e.open_tree();
+        for _ in 0..200 {
+            e.poll_background();
+            if e.tree.as_ref().is_some_and(|t| t.rows.len() >= 2) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(e.state(), State::List);
+        // q（Vim なら木を閉じる）は受けない
+        e.key(Key::Char('q'));
+        assert!(e.tree.is_some(), "文字のキーは受けない");
+        // 右クリックのメニューの「木を閉じる」は同じ操作
+        let r = e.tree_rect().unwrap();
+        let s = crate::layout::Screen { rows: 40, cols: 120 };
+        assert!(crate::layout::context(&mut e, s, r.y + 1, r.x + 2));
+        let i = e.menu.as_ref().unwrap().items.iter().position(|it| it.label == "木を閉じる").unwrap();
+        e.menu_run(i);
+        assert!(e.tree.is_none());
+        // 確認の窓はクリックでも答えられる（はい）
+        let hit = std::rc::Rc::new(std::cell::Cell::new(false));
+        let h2 = hit.clone();
+        e.ask("消しますか", move |_| h2.set(true));
+        let m = e.menu.as_ref().unwrap();
+        let b = m.rect(e.screen.0, e.screen.1);
+        crate::layout::press(&mut e, s, b.y + 1, b.x + 2, |_| 1);
+        assert!(hit.get(), "1 行目（題の下）の「はい」を押した");
+        assert!(e.menu.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

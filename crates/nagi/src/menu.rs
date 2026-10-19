@@ -44,6 +44,13 @@ impl Menu {
         self
     }
 
+    /// 選ぶと、向いている部品へキーを流す項目（キーの処理とメニューの処理を 1 つにする。
+    /// Vim を使わないときにキーを絞っても、メニューからは呼べる）
+    pub fn keys(self, label: impl Into<String>, keys: &[Key]) -> Menu {
+        let ks = keys.to_vec();
+        self.item(label, move |e| e.panel_keys(&ks))
+    }
+
     /// 文字のキーでも選べる項目
     pub fn item_key(mut self, label: impl Into<String>, accel: char, run: impl FnOnce(&mut Editor) + 'static) -> Menu {
         self.items.push(MenuItem { label: label.into(), run: Some(Box::new(run)), accel: Some(accel) });
@@ -76,6 +83,20 @@ impl Menu {
 }
 
 impl Editor {
+    /// 向いている部品へキーを流す（Vim を使わないときの絞り込みを通さない。部品が無ければ本文へ）
+    pub(crate) fn panel_keys(&mut self, keys: &[Key]) {
+        for &k in keys {
+            match crate::component::focused(self) {
+                Some(c) => {
+                    c.key(self, k);
+                }
+                None => {
+                    self.key(k);
+                }
+            }
+        }
+    }
+
     /// 確かめる（画面の真ん中に問いと「はい」「いいえ」。y・n・Enter・Esc・クリックで答える）。はいなら `yes`
     pub(crate) fn ask(&mut self, question: impl Into<String>, yes: impl FnOnce(&mut Editor) + 'static) {
         self.ask_or(question, yes, |_| {});
@@ -172,7 +193,7 @@ impl crate::component::Component for MenuComponent {
 
     fn status(&self, ed: &Editor) -> Option<crate::component::Status> {
         let _ = ed;
-        crate::component::Status::new("-- メニュー --", "j/k 選ぶ  Enter 行う  Esc 閉じる ")
+        crate::component::Status::keys("-- メニュー --", "j/k 選ぶ  Enter 行う  Esc 閉じる ", "↑↓ 選ぶ  Enter 行う  Esc 閉じる ")
     }
 }
 

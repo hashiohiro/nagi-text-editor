@@ -132,7 +132,8 @@ pub fn context(ed: &mut Editor, s: Screen, row: usize, col: usize) -> bool {
     if ed.menu.is_some() {
         return false;
     }
-    PANELS.iter().rev().any(|v| v.rect(ed, s).filter(|r| r.contains(row, col)).is_some_and(|r| v.context(ed, r, row, col)))
+    // ダイアログ（上の層）から、次に欄・小窓
+    OVERLAYS.iter().rev().chain(PANELS.iter().rev()).any(|v| v.rect(ed, s).filter(|r| r.contains(row, col)).is_some_and(|r| v.context(ed, r, row, col)))
 }
 
 /// ホイールを、マウスの下の部品へ上から渡す（画面を覆うダイアログ、欄・小窓の順）。どれかが受け取ったら true（受け取らなければ本文へ）

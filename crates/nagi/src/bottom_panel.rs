@@ -260,7 +260,7 @@ pub struct ProblemsComponent;
 impl crate::component::Component for ProblemsComponent {
     fn status(&self, ed: &crate::editor::Editor) -> Option<crate::component::Status> {
         let _ = ed;
-        crate::component::Status::new("-- 問題 --", "j/k 移動  Enter 開く  o 欄に残って開く  ]e [e 次・前  q 隠す  Ctrl-w k 窓へ ")
+        crate::component::Status::keys("-- 問題 --", "j/k 移動  Enter 開く  o 欄に残って開く  ]e [e 次・前  q 隠す  Ctrl-w k 窓へ ", "↑↓ 選ぶ  Enter 開く  右クリック 操作  Esc 窓へ ")
     }
 
     fn key(&self, ed: &mut crate::editor::Editor, key: nagi_vim::Key) -> crate::editor::Effect {
@@ -351,12 +351,67 @@ impl crate::layout::View for BottomView {
     }
 
     fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize) -> bool {
-        // Git のタブ（履歴）: 1 行目はタブなので、2 行目から中身
-        if ed.bottom_kind != BottomKind::Git || row <= r.y {
+        use nagi_vim::Key::*;
+        // 1 行目はタブなので、2 行目から中身
+        if row <= r.y {
             return false;
         }
-        let w = ed.bottom_content_rect().map_or(0, |c| c.w);
-        ed.log_context(row - r.y - 1, col.saturating_sub(r.x), w, (row, col))
+        let (prow, pcol) = (row - r.y - 1, col.saturating_sub(r.x));
+        let m = crate::menu::Menu::new(row, col);
+        let m = match ed.bottom_kind {
+            BottomKind::Git => {
+                let w = ed.bottom_content_rect().map_or(0, |c| c.w);
+                return ed.log_context(prow, pcol, w, (row, col));
+            }
+            BottomKind::Grep | BottomKind::Output => {
+                // 押した行を選ぶ（選んでいる範囲の中なら範囲を保つ）
+                let in_range = ed.grep.as_ref().is_some_and(|g| g.anchor.is_some());
+                if !in_range {
+                    ed.panel_click_at(prow, pcol, 1);
+                }
+                let m = if ed.bottom_kind == BottomKind::Grep { m.keys("開く", &[Enter]).keys("開いて欄に残る", &[Char('o')]) } else { m };
+                let m = m.keys("コピー", &[Char('y')]);
+                let m = if ed.bottom_kind == BottomKind::Grep { m.keys("検索し直す", &[Char('/')]) } else { m };
+                m.sep().keys("欄を閉じる", &[Char('q')])
+            }
+            BottomKind::Problems => {
+                ed.problems_click(prow, 1);
+                m.keys("開く", &[Enter]).keys("開いて欄に残る", &[Char('o')]).sep().keys("欄を隠す", &[Char('q')])
+            }
+            BottomKind::Result => {
+                ed.result_click(prow, pcol.saturating_sub(1));
+                let filterable = ed.db_results.active_tab().is_some_and(|t| t.filterable);
+                let m = m.keys("値をコピー", &[Char('y')]).keys("行をコピー", &[Char('Y')]).keys("表全体をコピー（タブ区切り）", &[Char('g'), Char('y')]);
+                let m = if filterable {
+                    m.sep()
+                        .keys("絞り込み（WHERE）", &[Char('f')])
+                        .keys("並べ替え（ORDER BY）", &[Char('F')])
+                        .keys("この列で並べ替え", &[Char('s')])
+                        .keys("次のページ", &[Char('>')])
+                        .keys("前のページ", &[Char('<')])
+                        .keys("読み直す", &[Char('R')])
+                } else {
+                    m
+                };
+                m.keys("テーブルを編集", &[Char('E')]).sep().keys("閉じる", &[Char('q')])
+            }
+            BottomKind::Terminal => {
+                if ed.terminals.list.is_empty() {
+                    return false;
+                }
+                ed.set_state(State::Terminal);
+                m.item("コピー", |e| {
+                    e.terminal_copy();
+                })
+                .item("貼り付け", |e| e.terminal_key(nagi_vim::Key::Paste))
+                .sep()
+                .item("新しいターミナル…", |e| e.terminals.open_chooser())
+                .item("このターミナルを閉じる", |e| e.close_terminal())
+                .item("本文へ", |e| e.set_state(State::Normal))
+            }
+        };
+        ed.open_menu(m);
+        true
     }
 }
 

@@ -47,11 +47,18 @@ pub struct Status {
     pub warn: bool,
     /// 右の操作の説明
     pub help: String,
+    /// Vim を使わないときの説明（矢印・Enter・右クリックで書く。None なら help のまま）
+    pub plain: Option<String>,
 }
 
 impl Status {
     pub fn new(name: impl Into<String>, help: impl Into<String>) -> Option<Status> {
-        Some(Status { name: name.into(), warn: false, help: help.into() })
+        Some(Status { name: name.into(), warn: false, help: help.into(), plain: None })
+    }
+
+    /// Vim のときの説明と、使わないときの説明
+    pub fn keys(name: impl Into<String>, help: impl Into<String>, plain: impl Into<String>) -> Option<Status> {
+        Some(Status { name: name.into(), warn: false, help: help.into(), plain: Some(plain.into()) })
     }
 }
 

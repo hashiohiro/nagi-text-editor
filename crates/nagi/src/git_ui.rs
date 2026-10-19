@@ -415,6 +415,20 @@ impl crate::layout::View for HunkPopupView {
         let _ = (r, s);
         draw::draw_hunk_popup(p, ed, s.rows, s.cols);
     }
+
+    fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize) -> bool {
+        use nagi_vim::Key::*;
+        let _ = (r, row, col);
+        let m = crate::menu::Menu::new(row, col)
+            .keys("前の変更", &[Char('['), Char('c')])
+            .keys("次の変更", &[Char(']'), Char('c')])
+            .sep()
+            .item("この変更をステージ", |e| e.stage_hunk())
+            .item("この変更を戻す", |e| e.revert_hunk())
+            .item("閉じる", |e| e.git.popup = None);
+        ed.open_menu(m);
+        true
+    }
 }
 
 /// 描き方（view.rs の Painter で描く）

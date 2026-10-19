@@ -172,9 +172,9 @@ pub struct RightComponent;
 impl crate::component::Component for RightComponent {
     fn status(&self, ed: &crate::editor::Editor) -> Option<crate::component::Status> {
         match ed.right_visible() {
-            Some(RightTab::Maven) => crate::component::Status::new("-- Maven --", "Enter 実行・開閉  l/h 開く・閉じる  r 読み直す  q 閉じる  Ctrl-w h 窓へ "),
-            Some(RightTab::Preview) => crate::component::Status::new("-- プレビュー --", "j/k 送る  Enter リンクを開く  g/G 先頭・末尾  q 閉じる  Ctrl-w h 窓へ "),
-            _ => crate::component::Status::new("-- データベース --", "Enter つなぐ・開閉  o 中身  n 新しいクエリ  c コンソール  / 絞り込み  a 足す  x 切る  Ctrl-w h 窓へ "),
+            Some(RightTab::Maven) => crate::component::Status::keys("-- Maven --", "Enter 実行・開閉  l/h 開く・閉じる  r 読み直す  q 閉じる  Ctrl-w h 窓へ ", "Enter 実行・開閉  ←→ 開く・閉じる  右クリック 操作  Esc 窓へ "),
+            Some(RightTab::Preview) => crate::component::Status::keys("-- プレビュー --", "j/k 送る  Enter リンクを開く  g/G 先頭・末尾  q 閉じる  Ctrl-w h 窓へ ", "↑↓ 送る  Enter リンクを開く  右クリック 操作  Esc 窓へ "),
+            _ => crate::component::Status::keys("-- データベース --", "Enter つなぐ・開閉  o 中身  n 新しいクエリ  c コンソール  / 絞り込み  a 足す  x 切る  Ctrl-w h 窓へ ", "Enter つなぐ・開閉  右クリック 操作  Esc 窓へ "),
         }
     }
 
@@ -209,9 +209,6 @@ impl crate::layout::View for RightView {
     }
 
     /// データベースの木の右クリック: 押した行（接続先・スキーマ・テーブル・列など）のメニュー
-    fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize) -> bool {
-        ed.right_visible() == Some(RightTab::Database) && ed.db_context(row - r.y, (row, col))
-    }
 
     fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, dy: isize, dx: isize) -> bool {
         let _ = (row, col, dx);
@@ -237,6 +234,42 @@ impl crate::layout::View for RightView {
             }
             None => {}
         }
+        true
+    }
+
+    fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize) -> bool {
+        use nagi_vim::Key::*;
+        let _ = (r, row, col);
+        // 押した行を選ぶだけ（1 回のクリックのように開け閉めしない）
+        let row = row - r.y;
+        if row == 0 {
+            return false;
+        }
+        let m = crate::menu::Menu::new(row + r.y, col);
+        let m = match ed.right_visible() {
+            // データベースは接続先・テーブルごとの詳しいメニュー（db_panel.rs）
+            Some(RightTab::Database) => return ed.db_context(row, (row + r.y, col)),
+            Some(RightTab::Maven) => {
+                let Some(mv) = &mut ed.maven else { return false };
+                let len = mv.rows.len();
+                if crate::list::pick_row(&mut mv.selected, mv.scroll, row, 1, len, 1).is_none() {
+                    return false;
+                }
+                ed.focus_right(RightTab::Maven);
+                m.keys("実行・開閉", &[Enter]).keys("読み直す", &[Char('r')]).keys("欄を閉じる", &[Char('q')])
+            }
+            Some(RightTab::Preview) => {
+                let Some(pv) = &mut ed.md_preview else { return false };
+                let len = pv.lines.len();
+                if crate::list::pick_row(&mut pv.selected, pv.scroll, row, 1, len, 1).is_none() {
+                    return false;
+                }
+                ed.focus_right(RightTab::Preview);
+                m.keys("リンクを開く", &[Enter]).keys("欄を閉じる", &[Char('q')])
+            }
+            None => return false,
+        };
+        ed.open_menu(m);
         true
     }
 }

@@ -452,7 +452,7 @@ pub struct CommitListComponent;
 impl crate::component::Component for CommitListComponent {
     fn status(&self, ed: &crate::editor::Editor) -> Option<crate::component::Status> {
         let _ = ed;
-        crate::component::Status::new("-- コミット --", "Space 選択  d 差分  u 戻す  c メッセージ  Ctrl-Enter コミット  P プッシュも  Alt-1 プロジェクト  q 閉じる ")
+        crate::component::Status::keys("-- コミット --", "Space 選択  d 差分  u 戻す  c メッセージ  Ctrl-Enter コミット  P プッシュも  Alt-1 プロジェクト  q 閉じる ", "Space 選ぶ  ダブルクリック 差分  右クリック 操作  Ctrl+Enter コミット ")
     }
 
     fn key(&self, ed: &mut crate::editor::Editor, key: nagi_vim::Key) -> crate::editor::Effect {
@@ -511,6 +511,35 @@ impl crate::layout::View for CommitView {
         if let Some(c) = ed.commit.as_mut().filter(|c| !c.items.is_empty()) {
             c.selected = (c.selected as isize + dy).clamp(0, c.items.len() as isize - 1) as usize;
         }
+        true
+    }
+
+    fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize) -> bool {
+        use nagi_vim::Key::*;
+        let _ = (r, row, col);
+        // 押した行を選ぶ（チェックボックスの列は避けて、切り替えない）
+        let Some(l) = ed.left_rect() else { return false };
+        ed.commit_click(row - l.y, 10, 1);
+        if ed.state() != crate::editor::State::List {
+            return false;
+        }
+        let amend = ed.commit.as_ref().is_some_and(|p| p.amend);
+        let m = crate::menu::Menu::new(row, col)
+            .keys("差分を見る", &[Char('d')])
+            .keys("開く", &[Enter])
+            .keys("開いて欄に残る", &[Char('o')])
+            .keys("選ぶ・外す", &[Char(' ')])
+            .keys("すべて選ぶ・外す", &[Char('a')])
+            .keys("変更を戻す…", &[Char('u')])
+            .sep()
+            .keys("メッセージを書く", &[Char('c')])
+            .keys(if amend { "直前のコミットを直す: やめる" } else { "直前のコミットを直す" }, &[Char('A')])
+            .keys("コミット", &[Ctrl('m')])
+            .keys("コミットしてプッシュ", &[Char('P')])
+            .sep()
+            .keys("読み直す", &[Char('r')])
+            .keys("欄を閉じる", &[Char('q')]);
+        ed.open_menu(m);
         true
     }
 }

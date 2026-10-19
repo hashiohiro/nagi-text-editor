@@ -364,25 +364,26 @@ impl Editor {
             Key::Ctrl('w') => t.pending_w = true,
             Key::Char('g') if g_pending => t.selected = 0,
             Key::Char('g') => t.pending_g = true,
-            Key::Enter | Key::Char('l') | Key::Char('o') => {
+            Key::Enter | Key::Char('l') | Key::Right | Key::Char('o') => {
                 let stay = key == Key::Char('o');
                 let Some(row) = t.rows.get(t.selected).cloned() else { return Effect::None };
                 if row.dir {
                     if t.expanded.contains(&row.path) {
-                        // l は開いているフォルダでは何もしない（Enter と o は畳む）
-                        if key != Key::Char('l') {
+                        // l・→ は開いているフォルダでは何もしない（Enter と o は畳む）
+                        if !matches!(key, Key::Char('l') | Key::Right) {
                             t.expanded.remove(&row.path);
                             t.rebuild();
                         }
                     } else {
                         t.expand(&row.path, &waker);
                     }
-                } else {
+                } else if key != Key::Right {
+                    // → はフォルダを開くだけ（ファイルは Enter・l・o・ダブルクリックで開く）
                     self.edit_file(row.path);
                     self.set_state(if stay { State::List } else { State::Normal });
                 }
             }
-            Key::Char('h') => {
+            Key::Char('h') | Key::Left => {
                 let Some(row) = t.rows.get(t.selected).cloned() else { return Effect::None };
                 if row.dir && t.expanded.contains(&row.path) {
                     t.expanded.remove(&row.path);
@@ -447,7 +448,7 @@ pub struct TreeComponent;
 impl crate::component::Component for TreeComponent {
     fn status(&self, ed: &crate::editor::Editor) -> Option<crate::component::Status> {
         let _ = ed;
-        crate::component::Status::new("-- プロジェクト --", "")
+        crate::component::Status::keys("-- プロジェクト --", "", "Enter 開く  ←→ 開閉  右クリック 操作  Esc 窓へ ")
     }
 
     fn key(&self, ed: &mut crate::editor::Editor, key: nagi_vim::Key) -> crate::editor::Effect {
@@ -491,6 +492,25 @@ impl crate::layout::View for TreeView {
                 crate::list::hwheel(&mut t.left, widest + 1, r.w, dx);
             }
         }
+        true
+    }
+
+    fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize) -> bool {
+        use nagi_vim::Key::*;
+        let _ = (r, row, col);
+        // 押した行を選ぶだけ（左クリックと違ってフォルダを開け閉めしない）
+        let Some(t) = &mut ed.tree else { return false };
+        let len = t.rows.len();
+        if crate::list::pick_row(&mut t.selected, t.scroll, row - r.y, 1, len, 1).is_none() {
+            return false;
+        }
+        let dir = t.rows[t.selected].dir;
+        ed.list_side = crate::editor::Side::Left;
+        ed.set_state(crate::editor::State::List);
+        let m = crate::menu::Menu::new(row, col).keys(if dir { "開く・畳む" } else { "開く" }, &[Enter]);
+        let m = if dir { m } else { m.keys("開いて木に残る", &[Char('o')]) };
+        let m = m.sep().keys("読み直す", &[Char('R')]).keys("木を閉じる", &[Char('q')]);
+        ed.open_menu(m);
         true
     }
 }

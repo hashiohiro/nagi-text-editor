@@ -159,6 +159,32 @@ fn build_preview(dir: PathBuf) -> Preview {
 
 impl Editor {
     /// ランチャーを出す（一覧は裏で集める）
+    /// 選んでいるプロジェクトをピン留めする・外す（p・右クリック）
+    pub(crate) fn launcher_pin(&mut self) {
+        let Some(l) = &mut self.launcher else { return };
+        let Some(e) = l.selected_entry().cloned() else { return };
+        let on = crate::project_open::toggle_pin(&e.path);
+        let path = e.path.clone();
+        if let Some(x) = l.all.iter_mut().find(|x| x.path == path) {
+            x.pinned = on;
+        }
+        l.all.sort_by(|a, b| b.pinned.cmp(&a.pinned).then(b.when.cmp(&a.when)));
+        l.refilter();
+        l.selected = l.hits.iter().position(|&i| l.all[i].path == path).unwrap_or(0);
+        l.message = if on { format!("ピン留めしました: {}", e.name) } else { format!("ピン留めを外しました: {}", e.name) };
+    }
+
+    /// 選んでいるプロジェクトを一覧から外す（dd・右クリック）
+    pub(crate) fn launcher_hide(&mut self) {
+        let Some(l) = &mut self.launcher else { return };
+        let Some(e) = l.selected_entry().cloned() else { return };
+        crate::project_open::hide_project(&e.path);
+        l.all.retain(|x| x.path != e.path);
+        l.refilter();
+        l.selected = l.selected.min(l.hits.len().saturating_sub(1));
+        l.message = format!("一覧から外しました: {}（開き直すと戻ります）", e.name);
+    }
+
     pub(crate) fn open_launcher(&mut self) {
         let rx = nagi_core::task::spawn("launcher", self.waker(), move |ctx| {
             ctx.send(recent_entries());
@@ -366,28 +392,8 @@ impl Editor {
             Key::Char(c @ ('g' | 'o' | 'w' | 'r' | 'n')) if normal => return self.launcher_action(c),
             Key::Char('G') if normal => l.selected = crate::list::step(key, l.selected, last + 1, 10).unwrap_or(l.selected),
 
-            Key::Char('p') if normal => {
-                if let Some(e) = l.selected_entry().cloned() {
-                    let on = crate::project_open::toggle_pin(&e.path);
-                    let path = e.path.clone();
-                    if let Some(x) = l.all.iter_mut().find(|x| x.path == path) {
-                        x.pinned = on;
-                    }
-                    l.all.sort_by(|a, b| b.pinned.cmp(&a.pinned).then(b.when.cmp(&a.when)));
-                    l.refilter();
-                    l.selected = l.hits.iter().position(|&i| l.all[i].path == path).unwrap_or(0);
-                    l.message = if on { format!("ピン留めしました: {}", e.name) } else { format!("ピン留めを外しました: {}", e.name) };
-                }
-            }
-            Key::Char('d') if normal && pending_d => {
-                if let Some(e) = l.selected_entry().cloned() {
-                    crate::project_open::hide_project(&e.path);
-                    l.all.retain(|x| x.path != e.path);
-                    l.refilter();
-                    l.selected = l.selected.min(l.hits.len().saturating_sub(1));
-                    l.message = format!("一覧から外しました: {}（開き直すと戻ります）", e.name);
-                }
-            }
+            Key::Char('p') if normal => self.launcher_pin(),
+            Key::Char('d') if normal && pending_d => self.launcher_hide(),
             Key::Char('d') if normal => l.pending_d = true,
             Key::Ctrl('c') => {
                 self.close_launcher();
@@ -535,6 +541,22 @@ impl crate::layout::View for LauncherView {
     fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, dy: isize, dx: isize) -> bool {
         let _ = (r, row, col, dx);
         crate::layout::wheel_keys(ed, dy)
+    }
+
+    fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize) -> bool {
+        use nagi_vim::Key::*;
+        let _ = (r, row, col);
+        // プロジェクトの行: 選んでから、開く・ピン留め・一覧から外す
+        let Some(l) = &mut ed.launcher else { return false };
+        let n = l.hits.len();
+        let hit = l.row_map.borrow().iter().find(|(r, _)| *r == row).map(|&(_, h)| h).filter(|&i| i < n);
+        if crate::list::pick(&mut l.selected, hit, 1, 2).is_none() {
+            return false;
+        }
+        let pinned = l.selected_entry().is_some_and(|e| e.pinned);
+        let m = crate::menu::Menu::new(row, col).keys("開く", &[Enter]).item(if pinned { "ピン留めを外す" } else { "ピン留め" }, |e| e.launcher_pin()).item("一覧から外す", |e| e.launcher_hide());
+        ed.open_menu(m);
+        true
     }
 }
 

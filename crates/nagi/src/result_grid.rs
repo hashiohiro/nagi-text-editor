@@ -546,7 +546,7 @@ pub struct ResultComponent;
 impl crate::component::Component for ResultComponent {
     fn status(&self, ed: &crate::editor::Editor) -> Option<crate::component::Status> {
         let _ = ed;
-        crate::component::Status::new("-- クエリの結果 --", "hjkl 移動  y 値  Y 行  gy 表全体（タブ区切り）  q 閉じる ")
+        crate::component::Status::keys("-- クエリの結果 --", "hjkl 移動  y 値  Y 行  gy 表全体（タブ区切り）  q 閉じる ", "矢印 移動  右クリック コピー・絞り込み  Esc 窓へ ")
     }
 
     fn key(&self, ed: &mut crate::editor::Editor, key: nagi_vim::Key) -> crate::editor::Effect {

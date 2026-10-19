@@ -528,6 +528,9 @@ impl Editor {
 
 
 /// この部品の入口（component.rs）
+/// Vim を使わないときの状態行の説明
+const PLAIN_HELP: &str = "矢印 移動  Enter 値を直す  右クリック 操作  Ctrl+Enter 送る ";
+
 pub struct DbTableComponent;
 
 impl crate::component::Component for DbTableComponent {
@@ -535,9 +538,9 @@ impl crate::component::Component for DbTableComponent {
         let n = ed.db_table.as_ref().map_or(0, |t| t.changes());
         let help = "i 値  c 入れ替え  x NULL  o 行を足す  dd 消す  u 戻す  f/F 絞り込み  s 並べ替え  < > ページ  Ctrl+Enter 送信  q 閉じる ";
         if n > 0 {
-            Some(crate::component::Status { name: format!("-- 編集 --  変更 {n} 件（未送信）"), warn: true, help: help.into() })
+            Some(crate::component::Status { name: format!("-- 編集 --  変更 {n} 件（未送信）"), warn: true, help: help.into(), plain: Some(PLAIN_HELP.into()) })
         } else {
-            crate::component::Status::new("-- テーブル --", help)
+            crate::component::Status::keys("-- テーブル --", help, PLAIN_HELP)
         }
     }
 
@@ -600,6 +603,31 @@ impl crate::layout::View for DbTableView {
             crate::list::wheel(&mut te.row, &mut te.scroll, len, r.h.saturating_sub(4), dy);
             crate::result_grid::grid_hwheel(&mut te.col, &mut te.hscroll, &te.widths, r.w, dx);
         }
+        true
+    }
+
+    fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize) -> bool {
+        use nagi_vim::Key::*;
+        let _ = (r, row, col);
+        ed.set_state(crate::editor::State::DbTable);
+        let m = crate::menu::Menu::new(row, col)
+            .keys("値を直す", &[Char('i')])
+            .keys("値を入れ替える", &[Char('c')])
+            .keys("NULL にする", &[Char('x')])
+            .keys("行を足す", &[Char('o')])
+            .keys("行を消す", &[Char('d'), Char('d')])
+            .keys("戻す", &[Char('u')])
+            .sep()
+            .keys("絞り込み（WHERE）", &[Char('f')])
+            .keys("並べ替え（ORDER BY）", &[Char('F')])
+            .keys("この列で並べ替え", &[Char('s')])
+            .keys("次のページ", &[Char('>')])
+            .keys("前のページ", &[Char('<')])
+            .keys("読み直す", &[Char('R')])
+            .sep()
+            .keys("変更を送る", &[Ctrl('m')])
+            .keys("閉じる", &[Char('q')]);
+        ed.open_menu(m);
         true
     }
 }
