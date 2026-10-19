@@ -417,10 +417,14 @@ pub struct Editor {
     pub prompt_caret: std::cell::Cell<Option<(usize, f32)>>,
     /// マウスを載せている SQL コンソールの帯のボタン
     pub hover_bar: Option<crate::db_panel::BarItem>,
+    /// マウスを載せているバッファのタブ（バッファの番号, × の上か）
+    pub hover_buftab: Option<(usize, bool)>,
     /// マウスを載せているボタン
     pub hover_button: Option<crate::toggles::Button>,
     /// マウスを載せているタブのアイコン（行, 列, 名前）と、描いたアイコンの位置
     pub hover_tab: Option<(usize, usize, &'static str)>,
+    /// 状態行の「▶ 構成の名前」の列（始め, 終わり）。押すと実行のメニュー
+    pub run_hit: std::cell::Cell<Option<(usize, usize)>>,
     pub tab_hits: std::cell::RefCell<Vec<(usize, usize, usize, &'static str)>>,
     /// 左の欄で出しているタブ（ツリーとコミットのパネルが両方開いているとき）
     pub left_tab: crate::tree_panel::LeftTab,
@@ -667,7 +671,9 @@ impl Editor {
             hover_button: None,
             hover_tab: None,
             tab_hits: Default::default(),
+            run_hit: Default::default(),
             hover_bar: None,
+            hover_buftab: None,
             prompt_caret: Default::default(),
             left_w: None,
             log_branch_w: None,
@@ -1769,7 +1775,7 @@ impl Editor {
     /// パネル（木・検索の結果・右の欄など）にいたら本文の操作に戻る（本文をクリックしたとき）
     /// 本文を押した: 向いている部品（欄・差分など、どのペインでも）から離れる。画面を覆う小窓・ダイアログは
     /// 自分でクリックを受け取るので、ここへは来ない（来ても離れない）
-    fn leave_panel(&mut self) {
+    pub(crate) fn leave_panel(&mut self) {
         let overlay = matches!(self.focus, Some(Panel::Finder | Panel::Launcher | Panel::RunDialog | Panel::Settings | Panel::Branches | Panel::GrepPrompt | Panel::Menu));
         if self.focus.is_some() && !overlay {
             self.set_state(State::Normal);

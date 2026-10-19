@@ -15,6 +15,8 @@ pub enum Button {
     ShowBottom,
     HideRight,
     ShowRight,
+    /// 状態行の右端の ⚙（設定を開く）
+    Settings,
 }
 
 impl Button {
@@ -26,7 +28,13 @@ impl Button {
             Button::ShowBottom => "▴",
             Button::HideRight => "»",
             Button::ShowRight => "«",
+            Button::Settings => "⚙",
         }
+    }
+
+    /// 2 セルの幅か（⚙）
+    pub fn wide(self) -> bool {
+        self == Button::Settings
     }
 
     /// マウスを載せたときに横に出す名前
@@ -46,6 +54,7 @@ impl Button {
                 (true, crate::right_panel::RightTab::Maven) => "Maven".into(),
                 (true, crate::right_panel::RightTab::Preview) => "プレビュー".into(),
             },
+            Button::Settings => "設定（Ctrl+Alt+S）".into(),
         }
     }
 }
@@ -104,11 +113,13 @@ impl Editor {
             None if !self.log_fullscreen() => v.push((Button::ShowRight, 0, self.screen.0.saturating_sub(1))),
             None => {}
         }
+        // 設定: 状態行の右端（⚙ は 2 セル。位置の表示の後ろに 1 列あける）
+        v.push((Button::Settings, self.screen.1, self.screen.0.saturating_sub(2)));
         v
     }
 
     pub fn button_at(&self, row: usize, col: usize) -> Option<Button> {
-        self.toggle_buttons().into_iter().find(|&(_, r, c)| r == row && c == col).map(|b| b.0)
+        self.toggle_buttons().into_iter().find(|&(b, r, c)| r == row && (c == col || (b.wide() && c + 1 == col))).map(|b| b.0)
     }
 
     pub(crate) fn press_button(&mut self, b: Button) {
@@ -119,6 +130,7 @@ impl Editor {
             Button::ShowBottom => self.show_bottom(),
             Button::HideRight => self.hide_right(),
             Button::ShowRight => self.select_right_tab(self.right_last()),
+            Button::Settings => self.open_settings(""),
         }
     }
 

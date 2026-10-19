@@ -178,6 +178,30 @@ impl Editor {
     }
 
     /// Ctrl+F2・`:RunStop`: 構成の窓を止める（ターミナルで構成の窓を出していればそれ、無ければ最後に動かしたもの）。出力は残す
+    /// 状態行の「▶ 構成の名前」の上か（メニュー・確認の窓を出している間は違う）
+    pub fn on_run_label(&self, row: usize, col: usize) -> bool {
+        self.menu.is_none() && row == self.screen.1 && self.run_hit.get().is_some_and(|(a, b)| col >= a && col < b)
+    }
+
+    /// 状態行の「▶ 構成の名前」を押した（左でも右クリックでも）: 実行・選ぶ・編集・止める
+    pub(crate) fn run_menu(&mut self, row: usize, col: usize) {
+        let name = self.run_selected.clone();
+        let mut m = crate::menu::Menu::new(row, col);
+        if let Some(n) = &name {
+            m = m.item(format!("▶ {n} を実行（Shift+F10）"), |e| e.run_command(""));
+        }
+        let running = self.terminals.list.iter().any(|t| t.name.starts_with(RUN_PREFIX) && !t.exited);
+        m = m.item("構成を選んで実行…（Alt+Shift+F10）", |e| e.open_run_chooser());
+        if self.run_last.is_some() {
+            m = m.item("もう一度実行（Ctrl+F5）", |e| e.run_again());
+        }
+        if running {
+            m = m.item("■ 止める（Ctrl+F2）", |e| e.run_stop());
+        }
+        m = m.sep().item("構成の編集…", move |e| e.open_run_dialog(name.as_deref()));
+        self.open_menu(m);
+    }
+
     pub(crate) fn run_stop(&mut self) {
         let active = self.terminals.list.get(self.terminals.active).filter(|t| t.name.starts_with(RUN_PREFIX) && !t.exited).map(|t| t.name.clone());
         let last = self.run_last.as_ref().map(|n| format!("{RUN_PREFIX}{n}"));

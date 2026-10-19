@@ -74,6 +74,7 @@ pub static SCHEMA: &[Item] = &[
     item("appearance.status_lang", "外観", "状態の行: 言語", B, "true", ""),
     // エディタ
     item("editor.line_numbers", "エディタ", "行番号", SKind::Choice(&[("absolute", "絶対"), ("relative", "相対（今の行は絶対）"), ("off", "出さない")]), "absolute", "Vim の number / relativenumber"),
+    item("editor.tabs", "エディタ", "タブ", B, "true", "本文の上に開いているファイルのタブを出す（× で閉じる・右クリックでまとめて閉じる）"),
     item("editor.wrap", "エディタ", "折り返す", B, "false", "画面の幅で行を折り返して表示する"),
     pitem("editor.indent_style", "エディタ", "インデント", SKind::Choice(&[("spaces", "空白"), ("tabs", "タブ")]), "spaces", "Tab キー・>>・自動インデントで入れるもの"),
     pitem("editor.indent_width", "エディタ", "インデントの幅", SKind::Int(1, 16), "4", ""),
@@ -232,8 +233,8 @@ pub fn render(values: &HashMap<String, String>, header: &str) -> String {
 impl Settings {
     /// 全体の設定と、`root` のプロジェクトの上書きを読む（試験では全体を読まない）
     pub fn load(root: Option<&Path>) -> Settings {
-        // 試験は Vim の操作で書いてある（Vim を使わないときの試験は set_vim(false) で）
-        let global = if cfg!(test) { HashMap::from([("vim.enabled".to_string(), "true".to_string())]) } else { global_path().and_then(|p| std::fs::read_to_string(p).ok()).map(|s| parse(&s)).unwrap_or_default() };
+        // 試験は Vim の操作で書いてあり、本文は 1 行目から（Vim を使わないときの試験は set_vim(false) で、タブは settings.set で出す）
+        let global = if cfg!(test) { HashMap::from([("vim.enabled".to_string(), "true".to_string()), ("editor.tabs".to_string(), "false".to_string())]) } else { global_path().and_then(|p| std::fs::read_to_string(p).ok()).map(|s| parse(&s)).unwrap_or_default() };
         let mut s = Settings { global, project: HashMap::new(), root: None };
         s.set_root(root);
         s

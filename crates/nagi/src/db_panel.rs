@@ -1738,29 +1738,59 @@ impl Editor {
         let Some(p) = &self.db else { return Vec::new() };
         let c = &p.conns[i];
         let width = |s: &str| nagi_core::display_col(s, s.len(), false);
-        let mut v = Vec::new();
-        // 左端の「出す」ボタン（»）と重ならないように 2 列あける
-        let mut x = 2;
-        let mut push = |v: &mut Vec<(String, usize, usize, BarItem)>, s: String, item: BarItem| {
-            let n = width(&s);
-            v.push((s, x, n, item));
-            x += n + 2;
-        };
-        push(&mut v, "▶ 実行".into(), BarItem::Run);
-        push(&mut v, "Ctrl+Enter".into(), BarItem::Label);
-        push(&mut v, "＋ 新しいクエリ".into(), BarItem::NewQuery);
-        if p.kind(i) != Some(Kind::Salesforce) {
-            push(&mut v, format!("Tx: {} ▾", if c.manual { "手動" } else { "自動" }), BarItem::Tx);
-        }
-        if c.manual {
-            push(&mut v, format!("未コミット {} 件", c.pending), BarItem::Pending);
-            push(&mut v, "✓ コミット".into(), BarItem::Commit);
-            push(&mut v, "↺ ロールバック".into(), BarItem::Rollback);
-        }
         let right = format!("{} › {} ▾", p.sources[i].name, if c.schema.is_empty() { "…" } else { &c.schema });
-        let n = width(&right);
-        v.push((right, w.saturating_sub(n + 1), n, BarItem::Schema));
-        v
+        // 狭ければ、説明の字・件数を外し、ボタンを記号だけにし、それでも入らなければ接続先の名前を詰める（重ねない）
+        for level in 0..3 {
+            let short = level >= 1;
+            let mut v = Vec::new();
+            // 左端の「出す」ボタン（»）と重ならないように 2 列あける
+            let mut x = 2;
+            let mut push = |v: &mut Vec<(String, usize, usize, BarItem)>, s: &str, item: BarItem| {
+                let n = width(s);
+                v.push((s.to_string(), x, n, item));
+                x += n + 2;
+            };
+            push(&mut v, if short { "▶" } else { "▶ 実行" }, BarItem::Run);
+            if level == 0 {
+                push(&mut v, "Ctrl+Enter", BarItem::Label);
+            }
+            push(&mut v, if short { "＋" } else { "＋ 新しいクエリ" }, BarItem::NewQuery);
+            if p.kind(i) != Some(Kind::Salesforce) {
+                let tx = if c.manual { "手動" } else { "自動" };
+                push(&mut v, &if short { format!("{tx}▾") } else { format!("Tx: {tx} ▾") }, BarItem::Tx);
+            }
+            if c.manual {
+                if level == 0 {
+                    push(&mut v, &format!("未コミット {} 件", c.pending), BarItem::Pending);
+                }
+                push(&mut v, if short { "✓" } else { "✓ コミット" }, BarItem::Commit);
+                push(&mut v, if short { "↺" } else { "↺ ロールバック" }, BarItem::Rollback);
+            }
+            // 左のボタンの終わりから 1 列あけて、右端の 1 列手前まで
+            let room = w.saturating_sub(x + 1);
+            let n = width(&right);
+            if n <= room {
+                v.push((right, w - n - 1, n, BarItem::Schema));
+                return v;
+            }
+            if level == 2 {
+                // 接続先の名前を後ろから詰める（▾ は残す）
+                if room >= 3 {
+                    let mut t: String = String::new();
+                    for ch in right.chars() {
+                        if width(&format!("{t}{ch}…▾")) > room {
+                            break;
+                        }
+                        t.push(ch);
+                    }
+                    let t = format!("{t}…▾");
+                    let n = width(&t);
+                    v.push((t, w - n - 1, n, BarItem::Schema));
+                }
+                return v;
+            }
+        }
+        unreachable!()
     }
 
     /// 帯のボタンを押す
@@ -1999,6 +2029,14 @@ pub(crate) mod tests {
         wait(&mut e, &|e| e.db.as_ref().unwrap().conns[i].pending == 1);
         let bar: Vec<String> = e.console_bar(120).into_iter().map(|b| b.0).collect();
         assert!(bar.contains(&"未コミット 1 件".to_string()), "{bar:?}");
+        // 狭くしても、ボタンと接続先は重ならない（説明を外し、記号だけにし、名前を詰める）
+        for w in [30, 45, 60, 80] {
+            let bar = e.console_bar(w);
+            for pair in bar.windows(2) {
+                assert!(pair[0].1 + pair[0].2 < pair[1].1, "{w}: {bar:?}");
+            }
+            assert!(bar.last().is_some_and(|b| b.3 == BarItem::Schema && b.1 + b.2 < w), "{w}: {bar:?}");
+        }
         e.db_commit(i, false);
         keys(&mut e, "o<CR>select count(*) as n from item<Esc><C-m>");
         wait(&mut e, &|e| e.db_results.active_tab().is_some_and(|t| !t.running && !t.rows.is_empty()));
@@ -2038,11 +2076,11 @@ pub struct ConsoleBarView;
 impl crate::layout::View for ConsoleBarView {
     fn rect(&self, ed: &crate::editor::Editor, s: crate::layout::Screen) -> Option<crate::panes::Rect> {
         let _ = s;
-        if ed.windows_top() == 0 {
+        if ed.console_row() == 0 {
             return None;
         }
         let (x, w) = ed.windows_x();
-        Some(crate::panes::Rect { x, y: 0, w, h: 1 })
+        Some(crate::panes::Rect { x, y: ed.tabs_row(), w, h: 1 })
     }
 
     fn draw(&self, ed: &crate::editor::Editor, p: &mut crate::view::Painter, r: crate::panes::Rect, s: crate::layout::Screen) {
@@ -2070,8 +2108,10 @@ pub(crate) mod draw {
         let cell = p.fonts.cell();
         let (x, w) = ed.windows_x();
         let (x0, wpx) = (x as f32 * cell.w, w as f32 * cell.w);
-        p.out.push(Instance::fill(x0, 0.0, wpx, cell.h, BG));
-        p.out.push(Instance::fill(x0, cell.h - 1.0, wpx, 1.0, rgb(0x2a2a2a)));
+        // タブの行の下
+        let y0 = ed.tabs_row() as f32 * cell.h;
+        p.out.push(Instance::fill(x0, y0, wpx, cell.h, BG));
+        p.out.push(Instance::fill(x0, y0 + cell.h - 1.0, wpx, 1.0, rgb(0x2a2a2a)));
         let hover = ed.hover_bar;
         for (label, bx, bw, item) in ed.console_bar(w) {
             use crate::db_panel::BarItem;
@@ -2085,9 +2125,9 @@ pub(crate) mod draw {
                 BarItem::Tx => STATUS_FG,
             };
             if hover == Some(item) && item != BarItem::Label && item != BarItem::Pending {
-                p.out.push(Instance::fill((x + bx) as f32 * cell.w - 3.0, 1.0, bw as f32 * cell.w + 6.0, cell.h - 2.0, MATCH_BG));
+                p.out.push(Instance::fill((x + bx) as f32 * cell.w - 3.0, y0 + 1.0, bw as f32 * cell.w + 6.0, cell.h - 2.0, MATCH_BG));
             }
-            p.text(&label, x + bx, 0.0, color);
+            p.text(&label, x + bx, y0, color);
         }
     }
 }

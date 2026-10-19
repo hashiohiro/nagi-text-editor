@@ -70,6 +70,7 @@ mod stats;
 mod view;
 mod list;
 mod menu;
+mod buffer_tabs;
 mod plain;
 mod layout;
 mod component;
@@ -914,7 +915,7 @@ impl App {
         // 出す・隠すのボタンの上なら明るくして名前を出す。ボタンは左端にもあるので、
         // ストライプがまだ出ていなければボタンを優先し、もう出ていればストライプを優先する
         // SQL コンソールの帯のボタン
-        let bar = if row == 0 && ed.windows_top() > 0 {
+        let bar = if row == ed.tabs_row() && ed.console_row() > 0 {
             let (x, w) = ed.windows_x();
             let c = col as usize;
             ed.console_bar(w).into_iter().find(|b| c >= x + b.1 && c < x + b.1 + b.2).map(|b| b.3)
@@ -923,6 +924,10 @@ impl App {
         };
         let bar_changed = bar != ed.hover_bar;
         ed.hover_bar = bar;
+        // バッファのタブ（載せたタブの名前を明るく、× の上なら × を）
+        let buftab = ed.buftab_at(row, col as usize);
+        let bar_changed = bar_changed || buftab != ed.hover_buftab;
+        ed.hover_buftab = buftab;
         let mut hover = ed.button_at(row, col as usize);
         let mut want = want;
         if want.is_some() && want == ed.stripe {
@@ -1036,6 +1041,13 @@ impl App {
             if let Some(b) = ed.button_at(row, col) {
                 ed.press_button(b);
                 ed.hover_button = None;
+                self.sync_ime();
+                self.draw();
+                return;
+            }
+            // 状態行の「▶ 構成の名前」: 実行のメニュー
+            if ed.on_run_label(row, col) {
+                ed.run_menu(row, col);
                 self.sync_ime();
                 self.draw();
                 return;
@@ -1481,7 +1493,11 @@ impl ApplicationHandler for App {
                     let cell = f.cell();
                     let (row, col) = ((self.mouse.1 as f32 / cell.h) as usize, (self.mouse.0.max(0.0) as f32 / cell.w) as usize);
                     // 部品の右クリックのメニュー（layout.rs の View の context・menu.rs）
-                    if layout::context(ed, layout::Screen { rows: ed.screen.1, cols: ed.screen.0 }, row, col) {
+                    if ed.on_run_label(row, col) {
+                        ed.run_menu(row, col);
+                        self.sync_ime();
+                        self.draw();
+                    } else if layout::context(ed, layout::Screen { rows: ed.screen.1, cols: ed.screen.0 }, row, col) {
                         self.sync_ime();
                         self.draw();
                     } else if ed.window_at(row, col).is_some_and(|(_, r)| row < r.y + ed.text_rows(r)) && !ed.has_prompt() {

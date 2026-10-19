@@ -104,12 +104,18 @@ impl Editor {
 
     /// 確かめる（いいえ・Esc・外を押したら `no`）
     pub(crate) fn ask_or(&mut self, question: impl Into<String>, yes: impl FnOnce(&mut Editor) + 'static, no: impl FnOnce(&mut Editor) + 'static) {
+        let m = Menu::new(0, 0).item_key("はい（Y）", 'y', yes).item_key("いいえ（N）", 'n', no);
+        self.ask_menu(question, m, 1);
+    }
+
+    /// 選択肢を並べて確かめる（`m` の項目を画面の真ん中に。Esc・外を押したら `cancel` 番目の項目）
+    pub(crate) fn ask_menu(&mut self, question: impl Into<String>, mut m: Menu, cancel: usize) {
         let q = question.into();
         let w = nagi_core::display_col(&q, q.len(), false) + 4;
         let (cols, rows) = self.screen;
-        let mut m = Menu::new((rows / 2).saturating_sub(2), cols.saturating_sub(w) / 2).item_key("はい（Y）", 'y', yes).item_key("いいえ（N）", 'n', no);
+        (m.row, m.col) = ((rows / 2).saturating_sub(2), cols.saturating_sub(w) / 2);
         m.title = Some(q);
-        m.cancel = 1;
+        m.cancel = cancel;
         self.open_menu(m);
     }
 

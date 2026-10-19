@@ -808,7 +808,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     }
     // 欄・小窓（layout.rs の表の順に下から）
     crate::layout::draw(crate::layout::Layer::Panels, ed, &mut p, crate::layout::Screen { rows, cols });
-    draw_toggle_buttons(&mut p, ed, cols);
+    draw_toggle_buttons(&mut p, ed, cols, false);
     match ed.stripe {
         Some(crate::editor::Side::Left) => draw_stripe_left(&mut p, ed.windows_rows(), ed.left_visible()),
         Some(crate::editor::Side::Bottom) => draw_stripe_bottom(&mut p, rows, cols, ed),
@@ -816,6 +816,8 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         Some(crate::editor::Side::Commit) | None => {}
     }
     // ---- 最下行: 左にモード・メッセージ・入力欄、右に位置（Vim の showmode と ruler と同じ形）
+    // 右端の 2 列は設定のボタン（⚙）
+    let scols = cols.saturating_sub(2);
     let y = rows as f32 * cell.h;
     // はみ出した本文の最終行（スムーズスクロール中）を最下行の地で隠す
     p.out.push(Instance::fill(0.0, y, w as f32, h as f32 - y, BG));
@@ -824,10 +826,13 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     // 選んでいる実行の構成（Shift+F10 で動かすもの）
     // （設定の「状態の行」で出すものを選べる）
     let st = &ed.settings;
+    // 押すと実行のメニュー（run_configs.rs の run_menu）。構成がまだ無ければ ▶ だけ
     let keys = match &ed.run_selected {
-        Some(r) if st.bool("appearance.status_run") => format!("{keys}   ▶ {r}"),
-        _ => keys,
+        _ if !st.bool("appearance.status_run") => keys,
+        Some(r) => format!("{keys}   ▶ {r}"),
+        None => format!("{keys}   ▶"),
     };
+    ed.run_hit.set(None);
     // git のブランチ（main ↑1）
     let keys = match ed.git_branch_label() {
         Some(b) if st.bool("appearance.status_branch") => format!("{keys}   {b}"),
@@ -855,6 +860,11 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             ruler_col(ed)
         )
     };
+    // 入りきらなければパスをファイル名だけに（入らないと位置ごと出なくなる）
+    let ruler = match ed.buf.path.as_deref().and_then(|p| p.file_name()) {
+        Some(f) if !name.is_empty() && p.width(&ruler) + 2 > scols => ruler.replacen(&name, &f.to_string_lossy(), 1),
+        _ => ruler,
+    };
     let re = if ed.search.regex { "  [.*]" } else { "" };
     let count = match (ed.search.current, ed.match_count()) {
         _ if ed.query.text.is_empty() => format!("{re} "),
@@ -874,7 +884,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             let end = status_text(&mut p, left, notified, y, color);
             // Vim を使わないときは矢印・Enter・右クリックで書いた説明
             let help = if ed.plain() { st.plain.as_deref().unwrap_or(&st.help) } else { &st.help };
-            let pc = cols.saturating_sub(p.width(help));
+            let pc = scols.saturating_sub(p.width(help));
             if !help.is_empty() && end + 2 <= pc {
                 p.text(help, pc, y, STATUS_FG);
             }
@@ -884,7 +894,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             let g = ed.grep.as_ref().unwrap();
             prompt_line(&mut p, crate::grep_panel::GREP_LEAD, &g.query.text, g.query.cursor, &ed.preedit, y, true);
             let info = format!("{}{} 件{} ", if g.regex { "[.*]  " } else { "" }, g.hits.len(), if g.searching() { " …" } else { "" });
-            let pc = cols.saturating_sub(p.width(&info));
+            let pc = scols.saturating_sub(p.width(&info));
             p.text(&info, pc, y, STATUS_FG);
         }
         State::Finder if ed.finder.is_some() => {
@@ -898,13 +908,13 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             }
             let mode = if f.field.is_insert() { String::new() } else { format!("-- {} --  j/k 選ぶ  Esc 閉じる   ", f.field.mode_label()) };
             let info = format!("{mode}{}  {}/{}{} ", f.source.label(), f.hits.len(), f.items.len(), if f.walking() { " …" } else { "" });
-            let pc = cols.saturating_sub(p.width(&info));
+            let pc = scols.saturating_sub(p.width(&info));
             p.text(&info, pc, y, STATUS_FG);
         }
         State::Search => {
             let lead = if ed.search.forward { "/" } else { "?" };
             prompt_line(&mut p, lead, &ed.query.text, ed.query.cursor, &ed.preedit, y, true);
-            let pc = cols.saturating_sub(p.width(&count));
+            let pc = scols.saturating_sub(p.width(&count));
             p.text(&count, pc, y, STATUS_FG);
         }
         State::Replace => {
@@ -912,7 +922,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             prompt_line(&mut p, "/", &ed.query.text, ed.query.cursor, &ed.preedit, y, ed.replace_field == 0);
             prompt_line(&mut p, "→", &ed.repl.text, ed.repl.cursor, &ed.preedit, y2, ed.replace_field == 1);
             let c = format!("Enter: 1 件  Alt+A: 全件   {count}");
-            let pc = cols.saturating_sub(p.width(&c));
+            let pc = scols.saturating_sub(p.width(&c));
             p.text(&c, pc, y2, STATUS_FG);
         }
         _ => {
@@ -941,12 +951,20 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             };
             let end = status_text(&mut p, &left, !ed.notify.text.is_empty(), y, color);
             // 長いメッセージと重なるときは位置表示を出さない（メッセージを優先する）
-            let pc = cols.saturating_sub(p.width(&ruler));
+            let pc = scols.saturating_sub(p.width(&ruler));
             if end + 2 <= pc {
                 p.text(&ruler, pc, y, STATUS_FG);
+                // ▶ 構成の名前 の列（押す所）
+                if let Some(i) = ruler.find("▶") {
+                    let run = ed.run_selected.as_ref().filter(|_| st.bool("appearance.status_run")).map_or("▶".to_string(), |r| format!("▶ {r}"));
+                    let c0 = pc + p.width(&ruler[..i]);
+                    ed.run_hit.set(Some((c0, c0 + p.width(&run))));
+                }
             }
         }
     }
+    // 状態行のボタン（⚙）は状態行を描いた後に
+    draw_toggle_buttons(&mut p, ed, cols, true);
     // 画面を覆うダイアログ（layout.rs）
     crate::layout::draw(crate::layout::Layer::Overlays, ed, &mut p, crate::layout::Screen { rows, cols });
     // タブのアイコンにマウスを載せていれば、その下に名前
@@ -1040,13 +1058,14 @@ pub(crate) fn draw_stripe_bottom(p: &mut Painter, rows: usize, cols: usize, ed: 
 }
 
 /// 出す・隠すのボタン。ふだんは薄い 1 文字、マウスを載せると明るくして名前を横に出す
-pub(crate) fn draw_toggle_buttons(p: &mut Painter, ed: &Editor, cols: usize) {
+pub(crate) fn draw_toggle_buttons(p: &mut Painter, ed: &Editor, cols: usize, status_row: bool) {
     let cell = p.fonts.cell();
-    for (b, row, col) in ed.toggle_buttons() {
+    for (b, row, col) in ed.toggle_buttons().into_iter().filter(|b| (b.1 == ed.screen.1) == status_row) {
         let hover = ed.hover_button == Some(b);
         let (x, y) = (col as f32 * cell.w, row as f32 * cell.h);
         // 本文の長い行と重なっても見えるように地を塗る
-        p.out.push(Instance::fill(x, y, cell.w, cell.h, if hover { MATCH_BG } else { BG }));
+        let cw = if b.wide() { 2.0 * cell.w } else { cell.w };
+        p.out.push(Instance::fill(x, y, cw, cell.h, if hover { MATCH_BG } else { BG }));
         let color = if hover { FG } else { STATUS_FG };
         match b {
             // 下の欄は、左右の « » に合わせて縦の二重の山形を線で描く（フォントに揃った字が無いため）

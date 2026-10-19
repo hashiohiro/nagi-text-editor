@@ -156,9 +156,24 @@ impl Editor {
         out
     }
 
-    /// 窓の領域の上に取る行（SQL コンソールの帯）
+    /// 窓の領域の上に取る行（バッファのタブと SQL コンソールの帯）
     pub fn windows_top(&self) -> usize {
-        usize::from(self.console_source().is_some() && self.diff.is_none() && !self.log_fullscreen() && self.db_table.is_none())
+        self.tabs_row() + self.console_row()
+    }
+
+    /// 差分・ログ・テーブルを画面いっぱいに出していないか（タブ・帯を出す）
+    fn editor_shown(&self) -> bool {
+        self.diff.is_none() && !self.log_fullscreen() && self.db_table.is_none()
+    }
+
+    /// バッファのタブの行（buffer_tabs.rs。設定の「タブ」で隠せる）
+    pub fn tabs_row(&self) -> usize {
+        usize::from(self.editor_shown() && self.settings.bool("editor.tabs"))
+    }
+
+    /// SQL コンソールの帯の行（タブの下）
+    pub fn console_row(&self) -> usize {
+        usize::from(self.console_source().is_some() && self.editor_shown())
     }
 
     pub fn active_rect(&self) -> Rect {
