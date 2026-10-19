@@ -36,9 +36,17 @@ impl LogRow {
     }
 }
 
-/// 履歴（幅 `w`）の真ん中の列で、横に送る部分の見える幅（右の作者・日時・ハッシュの分を除いた、だいたいの幅）
-pub fn log_text_w(w: usize) -> usize {
-    let (bw, dw) = (20.min(w / 6), 42.min(w / 3));
+/// 履歴（幅 `w`）の左のブランチの列と右の中身の列の幅（ドラッグで変えていればその幅。真ん中に 20 列は残す）
+pub fn log_cols(w: usize, branch_w: Option<usize>, detail_w: Option<usize>) -> (usize, usize) {
+    let bmin = 6.min(w);
+    let bw = branch_w.unwrap_or(20.min(w / 6)).clamp(bmin, (w / 2).max(bmin));
+    let dmin = 10.min(w);
+    let dw = detail_w.unwrap_or(42.min(w / 3)).clamp(dmin, w.saturating_sub(bw + 2 + 20).max(dmin));
+    (bw, dw)
+}
+
+/// 履歴の真ん中の列で、横に送る部分の見える幅（右の作者・日時・ハッシュの分を除いた、だいたいの幅）
+pub fn log_text_w(w: usize, (bw, dw): (usize, usize)) -> usize {
     w.saturating_sub(bw + dw + 2).saturating_sub(32).max(1)
 }
 
@@ -102,6 +110,8 @@ pub struct LogView {
     pub loading: bool,
     /// ブランチの列で選んでいるもの（branches の番号）
     pub branch_sel: Option<usize>,
+    /// ブランチの列の先頭に見せている行（見出しの行も数える）
+    pub branch_top: usize,
     /// 読み直すための元（ファイルの履歴のパス・比べる範囲）
     src_path: Option<String>,
     src_range: Option<String>,
@@ -173,22 +183,21 @@ fn spawn<T: Send + 'static>(waker: Option<std::sync::Arc<dyn Fn() + Send + Sync>
 impl LogView {
     /// ブランチの列の行（見出しの下を 0 とする）→ ブランチの番号（区分の見出しの行は None）
     pub fn branch_at(&self, row: usize) -> Option<usize> {
-        let mut r = 0;
+        self.branch_rows().get(self.branch_top + row).copied().flatten()
+    }
+
+    /// ブランチの列の行（見出しは None、ブランチは branches の番号）
+    pub fn branch_rows(&self) -> Vec<Option<usize>> {
+        let mut out = Vec::new();
         let mut last = "";
         for (i, (sec, _, _)) in self.branches.iter().enumerate() {
             if sec != last {
-                if r == row {
-                    return None;
-                }
-                r += 1;
+                out.push(None);
                 last = sec;
             }
-            if r == row {
-                return Some(i);
-            }
-            r += 1;
+            out.push(Some(i));
         }
-        None
+        out
     }
 
     /// 名前（ブランチ・タグ）の指すコミットの行（見せている行の番号）
@@ -307,6 +316,7 @@ impl Editor {
             left: 0,
             docked,
             branch_sel: None,
+            branch_top: 0,
             src_path: path.clone(),
             src_range: range.clone(),
             rows: Vec::new(),
@@ -331,8 +341,6 @@ impl Editor {
 
     /// 裏で取ったログ・ブランチ・コミットの中身を受け取る。変わったら true
     pub fn poll_log(&mut self) -> bool {
-        let waker = self.waker.clone();
-        let root = self.git.root.clone();
         let Some(l) = &mut self.log else { return false };
         let mut changed = false;
         if let Some(Ok(r)) = l.rx_log.as_ref().map(|rx| rx.try_recv()) {
@@ -366,7 +374,16 @@ impl Editor {
             }
             changed = true;
         }
-        // 選んでいるコミットの中身がまだなら取りに行く
+        self.log_request_detail();
+        changed
+    }
+
+    /// 選んでいるコミットの中身がまだなら、裏で取りに行く。描く前にも呼ぶ（選びはキー・マウスで変わり、
+    /// 裏の仕事が終わったときだけ見ていると、ほかの仕事が無い間は前のコミットの中身のままになる）
+    pub(crate) fn log_request_detail(&mut self) {
+        let waker = self.waker.clone();
+        let root = self.git.root.clone();
+        let Some(l) = &mut self.log else { return };
         let want = l.current().map(|c| c.hash.clone());
         if let (Some(h), Some(root)) = (want, root) {
             if l.detail.as_ref().is_none_or(|d| d.hash != h) && l.rx_detail.is_none() {
@@ -376,7 +393,6 @@ impl Editor {
                 });
             }
         }
-        changed
     }
 
     /// 履歴の画面のキー
@@ -483,15 +499,14 @@ impl Editor {
     /// 真ん中はコミットを選ぶ（ダブルクリックで変えたファイルへ）、右は変えたファイルを選ぶ（ダブルクリックで差分）
     pub(crate) fn log_click(&mut self, row: usize, col: usize, w: usize, clicks: u32) {
         self.set_state(State::Log);
+        let (bw, dw) = self.log_cols_for(w);
         let Some(l) = &mut self.log else { return };
         l.confirm = None;
         if row == 0 {
             return;
         }
         l.filter = None;
-        // 描き方（view.rs の draw_log_view）と同じ割り付け
-        let bw = 20.min(w / 6);
-        let dw = 42.min(w / 3);
+        // 描き方（draw_log_view）と同じ割り付け
         let cx = bw + 1;
         let cw = w.saturating_sub(bw + dw + 2);
         let dx = cx + cw + 1;
@@ -643,15 +658,39 @@ impl Editor {
     }
 
     /// ホイール: 表示だけを送る（選んでいるコミットは動かさない。キーで動かすと見える範囲へ戻る）。
-    /// 横は真ん中の列（グラフ・ref・題名）を送る。`w` は履歴の幅
-    pub(crate) fn log_wheel(&mut self, dy: isize, dx: isize, w: usize) {
+    /// 横は真ん中の列（グラフ・ref・題名）を送る。`w` は履歴の幅、`col` は履歴の中のマウスの列（左のブランチの列ならそこを送る）
+    pub(crate) fn log_wheel(&mut self, dy: isize, dx: isize, w: usize, col: usize) {
         let rows = self.log_rows();
+        let cols = self.log_cols_for(w);
         let Some(l) = &mut self.log else { return };
+        if col < cols.0 {
+            let n = l.branch_rows().len();
+            l.branch_top = (l.branch_top as isize + dy).clamp(0, n.saturating_sub(rows) as isize) as usize;
+            return;
+        }
         l.top = (l.top as isize + dy).clamp(0, l.visible.len().saturating_sub(rows) as isize) as usize;
         if dx != 0 {
             let widest = l.visible.iter().skip(l.top).take(rows).map(|&i| l.rows[i].text_width()).max().unwrap_or(0);
-            crate::list::hwheel(&mut l.left, widest + 1, log_text_w(w), dx);
+            crate::list::hwheel(&mut l.left, widest + 1, log_text_w(w, cols), dx);
         }
+    }
+
+    /// 履歴（幅 `w`）の左のブランチの列と右の中身の列の幅
+    pub(crate) fn log_cols_for(&self, w: usize) -> (usize, usize) {
+        log_cols(w, self.log_branch_w, self.log_detail_w)
+    }
+
+    /// 履歴を出している矩形（窓の領域いっぱいか、下の欄の中身）。区切りをつかむのに使う
+    pub(crate) fn log_rect(&self) -> Option<crate::panes::Rect> {
+        let l = self.log.as_ref()?;
+        if self.diff.is_some() {
+            return None;
+        }
+        if !l.docked {
+            let (x, w) = self.windows_x();
+            return Some(crate::panes::Rect { x, y: 0, w, h: self.windows_rows() });
+        }
+        (self.bottom_kind == crate::result_grid::BottomKind::Git).then(|| self.bottom_content_rect()).flatten()
     }
 
     /// 履歴の行の高さ（下の欄か窓の領域か）
@@ -666,8 +705,8 @@ impl Editor {
     /// 右クリック（欄の中の行・列・幅と、メニューを出す画面の位置）。押した行を選んでから、その行のメニューを出す
     pub(crate) fn log_context(&mut self, row: usize, col: usize, w: usize, at: (usize, usize)) -> bool {
         self.log_click(row, col, w, 1);
+        let (bw, _) = self.log_cols_for(w);
         let Some(l) = &self.log else { return false };
-        let bw = 20.min(w / 6);
         let cur = self.git.status.as_ref().map(|s| s.branch.clone()).unwrap_or_default();
         let upstream = self.git.status.as_ref().and_then(|s| s.upstream.clone());
         let menu = if col < bw {
@@ -904,7 +943,7 @@ impl crate::layout::View for LogScreenView {
     fn draw(&self, ed: &crate::editor::Editor, p: &mut crate::view::Painter, r: crate::panes::Rect, s: crate::layout::Screen) {
         let _ = (r, s);
         if let Some(l) = &ed.log {
-            draw::draw_log_view(p, l, r, &ed.preedit, ed.git.status.as_ref().map(|s| (s.branch.as_str(), s.ahead as usize, s.behind as usize)));
+            draw::draw_log_view(p, l, r, ed.log_cols_for(r.w), &ed.preedit, ed.git.status.as_ref().map(|s| (s.branch.as_str(), s.ahead as usize, s.behind as usize)));
         }
     }
 
@@ -920,8 +959,8 @@ impl crate::layout::View for LogScreenView {
     }
 
     fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, dy: isize, dx: isize) -> bool {
-        let _ = (r, row, col, dx);
-        ed.log_wheel(dy, dx, r.w);
+        let _ = row;
+        ed.log_wheel(dy, dx, r.w, col - r.x);
         true
     }
 }
@@ -934,13 +973,11 @@ pub(crate) mod draw {
 
     /// 履歴（窓の領域全体）。左にブランチ、中央にグラフ付きのコミット、右に選んだコミットの中身
     /// `ab` は今のブランチの (名前, 送るコミット数, 受け取るコミット数)
-    pub(crate) fn draw_log_view(p: &mut Painter, l: &crate::log_view::LogView, r: Rect, preedit: &str, ab: Option<(&str, usize, usize)>) {
+    pub(crate) fn draw_log_view(p: &mut Painter, l: &crate::log_view::LogView, r: Rect, (bw, dw): (usize, usize), preedit: &str, ab: Option<(&str, usize, usize)>) {
         const LANES: [[f32; 4]; 5] = [rgb(0x87afd7), rgb(0xd7af87), rgb(0x87af87), rgb(0xd787af), rgb(0xafafd7)];
         let cell = p.fonts.cell();
         let (x0, y0) = (r.x as f32 * cell.w, r.y as f32 * cell.h);
         p.out.push(Instance::fill(x0, y0, r.w as f32 * cell.w, r.h as f32 * cell.h, BG));
-        let bw = 20.min(r.w / 6);
-        let dw = 42.min(r.w / 3);
         let cx = r.x + bw + 1;
         let cw = r.w.saturating_sub(bw + dw + 2);
         let dx = cx + cw + 1;
@@ -975,22 +1012,24 @@ pub(crate) mod draw {
         // 左: ブランチ
         let saved = p.cols;
         p.cols = r.x + bw;
-        let mut y = y0 + cell.h;
-        let mut last_sec = "";
-        for (i, (sec, name, cur)) in l.branches.iter().enumerate() {
-            if y >= y0 + body as f32 * cell.h {
-                break;
+        // 見出し（ローカル・リモート・タグ）とブランチを、先頭の行（branch_top）から
+        let rows = l.branch_rows();
+        for (k, item) in rows.iter().skip(l.branch_top).take(body).enumerate() {
+            let y = y0 + (1 + k) as f32 * cell.h;
+            match item {
+                None => {
+                    // 見出し: 次のブランチの節
+                    let sec = rows[l.branch_top + k + 1..].iter().flatten().next().map_or("", |&i| l.branches[i].0.as_str());
+                    p.text(&format!(" {sec}"), r.x, y, STATUS_FG);
+                }
+                Some(i) => {
+                    let (_, name, cur) = &l.branches[*i];
+                    if l.branch_sel == Some(*i) {
+                        p.out.push(Instance::fill(x0, y, bw as f32 * cell.w, cell.h, MATCH_BG));
+                    }
+                    p.text(&format!(" {} {name}", if *cur { '*' } else { ' ' }), r.x, y, if *cur { FG } else { STATUS_FG });
+                }
             }
-            if sec != last_sec {
-                p.text(&format!(" {sec}"), r.x, y, STATUS_FG);
-                y += cell.h;
-                last_sec = sec;
-            }
-            if l.branch_sel == Some(i) {
-                p.out.push(Instance::fill(x0, y, bw as f32 * cell.w, cell.h, MATCH_BG));
-            }
-            p.text(&format!(" {} {name}", if *cur { '*' } else { ' ' }), r.x, y, if *cur { FG } else { STATUS_FG });
-            y += cell.h;
         }
         p.cols = saved;
         p.out.push(Instance::fill((r.x + bw) as f32 * cell.w + cell.w * 0.5, y0 + cell.h, 1.0, body as f32 * cell.h, LINE_NO));
@@ -1121,6 +1160,7 @@ mod tests {
         e.log = Some(LogView {
             left: 0,
             branch_sel: None,
+            branch_top: 0,
             src_path: None,
             src_range: None,
             docked: true,
@@ -1159,6 +1199,76 @@ mod tests {
         e.bottom_click(2, 60, 1);
         let l = e.log.as_ref().unwrap();
         assert_eq!((l.focus_files, l.selected), (false, 0));
+    }
+
+    /// 本物のリポジトリで: コミットを選ぶと右の中身がそのコミットになる（裏の仕事が無くても、描く前に取りに行く）・
+    /// ブランチの列はホイールで送れる・列の間の線をドラッグで動かせる
+    #[test]
+    fn detail_follows_and_columns() {
+        let dir = std::env::temp_dir().join(format!("nagi-logcols-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = |args: &[&str]| String::from_utf8_lossy(&nagi_workers::git::git(&dir, args).unwrap()).trim().to_string();
+        g(&["init", "-q", "-b", "main"]);
+        g(&["config", "user.email", "test@example.com"]);
+        g(&["config", "user.name", "test"]);
+        for f in ["a", "b", "c"] {
+            std::fs::write(dir.join(f), format!("{f}\n")).unwrap();
+            g(&["add", "."]);
+            g(&["commit", "-q", "-m", &format!("add {f}")]);
+        }
+        for k in 0..40 {
+            g(&["branch", &format!("b{k:02}")]);
+        }
+        let mut buf = nagi_core::Buffer::open(&dir.join("a")).unwrap();
+        buf.path = Some(dir.join("a"));
+        let mut e = Editor::new(buf, None);
+        e.set_screen(160, 40);
+        e.start_git();
+        e.open_log(false);
+        let wait = |e: &mut Editor, what: &dyn Fn(&Editor) -> bool| {
+            for _ in 0..500 {
+                e.poll_background();
+                if what(e) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            panic!("届かない");
+        };
+        wait(&mut e, &|e| e.log.as_ref().is_some_and(|l| !l.loading && !l.branches.is_empty() && l.detail.is_some()));
+        // 2 つ目のコミットを押す → 描く前の取りに行き（view::build が呼ぶ）で、右の中身がそのコミットになる
+        let r = e.log_rect().unwrap();
+        let (bw, _) = e.log_cols_for(r.w);
+        e.log_click(2, bw + 5, r.w, 1);
+        let want = e.log.as_ref().unwrap().current().unwrap().hash.clone();
+        assert_ne!(e.log.as_ref().unwrap().detail.as_ref().unwrap().hash, want);
+        e.log_request_detail();
+        assert!(e.log.as_ref().unwrap().rx_detail.is_some(), "選んだらすぐ取りに行く");
+        wait(&mut e, &|e| e.log.as_ref().unwrap().detail.as_ref().is_some_and(|d| d.hash == want));
+        // ブランチの列はホイールで送る（41 本で画面に入らない）。送った分だけ、押した行のブランチもずれる
+        let first = e.log.as_ref().unwrap().branch_at(0);
+        e.log_wheel(5, 0, r.w, 1);
+        let l = e.log.as_ref().unwrap();
+        assert_eq!(l.branch_top, 5);
+        assert_ne!(l.branch_at(0), first);
+        assert_eq!(l.branch_at(0), l.branch_rows()[5]);
+        e.log_wheel(-100, 0, r.w, 1);
+        assert_eq!(e.log.as_ref().unwrap().branch_top, 0);
+        // 列の間の線をつかんで動かす（ダブルクリックで元に戻す）
+        let (bw, dw) = e.log_cols_for(r.w);
+        let sep = e.sep_at(r.y + 3, r.x + bw).expect("ブランチの列の右の線");
+        assert!(sep.horizontal_drag());
+        e.drag_sep(&sep, r.y + 3, r.x + 40);
+        assert_eq!(e.log_cols_for(r.w).0, 40);
+        let sep2 = e.sep_at(r.y + 3, r.x + r.w - dw - 1).expect("中身の列の左の線");
+        e.drag_sep(&sep2, r.y + 3, r.x + r.w - 61);
+        assert_eq!(e.log_cols_for(r.w).1, 60);
+        assert!(e.sep_at(r.y, r.x + 40).is_none(), "見出しの行ではつかまない");
+        e.reset_sep(&sep);
+        e.reset_sep(&sep2);
+        assert_eq!(e.log_cols_for(r.w), (bw, dw));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 本物のリポジトリで: ブランチの列を押して選ぶ・ダブルクリックでそのブランチの履歴・右クリックでチェックアウト・本文を押すと戻る・右クリックのメニューで消す

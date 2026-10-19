@@ -339,7 +339,7 @@ impl crate::layout::View for BottomView {
                     crate::result_grid::grid_hwheel(&mut t.col, &mut t.hscroll, &t.widths, r.w, dx);
                 }
             }
-            BottomKind::Git => ed.log_wheel(dy, dx, r.w),
+            BottomKind::Git => ed.log_wheel(dy, dx, r.w, col.saturating_sub(r.x)),
             BottomKind::Problems => {
                 let n = ed.problem_rows().len();
                 let p = &mut ed.problems;
@@ -407,7 +407,7 @@ pub(crate) mod draw {
             },
             BottomKind::Problems => draw_problems(p, ed, c, focused),
             BottomKind::Git => match &ed.log {
-                Some(l) if l.docked => draw_log_view(p, l, c, &ed.preedit, ed.git.status.as_ref().map(|s| (s.branch.as_str(), s.ahead as usize, s.behind as usize))),
+                Some(l) if l.docked => draw_log_view(p, l, c, ed.log_cols_for(c.w), &ed.preedit, ed.git.status.as_ref().map(|s| (s.branch.as_str(), s.ahead as usize, s.behind as usize))),
                 _ => empty(p, "git のリポジトリではありません"),
             },
             BottomKind::Terminal => draw_terminal(p, ed, c, focused),

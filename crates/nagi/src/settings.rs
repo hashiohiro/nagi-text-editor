@@ -313,6 +313,8 @@ impl crate::editor::Editor {
             self.left_w = self.left_w.or(num("state.left_width"));
             self.right_w = self.right_w.or(num("state.right_width"));
             self.bottom_h = self.bottom_h.or(num("state.bottom_height"));
+            self.log_branch_w = self.log_branch_w.or(num("state.log_branch_width"));
+            self.log_detail_w = self.log_detail_w.or(num("state.log_detail_width"));
         }
         self.sync_clipboard();
         if !self.settings.bool("vim.hlsearch") {
@@ -375,7 +377,13 @@ impl crate::editor::Editor {
         if !self.settings.bool("appearance.remember_panels") {
             return;
         }
-        for (k, v) in [("state.left_width", self.left_w), ("state.right_width", self.right_w), ("state.bottom_height", self.bottom_h)] {
+        for (k, v) in [
+            ("state.left_width", self.left_w),
+            ("state.right_width", self.right_w),
+            ("state.bottom_height", self.bottom_h),
+            ("state.log_branch_width", self.log_branch_w),
+            ("state.log_detail_width", self.log_detail_w),
+        ] {
             if let Some(v) = v {
                 self.settings.global.insert(k.to_string(), v.to_string());
             }

@@ -685,6 +685,8 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     ed.set_screen(cols, rows);
     // Markdown のプレビュー: 打った内容と幅に合わせて作り直し、カーソルの行へ送る
     ed.refresh_md_preview();
+    // 履歴: 選んでいるコミットの中身を取りに行く（キー・マウスで選びを変えた後）
+    ed.log_request_detail();
     // プロジェクトの木を開いているファイルに合わせる
     ed.sync_tree();
     // ターミナルを欄の大きさに合わせる

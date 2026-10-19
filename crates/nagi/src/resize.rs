@@ -3,6 +3,7 @@
 //! - 左の欄と窓の間の縦線（左の欄の幅）
 //! - 窓の領域と下のパネルの間（パネルの見出しの行をつかむ。パネルの高さ）
 //! - 左右に並べた窓の間の縦線、上下に並べた窓の間（上の窓の状態行。Vim と同じ）
+//! - Git の履歴の、左のブランチの列と真ん中の間・真ん中と右の中身の列の間の縦線（列の幅）
 //!
 //! 線の上ではマウスのカーソルを ↔ / ↕ にする。ダブルクリックで元の大きさ（等分）に戻す。
 
@@ -17,13 +18,17 @@ pub enum Sep {
     Bottom,
     /// 窓の並び（根からの道筋）の、`idx` 番目と次の子の間。`area` はその並びの矩形
     Split { path: Vec<usize>, idx: usize, vertical: bool, area: Rect },
+    /// 履歴のブランチの列の右の線（`x` は履歴の左端）
+    LogBranch { x: usize },
+    /// 履歴の中身の列の左の線（`end` は履歴の右端の次の列）
+    LogDetail { end: usize },
 }
 
 impl Sep {
     /// 左右に動かす区切りか（カーソルの形）
     pub fn horizontal_drag(&self) -> bool {
         match self {
-            Sep::Left | Sep::Right => true,
+            Sep::Left | Sep::Right | Sep::LogBranch { .. } | Sep::LogDetail { .. } => true,
             Sep::Bottom => false,
             Sep::Split { vertical, .. } => *vertical,
         }
@@ -86,6 +91,16 @@ impl Editor {
 
     /// 画面の (行, 列) にある区切り
     pub fn sep_at(&self, row: usize, col: usize) -> Option<Sep> {
+        // 履歴の列の間の線（見出しの行より下）
+        if let Some(r) = self.log_rect().filter(|r| row > r.y && row < r.y + r.h) {
+            let (bw, dw) = self.log_cols_for(r.w);
+            if col == r.x + bw {
+                return Some(Sep::LogBranch { x: r.x });
+            }
+            if col + dw + 1 == r.x + r.w {
+                return Some(Sep::LogDetail { end: r.x + r.w });
+            }
+        }
         if self.diff.is_some() || self.log_fullscreen() {
             return None;
         }
@@ -122,6 +137,8 @@ impl Editor {
             Sep::Left => self.left_w = Some(col),
             Sep::Right => self.right_w = Some(self.screen.0.saturating_sub(col + 1)),
             Sep::Bottom => self.bottom_h = Some(self.screen.1.saturating_sub(row)),
+            Sep::LogBranch { x } => self.log_branch_w = Some(col.saturating_sub(*x)),
+            Sep::LogDetail { end } => self.log_detail_w = Some(end.saturating_sub(col + 1)),
             Sep::Split { path, idx, vertical, area } => {
                 let Some(Layout::Split { kids, weights, .. }) = node_mut(&mut self.layout, path) else { return };
                 let n = kids.len();
@@ -148,6 +165,8 @@ impl Editor {
             Sep::Left => self.left_w = None,
             Sep::Right => self.right_w = None,
             Sep::Bottom => self.bottom_h = None,
+            Sep::LogBranch { .. } => self.log_branch_w = None,
+            Sep::LogDetail { .. } => self.log_detail_w = None,
             Sep::Split { path, .. } => {
                 if let Some(Layout::Split { weights, .. }) = node_mut(&mut self.layout, path) {
                     *weights = vec![1.0; weights.len()];

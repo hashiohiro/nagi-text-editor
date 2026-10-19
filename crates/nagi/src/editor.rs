@@ -402,6 +402,9 @@ pub struct Editor {
     pub(crate) right_pending_w: bool,
     /// ドラッグで変えた左の欄の幅・下のパネルの高さ（None は既定の大きさ）
     pub left_w: Option<usize>,
+    /// 履歴の左のブランチの列・右の中身の列の幅（ドラッグで変えたとき）
+    pub log_branch_w: Option<usize>,
+    pub log_detail_w: Option<usize>,
     pub bottom_h: Option<usize>,
     /// 最後に描いた入力欄の縦棒カーソル（列, y の px）。IME の候補の窓の位置に使う
     pub prompt_caret: std::cell::Cell<Option<(usize, f32)>>,
@@ -623,6 +626,8 @@ impl Editor {
             hover_bar: None,
             prompt_caret: Default::default(),
             left_w: None,
+            log_branch_w: None,
+            log_detail_w: None,
             db: None,
             maven: None,
             db_results: Default::default(),
