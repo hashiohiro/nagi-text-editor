@@ -1084,7 +1084,7 @@ checksum = "743fb55ba31b18fb1ecef6bdc9aa2743314978ac084044301a7eee33fb99a20d"
 
 [[package]]
 name = "nagi"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "nagi-core",
  "nagi-render",
@@ -1101,7 +1101,7 @@ dependencies = [
 
 [[package]]
 name = "nagi-core"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "aho-corasick",
  "memchr",
@@ -1114,7 +1114,7 @@ dependencies = [
 
 [[package]]
 name = "nagi-render"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "nagi-text",
  "windows",
@@ -1122,7 +1122,7 @@ dependencies = [
 
 [[package]]
 name = "nagi-syntax"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "nagi-core",
  "pulldown-cmark",
@@ -1140,21 +1140,22 @@ dependencies = [
 
 [[package]]
 name = "nagi-text"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "dwrote",
  "swash",
  "unicode-segmentation",
  "unicode-width",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "nagi-vim"
-version = "0.4.0"
+version = "0.5.0"
 
 [[package]]
 name = "nagi-workers"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "grep-matcher",
  "grep-regex",
