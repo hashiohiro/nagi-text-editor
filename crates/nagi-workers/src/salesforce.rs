@@ -91,9 +91,9 @@ fn random(n: usize) -> R<Vec<u8>> {
     Ok(buf)
 }
 
-/// DPAPI で暗号化・復号する（このユーザーだけが読める）
+/// DPAPI で暗号化・復号する（このユーザーだけが読める。データベースのパスワードの保存にも使う）
 #[cfg(windows)]
-fn dpapi(data: &[u8], protect: bool) -> R<Vec<u8>> {
+pub(crate) fn dpapi(data: &[u8], protect: bool) -> R<Vec<u8>> {
     use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Cryptography::{CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData, CryptUnprotectData};
     let input = CRYPT_INTEGER_BLOB { cbData: data.len() as u32, pbData: data.as_ptr() as *mut u8 };
@@ -106,7 +106,7 @@ fn dpapi(data: &[u8], protect: bool) -> R<Vec<u8>> {
         }
     };
     if ok == 0 {
-        return Err("トークンを暗号化・復号できません".into());
+        return Err("暗号化・復号できません（DPAPI）".into());
     }
     let v = unsafe { std::slice::from_raw_parts(out.pbData, out.cbData as usize).to_vec() };
     unsafe { LocalFree(out.pbData as _) };
@@ -118,7 +118,7 @@ fn random(n: usize) -> R<Vec<u8>> {
     Err(format!("この OS では使えません（{n}）"))
 }
 #[cfg(not(windows))]
-fn dpapi(_: &[u8], _: bool) -> R<Vec<u8>> {
+pub(crate) fn dpapi(_: &[u8], _: bool) -> R<Vec<u8>> {
     Err("この OS では使えません".into())
 }
 

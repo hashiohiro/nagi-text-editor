@@ -245,7 +245,7 @@ pub static COMMANDS: &[Cmd] = &[
     cmd!(["DbCommit"], "コミット", Args::None, |e, c| e.db_tx_command("commit")),
     cmd!(["DbRollback"], "ロールバック", Args::None, |e, c| e.db_tx_command("rollback")),
     cmd!(["DbTx"], "トランザクションの自動・手動を切り替える", Args::None, |e, c| e.db_tx_command("toggle")),
-    cmd!(["DbLogout"], "Salesforce の保存したログインを消す", Args::None, |e, c| e.db_logout()),
+    cmd!(["DbLogout"], "保存したパスワード・Salesforce のログインを消す", Args::None, |e, c| e.db_logout()),
     cmd!(["DbNew", "DbQuery"], "新しいクエリを開く（Ctrl+Enter で実行）", Args::None, |e, c| e.db_new_query_command()),
 ];
 

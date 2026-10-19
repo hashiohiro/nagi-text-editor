@@ -68,6 +68,8 @@ pub struct Conn {
     pub manual: bool,
     /// 手動のときの、まだコミットしていない文の数
     pub pending: usize,
+    /// つなぎ中のパスワードと、保存したものを使ったか（つながったら保存する。保存したもので失敗したら聞き直す）
+    pass: Option<(String, bool)>,
 }
 
 impl Conn {
@@ -185,6 +187,7 @@ impl Form {
         self.fields = match kind {
             Kind::Oracle => vec![("種類", p("Oracle")), ("名前", p(&name)), ("ホスト", p("localhost")), ("ポート", p("1521")), ("サービス名", p("")), ("利用者", p(""))],
             Kind::Sqlite => vec![("種類", p("SQLite")), ("名前", p(&name)), ("ファイル", p(""))],
+            Kind::Postgres => vec![("種類", p("PostgreSQL")), ("名前", p(&name)), ("ホスト", p("localhost")), ("ポート", p("5432")), ("データベース", p("postgres")), ("利用者", p(""))],
             Kind::Salesforce => vec![("種類", p("Salesforce")), ("名前", p(&name)), ("ログイン URL", p("https://login.salesforce.com")), ("利用者", p(""))],
         };
         self.at = self.at.min(self.fields.len() - 1);
@@ -211,6 +214,13 @@ impl Form {
             Kind::Sqlite => {
                 let f = self.get("ファイル");
                 (format!("jdbc:sqlite:{}", if f.is_empty() { ":memory:".into() } else { f }), String::new())
+            }
+            Kind::Postgres => {
+                let (host, port, db) = (self.get("ホスト"), self.get("ポート"), self.get("データベース"));
+                if host.is_empty() || db.is_empty() {
+                    return Err("ホストとデータベースを入れてください".into());
+                }
+                (format!("jdbc:postgresql://{host}:{}/{db}", if port.is_empty() { "5432".into() } else { port }), self.get("利用者"))
             }
             Kind::Salesforce => {
                 let u = self.get("ログイン URL");
@@ -618,11 +628,20 @@ impl Editor {
             self.db_connect(i, String::new());
             return;
         }
+        if let Some(pass) = nagi_workers::db::saved_password(&s.url, &s.user) {
+            self.db_connect_with(i, pass, true);
+            return;
+        }
         p.password = Some((i, Prompt::default()));
         self.notify.info(format!("{} のパスワード（{}。Enter でつなぐ・Esc でやめる）", s.name, s.url));
     }
 
     fn db_connect(&mut self, i: usize, pass: String) {
+        self.db_connect_with(i, pass, false);
+    }
+
+    /// saved: 保存したパスワードか（違えば、つながったときに保存する）
+    fn db_connect_with(&mut self, i: usize, pass: String, saved: bool) {
         let waker = self.waker();
         let Some(p) = &mut self.db else { return };
         let s = p.sources[i].clone();
@@ -632,6 +651,7 @@ impl Editor {
             Ok(cl) => {
                 p.conns[i].client = Some(cl);
                 p.conns[i].expect = VecDeque::from([Expect::Connect]);
+                p.conns[i].pass = Some((pass, saved));
                 Ok(format!("{} につないでいます…", s.name))
             }
             Err(e) => {
@@ -760,8 +780,17 @@ impl Editor {
                 c.requested.insert(format!("o:{schema}"));
                 p.expanded.insert(format!("c{i}:{schema}"));
                 p.expanded.insert(format!("g{i}:{schema}:Tables"));
-                self.notify.info(format!("{name} につなぎました（{product}、{schema}）"));
-                self.db_log_line(&format!("{name} につなぎました（{product}、{schema}）"), false);
+                // 入れたパスワードは保存する（次から聞かない。:DbLogout で消せる）
+                let mut saved = String::new();
+                if let Some((pass, false)) = c.pass.take().filter(|(x, _)| !x.is_empty()) {
+                    let s = &p.sources[i];
+                    saved = match nagi_workers::db::save_password(&s.url, &s.user, &pass) {
+                        Ok(()) => "。パスワードを保存しました".into(),
+                        Err(e) => format!("。パスワードを保存できません: {e}"),
+                    };
+                }
+                self.notify.info(format!("{name} につなぎました（{product}、{schema}）{saved}"));
+                self.db_log_line(&format!("{name} につなぎました（{product}、{schema}）{saved}"), false);
                 if let Some(sql) = self.db.as_mut().and_then(|p| p.then.remove(&i)) {
                     self.db_execute(i, sql);
                 }
@@ -769,7 +798,13 @@ impl Editor {
             (Some(Expect::Connect), Reply::Error(e)) => {
                 c.client = None;
                 c.error = Some(e.clone());
-                self.notify.error(format!("{name} につなげません: {e}"));
+                // 保存したパスワードで失敗した: 入れ直してもらう（つながったら上書きする）
+                if c.pass.take().is_some_and(|(_, saved)| saved) {
+                    p.password = Some((i, Prompt::default()));
+                    self.notify.error(format!("{name} に保存したパスワードでつなげません: {e}。パスワードを入れ直してください（Enter でつなぐ・Esc でやめる）"));
+                } else {
+                    self.notify.error(format!("{name} につなげません: {e}"));
+                }
                 self.db_log_line(&format!("{name} につなげません: {e}"), true);
             }
             (Some(Expect::Schemas), Reply::Schemas(s)) => c.schemas = Some(s),
@@ -1045,7 +1080,7 @@ impl Editor {
         self.console_source().or_else(|| self.db.as_ref().and_then(|p| p.rows.get(p.selected)).map(|r| r.source()))
     }
 
-    /// `:DbLogout`: Salesforce の保存したログインを消して切る
+    /// `:DbLogout`: Salesforce の保存したログインを消して切る（ほかの接続先は、保存したパスワードを消す）
     pub(crate) fn db_logout(&mut self) {
         let Some(i) = self.db_current_source() else {
             self.notify.info("接続先がありません");
@@ -1054,7 +1089,8 @@ impl Editor {
         let Some(p) = &mut self.db else { return };
         let s = p.sources[i].clone();
         if p.kind(i) != Some(Kind::Salesforce) {
-            self.notify.info("ログアウトは Salesforce の接続先だけです");
+            let had = nagi_workers::db::forget_password(&s.url, &s.user);
+            self.notify.info(if had { format!("{} の保存したパスワードを消しました", s.name) } else { "保存したパスワードはありません".to_string() });
             return;
         }
         let had = nagi_workers::salesforce::forget(&s.url, &s.user);
@@ -1265,9 +1301,10 @@ impl Editor {
                     FieldOut::None
                 }
                 Key::Left | Key::Right | Key::Char(' ') if f.at == 0 => {
-                    let order = [Kind::Oracle, Kind::Sqlite, Kind::Salesforce];
+                    // 名前の順
+                    let order = [Kind::Oracle, Kind::Postgres, Kind::Salesforce, Kind::Sqlite];
                     let k = order.iter().position(|k| *k == f.kind).unwrap_or(0);
-                    let k = if key == Key::Left { (k + 2) % 3 } else { (k + 1) % 3 };
+                    let k = if key == Key::Left { (k + order.len() - 1) % order.len() } else { (k + 1) % order.len() };
                     f.set_kind(order[k]);
                     FieldOut::None
                 }
@@ -1602,10 +1639,10 @@ pub(crate) mod tests {
         let mut e = Editor::new(nagi_core::Buffer::from_str("x\n"), None);
         e.set_screen(160, 50);
         e.open_db_panel();
-        // a → 種類を SQLite に → 名前 → ファイル → Enter で保存してつなぐ
+        // a → 種類を SQLite に（名前の順で最後なので、Oracle から ← で回る）→ 名前 → ファイル → Enter で保存してつなぐ
         keys(&mut e, "a");
         assert!(e.db.as_ref().unwrap().form.is_some());
-        keys(&mut e, "<Up><Right><Down>shop<Tab>");
+        keys(&mut e, "<Up><Left><Down>shop<Tab>");
         let file = dir.join("shop.db");
         for c in file.display().to_string().chars() {
             e.key(Key::Char(c));

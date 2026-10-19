@@ -4,7 +4,10 @@
 //!   Instant Client は、初めてつなぐときに Nagi がダウンロードして `%LOCALAPPDATA%\nagi\drivers\oracle` に置く
 //!   （drivers.rs）。PATH などに入っているものがあればそれも使う。
 //! - SQLite: `rusqlite`（SQLite を中に組み込む）。準備は要らない。
+//! - PostgreSQL: `postgres`（Rust だけで書かれたドライバー）。SSL は Windows の SChannel（`native-tls`）。
+//!   sslmode は libpq と同じ意味（prefer・require は証明書を確かめない、verify-ca・verify-full は確かめる）。
 //!
+//! パスワードは、つながったら DPAPI で暗号化して `%LOCALAPPDATA%\nagi\passwords` に保存する（このユーザーだけが読める）。
 //! 接続ごとに裏のスレッドを 1 つ立て、頼みごと（Req）を順に処理して答え（Reply）を返し、UI を起こす。
 //! 値はすべて文字列（NULL は None）で返す。日時は `YYYY-MM-DD HH24:MI:SS` の形にそろえる（書き戻すときも同じ形）。
 
@@ -28,6 +31,7 @@ pub struct DataSource {
 pub enum Kind {
     Oracle,
     Sqlite,
+    Postgres,
     Salesforce,
 }
 
@@ -38,6 +42,8 @@ impl Kind {
             Some(Kind::Oracle)
         } else if u.starts_with("jdbc:sqlite:") {
             Some(Kind::Sqlite)
+        } else if u.starts_with("jdbc:postgresql:") {
+            Some(Kind::Postgres)
         } else if u.starts_with("salesforce:") {
             Some(Kind::Salesforce)
         } else {
@@ -49,6 +55,7 @@ impl Kind {
         match self {
             Kind::Oracle => "Oracle",
             Kind::Sqlite => "SQLite",
+            Kind::Postgres => "PostgreSQL",
             Kind::Salesforce => "Salesforce",
         }
     }
@@ -555,6 +562,398 @@ impl Backend for SqliteDb {
     }
 }
 
+// ---------------------------------------------------------------- PostgreSQL
+
+/// JDBC の URL（`jdbc:postgresql://host[:port][/db][?k=v&…]`）を分けたもの
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PgUrl {
+    pub host: String,
+    pub port: u16,
+    pub db: String,
+    /// sslmode（無ければ prefer）
+    pub ssl: String,
+    /// currentSchema（search_path にする）
+    pub schema: String,
+    pub user: String,
+    pub password: String,
+}
+
+pub fn pg_url(url: &str) -> R<PgUrl> {
+    let rest = url.split_once("postgresql:").map_or(url, |(_, r)| r);
+    let rest = rest.strip_prefix("//").ok_or_else(|| format!("PostgreSQL の URL は jdbc:postgresql://ホスト:ポート/データベース の形です: {url}"))?;
+    let (main, query) = rest.split_once('?').unwrap_or((rest, ""));
+    let (hostport, db) = main.split_once('/').unwrap_or((main, ""));
+    // 複数のホスト（h1,h2）は最初のものだけ
+    let hostport = hostport.split(',').next().unwrap_or("");
+    let (host, port) = match hostport.rsplit_once(':') {
+        Some((h, p)) if !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()) => (h, p.parse().map_err(|_| format!("ポートが読めません: {p}"))?),
+        _ => (hostport, 5432),
+    };
+    let mut u = PgUrl { host: host.trim_matches(['[', ']']).to_string(), port, db: db.to_string(), ssl: "prefer".into(), ..Default::default() };
+    if u.host.is_empty() {
+        u.host = "localhost".into();
+    }
+    for kv in query.split('&').filter(|s| !s.is_empty()) {
+        let (k, v) = kv.split_once('=').unwrap_or((kv, ""));
+        match k {
+            "sslmode" => u.ssl = v.to_ascii_lowercase(),
+            "ssl" if v == "true" && !query.contains("sslmode=") => u.ssl = "require".into(),
+            "currentSchema" => u.schema = v.to_string(),
+            "user" => u.user = v.to_string(),
+            "password" => u.password = v.to_string(),
+            _ => {}
+        }
+    }
+    Ok(u)
+}
+
+struct PgDb {
+    client: postgres::Client,
+    auto: bool,
+}
+
+fn pe(e: postgres::Error) -> nagi_core::Error {
+    match e.as_db_error() {
+        Some(d) => {
+            let mut s = format!("{}: {}（{}）", d.severity(), d.message(), d.code().code());
+            if let Some(x) = d.detail() {
+                s.push_str(&format!(" {x}"));
+            }
+            nagi_core::Error::new(s)
+        }
+        None => nagi_core::Error::new(e.to_string().lines().next().unwrap_or("")),
+    }
+}
+
+/// 文の最初の語（大文字。前の注釈は飛ばす）
+fn first_word(sql: &str) -> String {
+    let mut s = sql.trim_start();
+    loop {
+        if let Some(r) = s.strip_prefix("--") {
+            s = r.split_once('\n').map_or("", |x| x.1).trim_start();
+        } else if let Some(r) = s.strip_prefix("/*") {
+            s = r.split_once("*/").map_or("", |x| x.1).trim_start();
+        } else {
+            break;
+        }
+    }
+    s.chars().take_while(|c| c.is_ascii_alphabetic()).collect::<String>().to_ascii_uppercase()
+}
+
+impl PgDb {
+    fn connect(url: &str, user: &str, pass: &str) -> R<Self> {
+        let u = pg_url(url)?;
+        let mut cfg = postgres::Config::new();
+        cfg.host(&u.host).port(u.port).user(if user.is_empty() { &u.user } else { user }).password(if pass.is_empty() { &u.password } else { pass });
+        cfg.application_name("nagi").connect_timeout(std::time::Duration::from_secs(15));
+        if !u.db.is_empty() {
+            cfg.dbname(&u.db);
+        }
+        let client = match u.ssl.as_str() {
+            "disable" => cfg.ssl_mode(postgres::config::SslMode::Disable).connect(postgres::NoTls).map_err(pe)?,
+            mode => {
+                // prefer・require は libpq と同じく証明書を確かめない（RDS などの証明書は Windows の信頼する CA に無いことが多い）
+                let verify = mode.starts_with("verify");
+                let tls = native_tls::TlsConnector::builder().danger_accept_invalid_certs(!verify).danger_accept_invalid_hostnames(mode != "verify-full").build().map_err(nagi_core::Error::of)?;
+                let ssl = if matches!(mode, "allow" | "prefer") { postgres::config::SslMode::Prefer } else { postgres::config::SslMode::Require };
+                cfg.ssl_mode(ssl).connect(postgres_native_tls::MakeTlsConnector::new(tls)).map_err(pe)?
+            }
+        };
+        let mut db = PgDb { client, auto: true };
+        // 表示と書き戻しで同じ形にする
+        db.client.batch_execute("SET DateStyle = ISO, YMD").map_err(pe)?;
+        if !u.schema.is_empty() {
+            db.set_schema(&u.schema)?;
+        }
+        Ok(db)
+    }
+
+    /// 文字列の列だけを返す問い合わせ（カタログを読む。列はすべて text にしておく）
+    fn strings(&mut self, sql: &str, params: &[&(dyn postgres::types::ToSql + Sync)]) -> R<Vec<Vec<Option<String>>>> {
+        let rows = self.client.query(sql, params).map_err(pe)?;
+        Ok(rows.iter().map(|r| (0..r.len()).map(|i| r.try_get::<usize, Option<String>>(i).ok().flatten()).collect()).collect())
+    }
+
+    /// 文字の形で全部の行を受け取る（(列名, 行, 変えた行の数)。結果が幾つもあるときは最後のもの）
+    fn simple(&mut self, sql: &str) -> R<(Vec<String>, Vec<Vec<Option<String>>>, i64)> {
+        let mut cols = Vec::new();
+        let mut rows: Vec<Vec<Option<String>>> = Vec::new();
+        let mut count = 0;
+        let mut fresh = true;
+        for m in self.client.simple_query(sql).map_err(pe)? {
+            match m {
+                postgres::SimpleQueryMessage::Row(r) => {
+                    if fresh {
+                        cols = r.columns().iter().map(|c| c.name().to_string()).collect();
+                        rows.clear();
+                        fresh = false;
+                    }
+                    rows.push((0..r.len()).map(|i| r.get(i).map(str::to_string)).collect());
+                }
+                postgres::SimpleQueryMessage::CommandComplete(n) => {
+                    count = n as i64;
+                    fresh = true;
+                }
+                _ => {}
+            }
+        }
+        Ok((cols, rows, count))
+    }
+
+    /// カーソルで offset 行を飛ばし、max + 1 行を読む（大きな表を全部読まないように）
+    fn fetch(&mut self, sql: &str, max: usize, offset: usize) -> R<Vec<Vec<Option<String>>>> {
+        let own_tx = self.auto;
+        if own_tx {
+            self.client.batch_execute("BEGIN").map_err(pe)?;
+        }
+        let mut run = || -> R<Vec<Vec<Option<String>>>> {
+            self.client.batch_execute(&format!("DECLARE nagi_cur NO SCROLL CURSOR FOR {sql}")).map_err(pe)?;
+            if offset > 0 {
+                self.client.batch_execute(&format!("MOVE FORWARD {offset} IN nagi_cur")).map_err(pe)?;
+            }
+            let (_, rows, _) = self.simple(&format!("FETCH FORWARD {} FROM nagi_cur", max + 1))?;
+            self.client.batch_execute("CLOSE nagi_cur").map_err(pe)?;
+            Ok(rows)
+        };
+        let r = run();
+        if own_tx {
+            let _ = self.client.batch_execute(if r.is_ok() { "COMMIT" } else { "ROLLBACK" });
+        }
+        r
+    }
+
+    fn quote(s: &str) -> String {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    }
+}
+
+/// テーブルの oid を引く副問い合わせ（$1 = スキーマ, $2 = 名前）
+const PG_REL: &str = "(SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND c.relname = $2)";
+
+impl Backend for PgDb {
+    fn info(&mut self) -> R<(String, String)> {
+        let r = self.strings("SELECT current_setting('server_version'), COALESCE(current_schema(), 'public')::text", &[])?;
+        let v = r.first().map(|r| col(r, 0)).unwrap_or_default();
+        Ok((format!("PostgreSQL {}", v.split_whitespace().next().unwrap_or("")), r.first().map(|r| col(r, 1)).unwrap_or_else(|| "public".into())))
+    }
+
+    fn schemas(&mut self) -> R<Vec<String>> {
+        Ok(self.strings("SELECT nspname::text FROM pg_namespace WHERE nspname !~ '^pg_(toast|temp)' ORDER BY nspname", &[])?.iter().map(|r| col(r, 0)).collect())
+    }
+
+    fn set_schema(&mut self, s: &str) -> R<()> {
+        self.client.batch_execute(&format!("SET search_path TO {}", Self::quote(s))).map_err(pe)
+    }
+
+    fn objects(&mut self, schema: &str) -> R<Objects> {
+        let rows = self.strings(
+            "SELECT c.relname::text, CASE WHEN c.relkind IN ('v','m') THEN 'VIEW' WHEN c.relkind = 'S' THEN 'SEQUENCE' ELSE 'TABLE' END FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND c.relkind IN ('r','p','v','m','f','S') AND NOT c.relispartition ORDER BY c.relname",
+            &[&schema],
+        )?;
+        let mut o = Objects::default();
+        for r in rows {
+            let (n, t) = (col(&r, 0), col(&r, 1));
+            match t.as_str() {
+                "SEQUENCE" => o.sequences.push(n),
+                _ => o.tables.push((n, t)),
+            }
+        }
+        o.routines = self.strings("SELECT DISTINCT p.proname::text FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace WHERE n.nspname = $1 ORDER BY 1", &[&schema])?.iter().map(|r| col(r, 0)).collect();
+        Ok(o)
+    }
+
+    fn columns(&mut self, schema: &str, table: &str) -> R<Vec<Column>> {
+        let rows = self.strings(
+            &format!(
+                "SELECT a.attname::text, format_type(a.atttypid, a.atttypmod), CASE WHEN a.attnotnull THEN 'N' ELSE 'Y' END,
+                    CASE WHEN EXISTS (SELECT 1 FROM pg_constraint k WHERE k.conrelid = a.attrelid AND k.contype = 'p' AND a.attnum = ANY (k.conkey)) THEN 'Y' ELSE 'N' END,
+                    (SELECT r.relname::text FROM pg_constraint k JOIN pg_class r ON r.oid = k.confrelid WHERE k.conrelid = a.attrelid AND k.contype = 'f' AND a.attnum = ANY (k.conkey) LIMIT 1)
+                 FROM pg_attribute a WHERE a.attrelid = {PG_REL} AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum"
+            ),
+            &[&schema, &table],
+        )?;
+        Ok(rows.iter().map(|r| Column { name: col(r, 0), ty: col(r, 1), nullable: col(r, 2) == "Y", pk: col(r, 3) == "Y", fk: col(r, 4) }).collect())
+    }
+
+    fn indexes(&mut self, schema: &str, table: &str) -> R<(Vec<Index>, Vec<Key>)> {
+        let idx = self
+            .strings(
+                &format!(
+                    "SELECT i.relname::text, CASE WHEN x.indisunique THEN 'Y' ELSE 'N' END,
+                        (SELECT string_agg(pg_get_indexdef(x.indexrelid, k, true), ', ' ORDER BY k) FROM generate_series(1, x.indnatts) k)
+                     FROM pg_index x JOIN pg_class i ON i.oid = x.indexrelid WHERE x.indrelid = {PG_REL} ORDER BY i.relname"
+                ),
+                &[&schema, &table],
+            )?
+            .iter()
+            .map(|r| Index { name: col(r, 0), unique: col(r, 1) == "Y", cols: col(r, 2) })
+            .collect();
+        let keys = self
+            .strings(
+                &format!(
+                    "SELECT k.conname::text,
+                        (SELECT string_agg(a.attname::text, ', ' ORDER BY u.o) FROM unnest(k.conkey) WITH ORDINALITY u(n, o) JOIN pg_attribute a ON a.attrelid = k.conrelid AND a.attnum = u.n),
+                        COALESCE(r.relname::text, '')
+                     FROM pg_constraint k LEFT JOIN pg_class r ON r.oid = k.confrelid WHERE k.conrelid = {PG_REL} AND k.contype IN ('p','f') ORDER BY k.contype DESC, k.conname"
+                ),
+                &[&schema, &table],
+            )?
+            .iter()
+            .map(|r| Key { name: col(r, 0), cols: col(r, 1), refs: col(r, 2) })
+            .collect();
+        Ok((idx, keys))
+    }
+
+    fn query(&mut self, sql: &str, max: usize, offset: usize) -> R<Result<(Vec<String>, Vec<String>, Vec<Vec<Option<String>>>, bool), i64>> {
+        let sql = strip_semicolon(sql);
+        let stmt = match self.client.prepare(&sql) {
+            Ok(s) => s,
+            // 幾つもの文（a; b）は準備できない。そのまま流して最後の結果を返す
+            Err(e) if e.as_db_error().is_some_and(|d| d.message().contains("multiple commands")) => {
+                let (cols, rows, count) = self.simple(&sql)?;
+                if cols.is_empty() {
+                    return Ok(Err(count));
+                }
+                let more = rows.len() > offset + max;
+                let rows = rows.into_iter().skip(offset).take(max).collect();
+                let types = vec![String::new(); cols.len()];
+                return Ok(Ok((cols, types, rows, more)));
+            }
+            Err(e) => return Err(pe(e)),
+        };
+        if stmt.columns().is_empty() {
+            return Ok(Err(self.client.execute(&stmt, &[]).map_err(pe)? as i64));
+        }
+        let cols: Vec<String> = stmt.columns().iter().map(|c| c.name().to_string()).collect();
+        let types: Vec<String> = stmt.columns().iter().map(|c| c.type_().name().to_string()).collect();
+        // 読むだけの文はカーソルで要る分だけ。ほか（EXPLAIN・SHOW・… RETURNING）は全部受け取って切る
+        let word = first_word(&sql);
+        let mut rows: Vec<Vec<Option<String>>> = if matches!(word.as_str(), "SELECT" | "VALUES" | "TABLE" | "WITH") {
+            match self.fetch(&sql, max, offset) {
+                Ok(r) => r,
+                // データを変える WITH はカーソルにできない（自動コミットのときだけ、そのまま流し直す）
+                Err(_) if self.auto && word == "WITH" => self.simple(&sql)?.1.into_iter().skip(offset).collect(),
+                Err(e) => return Err(e),
+            }
+        } else {
+            self.simple(&sql)?.1.into_iter().skip(offset).collect()
+        };
+        let more = rows.len() > max;
+        rows.truncate(max);
+        Ok(Ok((cols, types, rows, more)))
+    }
+
+    fn count(&mut self, sql: &str) -> R<i64> {
+        let (_, rows, _) = self.simple(&strip_semicolon(sql))?;
+        let v = rows.first().map(|r| col(r, 0)).unwrap_or_default();
+        v.parse::<i64>().map_err(|_| format!("件数が読めません: {v}").into())
+    }
+
+    fn batch(&mut self, stmts: &[String]) -> R<i64> {
+        self.client.batch_execute(if self.auto { "BEGIN" } else { "SAVEPOINT nagi_batch" }).map_err(pe)?;
+        let mut run = || -> R<i64> {
+            let mut total = 0;
+            for (k, s) in stmts.iter().enumerate() {
+                let n = self.client.execute(strip_semicolon(s).as_str(), &[]).map_err(pe)?;
+                if n != 1 {
+                    return Err(format!("{} 文目が {n} 行を変えようとしました（1 行のはず）。すべて取り消しました", k + 1).into());
+                }
+                total += 1;
+            }
+            Ok(total)
+        };
+        let r = run();
+        let end = match (&r, self.auto) {
+            (Ok(_), true) => "COMMIT",
+            (Err(_), true) => "ROLLBACK",
+            (Ok(_), false) => "RELEASE SAVEPOINT nagi_batch",
+            (Err(_), false) => "ROLLBACK TO SAVEPOINT nagi_batch; RELEASE SAVEPOINT nagi_batch",
+        };
+        let done = self.client.batch_execute(end).map_err(pe);
+        let total = r?;
+        done?;
+        Ok(total)
+    }
+
+    fn set_autocommit(&mut self, on: bool) -> R<()> {
+        if on == self.auto {
+            return Ok(());
+        }
+        self.auto = on;
+        // 手動: BEGIN しておく。自動に戻すときは、残っている変更を確定する
+        self.client.batch_execute(if on { "COMMIT" } else { "BEGIN" }).map_err(pe)
+    }
+
+    fn commit(&mut self) -> R<()> {
+        if self.auto {
+            return Ok(());
+        }
+        self.client.batch_execute("COMMIT; BEGIN").map_err(pe)
+    }
+
+    fn rollback(&mut self) -> R<()> {
+        if self.auto {
+            return Ok(());
+        }
+        self.client.batch_execute("ROLLBACK; BEGIN").map_err(pe)
+    }
+
+    fn ddl(&mut self, schema: &str, name: &str, kind: &str) -> R<String> {
+        let full = format!("{}.{}", Self::quote(schema), Self::quote(name));
+        if kind.contains("VIEW") {
+            let r = self.strings(&format!("SELECT pg_get_viewdef({PG_REL}, true)"), &[&schema, &name])?;
+            return Ok(format!("CREATE OR REPLACE VIEW {full} AS\n{}", r.first().map(|r| col(r, 0)).unwrap_or_default().trim_end()));
+        }
+        // PostgreSQL には表の DDL を返す関数が無いので、列・制約・索引から組み立てる
+        let cols = self.strings(
+            &format!("SELECT quote_ident(a.attname), format_type(a.atttypid, a.atttypmod), CASE WHEN a.attnotnull THEN ' NOT NULL' ELSE '' END, pg_get_expr(d.adbin, d.adrelid) FROM pg_attribute a LEFT JOIN pg_attrdef d ON d.adrelid = a.attrelid AND d.adnum = a.attnum WHERE a.attrelid = {PG_REL} AND a.attnum > 0 AND NOT a.attisdropped ORDER BY a.attnum"),
+            &[&schema, &name],
+        )?;
+        if cols.is_empty() {
+            return Err(format!("{full} が見つかりません").into());
+        }
+        let cons = self.strings(&format!("SELECT quote_ident(conname), pg_get_constraintdef(oid, true) FROM pg_constraint WHERE conrelid = {PG_REL} ORDER BY CASE contype WHEN 'p' THEN 0 WHEN 'u' THEN 1 WHEN 'f' THEN 2 ELSE 3 END, conname"), &[&schema, &name])?;
+        let idx = self.strings(&format!("SELECT pg_get_indexdef(x.indexrelid) FROM pg_index x WHERE x.indrelid = {PG_REL} AND NOT EXISTS (SELECT 1 FROM pg_constraint k WHERE k.conindid = x.indexrelid) ORDER BY 1"), &[&schema, &name])?;
+        let mut lines: Vec<String> = cols.iter().map(|r| format!("    {} {}{}{}", col(r, 0), col(r, 1), col(r, 2), r.get(3).cloned().flatten().map(|d| format!(" DEFAULT {d}")).unwrap_or_default())).collect();
+        lines.extend(cons.iter().map(|r| format!("    CONSTRAINT {} {}", col(r, 0), col(r, 1))));
+        let mut s = format!("CREATE TABLE {full} (\n{}\n);", lines.join(",\n"));
+        for r in idx {
+            s.push_str(&format!("\n{};", col(&r, 0)));
+        }
+        Ok(s)
+    }
+}
+
+// ---------------------------------------------------------------- 保存したパスワード
+
+fn password_path(url: &str, user: &str) -> PathBuf {
+    let dir = std::env::var_os("NAGI_PASSWORD_DIR").map(PathBuf::from).unwrap_or_else(|| std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("nagi").join("passwords"));
+    let key: String = format!("{url}_{user}").chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '_' }).take(120).collect();
+    // 記号を _ にすると違う接続先が同じ名前になりうるので、元の文字列の FNV-1a を添える
+    let h = format!("{url}\n{user}").bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3));
+    dir.join(format!("{key}_{h:016x}.pass"))
+}
+
+/// 保存したパスワード（無い・読めないときは None）
+pub fn saved_password(url: &str, user: &str) -> Option<String> {
+    let enc = std::fs::read(password_path(url, user)).ok()?;
+    String::from_utf8(crate::salesforce::dpapi(&enc, false).ok()?).ok()
+}
+
+/// パスワードを DPAPI で暗号化して保存する
+pub fn save_password(url: &str, user: &str, pass: &str) -> R<()> {
+    let p = password_path(url, user);
+    if let Some(d) = p.parent() {
+        std::fs::create_dir_all(d).map_err(nagi_core::Error::of)?;
+    }
+    std::fs::write(p, crate::salesforce::dpapi(pass.as_bytes(), true)?).map_err(nagi_core::Error::of)
+}
+
+/// 保存したパスワードを消す（消したら true）
+pub fn forget_password(url: &str, user: &str) -> bool {
+    std::fs::remove_file(password_path(url, user)).is_ok()
+}
+
 // ---------------------------------------------------------------- 接続（裏のスレッド）
 
 /// 1 つの接続
@@ -566,7 +965,7 @@ pub struct Client {
 impl Client {
     /// 裏のスレッドで `url` につなぎ始める（つながったら Reply::Connected が届く）
     pub fn connect(url: &str, user: &str, pass: &str, waker: Waker) -> nagi_core::Result<Client> {
-        let kind = Kind::of(url).ok_or_else(|| format!("この種類の接続はまだ使えません（Oracle・SQLite・Salesforce）: {}", url.split(':').take(2).collect::<Vec<_>>().join(":")))?;
+        let kind = Kind::of(url).ok_or_else(|| format!("この種類の接続はまだ使えません（Oracle・SQLite・PostgreSQL・Salesforce）: {}", url.split(':').take(2).collect::<Vec<_>>().join(":")))?;
         let (tx, req_rx) = channel::<Req>();
         let (reply_tx, rx) = channel::<Reply>();
         let (url, user, pass) = (url.to_string(), user.to_string(), pass.to_string());
@@ -584,6 +983,7 @@ impl Client {
                 let opened: R<Box<dyn Backend>> = match kind {
                     Kind::Oracle => OracleDb::connect(&url, &user, &pass).map(|d| Box::new(d) as Box<dyn Backend>),
                     Kind::Sqlite => SqliteDb::connect(&url).map(|d| Box::new(d) as Box<dyn Backend>),
+                    Kind::Postgres => PgDb::connect(&url, &user, &pass).map(|d| Box::new(d) as Box<dyn Backend>),
                     Kind::Salesforce => crate::salesforce::SalesforceDb::connect(&url, &user, &note).map(|d| Box::new(d) as Box<dyn Backend>),
                 };
                 let mut db = match opened.and_then(|mut d| d.info().map(|i| (d, i))) {
@@ -706,7 +1106,120 @@ mod tests {
         assert_eq!(strip_semicolon("select 1 from dual;"), "select 1 from dual");
         assert_eq!(strip_semicolon("BEGIN x; END;"), "BEGIN x; END;");
         assert_eq!(Kind::of("jdbc:sqlite::memory:"), Some(Kind::Sqlite));
-        assert_eq!(Kind::of("jdbc:postgresql://x"), None);
+        assert_eq!(Kind::of("jdbc:postgresql://x"), Some(Kind::Postgres));
+        assert_eq!(Kind::of("jdbc:mysql://x"), None);
+    }
+
+    #[test]
+    fn pg_urls() {
+        let u = pg_url("jdbc:postgresql://db.example.com:6543/shop?sslmode=require&currentSchema=app").unwrap();
+        assert_eq!((u.host.as_str(), u.port, u.db.as_str(), u.ssl.as_str(), u.schema.as_str()), ("db.example.com", 6543, "shop", "require", "app"));
+        let u = pg_url("jdbc:postgresql://localhost/x").unwrap();
+        assert_eq!((u.host.as_str(), u.port, u.ssl.as_str()), ("localhost", 5432, "prefer"), "ポートと sslmode の既定");
+        assert_eq!(pg_url("jdbc:postgresql://[::1]:5433/x").unwrap().host, "::1");
+        assert_eq!(pg_url("jdbc:postgresql://h1:5432,h2:5432/x").unwrap().host, "h1", "複数のホストは最初のもの");
+        assert!(pg_url("jdbc:postgresql:x").is_err());
+        assert_eq!(first_word("  -- 注釈\n/* a */ select 1"), "SELECT");
+        assert_eq!(first_word("with x as (select 1) select * from x"), "WITH");
+    }
+
+    /// パスワードを保存して読み、消す（DPAPI は Windows だけ）
+    #[cfg(windows)]
+    #[test]
+    fn passwords() {
+        let dir = std::env::temp_dir().join(format!("nagi-pass-{}", std::process::id()));
+        // SAFETY: この試験のほかに NAGI_PASSWORD_DIR を読む試験は無い
+        unsafe { std::env::set_var("NAGI_PASSWORD_DIR", &dir) };
+        let url = "jdbc:postgresql://db:5432/x";
+        assert_eq!(saved_password(url, "app"), None);
+        save_password(url, "app", "秘密 pass").unwrap();
+        assert_eq!(saved_password(url, "app").as_deref(), Some("秘密 pass"));
+        assert_eq!(saved_password(url, "other"), None, "利用者が違えば別");
+        assert_eq!(saved_password("jdbc:postgresql://db:5432/x?", "app"), None, "記号だけ違う URL も別");
+        let raw = std::fs::read_dir(&dir).unwrap().flatten().next().unwrap().path();
+        assert!(!String::from_utf8_lossy(&std::fs::read(raw).unwrap()).contains("pass"), "平文で置かない");
+        assert!(forget_password(url, "app"));
+        assert_eq!(saved_password(url, "app"), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 本物の PostgreSQL で往復する（手で流す。NAGI_TEST_PG に「URL 利用者 パスワード」。表 nagi_customer・nagi_item を作り直す）
+    #[test]
+    #[ignore]
+    fn postgres_real() {
+        let conf = std::env::var("NAGI_TEST_PG").expect("NAGI_TEST_PG に「URL 利用者 パスワード」");
+        let mut it = conf.split_whitespace();
+        let (url, user, pass) = (it.next().unwrap(), it.next().unwrap(), it.next().unwrap());
+        let c = Client::connect(url, user, pass, std::sync::Arc::new(|| {})).unwrap();
+        let wait = || c.rx.recv_timeout(std::time::Duration::from_secs(60)).expect("応答が無い");
+        let schema = match wait() {
+            Reply::Connected { product, schema } => {
+                eprintln!("つないだ: {product} / {schema}");
+                assert!(product.starts_with("PostgreSQL"));
+                schema
+            }
+            r => panic!("{r:?}"),
+        };
+        c.query("drop table if exists nagi_item, nagi_customer", 10);
+        wait();
+        c.query("create table nagi_customer(id int primary key, name varchar(50) not null)", 10);
+        assert!(matches!(wait(), Reply::Updated { .. }));
+        c.query("create table nagi_item(id int primary key, name text default 'x', cust int references nagi_customer(id), at timestamp)", 10);
+        wait();
+        c.query("create index nagi_item_name on nagi_item(name)", 10);
+        wait();
+        c.query("insert into nagi_item values (1, 'a', null, '2026-10-19 08:47:24'), (2, 'りんご', null, null), (3, 'c', null, null)", 10);
+        assert!(matches!(wait(), Reply::Updated { count: 3, .. }));
+        c.send(Req::Query { sql: "select id, name, cust, at from nagi_item order by id;".into(), max: 1, offset: 1 });
+        match wait() {
+            Reply::Rows { cols, types, rows, more, .. } => {
+                assert_eq!(cols, vec!["id", "name", "cust", "at"]);
+                assert_eq!(types, vec!["int4", "text", "int4", "timestamp"]);
+                assert_eq!(rows, vec![vec![Some("2".to_string()), Some("りんご".into()), None, None]], "1 行飛ばして 1 行");
+                assert!(more);
+            }
+            r => panic!("{r:?}"),
+        }
+        c.query("select at from nagi_item where id = 1", 10);
+        assert!(matches!(wait(), Reply::Rows { rows, .. } if rows[0][0].as_deref() == Some("2026-10-19 08:47:24")));
+        c.query("select 1 as a; select 2 as b", 10);
+        assert!(matches!(wait(), Reply::Rows { cols, rows, .. } if cols == vec!["b"] && rows[0][0].as_deref() == Some("2")), "幾つもの文は最後の結果");
+        c.query("update nagi_item set name = 'z' where id = 3 returning id", 10);
+        assert!(matches!(wait(), Reply::Rows { rows, .. } if rows.len() == 1));
+        c.send(Req::Objects(schema.clone()));
+        assert!(matches!(wait(), Reply::Objects(o) if ["nagi_customer", "nagi_item"].iter().all(|n| o.tables.iter().any(|t| t.0 == *n))));
+        c.send(Req::Columns(schema.clone(), "nagi_item".into()));
+        assert!(matches!(wait(), Reply::Columns(cols) if cols[0].pk && cols[2].fk == "nagi_customer" && cols[1].nullable && !cols[0].nullable));
+        c.send(Req::Indexes(schema.clone(), "nagi_item".into()));
+        assert!(matches!(wait(), Reply::Indexes(i, k) if i.iter().any(|x| x.name == "nagi_item_name" && x.cols == "name") && k.iter().any(|x| x.refs == "nagi_customer")));
+        c.send(Req::Count("select count(*) from nagi_item".into()));
+        assert!(matches!(wait(), Reply::Count(3)));
+        c.send(Req::Batch(vec!["update nagi_item set name = 'x' where id = 1".into(), "update nagi_item set name = 'y' where id = 99".into()]));
+        assert!(matches!(wait(), Reply::Error(m) if m.contains("2 文目")));
+        c.send(Req::Batch(vec!["update nagi_item set name = 'x' where id = 1".into(), "delete from nagi_item where id = 3".into()]));
+        assert!(matches!(wait(), Reply::Updated { count: 2, .. }));
+        c.send(Req::AutoCommit(false));
+        wait();
+        c.query("delete from nagi_item", 10);
+        wait();
+        c.send(Req::Rollback);
+        wait();
+        c.send(Req::Count("select count(*) from nagi_item".into()));
+        assert!(matches!(wait(), Reply::Count(2)));
+        c.send(Req::AutoCommit(true));
+        wait();
+        c.send(Req::Ddl(schema.clone(), "nagi_item".into(), "TABLE".into()));
+        match wait() {
+            Reply::Ddl(d) => {
+                eprintln!("{d}");
+                assert!(d.contains("CREATE TABLE") && d.contains("PRIMARY KEY") && d.contains("CREATE INDEX nagi_item_name"), "{d}");
+            }
+            r => panic!("{r:?}"),
+        }
+        c.query("select * from nothing", 10);
+        assert!(matches!(wait(), Reply::Error(m) if m.contains("42P01")));
+        c.query("drop table nagi_item, nagi_customer", 10);
+        wait();
     }
 
     #[test]
