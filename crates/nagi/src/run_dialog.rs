@@ -500,6 +500,11 @@ impl crate::layout::View for RunDialogView {
             draw::draw_run_dialog(p, ed, d, s.cols, s.rows);
         }
     }
+
+    fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, dy: isize, dx: isize) -> bool {
+        let _ = (r, row, col, dx);
+        crate::layout::wheel_keys(ed, dy)
+    }
 }
 
 /// 描き方（view.rs の Painter で描く）

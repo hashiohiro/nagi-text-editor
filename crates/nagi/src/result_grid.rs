@@ -181,6 +181,21 @@ pub struct DbResults {
     pending_g: bool,
 }
 
+/// 表の横のホイール: 左端の列 `hscroll` を 1 列ずつ送り、選んでいる列 `col` は見える範囲に留める
+/// （見える範囲は view.rs の build の fit_grid と同じ数え方: 列の幅 + 3 の和 + 8 が `w` 以下）
+pub fn grid_hwheel(col: &mut usize, hscroll: &mut usize, widths: &[usize], w: usize, n: isize) {
+    if widths.is_empty() || n == 0 {
+        return;
+    }
+    let len = widths.len();
+    *hscroll = (*hscroll as isize + n.signum()).clamp(0, len as isize - 1) as usize;
+    let mut last = *hscroll;
+    while last + 1 < len && widths[*hscroll..=last + 1].iter().map(|w| w + 3).sum::<usize>() + 8 <= w {
+        last += 1;
+    }
+    *col = (*col).clamp(*hscroll, last);
+}
+
 fn now_hms() -> String {
     #[cfg(windows)]
     {

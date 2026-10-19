@@ -158,6 +158,11 @@ impl crate::layout::View for MenuView {
         }
         crate::layout::Click::Done
     }
+
+    fn wheel(&self, ed: &mut Editor, r: Rect, row: usize, col: usize, dy: isize, dx: isize) -> bool {
+        let _ = (r, row, col, dx);
+        crate::layout::wheel_keys(ed, dy)
+    }
 }
 
 pub(crate) mod draw {

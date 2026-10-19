@@ -254,6 +254,10 @@ pub struct Editor {
     pub top: usize,
     /// スムーズスクロール中の、行に満たない分（0.0〜1.0 行。描画は top + frac から始める）
     pub frac: f32,
+    /// 画面の左端の列（表示の列。折り返さないとき、長い行の右を見るために送る）
+    pub left: usize,
+    /// 左端をカーソルに合わせたときのカーソル（行, byte）。動いていなければ合わせ直さない（横のホイールで送った位置を保つ）
+    left_at: (usize, usize),
     /// Vim の状態（Normal・Insert・Visual・コマンドライン・検索・置換）
     pub vim: Mode,
     /// 向いている部品（パネル・ダイアログ。None ならエディタ）。component::focused が引く
@@ -538,6 +542,8 @@ impl Editor {
             cursor: Cursor::default(),
             top: 0,
             frac: 0.0,
+            left: 0,
+            left_at: (usize::MAX, 0),
             vim: Mode::Normal,
             focus: None,
             menu: None,
@@ -1670,7 +1676,7 @@ impl Editor {
             shown.last().copied().unwrap_or(0)
         };
         let text = self.buf.line(line);
-        let col = col.saturating_sub(self.gutter());
+        let col = col.saturating_sub(self.gutter()) + self.left;
         let byte = if self.state() == State::Insert && col >= display_col(&text, text.len(), false) {
             text.len()
         } else {
@@ -1775,6 +1781,51 @@ impl Editor {
         }
     }
 
+    /// 横のホイール: 左端の列を `cols` 列送る（見えている行のいちばん長いものまで。カーソルは動かさない）
+    pub fn hscroll(&mut self, cols: isize) {
+        if self.wrap_width().is_some() {
+            return;
+        }
+        let w = self.active_rect().w.saturating_sub(self.gutter()).max(1);
+        let total = self.buf.line_count();
+        // 長い行も、今の左端から少し先までを見れば足りる（数 MB の 1 行を毎回全部数えない）
+        let widest = (self.top..(self.top + self.rows.max(1)).min(total))
+            .map(|l| {
+                let (h, _) = self.buf.line_head(l, (self.left + w * 2) * 4);
+                display_col(&h, h.len(), false)
+            })
+            .max()
+            .unwrap_or(0);
+        crate::list::hwheel(&mut self.left, widest + 1, w, cols);
+        self.left_at = (self.cursor.line, self.cursor.byte);
+    }
+
+    /// カーソルが動いたら、カーソルの列が見えるように左端を送る（折り返すときは 0）
+    fn follow_left(&mut self) {
+        if self.wrap_width().is_some() {
+            self.left = 0;
+            return;
+        }
+        let at = (self.cursor.line, self.cursor.byte);
+        if at == self.left_at {
+            return;
+        }
+        self.left_at = at;
+        let w = self.active_rect().w.saturating_sub(self.gutter());
+        if w < 2 {
+            return;
+        }
+        let (head, _) = self.buf.line_head(self.cursor.line, self.cursor.byte + 4);
+        let col = display_col(&head, self.cursor.byte.min(head.len()), false);
+        // 端に着いたら少し余分に送る（1 文字ずつ送り続けないように）
+        let step = (w / 4).max(1);
+        if col < self.left {
+            self.left = col.saturating_sub(step);
+        } else if col >= self.left + w {
+            self.left = col + 1 + step - w;
+        }
+    }
+
     /// 今の表示位置（行単位の小数）
     pub fn scroll_pos(&self) -> f64 {
         self.top as f64 + self.frac as f64
@@ -1806,6 +1857,7 @@ impl Editor {
             }
             return;
         }
+        self.follow_left();
         if self.frac > 0.0 && self.cursor.line <= self.top {
             self.frac = 0.0;
         }
@@ -1905,5 +1957,33 @@ mod tests {
         assert_eq!(e.cursor.line, 19);
         e.scroll_to(0.0);
         assert_eq!(e.cursor.line, 2, "画面の最下段に留まる");
+    }
+
+    /// 折り返さない長い行: カーソルに付いて左端を送る・押した位置は左端から数える・横のホイールはカーソルを動かさない
+    #[test]
+    fn horizontal_scroll_follows_cursor() {
+        let text = format!("{}\nshort\n", "x".repeat(100));
+        let mut e = ed(&text);
+        e.set_screen(40, 10);
+        let w = e.active_rect().w - e.gutter();
+        e.scroll_into_view();
+        assert_eq!(e.left, 0);
+        e.key(Key::Char('$'));
+        e.scroll_into_view();
+        assert!(e.left > 0 && 99 >= e.left && 99 < e.left + w, "行末が見える: left {}", e.left);
+        let left = e.left;
+        e.click(0, e.gutter());
+        assert_eq!(e.cursor.byte, left, "押した位置は左端から");
+        e.hscroll(-1000);
+        e.scroll_into_view();
+        assert_eq!((e.left, e.cursor.byte), (0, left), "ホイールではカーソルは動かず、左端も戻らない");
+        e.key(Key::Char('h'));
+        e.scroll_into_view();
+        assert!(e.left > 0 && left - 1 < e.left + w, "カーソルが動いたら、また付いていく");
+        e.key(Key::Char('j'));
+        e.scroll_into_view();
+        assert_eq!(e.left, 0, "短い行へ移ると左端へ");
+        e.hscroll(1000);
+        assert!(e.left <= 101, "見えている行のいちばん長いものまで: {}", e.left);
     }
 }

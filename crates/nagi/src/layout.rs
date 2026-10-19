@@ -55,6 +55,12 @@ pub trait View: Sync {
         false
     }
 
+    /// ホイール（`dy` は下へ、`dx` は右へ動かす行・列の数。Shift か横のホイール・タッチパッドで横）。受け取ったら true
+    fn wheel(&self, ed: &mut Editor, r: Rect, row: usize, col: usize, dy: isize, dx: isize) -> bool {
+        let _ = (ed, r, row, col, dy, dx);
+        false
+    }
+
     /// 型の名前（試験で部品を見分ける。大きさ 0 の型は番地では見分けられない）
     #[cfg(test)]
     fn name(&self) -> &'static str {
@@ -127,6 +133,21 @@ pub fn context(ed: &mut Editor, s: Screen, row: usize, col: usize) -> bool {
         return false;
     }
     PANELS.iter().rev().any(|v| v.rect(ed, s).filter(|r| r.contains(row, col)).is_some_and(|r| v.context(ed, r, row, col)))
+}
+
+/// ホイールを、マウスの下の部品へ上から渡す（画面を覆うダイアログ、欄・小窓の順）。どれかが受け取ったら true（受け取らなければ本文へ）
+pub fn wheel(ed: &mut Editor, s: Screen, row: usize, col: usize, dy: isize, dx: isize) -> bool {
+    OVERLAYS.iter().chain(PANELS.iter()).rev().any(|v| v.rect(ed, s).filter(|r| r.contains(row, col)).is_some_and(|r| v.wheel(ed, r, row, col, dy, dx)))
+}
+
+/// 画面を覆う小窓・ダイアログのホイール: 向いている部品へ ↓ / ↑ を行の数だけ送る（選びが動き、見える範囲が付いてくる）
+pub fn wheel_keys(ed: &mut Editor, dy: isize) -> bool {
+    let Some(c) = crate::component::focused(ed) else { return false };
+    let key = if dy > 0 { nagi_vim::Key::Down } else { nagi_vim::Key::Up };
+    for _ in 0..dy.unsigned_abs() {
+        c.key(ed, key);
+    }
+    true
 }
 
 #[cfg(test)]

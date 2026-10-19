@@ -117,7 +117,8 @@ impl Editor {
                 let above: usize = (self.top..line).map(|l| self.line_rows(l, w)).sum();
                 Some((above + col / w, col % w))
             }
-            _ => Some((line - self.top, col)),
+            // 横に送っていれば、左端からの列（左に隠れていれば None）
+            _ => Some((line - self.top, col.checked_sub(self.left)?)),
         }
     }
 

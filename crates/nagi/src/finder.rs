@@ -440,6 +440,11 @@ impl crate::layout::View for FinderView {
             draw::draw_finder(p, f, s.rows, s.cols);
         }
     }
+
+    fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, dy: isize, dx: isize) -> bool {
+        let _ = (r, row, col, dx);
+        crate::layout::wheel_keys(ed, dy)
+    }
 }
 
 /// 描き方（view.rs の Painter で描く）

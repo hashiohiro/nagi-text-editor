@@ -296,9 +296,12 @@ pub(crate) mod draw {
                 };
                 items.push(Item { g: Cow::Borrowed(gr), width, fg, bg, underline: false });
             }
+            // 横に送っていれば、左端より左を落とす（行が左端より短ければ、行末のカーソルも隠れている）
+            let width: usize = items.iter().map(|i| i.width).sum();
+            skip_cols(&mut items, ed.left, &mut None);
             let end = p.draw(&items, r.x, y);
             // 空の行・行末のカーソル
-            if cur.is_some_and(|c| c >= text.len()) {
+            if cur.is_some_and(|c| c >= text.len()) && width >= ed.left {
                 p.out.push(Instance::fill(end as f32 * cell.w, y, cell.w, cell.h, if vis.is_some() { CURSOR_IN_SELECTION } else { CURSOR }));
             } else if vis.is_some() && text.is_empty() {
                 p.out.push(Instance::fill(end as f32 * cell.w, y, cell.w, cell.h, FG));

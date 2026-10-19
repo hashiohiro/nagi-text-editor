@@ -207,6 +207,33 @@ impl crate::layout::View for RightView {
         ed.right_click(row - r.y, col - r.x, clicks);
         crate::layout::Click::Done
     }
+
+    fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, dy: isize, dx: isize) -> bool {
+        let _ = (row, col, dx);
+        // 1 行目はタブ、2 行目は見出し（view.rs の build と同じ高さ）
+        let h = r.h.saturating_sub(2);
+        match ed.right_visible() {
+            Some(RightTab::Maven) => {
+                if let Some(m) = &mut ed.maven {
+                    crate::list::wheel(&mut m.selected, &mut m.scroll, m.rows.len(), h, dy);
+                }
+            }
+            Some(RightTab::Database) => {
+                if let Some(d) = &mut ed.db {
+                    crate::list::wheel(&mut d.selected, &mut d.scroll, d.rows.len(), h, dy);
+                }
+            }
+            Some(RightTab::Preview) => {
+                if let Some(pv) = &mut ed.md_preview {
+                    // 手で送ったら、エディタのカーソルには付いていかない（欄で j / k を押したときと同じ）
+                    pv.follow = false;
+                    crate::list::wheel(&mut pv.selected, &mut pv.scroll, pv.lines.len(), r.h.saturating_sub(1), dy);
+                }
+            }
+            None => {}
+        }
+        true
+    }
 }
 
 /// 描き方（view.rs の Painter で描く）

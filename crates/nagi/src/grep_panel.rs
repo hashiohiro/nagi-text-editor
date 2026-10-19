@@ -20,6 +20,8 @@ pub struct GrepPanel {
     pub selected: usize,
     /// 画面に出している範囲の先頭
     pub scroll: usize,
+    /// 左端の列（長い行を横に送って見る）
+    pub left: usize,
     job: Option<GrepJob>,
     /// 正規表現の誤り
     pub error: Option<String>,
@@ -147,6 +149,7 @@ impl Editor {
             .unwrap_or_default();
         let root = std::path::absolute(&root).unwrap_or(root);
         let g = self.grep.get_or_insert_with(|| GrepPanel {
+            left: 0,
             query: Prompt::default(),
             regex: false,
             root: root.clone(),
@@ -625,6 +628,7 @@ pub(crate) mod draw {
                 let width = p.cell_width(gr);
                 items.push(Item { g: Cow::Borrowed(gr), width, fg: if m { accent } else { fg }, bg: None, underline: m && reversed });
             }
+            skip_cols(&mut items, g.left, &mut None);
             p.draw(&items, r.x, y);
         }
     }

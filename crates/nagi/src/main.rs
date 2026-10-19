@@ -265,6 +265,8 @@ struct App {
     /// マッピングの続きを待つ期限
     map_deadline: Option<Instant>,
     scroll_anim: Option<ScrollAnim>,
+    /// タッチパッドの、まだ 1 行・1 列に満たない動き（欄・小窓は行・列の単位で送る）
+    wheel_acc: (f64, f64),
     snap_deadline: Option<Instant>,
     press: Option<Press>,
     /// 直前のクリック（時刻, 画面上のセル, 連続回数）。ダブル・トリプルクリックの判定用
@@ -831,7 +833,7 @@ impl App {
                 // 画面の幅より右は見えないので、そこまでの幅だけ数える（数 MB の行で全体を数えない）
                 let line = ed.buf.line_head(ed.cursor.line, ed.cursor.byte.min(4096) + 4).0;
                 let rect = ed.active_rect();
-                (rect.x + ed.gutter() + nagi_core::display_col(&line, ed.cursor.byte.min(line.len()), false), rect.y + ed.cursor.line.saturating_sub(ed.top))
+                (rect.x + ed.gutter() + nagi_core::display_col(&line, ed.cursor.byte.min(line.len()), false).saturating_sub(ed.left), rect.y + ed.cursor.line.saturating_sub(ed.top))
             };
             w.set_ime_cursor_area(
                 winit::dpi::PhysicalPosition::new((col as f32 * cell.w) as i32, (row as f32 * cell.h) as i32),
@@ -1170,6 +1172,49 @@ impl App {
             self.draw();
             return;
         }
+        // 行・列の数（下・右が正）。Shift を押していれば縦のホイールも横に
+        let (mut dx, mut dy) = match delta {
+            winit::event::MouseScrollDelta::LineDelta(x, y) => ((x * WHEEL_LINES as f32).round() as isize, (-y * WHEEL_LINES as f32).round() as isize),
+            winit::event::MouseScrollDelta::PixelDelta(p) => {
+                // 1 行・1 列に満たない分は貯めておく（ゆっくり動かしても欄が送られるように）
+                let (cw, ch) = (f.cell().w as f64, f.cell().h as f64);
+                self.wheel_acc.0 += p.x;
+                self.wheel_acc.1 -= p.y;
+                let (x, y) = ((self.wheel_acc.0 / cw).trunc(), (self.wheel_acc.1 / ch).trunc());
+                self.wheel_acc.0 -= x * cw;
+                self.wheel_acc.1 -= y * ch;
+                (x as isize, y as isize)
+            }
+        };
+        let shift = self.modifiers.shift_key();
+        if shift && dx == 0 {
+            (dx, dy) = (dy, 0);
+        }
+        // 欄・小窓・ダイアログの上なら、その部品へ（layout.rs）
+        // （行に満たない動きでも、欄の上なら本文へは通さない）
+        let screen = layout::Screen { rows: ed.screen.1, cols: ed.screen.0 };
+        if layout::wheel(ed, screen, row, col, dy, dx) {
+            self.draw();
+            return;
+        }
+        // 分けた窓: マウスの下の窓を動かす（その窓へ移る）
+        if let Some((w, _)) = ed.window_at(row, col).filter(|(w, _)| *w != ed.cur_win) {
+            self.scroll_anim = None;
+            ed.focus_window(w);
+            let rows = self.sync_screen();
+            if let Some(ed) = &mut self.ed {
+                ed.rows = rows;
+            }
+        }
+        let Some(ed) = &mut self.ed else { return };
+        // 本文の横（折り返していないとき）
+        if dx != 0 {
+            ed.hscroll(dx);
+            self.sync_ime();
+            self.draw();
+            return;
+        }
+        let Some(f) = &self.fonts else { return };
         let now = Instant::now();
         match delta {
             // マウスのホイール: 目盛りごとに 3 行を、短い時間で滑らかに動かす
@@ -1576,6 +1621,7 @@ fn main() {
         matcher: Matcher::default(),
         map_deadline: None,
         scroll_anim: None,
+        wheel_acc: (0.0, 0.0),
         snap_deadline: None,
         press: None,
         last_click: None,

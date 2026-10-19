@@ -62,6 +62,21 @@ pub fn fit(sel: usize, top: &mut usize, h: usize) {
     }
 }
 
+/// ホイール: 先頭 `top` を `n` 行動かし（`len` 行のうち `h` 行が見える）、選んでいる行 `sel` は見える範囲に留める（本文の Vim と同じ）
+pub fn wheel(sel: &mut usize, top: &mut usize, len: usize, h: usize, n: isize) {
+    let h = h.max(1);
+    let max = len.saturating_sub(h);
+    *top = (*top as isize + n).clamp(0, max as isize) as usize;
+    if len > 0 {
+        *sel = (*sel).clamp(*top, (*top + h - 1).min(len - 1));
+    }
+}
+
+/// 横のホイール: 左端の列 `left` を `n` 列動かす（`width` は中身の幅、`w` は見える幅）
+pub fn hwheel(left: &mut usize, width: usize, w: usize, n: isize) {
+    *left = (*left as isize + n).clamp(0, width.saturating_sub(w.max(1)) as isize) as usize;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -80,6 +95,27 @@ mod tests {
         assert_eq!(top, 3);
         fit(1, &mut top, 5);
         assert_eq!(top, 1);
+    }
+
+    #[test]
+    fn wheels() {
+        let (mut sel, mut top) = (0, 0);
+        wheel(&mut sel, &mut top, 20, 5, 3);
+        assert_eq!((sel, top), (3, 3), "選んでいる行は見える範囲の上端へ");
+        wheel(&mut sel, &mut top, 20, 5, 100);
+        assert_eq!((sel, top), (15, 15), "末尾が下端に来るまで");
+        sel = 19;
+        wheel(&mut sel, &mut top, 20, 5, -10);
+        assert_eq!((sel, top), (9, 5), "上へ動かすと下端に留まる");
+        wheel(&mut sel, &mut top, 3, 5, 2);
+        assert_eq!((sel, top), (2, 0), "全部見えている一覧は動かない");
+        let mut left = 0;
+        hwheel(&mut left, 50, 20, 8);
+        assert_eq!(left, 8);
+        hwheel(&mut left, 50, 20, 100);
+        assert_eq!(left, 30);
+        hwheel(&mut left, 50, 20, -100);
+        assert_eq!(left, 0);
     }
 
     #[test]

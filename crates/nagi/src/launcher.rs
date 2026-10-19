@@ -534,6 +534,11 @@ impl crate::layout::View for LauncherView {
             draw::draw_launcher(p, l, s.cols, s.rows + ed.status_rows(), &ed.preedit);
         }
     }
+
+    fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, dy: isize, dx: isize) -> bool {
+        let _ = (r, row, col, dx);
+        crate::layout::wheel_keys(ed, dy)
+    }
 }
 
 /// 描き方（view.rs の Painter で描く）

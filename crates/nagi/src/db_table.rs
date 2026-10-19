@@ -575,6 +575,17 @@ impl crate::layout::View for DbTableView {
         ed.set_state(crate::editor::State::DbTable);
         crate::layout::Click::Done
     }
+
+    fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, dy: isize, dx: isize) -> bool {
+        let _ = (row, col);
+        if let Some(te) = &mut ed.db_table {
+            // 上の 4 行は見出し（view.rs の build と同じ高さ）
+            let len = te.len();
+            crate::list::wheel(&mut te.row, &mut te.scroll, len, r.h.saturating_sub(4), dy);
+            crate::result_grid::grid_hwheel(&mut te.col, &mut te.hscroll, &te.widths, r.w, dx);
+        }
+        true
+    }
 }
 
 /// 描き方（view.rs の Painter で描く）

@@ -32,6 +32,8 @@ pub struct TreePanel {
     pub rows: Vec<Row>,
     pub selected: usize,
     pub scroll: usize,
+    /// 左端の列（深いフォルダ・長い名前を横に送って見る）
+    pub left: usize,
     tx: Sender<DirList>,
     rx: Receiver<DirList>,
     /// 読んでいる途中のフォルダ
@@ -243,6 +245,7 @@ impl Editor {
                 children: HashMap::new(),
                 expanded: Default::default(),
                 rows: Vec::new(),
+                left: 0,
                 selected: 0,
                 scroll: 0,
                 tx,
@@ -476,6 +479,20 @@ impl crate::layout::View for TreeView {
         ed.tree_click(row, clicks);
         crate::layout::Click::Done
     }
+
+    fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, dy: isize, dx: isize) -> bool {
+        let _ = (row, col);
+        if let Some(t) = &mut ed.tree {
+            // 1 行目は見出し（view.rs の build と同じ高さ）
+            let h = r.h.saturating_sub(1);
+            crate::list::wheel(&mut t.selected, &mut t.scroll, t.rows.len(), h, dy);
+            if dx != 0 {
+                let widest = t.rows.iter().skip(t.scroll).take(h).map(|x| x.depth * 2 + 4 + nagi_core::display_col(&x.name, x.name.len(), false)).max().unwrap_or(0);
+                crate::list::hwheel(&mut t.left, widest + 1, r.w, dx);
+            }
+        }
+        true
+    }
 }
 
 
@@ -547,12 +564,18 @@ pub(crate) mod draw {
                 Some(FileState::Deleted) => STATUS_FG,
                 None => FG,
             };
-            let label = format!("{}{mark}", "  ".repeat(row.depth));
+            // 横に送っていれば、字下げ・印・アイコン・名前を左端の分だけ左へ（左端より左は描かない）
+            let left = t.left;
+            let label: String = format!("{}{mark}", "  ".repeat(row.depth)).chars().skip(left).collect();
             p.text(&label, r.x, y, if reversed { BG } else { STATUS_FG });
-            if icon_col + 3 < r.x + r.w {
-                draw_tree_icon(p, &tree_icon(row, index, &t.root), icon_col, y);
+            let icon_at = row.depth * 2 + 2;
+            if icon_at >= left && icon_col - left + 3 < r.x + r.w {
+                draw_tree_icon(p, &tree_icon(row, index, &t.root), icon_col - left, y);
             }
-            p.text(&row.name, icon_col + 2, y, fg);
+            let name_at = icon_at + 2;
+            let mut items = p.items(&row.name, fg);
+            crate::view::skip_cols(&mut items, left.saturating_sub(name_at), &mut None);
+            p.draw(&items, r.x + name_at.saturating_sub(left), y);
         }
         p.cols = saved;
     }

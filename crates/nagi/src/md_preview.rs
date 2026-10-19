@@ -19,8 +19,11 @@ pub struct MdPreview {
     pub scroll: usize,
     /// 欄にいるときに選んでいる行（Enter でリンクを開く）
     pub selected: usize,
-    /// エディタのカーソルに合わせてスクロールする（欄で j / k を押したら、エディタに戻るまで止める）
+    /// エディタのカーソルに合わせてスクロールする（欄で j / k を押したら、エディタに戻るまで止める。
+    /// ホイールで送ったら、エディタのカーソルが動くまで止める）
     pub follow: bool,
+    /// 最後に見たエディタのカーソルの行（動いたら、また付いていく）
+    seen_line: usize,
 }
 
 pub fn is_markdown(p: &std::path::Path) -> bool {
@@ -42,7 +45,7 @@ impl Editor {
             self.notify.info("Markdown のファイルではありません");
             return;
         }
-        self.md_preview = Some(MdPreview { key: (PathBuf::new(), 0, 0), lines: Vec::new(), scroll: 0, selected: 0, follow: true });
+        self.md_preview = Some(MdPreview { key: (PathBuf::new(), 0, 0), lines: Vec::new(), scroll: 0, selected: 0, follow: true, seen_line: usize::MAX });
         self.right_tab = RightTab::Preview;
         self.right_hidden = false;
         self.rows = self.text_rows(self.active_rect());
@@ -67,9 +70,10 @@ impl Editor {
             pv.key = key;
             pv.selected = pv.selected.min(pv.lines.len().saturating_sub(1));
         }
-        if !focused {
+        if !focused && pv.seen_line != cur_line {
             pv.follow = true;
         }
+        pv.seen_line = cur_line;
         if md && pv.follow && !focused {
             // カーソルの行を作った行のうち、元の行がそれ以下で最後のもの。上から 1/3 に置く
             let at = pv.lines.iter().rposition(|l| l.src <= cur_line).unwrap_or(0);

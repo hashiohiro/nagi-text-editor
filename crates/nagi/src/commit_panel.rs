@@ -516,6 +516,14 @@ impl crate::layout::View for CommitView {
         ed.commit_click(row - l.y, col - l.x, clicks);
         crate::layout::Click::Done
     }
+
+    fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, dy: isize, dx: isize) -> bool {
+        let _ = (r, row, col, dx);
+        if let Some(c) = ed.commit.as_mut().filter(|c| !c.items.is_empty()) {
+            c.selected = (c.selected as isize + dy).clamp(0, c.items.len() as isize - 1) as usize;
+        }
+        true
+    }
 }
 
 /// 描き方（view.rs の Painter で描く）

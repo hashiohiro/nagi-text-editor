@@ -24,6 +24,24 @@ pub struct LogRow {
     pub commit: Option<Commit>,
 }
 
+impl LogRow {
+    /// 真ん中の列で横に送る部分（グラフ・ref・題名）の表示の幅（描き方と同じ並び）
+    pub fn text_width(&self) -> usize {
+        let w = |s: &str| nagi_core::display_col(s, s.len(), false);
+        let graph = w(&pretty_graph(&self.graph));
+        match &self.commit {
+            Some(c) => graph + 1 + if c.refs.is_empty() { 0 } else { w(&c.refs) + 2 } + w(&c.subject),
+            None => graph,
+        }
+    }
+}
+
+/// 履歴（幅 `w`）の真ん中の列で、横に送る部分の見える幅（右の作者・日時・ハッシュの分を除いた、だいたいの幅）
+pub fn log_text_w(w: usize) -> usize {
+    let (bw, dw) = (20.min(w / 6), 42.min(w / 3));
+    w.saturating_sub(bw + dw + 2).saturating_sub(32).max(1)
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Detail {
     pub hash: String,
@@ -68,6 +86,8 @@ pub struct LogView {
     pub visible: Vec<usize>,
     pub selected: usize,
     pub top: usize,
+    /// 真ん中の列（グラフ・ref・題名）の左端の列。作者・日時・ハッシュは右に留めたまま
+    pub left: usize,
     /// (見出し, 名前, 今のブランチか)
     pub branches: Vec<(String, String, bool)>,
     pub detail: Option<Detail>,
@@ -284,6 +304,7 @@ impl Editor {
             Ok(v)
         });
         self.log = Some(LogView {
+            left: 0,
             docked,
             branch_sel: None,
             src_path: path.clone(),
@@ -298,7 +319,7 @@ impl Editor {
             file_sel: 0,
             filter_text: String::new(),
             filter: None,
-            path: path.or(range.map(|r| format!("比較 {r}"))),
+            path: path.or(range.map(|r| if r.contains("..") { format!("比較 {r}") } else { format!("ブランチ {r}") })),
             confirm: None,
             loading: true,
             rx_log,
@@ -494,7 +515,8 @@ impl Editor {
                 }
             }
         } else if col < bw {
-            // 左: ブランチ。押すとそのブランチの指すコミットへ、ダブルクリックでチェックアウト
+            // 左: ブランチ。押すとそのブランチの指すコミットへ、ダブルクリックでそのブランチの履歴だけを出す
+            // （IntelliJ と同じ。チェックアウトは右クリックのメニューから）
             l.focus_files = false;
             let Some(i) = l.branch_at(row - 1) else { return };
             l.branch_sel = Some(i);
@@ -506,11 +528,25 @@ impl Editor {
                 }
             }
             if clicks >= 2 {
-                self.log_checkout_branch(i);
+                self.log_show_branch(i);
             }
         } else {
             l.focus_files = false;
         }
+    }
+
+    /// そのブランチの履歴だけを出す。もう出していれば、全部のブランチに戻す（下の欄か窓の領域かは保つ）
+    pub(crate) fn log_show_branch(&mut self, i: usize) {
+        let Some(l) = &mut self.log else { return };
+        let Some(name) = l.branches.get(i).map(|b| b.1.clone()) else { return };
+        let all = l.src_range.as_deref() == Some(name.as_str());
+        l.src_range = if all { None } else { Some(name.clone()) };
+        l.src_path = None;
+        self.reload_log();
+        if let Some(l) = &mut self.log {
+            l.branch_sel = Some(i);
+        }
+        self.notify.info(if all { "全部のブランチの履歴を出しました".to_string() } else { format!("{name} の履歴だけを出しました（もう一度ダブルクリックで全部に戻す）") });
     }
 
     /// `:` の行に `head` と `tail` を入れ、その間にカーソルを置く（名前などを打たせる）
@@ -585,7 +621,7 @@ impl Editor {
         self.reload_log();
     }
 
-    /// ブランチの列の i 番目をチェックアウトする（ダブルクリック・メニュー）
+    /// ブランチの列の i 番目をチェックアウトする（右クリックのメニュー）
     pub(crate) fn log_checkout_branch(&mut self, i: usize) {
         let Some((sec, name, cur)) = self.log.as_ref().and_then(|l| l.branches.get(i).cloned()) else { return };
         if cur {
@@ -601,6 +637,18 @@ impl Editor {
         let exists = self.log.as_ref().is_some_and(|l| l.branches.iter().any(|(s, n, _)| s == "ローカル" && *n == local));
         self.checkout_ref(&name, remote, exists);
         self.reload_log();
+    }
+
+    /// ホイール: 表示だけを送る（選んでいるコミットは動かさない。キーで動かすと見える範囲へ戻る）。
+    /// 横は真ん中の列（グラフ・ref・題名）を送る。`w` は履歴の幅
+    pub(crate) fn log_wheel(&mut self, dy: isize, dx: isize, w: usize) {
+        let rows = self.log_rows();
+        let Some(l) = &mut self.log else { return };
+        l.top = (l.top as isize + dy).clamp(0, l.visible.len().saturating_sub(rows) as isize) as usize;
+        if dx != 0 {
+            let widest = l.visible.iter().skip(l.top).take(rows).map(|&i| l.rows[i].text_width()).max().unwrap_or(0);
+            crate::list::hwheel(&mut l.left, widest + 1, log_text_w(w), dx);
+        }
     }
 
     /// 履歴の行の高さ（下の欄か窓の領域か）
@@ -867,6 +915,12 @@ impl crate::layout::View for LogScreenView {
     fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize) -> bool {
         ed.log_context(row - r.y, col - r.x, r.w, (row, col))
     }
+
+    fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, dy: isize, dx: isize) -> bool {
+        let _ = (r, row, col, dx);
+        ed.log_wheel(dy, dx, r.w);
+        true
+    }
 }
 
 /// 描き方（view.rs の Painter で描く）
@@ -950,13 +1004,19 @@ pub(crate) mod draw {
             } else if sel {
                 p.out.push(Instance::fill(cx as f32 * cell.w, y, cw as f32 * cell.w, cell.h, MATCH_BG));
             }
-            let mut c = cx + 1;
-            for (j, ch) in crate::log_view::pretty_graph(&row.graph).chars().enumerate() {
-                let mut b = [0u8; 4];
+            // グラフ・ref・題名を 1 つに並べ、横に送った分を落としてから描く
+            let graph = crate::log_view::pretty_graph(&row.graph);
+            let mut items: Vec<Item> = Vec::new();
+            for (j, (_, g)) in graph.grapheme_indices(true).enumerate() {
                 let color = if focused { BG } else { LANES[(j / 2) % LANES.len()] };
-                c = p.text(ch.encode_utf8(&mut b), c, y, color);
+                items.push(Item { g: Cow::Owned(g.to_string()), width: p.cell_width(g), fg: color, bg: None, underline: false });
             }
-            if let Some(cm) = &row.commit {
+            let Some(cm) = &row.commit else {
+                skip_cols(&mut items, l.left, &mut None);
+                p.draw(&items, cx + 1, y);
+                continue;
+            };
+            {
                 let (fg, dim, refc) = if focused { (BG, BG, BG) } else { (FG, STATUS_FG, rgb(0xd7af87)) };
                 // 作者と日時は表示の幅で揃える（全角は 2 セル）
                 let pad = |p: &Painter, s: &str, w: usize| {
@@ -969,14 +1029,16 @@ pub(crate) mod draw {
                 };
                 let right = format!("{} {} {}", pad(p, &cm.author, 10), pad(p, &cm.date, 9), cm.short);
                 let rw = p.width(&right);
-                let mut c2 = c + 1;
+                items.extend(p.items(" ", fg).into_iter().map(|i| Item { g: Cow::Owned(i.g.into_owned()), ..i }));
                 if !cm.refs.is_empty() {
-                    c2 = p.text(&format!("{}  ", cm.refs), c2, y, refc);
+                    items.extend(p.items(&format!("{}  ", cm.refs), refc).into_iter().map(|i| Item { g: Cow::Owned(i.g.into_owned()), ..i }));
                 }
+                items.extend(p.items(&cm.subject, fg));
                 let limit = (cx + cw).saturating_sub(rw + 1);
+                skip_cols(&mut items, l.left, &mut None);
                 let saved2 = p.cols;
                 p.cols = limit.saturating_sub(1);
-                p.text(&cm.subject, c2, y, fg);
+                p.draw(&items, cx + 1, y);
                 p.cols = saved2;
                 p.text(&right, limit, y, dim);
             }
@@ -1054,6 +1116,7 @@ mod tests {
         e.set_screen(120, 40);
         let rows = parse_log("*\x1fa1\x1f\x1f一\x1fA\x1f1\x1fa1\n|\n*\x1fb2\x1f\x1f二\x1fA\x1f2\x1fb2\n");
         e.log = Some(LogView {
+            left: 0,
             branch_sel: None,
             src_path: None,
             src_range: None,
@@ -1095,7 +1158,7 @@ mod tests {
         assert_eq!((l.focus_files, l.selected), (false, 0));
     }
 
-    /// 本物のリポジトリで: ブランチの列を押して選ぶ・ダブルクリックでチェックアウト・本文を押すと戻る・右クリックのメニューで消す
+    /// 本物のリポジトリで: ブランチの列を押して選ぶ・ダブルクリックでそのブランチの履歴・右クリックでチェックアウト・本文を押すと戻る・右クリックのメニューで消す
     #[test]
     fn branches_and_commit_menu() {
         let dir = std::env::temp_dir().join(format!("nagi-logops-{}", std::process::id()));
@@ -1139,8 +1202,23 @@ mod tests {
         let l = e.log.as_ref().unwrap();
         assert_eq!(l.branch_sel, Some(1));
         assert_eq!(l.current().map(|c| c.subject.as_str()), Some("add a"));
-        // ダブルクリックでチェックアウト
+        // ダブルクリックで、そのブランチの履歴だけ（チェックアウトはしない）
         e.bottom_click(4, 2, 2);
+        wait(&mut e);
+        assert_eq!(g(&["rev-parse", "--abbrev-ref", "HEAD"]), "main", "チェックアウトしない");
+        let subjects = |e: &Editor| e.log.as_ref().unwrap().rows.iter().filter_map(|r| r.commit.as_ref().map(|c| c.subject.clone())).collect::<Vec<_>>();
+        assert_eq!(subjects(&e), vec!["add a"], "topic の履歴だけ");
+        assert_eq!(e.log.as_ref().unwrap().branch_sel, Some(1));
+        // もう一度ダブルクリックで全部に戻る（下の欄に収めたまま）
+        e.bottom_click(4, 2, 2);
+        wait(&mut e);
+        assert_eq!(subjects(&e).len(), 3);
+        assert!(e.log.as_ref().unwrap().docked);
+        // チェックアウトは右クリックのメニューから
+        let w = e.bottom_content_rect().unwrap().w;
+        assert!(e.log_context(3, 2, w, (5, 2)));
+        let i = e.menu.as_ref().unwrap().items.iter().position(|it| it.label == "チェックアウト").unwrap();
+        e.menu_run(i);
         assert_eq!(g(&["rev-parse", "--abbrev-ref", "HEAD"]), "topic", "{}", e.notify.text);
         wait(&mut e);
         // 本文を押すとエディタへ（どのペインからでも）

@@ -35,12 +35,47 @@ pub struct DiffView {
     pub rows: Vec<Row>,
     pub top: usize,
     pub cursor: usize,
+    /// カーソルの列（本文の表示の列。行の長さより右なら行末に出す）
+    pub col: usize,
+    /// カーソルを左（古い版）に置くか。右に行が無ければ左に出す
+    pub on_left: bool,
+    /// 本文の左端の列（長い行の右を見るために横に送る。左右とも同じだけ）
+    pub left: usize,
     /// 各まとまりの最初の行（rows の番号）
     pub hunk_rows: Vec<usize>,
     /// 作業中のファイルとの差分なら (根, 相対パス, 絶対パス)。戻す・ステージができる
     pub work: Option<(PathBuf, String, PathBuf)>,
     hunks: Vec<Hunk>,
     old_text: String,
+}
+
+/// 行番号の欄の幅（"{:>5} "）
+pub const NUM_W: usize = 6;
+
+impl DiffView {
+    /// カーソルの行で、カーソルを出す側の本文（右に無ければ左）
+    pub fn cursor_text(&self) -> &str {
+        let Some(r) = self.rows.get(self.cursor) else { return "" };
+        let side = if self.on_left { r.left.as_ref().or(r.right.as_ref()) } else { r.right.as_ref().or(r.left.as_ref()) };
+        side.map_or("", |s| s.1.as_str())
+    }
+
+    /// カーソルを出す列（行末より右は行末の文字へ）
+    pub fn shown_col(&self) -> usize {
+        let t = self.cursor_text();
+        self.col.min(nagi_core::display_col(t, t.len(), false).saturating_sub(1))
+    }
+
+    /// カーソルの列が見えるように左端を送る（`w` は本文の見える幅）
+    pub fn follow(&mut self, w: usize) {
+        let c = self.shown_col();
+        let w = w.max(1);
+        if c < self.left {
+            self.left = c;
+        } else if c >= self.left + w {
+            self.left = c + 1 - w;
+        }
+    }
 }
 
 /// 2 つの中身から、左右に並べた行を作る
@@ -116,7 +151,7 @@ impl Editor {
             self.notify.info("差分はありません");
         }
         let cursor = hunk_rows.first().copied().unwrap_or(0);
-        self.diff = Some(DiffView { left_title, right_title, rows, top: cursor.saturating_sub(5), cursor, hunk_rows, work, hunks, old_text: old.to_string() });
+        self.diff = Some(DiffView { left_title, right_title, rows, top: cursor.saturating_sub(5), cursor, col: 0, on_left: false, left: 0, hunk_rows, work, hunks, old_text: old.to_string() });
         self.diff_return = Some(self.state());
         self.set_state(State::Diff);
     }
@@ -152,6 +187,14 @@ impl Editor {
                 }
             }
             (Some('g'), Key::Char('g')) => d.cursor = 0,
+            // 横の移動（読むだけでも、どこを見ているか分かるように列のカーソルを持つ）
+            (_, Key::Char('h') | Key::Left) => d.col = d.shown_col().saturating_sub(1),
+            (_, Key::Char('l') | Key::Right) => {
+                let t = d.cursor_text();
+                d.col = (d.shown_col() + 1).min(nagi_core::display_col(t, t.len(), false).saturating_sub(1));
+            }
+            (_, Key::Char('0')) => d.col = 0,
+            (_, Key::Char('$')) => d.col = usize::MAX,
             (_, Key::Char(c @ (']' | '[' | 'g'))) => self.diff_pending = Some(c),
             _ if moved.is_some() => d.cursor = moved.unwrap_or(d.cursor),
             (_, Key::Char('q') | Key::Esc) => self.close_diff(),
@@ -169,9 +212,16 @@ impl Editor {
             }
             _ => {}
         }
+        let tw = self.diff_text_w();
         if let Some(d) = &mut self.diff {
             crate::list::fit(d.cursor, &mut d.top, rows);
+            d.follow(tw);
         }
+    }
+
+    /// 差分の本文の見える幅（左右の狭い方。行番号の欄を除く）
+    fn diff_text_w(&self) -> usize {
+        (self.windows_x().1.saturating_sub(1) / 2).saturating_sub(NUM_W).max(1)
     }
 
     /// カーソルの変更を戻す（`stage` ならステージ）。作業中のファイルとの差分だけ
@@ -232,7 +282,7 @@ impl crate::component::Component for DiffComponent {
         let d = ed.diff.as_ref();
         let n = d.map_or(0, |d| d.hunk_rows.len());
         let i = d.map_or(0, |d| d.hunk_rows.iter().rposition(|&r| r <= d.cursor).map_or(0, |i| i + 1));
-        crate::component::Status::new(format!("-- 差分 --   変更 {i}/{n}"), "]c 次  [c 前  s ステージ  u 戻す  Enter 開く  q 閉じる ")
+        crate::component::Status::new(format!("-- 差分 --   変更 {i}/{n}"), "]c 次  [c 前  h/l 横  s ステージ  u 戻す  Enter 開く  q 閉じる ")
     }
 
     fn key(&self, ed: &mut crate::editor::Editor, key: nagi_vim::Key) -> crate::editor::Effect {
@@ -262,10 +312,37 @@ impl crate::layout::View for DiffScreenView {
 
     fn click(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, clicks: u32) -> crate::layout::Click {
         let _ = (col, clicks);
-        // 窓を覆って出ている差分: 押したら差分へ向く（下の本文へは通さない）
-        let _ = (r, row);
+        // 窓を覆って出ている差分: 押したら差分へ向き、押した行・列へカーソルを置く（下の本文へは通さない）
         ed.set_state(crate::editor::State::Diff);
+        let tw = ed.diff_text_w();
+        if let Some(d) = &mut ed.diff {
+            let half = r.w.saturating_sub(1) / 2;
+            let k = (row - r.y).checked_sub(1).map(|k| d.top + k).filter(|&k| k < d.rows.len());
+            if let Some(k) = k {
+                d.cursor = k;
+                d.on_left = col < r.x + half;
+                let x0 = if d.on_left { r.x } else { r.x + half + 1 } + NUM_W;
+                d.col = col.saturating_sub(x0) + d.left;
+                d.col = d.shown_col();
+                d.follow(tw);
+            }
+        }
         crate::layout::Click::Done
+    }
+
+    fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, dy: isize, dx: isize) -> bool {
+        let _ = (row, col);
+        let tw = ed.diff_text_w();
+        let Some(d) = &mut ed.diff else { return false };
+        // 表示だけを送る（カーソルは動かさない。キーで動かすと見える範囲へ戻る）
+        let body = r.h.saturating_sub(1);
+        d.top = (d.top as isize + dy).clamp(0, d.rows.len().saturating_sub(body) as isize) as usize;
+        if dx != 0 {
+            let width = |s: &Option<(usize, String)>| s.as_ref().map_or(0, |x| nagi_core::display_col(&x.1, x.1.len(), false));
+            let widest = d.rows.iter().skip(d.top).take(body).map(|x| width(&x.left).max(width(&x.right))).max().unwrap_or(0);
+            crate::list::hwheel(&mut d.left, widest + 1, tw, dx);
+        }
+        true
     }
 }
 
@@ -307,7 +384,9 @@ pub(crate) mod draw {
                 _ => (None, None),
             };
             let cursor = k == d.cursor;
-            for (side, col, w, span, word) in [(&row.left, r.x, half, spans.0, DIFF_WORD_DEL_BG), (&row.right, rx, r.w - half - 1, spans.1, DIFF_WORD_BG)] {
+            // カーソルを出す側（右に行が無ければ左）
+            let caret_left = d.on_left && row.left.is_some() || row.right.is_none();
+            for (is_left, side, col, w, span, word) in [(true, &row.left, r.x, half, spans.0, DIFF_WORD_DEL_BG), (false, &row.right, rx, r.w - half - 1, spans.1, DIFF_WORD_BG)] {
                 let saved = p.cols;
                 p.cols = col + w;
                 if let Some((n, text)) = side {
@@ -319,12 +398,29 @@ pub(crate) mod draw {
                         p.text(&num, col, y, LINE_NO)
                     };
                     let mut items = Vec::new();
+                    // カーソルの文字（読むだけでも、今の位置が分かるように反転で出す）
+                    let caret = (cursor && caret_left == is_left).then(|| d.shown_col());
+                    let mut caret_item = None;
+                    let mut at = 0;
                     for (b, g) in text.grapheme_indices(true) {
                         let width = p.cell_width(g);
                         let hit = span.as_ref().is_some_and(|s| b >= s.start && b < s.end);
+                        if caret.is_some_and(|cc| cc >= at && cc < at + width) {
+                            caret_item = Some(items.len());
+                        }
+                        at += width;
                         items.push(Item { g: Cow::Borrowed(g), width, fg: FG, bg: if hit { Some(word) } else { None }, underline: false });
                     }
-                    p.draw(&items, c, y);
+                    let gone = d.left > 0 && (skip_cols(&mut items, d.left, &mut caret_item) || at < d.left);
+                    if let Some(i) = caret_item {
+                        items[i].bg = Some(CURSOR);
+                        items[i].fg = BG;
+                    }
+                    let end = p.draw(&items, c, y);
+                    // 空の行: 行の頭に 1 セルの塗り
+                    if caret.is_some() && caret_item.is_none() && !gone && end < col + w {
+                        p.out.push(Instance::fill(end as f32 * cell.w, y, cell.w, cell.h, CURSOR));
+                    }
                 } else if cursor {
                     p.out.push(Instance::fill(col as f32 * cell.w, y, 5.0 * cell.w, cell.h, MATCH_BG));
                 }
@@ -350,5 +446,31 @@ mod tests {
         // 変えた行が増えたとき、増えた分は足した行として
         let (rows, _, _) = build_rows("a\nb\n", "a\nB1\nB2\n");
         assert_eq!(rows.iter().map(|r| r.kind).collect::<Vec<_>>(), vec![RowKind::Eq, RowKind::Mod, RowKind::Add]);
+    }
+
+    /// 列のカーソル: h / l で動き、行末で止まり、長い行は左端が付いてくる。押した位置へ置く
+    #[test]
+    fn column_cursor() {
+        let mut e = Editor::new(nagi_core::Buffer::from_str(""), None);
+        e.set_screen(60, 20);
+        let long = "y".repeat(80);
+        e.show_diff("a".into(), "b".into(), "ab\n", &format!("ab\n{long}\n"), None);
+        assert_eq!(e.state(), State::Diff);
+        let d = e.diff.as_ref().unwrap();
+        assert_eq!((d.cursor, d.col), (1, 0), "最初の変更の行の頭");
+        e.diff_key(Key::Char('$'));
+        let tw = e.diff_text_w();
+        let d = e.diff.as_ref().unwrap();
+        assert_eq!(d.shown_col(), 79);
+        assert!(d.left > 0 && 79 < d.left + tw, "行末が見える: left {}", d.left);
+        e.diff_key(Key::Char('l'));
+        assert_eq!(e.diff.as_ref().unwrap().shown_col(), 79, "行末で止まる");
+        e.diff_key(Key::Char('k'));
+        let d = e.diff.as_ref().unwrap();
+        assert_eq!((d.cursor, d.shown_col(), d.left), (0, 1, 1), "短い行では行末に出し、左端も付いてくる");
+        e.diff_key(Key::Char('0'));
+        assert_eq!(e.diff.as_ref().unwrap().left, 0);
+        e.diff_key(Key::Char('l'));
+        assert_eq!(e.diff.as_ref().unwrap().shown_col(), 1);
     }
 }

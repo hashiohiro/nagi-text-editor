@@ -305,6 +305,53 @@ impl crate::layout::View for BottomView {
         }
     }
 
+    fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, dy: isize, dx: isize) -> bool {
+        let _ = (row, col);
+        // 1 行目はタブ（ターミナルは main.rs が先に受け取る）
+        let h = r.h.saturating_sub(1);
+        match ed.bottom_kind {
+            BottomKind::Grep | BottomKind::Output => match &mut ed.grep {
+                // 出力・診断の読む画面は、中の Editor を送る（カーソルは見える範囲に留める）
+                Some(g) if g.view.is_some() && g.title.is_some() => {
+                    let v = g.view.as_mut().unwrap();
+                    v.ed.scroll(dy);
+                    v.ed.hscroll(dx);
+                }
+                Some(g) => {
+                    crate::list::wheel(&mut g.selected, &mut g.scroll, g.hits.len(), h, dy);
+                    if dx != 0 {
+                        let width = |h: &nagi_workers::grep::Hit| {
+                            let head = if h.path.is_empty() { 0 } else { nagi_core::display_col(&h.path, h.path.len(), false) + format!(":{}: ", h.line).len() };
+                            head + nagi_core::display_col(&h.text, h.text.len(), false)
+                        };
+                        let widest = g.hits.iter().skip(g.scroll).take(h).map(width).max().unwrap_or(0);
+                        crate::list::hwheel(&mut g.left, widest + 1, r.w, dx);
+                    }
+                }
+                None => {}
+            },
+            BottomKind::Result => {
+                let res = &mut ed.db_results;
+                if res.active == 0 {
+                    // 出力（下から数える。0 が最新）
+                    res.log_scroll = (res.log_scroll as isize - dy).clamp(0, res.log.len().saturating_sub(1) as isize) as usize;
+                } else if let Some(t) = res.active_tab_mut() {
+                    let head = if t.filterable { 4 } else { 3 };
+                    crate::list::wheel(&mut t.row, &mut t.scroll, t.rows.len(), r.h.saturating_sub(head), dy);
+                    crate::result_grid::grid_hwheel(&mut t.col, &mut t.hscroll, &t.widths, r.w, dx);
+                }
+            }
+            BottomKind::Git => ed.log_wheel(dy, dx, r.w),
+            BottomKind::Problems => {
+                let n = ed.problem_rows().len();
+                let p = &mut ed.problems;
+                p.scroll = (p.scroll as isize + dy).clamp(0, n.saturating_sub(h.saturating_sub(1)) as isize) as usize;
+            }
+            BottomKind::Terminal => {}
+        }
+        true
+    }
+
     fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize) -> bool {
         // Git のタブ（履歴）: 1 行目はタブなので、2 行目から中身
         if ed.bottom_kind != BottomKind::Git || row <= r.y {

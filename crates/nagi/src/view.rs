@@ -335,8 +335,32 @@ pub(crate) struct Pane<'a> {
     pub(crate) syntax: Option<&'a nagi_syntax::Syntax>,
     pub(crate) cursor: nagi_core::Cursor,
     pub(crate) top: usize,
+    /// 左端の列（折り返さないときの横の送り）
+    pub(crate) left: usize,
     pub(crate) frac: f32,
     pub(crate) active: bool,
+}
+
+/// 行の頭から表示の `cols` 列ぶんの文字を落とす（横に送ったとき）。途中で切れる幅の広い文字は空白に。
+/// カーソルの文字の番号も合わせる（落とした文字の中にあれば None にして true を返す）
+pub(crate) fn skip_cols(items: &mut Vec<Item>, cols: usize, cursor_item: &mut Option<usize>) -> bool {
+    let (mut w, mut n) = (0, 0);
+    while n < items.len() && w + items[n].width <= cols {
+        w += items[n].width;
+        n += 1;
+    }
+    // 左端にかかる幅の広い文字は、はみ出した分を空白にする
+    let pad = if n < items.len() && w < cols {
+        let rest = items[n].width - (cols - w);
+        n += 1;
+        rest
+    } else {
+        0
+    };
+    items.splice(..n, (0..pad).map(|_| Item { g: Cow::Borrowed(" "), width: 1, fg: FG, bg: None, underline: false }));
+    let gone = cursor_item.is_some_and(|i| i < n);
+    *cursor_item = cursor_item.and_then(|i| i.checked_sub(n)).map(|i| i + pad);
+    gone
 }
 
 /// 窓 1 つを `rect`（本文の行だけ。状態行は含まない）に描く
@@ -368,7 +392,7 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
     let view_end = pane.buf.line_start(shown.last().map_or(pane.top, |l| l + 1).min(total));
     // 行は画面に入る分だけ取り出す（折り返さないので、それより右は見えない。数 MB の 1 行でも毎回全体を作らない）
     // 折り返すときは、画面に入るだけの行ぶん
-    let budget = if ed.settings.bool("editor.wrap") { line_budget(rect.w * drawn) } else { line_budget(rect.w) };
+    let budget = if ed.settings.bool("editor.wrap") { line_budget(rect.w * drawn) } else { line_budget(rect.w + pane.left) };
     let heads: Vec<(String, usize, bool)> = shown
         .iter()
         .map(|&ln| {
@@ -499,7 +523,10 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
                 let (da, db) = (nagi_core::display_col(line, a, false), nagi_core::display_col(line, b, false));
                 let color = if error { DIAG_ERROR } else { DIAG_WARN };
                 if wrapw == 0 {
-                    draw_squiggle(p, (rect.x + gutter + da) as f32 * cell.w, (rect.x + gutter + db) as f32 * cell.w, y + cell.h, color);
+                    let (da, db) = (da.max(pane.left) - pane.left, db.max(pane.left) - pane.left);
+                    if db > da {
+                        draw_squiggle(p, (rect.x + gutter + da) as f32 * cell.w, (rect.x + gutter + db) as f32 * cell.w, y + cell.h, color);
+                    }
                 } else {
                     // 折り返した行ごとに分けて引く
                     let mut s0 = da;
@@ -588,6 +615,12 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
                 items.push(Item { g: Cow::Borrowed(" "), width: 1, fg: BG, bg: Some(FG), underline: false });
             }
         }
+        // 横に送って、カーソルが左に隠れた（行末のカーソルも、行が左端より短ければ隠れている）
+        let mut cursor_gone = false;
+        if pane.left > 0 && wrapw == 0 {
+            let width: usize = items.iter().map(|i| i.width).sum();
+            cursor_gone = skip_cols(&mut items, pane.left, &mut cursor_item) || (cursor_item.is_none() && width < pane.left);
+        }
         if !is_cursor_line || matches!(ed.state(), State::Command | State::Search | State::Replace | State::Finder | State::GrepPrompt | State::List | State::CommitMsg | State::Diff | State::Log | State::Branches | State::DbTable) {
             p.draw(&items, rect.x + gutter, y);
             continue;
@@ -623,8 +656,8 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
                 }
                 None => {
                     let c = p.draw(&items, rect.x + gutter, y);
-                    // 切った行でカーソルが見えている部分より右にあるときは描かない
-                    if !cut {
+                    // 切った行でカーソルが見えている部分より右にあるとき・横に送って隠れたときは描かない
+                    if !cut && !cursor_gone && c < rect.x + rect.w {
                         let color = if eol_selected { CURSOR_IN_SELECTION } else { CURSOR };
                         // 折り返していて、行末が幅いっぱいなら次の行の頭
                         let (cx, cy) = if wrapw > 0 && c >= rect.x + gutter + wrapw { (rect.x + gutter, p.end_y + cell.h) } else { (c, p.end_y) };
@@ -729,7 +762,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         let last = buf.line_count().saturating_sub(1);
         let mut cursor = st.cursor;
         cursor.line = cursor.line.min(last);
-        let pane = Pane { buf, marks: ed.git_markers(buf.path.as_deref()), diags: ed.diag_lines(buf.path.as_deref()), squiggles: if ed.settings.bool("editor.squiggles") { ed.diag_spans(buf.path.as_deref()) } else { Vec::new() }, folds, syntax, cursor, top: st.top.min(last), frac: if active { ed.frac } else { 0.0 }, active };
+        let pane = Pane { buf, marks: ed.git_markers(buf.path.as_deref()), diags: ed.diag_lines(buf.path.as_deref()), squiggles: if ed.settings.bool("editor.squiggles") { ed.diag_spans(buf.path.as_deref()) } else { Vec::new() }, folds, syntax, cursor, top: st.top.min(last), left: if ed.settings.bool("editor.wrap") { 0 } else { st.left }, frac: if active { ed.frac } else { 0.0 }, active };
         draw_pane(&mut p, ed, &pane, Rect { h: ed.text_rows(rect), ..rect });
     }
     // 窓ごとの状態行（分割中だけ。Vim の laststatus=1 と同じ）と、左右の窓の間の 1px の区切り線

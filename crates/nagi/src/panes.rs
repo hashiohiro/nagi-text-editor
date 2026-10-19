@@ -16,6 +16,8 @@ pub(crate) struct Win {
     pub doc: usize,
     pub cursor: Cursor,
     pub top: usize,
+    /// 左端の列（横に送った位置）
+    pub left: usize,
 }
 
 pub(crate) enum WinSlot {
@@ -181,7 +183,7 @@ impl Editor {
     /// 窓 `w` の表示状態 (バッファ番号, カーソル, 表示位置)
     pub(crate) fn win_state(&self, w: usize) -> Option<Win> {
         match self.wins.get(w)? {
-            WinSlot::Active => Some(Win { doc: self.cur_doc, cursor: self.cursor, top: self.top }),
+            WinSlot::Active => Some(Win { doc: self.cur_doc, cursor: self.cursor, top: self.top, left: self.left }),
             WinSlot::Parked(win) => Some(*win),
             WinSlot::Closed => None,
         }
@@ -193,7 +195,7 @@ impl Editor {
             return;
         }
         let WinSlot::Parked(next) = std::mem::replace(&mut self.wins[w], WinSlot::Active) else { unreachable!() };
-        self.wins[self.cur_win] = WinSlot::Parked(Win { doc: self.cur_doc, cursor: self.cursor, top: self.top });
+        self.wins[self.cur_win] = WinSlot::Parked(Win { doc: self.cur_doc, cursor: self.cursor, top: self.top, left: self.left });
         self.prev_win = Some(self.cur_win);
         self.cur_win = w;
         if next.doc != self.cur_doc {
@@ -208,6 +210,7 @@ impl Editor {
         self.pending_keys.clear();
         self.cursor = next.cursor;
         self.top = next.top;
+        self.left = next.left;
         self.frac = 0.0;
         let last = self.buf.line_count().saturating_sub(1);
         self.cursor.line = self.cursor.line.min(last);
@@ -225,7 +228,7 @@ impl Editor {
             return;
         }
         let new = self.wins.len();
-        self.wins.push(WinSlot::Parked(Win { doc: self.cur_doc, cursor: self.cursor, top: self.top }));
+        self.wins.push(WinSlot::Parked(Win { doc: self.cur_doc, cursor: self.cursor, top: self.top, left: self.left }));
         self.layout.insert(self.cur_win, new, vertical, true);
         self.focus_window(new);
     }

@@ -465,6 +465,11 @@ impl crate::layout::View for BranchPopupView {
             draw::draw_branch_popup(p, b, s.rows, s.cols, &ed.preedit);
         }
     }
+
+    fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, dy: isize, dx: isize) -> bool {
+        let _ = (r, row, col, dx);
+        crate::layout::wheel_keys(ed, dy)
+    }
 }
 
 /// 描き方（view.rs の Painter で描く）
