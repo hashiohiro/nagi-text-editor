@@ -393,12 +393,11 @@ impl Editor {
         }
     }
 
-    /// 選んでいる範囲をクリップボードへ（各行の行末の空白は落とす）。コピーしたら選びを消す
+    /// 選んでいる範囲をクリップボードへ（`copy_text`）。コピーしたら選びを消す
     pub(crate) fn terminal_copy(&mut self) -> bool {
-        let Some(((r0, c0), (r1, c1))) = self.terminals.sel_ordered() else { return false };
+        let Some((a, b)) = self.terminals.sel_ordered() else { return false };
         let Some(t) = self.terminals.current() else { return false };
-        let text = t.term.with_screen(|s| s.contents_between(r0, c0, r1, c1 + 1));
-        let text: String = text.lines().map(str::trim_end).collect::<Vec<_>>().join("\r\n");
+        let text = t.term.with_screen(|s| copy_text(s, a, b));
         match &self.clipboard {
             Some(cb) => (cb.set)(&text),
             None => crate::clipboard::set(&text),
@@ -513,11 +512,74 @@ impl Editor {
         }
     }
 
-    /// ホイール: さかのぼる（正で上へ）
-    pub(crate) fn terminal_scroll(&mut self, lines: isize) {
-        if let Some(t) = self.terminals.current() {
+    /// ホイール（正で上へ。画面の (行, 列) の上で回した）。アプリがマウスを求めていればホイールの操作を送り
+    /// （Claude Code・vim など）、全画面（代替画面）のアプリには ↑↓ を送り、それ以外はさかのぼる
+    pub(crate) fn terminal_wheel(&mut self, lines: isize, row: usize, col: usize) {
+        let cell = self.terminal_cell(row, col).unwrap_or((0, 0));
+        let Some(t) = self.terminals.current_mut() else { return };
+        if t.exited || lines == 0 {
+            return;
+        }
+        let (mode, enc, alt, app) = t.term.with_screen(|s| (s.mouse_protocol_mode(), s.mouse_protocol_encoding(), s.alternate_screen(), s.application_cursor()));
+        let key = if lines > 0 { Key::Up } else { Key::Down };
+        let one = if mode != vt100::MouseProtocolMode::None {
+            wheel_bytes(lines > 0, cell, enc)
+        } else if alt {
+            key_bytes(key, app).unwrap_or_default()
+        } else {
             let now = t.term.scrollback() as isize;
             t.term.set_scrollback((now + lines).max(0) as usize);
+            return;
+        };
+        t.term.write(&one.repeat(lines.unsigned_abs()));
+    }
+}
+
+/// 画面の (行, 列) の `a` から `b` まで（`b` の列を含む）の文字。折り返した行はつなぎ、行末の空白は落とす。
+/// 全角の文字が行の端の 1 列に入らずに次の行へ送られたときの、端の空き（ConPTY は空白を書く）も落とす
+pub fn copy_text(s: &vt100::Screen, (r0, c0): (u16, u16), (r1, c1): (u16, u16)) -> String {
+    let cols = s.size().1;
+    let mut out = String::new();
+    for row in r0..=r1 {
+        let (from, to) = (if row == r0 { c0 } else { 0 }, if row == r1 { (c1 + 1).min(cols) } else { cols });
+        let wrapped = row < r1 && s.row_wrapped(row);
+        let pad = wrapped
+            && s.cell(row + 1, 0).is_some_and(|c| c.is_wide())
+            && s.cell(row, cols - 1).is_some_and(|c| !c.is_wide_continuation() && c.contents().trim().is_empty());
+        let mut line = String::new();
+        for col in from..to {
+            let Some(c) = s.cell(row, col) else { break };
+            if c.is_wide_continuation() || (pad && col == cols - 1) {
+                continue;
+            }
+            line.push_str(if c.has_contents() { c.contents() } else { " " });
+        }
+        if wrapped {
+            out.push_str(&line);
+        } else {
+            out.push_str(line.trim_end());
+            if row < r1 {
+                out.push_str("\r\n");
+            }
+        }
+    }
+    out
+}
+
+/// ホイールの 1 回分のマウスの報告（上なら 64、下なら 65 のボタン。`cell` はシェルの画面の (行, 列)）
+pub fn wheel_bytes(up: bool, (row, col): (u16, u16), enc: vt100::MouseProtocolEncoding) -> Vec<u8> {
+    let b = if up { 64u32 } else { 65 };
+    let (x, y) = (col as u32 + 1, row as u32 + 1);
+    match enc {
+        vt100::MouseProtocolEncoding::Sgr => format!("\x1b[<{b};{x};{y}M").into_bytes(),
+        // 32 を足した値を 1 文字に（既定は 1 byte なので 223 まで、UTF-8 は 2047 まで）
+        vt100::MouseProtocolEncoding::Utf8 => {
+            let c = |v: u32| char::from_u32(32 + v.min(2015)).unwrap_or(' ');
+            format!("\x1b[M{}{}{}", c(b), c(x), c(y)).into_bytes()
+        }
+        vt100::MouseProtocolEncoding::Default => {
+            let c = |v: u32| (32 + v.min(223)) as u8;
+            vec![0x1b, b'[', b'M', c(b), c(x), c(y)]
         }
     }
 }
@@ -675,9 +737,93 @@ mod tests {
         assert_eq!(key_bytes(Key::Up, false).unwrap(), b"\x1b[A");
         assert_eq!(key_bytes(Key::Up, true).unwrap(), b"\x1bOA");
         assert_eq!(key_bytes(Key::Enter, false).unwrap(), b"\r");
+        // Ctrl+Enter・Shift+Enter（main.rs で Ctrl-j にする）は改行
+        assert_eq!(key_bytes(Key::Ctrl('j'), false).unwrap(), b"\n");
         assert_eq!(key_bytes(Key::F(5), false).unwrap(), b"\x1b[15~");
         assert_eq!(key_bytes(Key::Alt('b'), false).unwrap(), b"\x1bb");
     }
+
+    /// 折り返した行はつなぐ。全角の文字が入らずに空いた行の端は落とす（ConPTY は空白を書いて折り返す）
+    #[test]
+    fn copy_joins_wrapped_rows() {
+        let copy = |bytes: &str| {
+            let mut p = vt100::Parser::new(4, 9, 0);
+            p.process(bytes.as_bytes());
+            copy_text(p.screen(), (0, 0), (3, 8)).trim_end().to_string()
+        };
+        assert_eq!(copy("abcd日本 語x"), "abcd日本語x");
+        // 行の端の本当の空白は残す
+        assert_eq!(copy("abcdefgh ijk"), "abcdefgh ijk");
+        assert_eq!(copy("abcdefghi jk"), "abcdefghi jk");
+        // 折り返していない行は改行、行末の空白は落とす、全角は 1 文字
+        assert_eq!(copy("ab  \r\n日本\r\n\r\nz"), "ab\r\n日本\r\n\r\nz");
+        // 途中の列から
+        let mut p = vt100::Parser::new(2, 9, 0);
+        p.process("abcd日本 語x".as_bytes());
+        assert_eq!(copy_text(p.screen(), (0, 2), (1, 0)), "cd日本語");
+    }
+
+    #[test]
+    fn wheel_reports() {
+        use vt100::MouseProtocolEncoding as E;
+        assert_eq!(wheel_bytes(true, (4, 9), E::Sgr), b"\x1b[<64;10;5M");
+        assert_eq!(wheel_bytes(false, (0, 0), E::Sgr), b"\x1b[<65;1;1M");
+        assert_eq!(wheel_bytes(true, (4, 9), E::Default), [0x1b, b'[', b'M', 96, 42, 37]);
+        assert_eq!(wheel_bytes(false, (0, 300), E::Default)[4], 255);
+        assert_eq!(wheel_bytes(false, (0, 300), E::Utf8), format!("\x1b[Ma{}!", char::from_u32(32 + 301).unwrap()).into_bytes());
+    }
+
+    /// 全画面のアプリ（代替画面に移り、マウスを求める。Claude Code など）の出した要求が ConPTY を通って届き、
+    /// ホイールはさかのぼらずにアプリへ送る
+    #[test]
+    fn wheel_goes_to_fullscreen_app() {
+        unsafe { std::env::set_var("NAGI_SHELL", "cmd.exe /Q /K prompt $G") };
+        let mut e = Editor::new(Buffer::from_str("x\n"), None);
+        e.set_screen(120, 40);
+        e.toggle_bottom_tab(BottomKind::Terminal);
+        for k in nagi_vim::parse_keys("for /L %i in (1,1,60) do @echo l%i<CR>", " ") {
+            e.key(k);
+        }
+        wait_text(&mut e, "l5");
+        // ふつうの画面ではさかのぼる
+        let r = e.terminal_rect().unwrap();
+        e.terminal_wheel(3, r.y + 2, r.x + 5);
+        assert_eq!(e.terminals.current().unwrap().term.scrollback(), 3);
+        e.terminal_wheel(-3, r.y + 2, r.x + 5);
+        assert_eq!(e.terminals.current().unwrap().term.scrollback(), 0);
+        // アプリが代替画面とマウス（SGR）を求める。ConPTY がマウスの要求を通すのは、アプリが VT の入力
+        // （ENABLE_VIRTUAL_TERMINAL_INPUT）にしているときだけ（Node の raw モードはそう）
+        let ps1 = std::env::temp_dir().join(format!("nagi-vtin-{}.ps1", std::process::id()));
+        std::fs::write(&ps1, VT_INPUT_APP).unwrap();
+        e.terminal_input(&format!("powershell -NoProfile -ExecutionPolicy Bypass -File \"{}\"\r", ps1.display()));
+        let start = std::time::Instant::now();
+        loop {
+            e.sync_terminal();
+            let got = e.terminals.current().unwrap().term.with_screen(|s| (s.alternate_screen(), s.mouse_protocol_mode(), s.mouse_protocol_encoding()));
+            if got.1 != vt100::MouseProtocolMode::None && got.2 == vt100::MouseProtocolEncoding::Sgr {
+                break;
+            }
+            assert!(start.elapsed().as_secs() < 20, "{got:?}");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        e.terminal_wheel(3, r.y + 2, r.x + 5);
+        assert_eq!(e.terminals.current().unwrap().term.scrollback(), 0);
+        e.close_terminal();
+        let _ = std::fs::remove_file(ps1);
+    }
+
+    /// VT の入力にして、代替画面とマウス（SGR）を求めて待つ
+    const VT_INPUT_APP: &str = r#"Add-Type -Namespace W -Name K -MemberDefinition @'
+[DllImport("kernel32.dll")] public static extern IntPtr GetStdHandle(int n);
+[DllImport("kernel32.dll")] public static extern bool GetConsoleMode(IntPtr h, out uint m);
+[DllImport("kernel32.dll")] public static extern bool SetConsoleMode(IntPtr h, uint m);
+'@
+$h = [W.K]::GetStdHandle(-10); $m = 0; [void][W.K]::GetConsoleMode($h, [ref]$m)
+[void][W.K]::SetConsoleMode($h, ($m -bor 0x200) -band (-bnot 0x7))
+$e = [char]27
+[Console]::Write("$e[?1049h$e[?1000h$e[?1006h")
+Start-Sleep 30
+"#;
 
     #[test]
     fn shells_list() {
@@ -773,3 +919,4 @@ mod tests {
         assert_eq!(e.state(), State::Terminal);
     }
 }
+

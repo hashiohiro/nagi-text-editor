@@ -29,7 +29,7 @@ pub struct ToolDef {
     pub download: Option<&'static str>,
 }
 
-pub const TOOLS: [ToolDef; 10] = [
+pub const TOOLS: [ToolDef; 11] = [
     ToolDef { id: "python", label: "Python", exe: "python.exe", version_args: &["--version"], wsl: "python3", known: &[r"%LOCALAPPDATA%\Programs\Python\*", r"%ProgramFiles%\Python*"], download: Some("Python（python-build-standalone、約 30MB）") },
     ToolDef { id: "node", label: "Node.js", exe: "node.exe", version_args: &["--version"], wsl: "node", known: &[r"%ProgramFiles%\nodejs"], download: Some("Node.js LTS（約 35MB）") },
     ToolDef { id: "go", label: "Go", exe: "go.exe", version_args: &["version"], wsl: "go", known: &[r"%ProgramFiles%\Go\bin", r"%USERPROFILE%\go\bin"], download: Some("Go（約 80MB）") },
@@ -39,6 +39,7 @@ pub const TOOLS: [ToolDef; 10] = [
     ToolDef { id: "cmake", label: "CMake", exe: "cmake.exe", version_args: &["--version"], wsl: "cmake", known: &[r"%ProgramFiles%\CMake\bin"], download: Some("CMake（約 45MB）") },
     ToolDef { id: "zig", label: "Zig", exe: "zig.exe", version_args: &["version"], wsl: "zig", known: &[], download: Some("Zig（約 80MB）") },
     ToolDef { id: "dart", label: "Dart", exe: "dart.exe", version_args: &["--version"], wsl: "dart", known: &[r"C:\tools\dart-sdk\bin", r"%LOCALAPPDATA%\Pub\Cache\bin"], download: Some("Dart SDK（約 200MB）") },
+    ToolDef { id: "maven", label: "Maven", exe: "mvn.cmd", version_args: &["--version"], wsl: "mvn", known: &[r"%MAVEN_HOME%\bin", r"%M2_HOME%\bin", r"%USERPROFILE%\scoop\apps\maven\current\bin"], download: Some("Apache Maven（Maven Central から。約 10MB）") },
     ToolDef { id: "php", label: "PHP", exe: "php.exe", version_args: &["--version"], wsl: "php", known: &[r"C:\php", r"C:\tools\php*"], download: Some("PHP（NTS、約 35MB）") },
 ];
 
@@ -346,6 +347,10 @@ pub fn releases(id: &str) -> nagi_core::Result<Vec<Release>> {
                 .collect();
             newest_per_series(v, minor, 4).into_iter().map(|(v, u)| rel(v, u, "")).collect()
         }
+        "maven" => {
+            let xml = fetch_text("https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/maven-metadata.xml")?;
+            maven_releases(&xml)
+        }
         // rustup のツールチェーン（プロジェクトごとの版は rust-toolchain.toml で）
         "rust" => vec![rel("stable", "", "rustup"), rel("beta", "", "rustup"), rel("nightly", "", "rustup")],
         _ => return Err(format!("{id} はダウンロードできません").into()),
@@ -354,6 +359,21 @@ pub fn releases(id: &str) -> nagi_core::Result<Vec<Release>> {
         return Err(format!("{id} の Windows 用の版が見つかりません").into());
     }
     Ok(out)
+}
+
+/// Maven Central の maven-metadata.xml から、正式版（数字だけの版）を系列ごとに。3 系を先に（IntelliJ 同梱と同じ系列。
+/// 自動で入れるときは先頭を使う）
+fn maven_releases(xml: &str) -> Vec<Release> {
+    let re = regex::Regex::new(r"<version>(\d+\.\d+\.\d+)</version>").unwrap();
+    let v: Vec<(String, ())> = re.captures_iter(xml).map(|c| (c[1].to_string(), ())).collect();
+    let mut v = newest_per_series(v, minor, 4);
+    v.sort_by_key(|(ver, _)| !ver.starts_with("3."));
+    v.into_iter()
+        .map(|(ver, _)| {
+            let note = if ver.starts_with("3.") { "推奨" } else { "" };
+            rel(&ver, format!("https://repo.maven.apache.org/maven2/org/apache/maven/apache-maven/{ver}/apache-maven-{ver}-bin.zip"), note)
+        })
+        .collect()
 }
 
 /// いちばん新しい版の (zip の URL, 版)
@@ -482,6 +502,15 @@ mod tests {
         let v = installed("go");
         assert_eq!(v.first().map(|f| (f.bin.clone(), f.source)), Some((dir.join("go-1.27.2/go/bin"), "nagi")));
         unsafe { std::env::remove_var("NAGI_TOOLS_DIR") };
+    }
+
+    /// Maven の版: 正式版だけ、系列ごとに 1 つ、3 系を先に
+    #[test]
+    fn maven_versions() {
+        let xml = "<versions><version>3.8.8</version><version>3.9.9</version><version>3.9.11</version><version>4.0.0-rc-4</version><version>4.0.1</version></versions>";
+        let v: Vec<(String, String)> = maven_releases(xml).into_iter().map(|r| (r.version, r.note)).collect();
+        assert_eq!(v, [("3.9.11".into(), "推奨".into()), ("3.8.8".into(), "推奨".into()), ("4.0.1".into(), String::new())]);
+        assert!(maven_releases(xml)[0].url.ends_with("/3.9.11/apache-maven-3.9.11-bin.zip"));
     }
 
     /// ネットワークで最新版を調べる（手で流す: cargo test -- --ignored resolve_all）

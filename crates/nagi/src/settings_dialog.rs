@@ -235,9 +235,16 @@ impl SettingsDialog {
     }
 }
 
+/// 足りないツールを入れ終わったら動かすもの（Editor::fetch_missing_tools）
+#[derive(Clone, Debug)]
+pub(crate) enum AfterTools {
+    Job { cmd: String, root: std::path::PathBuf, title: String, output: bool },
+    Config(nagi_workers::runconfig::RunConfig),
+}
+
 /// JDK のコンボボックスの一覧: 自動・入っているもの・ダウンロード（Eclipse Temurin）
 fn jdk_items() -> Vec<ComboItem> {
-    let mut v = vec![ComboItem { label: "自動（JAVA_HOME か ~\\.jdks から探す）".into(), value: String::new(), tag: String::new() }];
+    let mut v = vec![ComboItem { label: "自動（JAVA_HOME か nagi が入れたものから探す）".into(), value: String::new(), tag: String::new() }];
     for j in nagi_workers::jdk::installed() {
         let name = j.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         v.push(ComboItem { label: format!("{}  {}", j.version, name), value: j.path.display().to_string(), tag: if j.vendor.is_empty() { "入っている".into() } else { j.vendor.clone() } });
@@ -368,6 +375,43 @@ impl Editor {
         }
     }
 
+    /// 動かす行に足りないもの（Maven, JDK。Exec::missing_tools）があれば、ダウンロードし始めて `then` を覚え、false を返す
+    /// （入れ終わったら then を動かす）。足りていれば true（そのまま動かしてよい）。IDE が無くても動くように、IDE のものは借りない
+    pub(crate) fn fetch_missing_tools(&mut self, (maven, jdk): (bool, bool), then: AfterTools) -> bool {
+        if !maven && !jdk {
+            return true;
+        }
+        let what = [(maven, "Maven"), (jdk, "JDK")].iter().filter(|(m, _)| *m).map(|(_, n)| *n).collect::<Vec<_>>().join("・");
+        // 入れた後でもまだ足りなければ、もう入れに行かない（同じダウンロードを繰り返さない）
+        if self.tools_fetched {
+            self.notify.error(format!("{what} が見つかりません（設定の「ビルド・実行」で選ぶか、ダウンロードしてください）"));
+            return false;
+        }
+        if maven && self.tool_download.as_ref().is_none_or(|(id, _)| id != "maven") {
+            self.start_tool_download("maven", None);
+        }
+        if jdk && self.jdk_download.is_none() {
+            self.start_jdk_download(nagi_workers::jdk::AUTO);
+        }
+        self.after_tools = Some(then);
+        self.notify.info(format!("{what} が無いので、nagi 用にダウンロードして入れます。入れ終わったら続けて動かします"));
+        false
+    }
+
+    /// ダウンロードが全部終わっていれば、待たせていたものを動かす
+    fn run_after_tools(&mut self) {
+        if self.tool_download.is_some() || self.jdk_download.is_some() {
+            return;
+        }
+        let Some(then) = self.after_tools.take() else { return };
+        self.tools_fetched = true;
+        match then {
+            AfterTools::Job { cmd, root, title, output } => self.run_job(&cmd, &root, &title, output),
+            AfterTools::Config(cfg) => self.run_config(cfg),
+        }
+        self.tools_fetched = false;
+    }
+
     /// 言語のツールをダウンロードし始める。進み具合は状態の行に、終わったら設定に入れる
     pub(crate) fn start_tool_download(&mut self, id: &str, release: Option<nagi_workers::toolchains::Release>) {
         let label = nagi_workers::toolchains::def(id).map_or(id, |t| t.label);
@@ -397,13 +441,17 @@ impl Editor {
         }
         let waker = self.waker();
         self.jdk_download = Some((version, nagi_workers::jdk::download_temurin(version, waker)));
-        self.notify.info(format!("Eclipse Temurin {version} をダウンロードしています（約 200MB。~\\.jdks に置く）"));
+        self.notify.info(format!("Eclipse Temurin {version} をダウンロードしています（約 200MB。{} に置く）", nagi_workers::jdk::jdks_dir().display()));
     }
 
     /// ダウンロードの進み具合を受け取る。変わったら true
     pub fn poll_jdk_download(&mut self) -> bool {
         let combo = self.settings_dialog.as_mut().is_some_and(|d| d.refresh_tool_combo());
-        combo | self.poll_tool_download() | self.poll_jdk_only()
+        let changed = combo | self.poll_tool_download() | self.poll_jdk_only();
+        if changed {
+            self.run_after_tools();
+        }
+        changed
     }
 
     fn poll_tool_download(&mut self) -> bool {
@@ -424,7 +472,10 @@ impl Editor {
                     let scope = if project { "このプロジェクトの設定" } else { "設定" };
                     self.notify.info(format!("{label} を入れました: {p}（{scope}にしました。ターミナル・実行の構成・:Make で使う）"));
                 }
-                Err(e) => self.notify.error(format!("{label} をダウンロードできません: {e}")),
+                Err(e) => {
+                    self.after_tools = None;
+                    self.notify.error(format!("{label} をダウンロードできません: {e}"));
+                }
             }
         }
         changed
@@ -444,7 +495,10 @@ impl Editor {
                     let p = self.set_downloaded("maven.jdk", &path, false);
                     self.notify.info(format!("JDK を入れました: {p}（設定の JDK にしました）"));
                 }
-                Err(e) => self.notify.error(format!("JDK をダウンロードできません: {e}")),
+                Err(e) => {
+                    self.after_tools = None;
+                    self.notify.error(format!("JDK をダウンロードできません: {e}"));
+                }
             }
         }
         changed

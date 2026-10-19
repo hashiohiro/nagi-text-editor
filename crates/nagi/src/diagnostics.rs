@@ -285,6 +285,11 @@ impl Editor {
         let waker = self.waker();
         // Maven・Gradle で JAVA_HOME が使えなければ（古い JRE を指したままなど）、見つけた JDK をこのコマンドのときだけ使う
         let mut ex = nagi_workers::exec::Exec::in_dir(root);
+        // Maven・JDK が無ければ nagi 用に入れてから動かす
+        let then = crate::settings_dialog::AfterTools::Job { cmd: cmd.to_string(), root: root.to_path_buf(), title: title.to_string(), output };
+        if !self.fetch_missing_tools(ex.missing_tools(cmd), then) {
+            return;
+        }
         let fix = if nagi_workers::exec::needs_jdk(cmd) { ex.fix_jdk() } else { None };
         match ex.stream(cmd, waker) {
             Ok(job) => {

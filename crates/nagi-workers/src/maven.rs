@@ -138,6 +138,59 @@ pub fn command(root: &Path, pom_dir: &Path, goals: &str) -> String {
     format!("{mvn} -B -f \"{}\" {goals}", pom.display())
 }
 
+/// PATH に mvn が無いとき、PATH に足す Maven の bin。MAVEN_HOME・M2_HOME → nagi が入れたもの（tools\maven-<版>）→
+/// ~\.m2\wrapper\dists → scoop。IDE（IntelliJ・Eclipse）に同梱のものは使わない（IDE が無くても同じに動くように）。
+/// PATH に mvn があれば None（そのまま）。どれも無ければ、mvn を動かすときに nagi がダウンロードして入れる（missing）
+pub fn extra_bin() -> Option<PathBuf> {
+    let var = |k: &str| std::env::var_os(k).map(PathBuf::from);
+    let homes: Vec<PathBuf> = ["MAVEN_HOME", "M2_HOME"].iter().filter_map(|k| var(k)).collect();
+    let user = var("USERPROFILE").or_else(|| var("HOME")).unwrap_or_default();
+    find_bin(std::env::var_os("PATH"), &homes, &crate::toolchains::tools_dir(), &user)
+}
+
+/// この行が mvn を動かすのに、mvn がどこにも無いか（設定の mvn の場所が無く、PATH にも無い）。WSL の中では見ない。
+/// 設定の適用が extra_bin・設定の Maven を PATH に足しているので、PATH を見れば足りる
+pub fn missing(line: &str, ex: &crate::exec::Exec) -> bool {
+    let first = line.split_whitespace().next().unwrap_or("").to_ascii_lowercase();
+    !ex.is_wsl() && matches!(first.as_str(), "mvn" | "mvn.cmd") && crate::config::get().mvn.is_none() && !std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join("mvn.cmd").is_file()))
+}
+
+/// `dir` から `depth` 段下のフォルダ
+fn below(dir: &Path, depth: usize) -> Vec<PathBuf> {
+    let mut v = vec![dir.to_path_buf()];
+    for _ in 0..depth {
+        v = v.iter().flat_map(|d| std::fs::read_dir(d).into_iter().flatten().flatten().map(|e| e.path())).filter(|p| p.is_dir()).collect();
+    }
+    v
+}
+
+fn find_bin(path: Option<std::ffi::OsString>, homes: &[PathBuf], tools: &Path, user: &Path) -> Option<PathBuf> {
+    let has = |bin: &Path| bin.join("mvn.cmd").is_file();
+    if path.is_some_and(|p| std::env::split_paths(&p).any(|d| has(&d))) {
+        return None;
+    }
+    if let Some(b) = homes.iter().map(|h| h.join("bin")).find(|b| has(b)) {
+        return Some(b);
+    }
+    // いちばん新しいもの（版の順で最後）
+    let newest = |mut v: Vec<PathBuf>| {
+        v.sort_by_key(|p| crate::sys::version_key(&p.to_string_lossy()));
+        v.pop()
+    };
+    // nagi が入れたもの: tools\maven-<版>\apache-maven-<版>\bin
+    let mine = below(tools, 2).into_iter().filter(|d| d.parent().and_then(|p| p.file_name()).is_some_and(|n| n.to_string_lossy().starts_with("maven-"))).map(|d| d.join("bin")).filter(|b| has(b)).collect();
+    if let Some(b) = newest(mine) {
+        return Some(b);
+    }
+    // Wrapper が取ってきたもの: dists\apache-maven-<版>[-bin]\<ハッシュ>[\apache-maven-<版>]\bin
+    let dists = user.join(".m2").join("wrapper").join("dists");
+    let wrapped = [2, 3].iter().flat_map(|&n| below(&dists, n)).map(|d| d.join("bin")).filter(|b| has(b)).collect();
+    if let Some(b) = newest(wrapped) {
+        return Some(b);
+    }
+    Some(user.join("scoop").join("apps").join("maven").join("current").join("bin")).filter(|b| has(b))
+}
+
 /// ライフサイクルのゴール（IntelliJ の Maven の画面と同じ並び）
 pub const LIFECYCLE: [&str; 9] = ["clean", "validate", "compile", "test", "package", "verify", "install", "site", "deploy"];
 
@@ -183,5 +236,30 @@ mod tests {
         std::fs::create_dir_all(dir.join(".mvn/wrapper")).unwrap();
         std::fs::write(dir.join(".mvn/wrapper/maven-wrapper.properties"), "distributionUrl=x").unwrap();
         assert!(command(&dir, &dir, "install").starts_with("mvnw.cmd -B"));
+    }
+
+    /// PATH に mvn が無ければ MAVEN_HOME → nagi が入れたもの（新しい版）→ Wrapper のもの。PATH にあれば足さない
+    #[test]
+    fn finds_maven_without_path() {
+        let dir = std::env::temp_dir().join(format!("nagi-mvnhome-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mvn = |bin: &Path| {
+            std::fs::create_dir_all(bin).unwrap();
+            std::fs::write(bin.join("mvn.cmd"), "").unwrap();
+            bin.to_path_buf()
+        };
+        let (user, tools) = (dir.join("user"), dir.join("tools"));
+        assert_eq!(find_bin(None, &[], &tools, &user), None);
+        let wrapped = mvn(&user.join(".m2/wrapper/dists/apache-maven-3.9.6-bin/abc/apache-maven-3.9.6/bin"));
+        assert_eq!(find_bin(None, &[], &tools, &user), Some(wrapped));
+        mvn(&tools.join("maven-3.9.9/apache-maven-3.9.9/bin"));
+        let mine = mvn(&tools.join("maven-3.9.11/apache-maven-3.9.11/bin"));
+        assert_eq!(find_bin(None, &[], &tools, &user), Some(mine), "3.9.11 は 3.9.9 より新しい");
+        let home = dir.join("maven");
+        let home_bin = mvn(&home.join("bin"));
+        assert_eq!(find_bin(None, &[home.clone()], &tools, &user), Some(home_bin.clone()));
+        let path = std::env::join_paths([dir.join("nothing"), home_bin]).unwrap();
+        assert_eq!(find_bin(Some(path), &[home], &tools, &user), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

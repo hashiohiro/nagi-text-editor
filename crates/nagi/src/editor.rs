@@ -393,6 +393,9 @@ pub struct Editor {
     pub jdk_download: Option<(u32, nagi_workers::drivers::Download)>,
     /// 言語のツールのダウンロード（種類）
     pub tool_download: Option<(String, nagi_workers::drivers::Download)>,
+    /// 足りないツール（Maven・JDK）を入れ終わったら動かすもの。入れた後に動かし直したか（2 度目は入れに行かない）
+    pub(crate) after_tools: Option<crate::settings_dialog::AfterTools>,
+    pub(crate) tools_fetched: bool,
     /// 文法のダウンロード（言語の名前）と、失敗したもの（開くたびにやり直さない。:GrammarInstall でやり直す）
     pub grammar_downloads: Vec<(String, nagi_workers::drivers::Download)>,
     pub grammar_failed: std::collections::HashSet<String>,
@@ -649,6 +652,8 @@ impl Editor {
             appearance_changed: false,
             jdk_download: None,
             tool_download: None,
+            after_tools: None,
+            tools_fetched: false,
             grammar_downloads: Vec::new(),
             grammar_failed: Default::default(),
             right_tab: Default::default(),

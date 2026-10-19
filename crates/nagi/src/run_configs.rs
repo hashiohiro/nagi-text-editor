@@ -147,6 +147,10 @@ impl Editor {
                 if matches!(cfg.kind, Kind::Maven { .. } | Kind::SpringBoot { .. } | Kind::Application { .. } | Kind::Gradle { .. }) {
                     ex.fix_jdk();
                 }
+                // Maven・JDK が無ければ nagi 用に入れてから動かす
+                if !self.fetch_missing_tools(ex.missing_tools(&cmd), crate::settings_dialog::AfterTools::Config(cfg.clone())) {
+                    return;
+                }
                 let shell = match ex.terminal_line(&cfg.name, &cmd) {
                     Ok(s) => s,
                     Err(e) => {

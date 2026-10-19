@@ -122,9 +122,10 @@ pub static SCHEMA: &[Item] = &[
     item("terminal.shell", "ツール", "ターミナル: 既定のシェル", T, "", "空なら最後に選んだもの（cmd・powershell・pwsh・bash・wsl、またはコマンド）"),
     item("terminal.start_dir", "ツール", "ターミナル: 始めるフォルダ", SKind::Choice(&[("project", "プロジェクト"), ("file", "開いているファイルのフォルダ"), ("home", "ホーム")]), "project", ""),
     item("terminal.utf8", "ツール", "ターミナル: UTF-8 で始める", B, "true", "オフなら Windows の既定（CP932）"),
-    pitem("maven.jdk", "ビルド・実行", "JDK（コンパイル・実行）", SKind::Jdk, "", "Enter で入っているものから選ぶか、Eclipse Temurin をダウンロード（~\\.jdks に置く）。空なら JAVA_HOME か ~\\.jdks から探す"),
+    pitem("maven.jdk", "ビルド・実行", "JDK（コンパイル・実行）", SKind::Jdk, "", "Enter で入っているものから選ぶか、Eclipse Temurin をダウンロード（%LOCALAPPDATA%\\nagi\\jdks に置く）。空なら JAVA_HOME か nagi が入れたものから探し、無ければ動かすときに 21 を入れる"),
     item("build.jdk_env", "ビルド・実行", "JDK を nagi から起動するものに渡す", B, "true", "ターミナル・実行の構成・Maven に JAVA_HOME と PATH（JDK の bin）として"),
-    pitem("maven.path", "ビルド・実行", "Maven: mvn の場所", T, "", "空なら PATH の mvn"),
+    pitem("maven.path", "ビルド・実行", "Maven: mvn の場所", T, "", "空なら PATH の mvn・MAVEN_HOME・下の Maven。どれも無ければ動かすときに nagi 用にダウンロードして入れる"),
+    pitem("toolchain.maven", "ビルド・実行", "Maven", SKind::Tool("maven"), "", TOOL_HELP),
     pitem("maven.use_wrapper", "ビルド・実行", "Maven: Wrapper（mvnw）を使う", B, "true", "設定ファイルもそろっているときだけ"),
     pitem("maven.options", "ビルド・実行", "Maven: 追加のオプション", T, "", "いつも付ける（-o・-T 4 など）"),
     pitem("toolchain.python", "ビルド・実行", "Python", SKind::Tool("python"), "", TOOL_HELP),
@@ -352,7 +353,12 @@ impl crate::editor::Editor {
                 }
             }
             let extra = extra.join(";");
-            let path = if extra.is_empty() { base.clone() } else { format!("{extra};{base}") };
+            let mut path = if extra.is_empty() { base.clone() } else { format!("{extra};{base}") };
+            // PATH に mvn が無ければ、見つけた Maven（MAVEN_HOME・nagi が入れたものなど）を後ろに足す（mvn と打てばどこでも動くように）
+            static MAVEN_BIN: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
+            if let Some(b) = MAVEN_BIN.get_or_init(nagi_workers::maven::extra_bin) {
+                path = format!("{path};{}", b.display());
+            }
             // SAFETY: 下と同じ（UI のスレッドだけが書く）
             unsafe {
                 match (&jdk, base_jh) {

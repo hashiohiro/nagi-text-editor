@@ -1,7 +1,8 @@
 //! JDK（IntelliJ の Project SDK と同じ考え方）。入っているものを探し、無ければ Eclipse Temurin をダウンロードする。
 //!
-//! 探す場所: `~\.jdks`（IntelliJ がダウンロードする場所）、Program Files の Java・Eclipse Adoptium・Microsoft・Zulu・
-//! Amazon Corretto、JAVA_HOME。ダウンロードは Adoptium の API から zip を取り、IntelliJ と同じく `~\.jdks\temurin-<版>` に置く。
+//! 探す場所: nagi が入れたもの（`%LOCALAPPDATA%\nagi\jdks`）、Program Files の Java・Eclipse Adoptium・Microsoft・Zulu・
+//! Amazon Corretto、JAVA_HOME。IDE（IntelliJ の `~\.jdks` など）のものは使わない（IDE が無くても同じに動くように）。
+//! ダウンロードは Adoptium の API から zip を取り、`%LOCALAPPDATA%\nagi\jdks\temurin-<版>` に置く。
 
 use std::path::{Path, PathBuf};
 
@@ -27,9 +28,22 @@ impl Jdk {
 /// ダウンロードできる版（Eclipse Temurin。LTS）
 pub const DOWNLOADS: [u32; 5] = [25, 21, 17, 11, 8];
 
-/// IntelliJ がダウンロードする場所（`~\.jdks`）
+/// 自動で入れるときの版（Eclipse Temurin。LTS）
+pub const AUTO: u32 = 21;
+
+/// nagi がダウンロードした JDK を置く場所（`%LOCALAPPDATA%\nagi\jdks`。試験では NAGI_JDKS_DIR）
 pub fn jdks_dir() -> PathBuf {
-    std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from).unwrap_or_default().join(".jdks")
+    if let Some(d) = std::env::var_os("NAGI_JDKS_DIR") {
+        return PathBuf::from(d);
+    }
+    std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("nagi").join("jdks")
+}
+
+/// nagi が入れた JDK のうち、いちばん新しい版
+pub fn newest_mine() -> Option<Jdk> {
+    let mut v: Vec<Jdk> = std::fs::read_dir(jdks_dir()).into_iter().flatten().flatten().filter_map(|e| read(&e.path())).collect();
+    v.sort_by(|a, b| version_key(&a.version).cmp(&version_key(&b.version)));
+    v.pop()
 }
 
 /// JDK のフォルダか（javac がある）。あれば版と作ったところを読む

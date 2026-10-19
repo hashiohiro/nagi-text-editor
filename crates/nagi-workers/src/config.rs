@@ -7,7 +7,7 @@ use std::sync::RwLock;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
-    /// mvn の場所（None なら PATH の mvn）
+    /// mvn の場所（None なら PATH の mvn。PATH に無ければ設定の適用が maven::bundled_bin を PATH に足す）
     pub mvn: Option<String>,
     /// Maven Wrapper（mvnw）を使うか
     pub use_wrapper: bool,

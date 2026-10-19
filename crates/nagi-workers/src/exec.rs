@@ -95,6 +95,12 @@ impl Exec {
         Some(j)
     }
 
+    /// この行を動かすのに足りないもの（Maven, JDK）。どちらも nagi がダウンロードして入れられる。WSL では見ない（WSL の中のものを使う）
+    pub fn missing_tools(&self, line: &str) -> (bool, bool) {
+        let jdk = !self.is_wsl() && needs_jdk(line) && !self.env.iter().any(|(k, _)| k == "JAVA_HOME") && crate::jobs::jdk_missing();
+        (crate::maven::missing(line, self), jdk)
+    }
+
     /// WSL の行の頭に付ける環境変数（Windows のものは外す）
     fn exports(&self) -> String {
         let q = |v: &str| format!("'{}'", v.replace('\'', "'\\''"));

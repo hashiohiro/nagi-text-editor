@@ -585,6 +585,7 @@ impl App {
         }
         let ctrl = self.modifiers.control_key();
         let alt = self.modifiers.alt_key();
+        let in_terminal = matches!(ed.state(), State::Terminal);
         // キーマップ（設定。Ctrl+Alt+S・Shift+F10 などの IntelliJ の組み合わせは既定値）: 付けた操作にする。
         // 元の組み合わせから別のキーへ移した操作は、元のキーでは動かさない
         if let Some(chord) = chord_of(&ev.logical_key, self.modifiers) {
@@ -622,6 +623,8 @@ impl App {
                 NamedKey::Space if ctrl => vec![VKey::Ctrl(' ')],
                 NamedKey::Space => vec![VKey::Char(' ')],
                 NamedKey::Escape => vec![VKey::Esc],
+                // ターミナルでは Ctrl+Enter・Shift+Enter は改行（Ctrl-j の \n。Claude Code などで送らずに改行する）
+                NamedKey::Enter if (ctrl || self.modifiers.shift_key()) && in_terminal => vec![VKey::Ctrl('j')],
                 // Ctrl-Enter はコミット（Ctrl-m として渡す）
                 NamedKey::Enter if ctrl => vec![VKey::Ctrl('m')],
                 NamedKey::Enter => vec![VKey::Enter],
@@ -1161,14 +1164,14 @@ impl App {
         let rows = self.sync_screen();
         let (Some(ed), Some(f)) = (&mut self.ed, &self.fonts) else { return };
         ed.rows = rows;
-        // ターミナルの上ならさかのぼる
+        // ターミナルの上ならシェル・アプリへ（さかのぼる・アプリに送る）
         let (row, col) = ((self.mouse.1 as f32 / f.cell().h) as usize, (self.mouse.0.max(0.0) as f32 / f.cell().w) as usize);
         if ed.bottom_kind == result_grid::BottomKind::Terminal && ed.bottom_content_rect().is_some_and(|r| r.contains(row, col)) {
             let lines = match delta {
                 winit::event::MouseScrollDelta::LineDelta(_, y) => (y * WHEEL_LINES as f32).round() as isize,
                 winit::event::MouseScrollDelta::PixelDelta(p) => (p.y / f.cell().h as f64).round() as isize,
             };
-            ed.terminal_scroll(lines);
+            ed.terminal_wheel(lines, row, col);
             self.draw();
             return;
         }
