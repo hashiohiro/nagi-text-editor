@@ -202,6 +202,7 @@ pub static COMMANDS: &[Cmd] = &[
     // 欄の出し入れ（IntelliJ のツールウィンドウ。キーマップの Alt+1 など）
     cmd!(["ToolProject"], "プロジェクトの欄を出す・隠す（Alt+1）", Args::None, |e, c| e.toggle_left_tab(crate::tree_panel::LeftTab::Project)),
     cmd!(["ToolCommit"], "コミットの欄を出す・隠す（Alt+0）", Args::None, |e, c| e.toggle_left_tab(crate::tree_panel::LeftTab::Commit)),
+    cmd!(["ToolRun"], "実行の構成の欄を出す・隠す（Alt+8）", Args::None, |e, c| e.toggle_left_tab(crate::tree_panel::LeftTab::Run)),
     cmd!(["ToolGit"], "Git の欄を出す・隠す（Alt+9）", Args::None, |e, c| e.toggle_bottom_tab(crate::result_grid::BottomKind::Git)),
     cmd!(["ToolFind"], "検索の欄を出す・隠す（Alt+3）", Args::None, |e, c| e.toggle_bottom_tab(crate::result_grid::BottomKind::Grep)),
     cmd!(["ToolProblems"], "問題の欄を出す・隠す（Alt+6）", Args::None, |e, c| e.toggle_bottom_tab(crate::result_grid::BottomKind::Problems)),

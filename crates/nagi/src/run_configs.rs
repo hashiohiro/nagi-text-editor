@@ -78,7 +78,7 @@ impl Editor {
     }
 
     /// 開いているファイルをそのまま動かす構成（Python・Node.js・PHP・Ruby・Go）
-    fn current_file_config(&self) -> Option<RunConfig> {
+    pub(crate) fn current_file_config(&self) -> Option<RunConfig> {
         let f = std::path::absolute(self.buf.path.as_ref()?).ok()?;
         runconfig::for_file(&f, &self.nav_root())
     }
@@ -198,7 +198,7 @@ impl Editor {
         if running {
             m = m.item("■ 止める（Ctrl+F2）", |e| e.run_stop());
         }
-        m = m.sep().item("構成の編集…", move |e| e.open_run_dialog(name.as_deref()));
+        m = m.sep().item("構成の編集…", move |e| e.open_run_dialog(name.as_deref())).item("実行の欄（Alt+8）", |e| e.open_run_panel());
         self.open_menu(m);
     }
 

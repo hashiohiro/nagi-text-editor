@@ -678,7 +678,7 @@ mod tests {
     }
 
     fn wait(e: &mut Editor) {
-        for _ in 0..600 {
+        for _ in 0..2000 {
             e.poll_git();
             e.poll_commit();
             let busy = e.commit.as_ref().is_some_and(|p| p.running.is_some()) || e.git_status_pending();
@@ -756,11 +756,12 @@ mod layout_tests {
             assert!(l.list + l.list_h < l.title, "{h}: {l:?}");
             assert!(l.title < l.msg && l.msg + l.msg_h < l.amend && l.amend < l.buttons && l.buttons < h, "{h}: {l:?}");
         }
-        // タブ「 プロジェクト 」は 14 セル、その右が「 コミット 」
+        // タブはアイコン（4 列ずつ）: プロジェクト・コミット・実行
         assert_eq!(tab_at(1), Some(LeftTab::Project));
         assert_eq!(tab_at(5), Some(LeftTab::Commit));
-        assert_eq!(tab_at(8), None);
-        assert_eq!((stripe_at(0), stripe_at(8), stripe_at(20)), (Some(LeftTab::Project), Some(LeftTab::Commit), None));
+        assert_eq!(tab_at(8), Some(LeftTab::Run));
+        assert_eq!(tab_at(12), None);
+        assert_eq!((stripe_at(0), stripe_at(8), stripe_at(13), stripe_at(20)), (Some(LeftTab::Project), Some(LeftTab::Commit), Some(LeftTab::Run), None));
         // ボタンは右寄せで重ならない
         let [(_, px, pw, true), (_, mx, _, false)] = buttons(36) else { panic!() };
         assert!(px + pw < mx);

@@ -116,6 +116,7 @@ pub static SCHEMA: &[Item] = &[
     item("keymap.terminal", "キーマップ", "ターミナル", K, "Alt+F12", ""),
     item("keymap.project", "キーマップ", "プロジェクト", K, "Alt+1", ""),
     item("keymap.commit", "キーマップ", "コミット", K, "Alt+0", ""),
+    item("keymap.run_panel", "キーマップ", "実行の欄", K, "Alt+8", ""),
     item("keymap.git", "キーマップ", "Git", K, "Alt+9", ""),
     item("keymap.find", "キーマップ", "検索の欄", K, "Alt+3", ""),
     item("keymap.problems", "キーマップ", "問題", K, "Alt+6", ""),

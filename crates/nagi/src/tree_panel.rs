@@ -57,16 +57,18 @@ pub enum LeftTab {
     #[default]
     Project,
     Commit,
+    /// 実行の構成（run_panel.rs）
+    Run,
 }
 
 /// タブ（1 行目にアイコンで並べる。名前は出しているタブの横に出す）
-pub const TABS: [(&str, LeftTab); 2] = [("プロジェクト", LeftTab::Project), ("コミット", LeftTab::Commit)];
+pub const TABS: [(&str, LeftTab); 3] = [("プロジェクト", LeftTab::Project), ("コミット", LeftTab::Commit), ("実行", LeftTab::Run)];
 
 /// アイコンのタブ 1 つの幅（列）
 pub const TAB_W: usize = 4;
 
 /// 左のストライプのラベル（縦書き。見出し, タブ, 上端の行）
-pub const STRIPE: [(&str, LeftTab, usize); 2] = [("プロジェクト", LeftTab::Project, 0), ("コミット", LeftTab::Commit, 7)];
+pub const STRIPE: [(&str, LeftTab, usize); 3] = [("プロジェクト", LeftTab::Project, 0), ("コミット", LeftTab::Commit, 7), ("実行", LeftTab::Run, 12)];
 
 /// 左のストライプの `row` にあるラベル
 pub fn stripe_at(row: usize) -> Option<LeftTab> {
@@ -187,17 +189,22 @@ impl Editor {
         self.waker()
     }
 
-    /// 左の欄に出しているタブ（両方開いていれば、最後に選んだ方）
+    /// 左の欄に出しているタブ（いくつか開いていれば、最後に選んだもの）
     pub fn left_visible(&self) -> Option<LeftTab> {
         if self.left_hidden {
             return None;
         }
-        match (self.tree.is_some(), self.commit.is_some()) {
-            (true, true) => Some(self.left_tab),
-            (true, false) => Some(LeftTab::Project),
-            (false, true) => Some(LeftTab::Commit),
-            (false, false) => None,
-        }
+        self.left_open()
+    }
+
+    /// 開いている左の欄のタブ（隠していても）。最後に選んだものが開いていればそれ、無ければ開いている最初のもの
+    pub fn left_open(&self) -> Option<LeftTab> {
+        let open = |t: LeftTab| match t {
+            LeftTab::Project => self.tree.is_some(),
+            LeftTab::Commit => self.commit.is_some(),
+            LeftTab::Run => self.run_panel.is_some(),
+        };
+        if open(self.left_tab) { Some(self.left_tab) } else { TABS.iter().map(|t| t.1).find(|&t| open(t)) }
     }
 
     /// 左の欄の矩形（1 行目はタブ）
@@ -294,6 +301,7 @@ impl Editor {
         match tab {
             LeftTab::Project => self.open_tree(),
             LeftTab::Commit => self.open_commit_panel(),
+            LeftTab::Run => self.open_run_panel(),
         }
     }
 

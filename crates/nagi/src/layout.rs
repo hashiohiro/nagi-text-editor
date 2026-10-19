@@ -78,6 +78,7 @@ pub enum Layer {
 pub static PANELS: &[&dyn View] = &[
     &crate::tree_panel::TreeView,
     &crate::commit_panel::CommitView,
+    &crate::run_panel::RunPanelView,
     // 左の欄の 1 行目は木・コミットの欄の矩形にも入るので、それより上に置いて先に当てる
     &crate::tree_panel::LeftTabsView,
     &crate::log_view::LogScreenView,

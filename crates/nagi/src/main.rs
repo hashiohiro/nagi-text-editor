@@ -20,6 +20,7 @@ mod dialogs;
 mod jumplist;
 mod read_view;
 mod run_configs;
+mod run_panel;
 mod run_dialog;
 mod keymap;
 mod settings;
@@ -961,6 +962,7 @@ impl Frame {
             Some(editor::Side::Left) if col < STRIPE_W && row < ed.windows_rows() => match tree_panel::stripe_at(row) {
                 Some(tree_panel::LeftTab::Project) => ed.toggle_tree(),
                 Some(tree_panel::LeftTab::Commit) => ed.toggle_commit(),
+                Some(tree_panel::LeftTab::Run) => ed.toggle_left_tab(tree_panel::LeftTab::Run),
                 None => return false,
             },
             Some(editor::Side::Right) if col + STRIPE_W >= ed.screen.0 && row < ed.windows_rows() => match right_panel::rstripe_at(row) {

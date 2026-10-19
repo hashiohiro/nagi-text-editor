@@ -45,6 +45,7 @@ impl Button {
             Button::ShowLeft => match ed.left_last() {
                 LeftTab::Project => "プロジェクト（Alt-1）".into(),
                 LeftTab::Commit => "コミット（Alt-0）".into(),
+                LeftTab::Run => "実行（Alt-8）".into(),
             },
             Button::HideBottom => "隠す".into(),
             Button::ShowBottom => crate::bottom_panel::BTABS.iter().find(|(_, k)| *k == ed.bottom_kind).map_or("下の欄".into(), |(l, _)| format!("下の欄:{l}")),
@@ -63,11 +64,7 @@ impl Button {
 impl Editor {
     /// 左の欄が出ていれば、最後に選んだタブ（隠していても覚えている）
     pub fn left_last(&self) -> LeftTab {
-        match (self.tree.is_some(), self.commit.is_some()) {
-            (true, true) => self.left_tab,
-            (false, true) => LeftTab::Commit,
-            _ => LeftTab::Project,
-        }
+        self.left_open().unwrap_or(LeftTab::Project)
     }
 
     /// 下の欄に出すものがあるか（検索・ログ・クエリの結果は中身があるとき、ほかのタブはいつも）
@@ -138,7 +135,7 @@ impl Editor {
     /// 左の欄を隠す（中身は残す）
     pub(crate) fn hide_left(&mut self) {
         self.left_hidden = true;
-        if self.state() == State::CommitMsg || (self.state() == State::List && matches!(self.list_side, Side::Left | Side::Commit)) {
+        if self.state() == State::CommitMsg || (self.state() == State::List && matches!(self.list_side, Side::Left | Side::Commit | Side::Run)) {
             self.set_state(State::Normal);
         }
         self.rows = self.text_rows(self.active_rect());
@@ -164,6 +161,7 @@ impl Editor {
         let focused = match tab {
             LeftTab::Project => self.state() == State::List && self.list_side == Side::Left,
             LeftTab::Commit => self.state() == State::CommitMsg || (self.state() == State::List && self.list_side == Side::Commit),
+            LeftTab::Run => self.state() == State::List && self.list_side == Side::Run,
         };
         if self.left_visible() == Some(tab) && focused {
             self.hide_left();

@@ -124,6 +124,8 @@ pub enum Side {
     Bottom,
     /// コミットのパネル
     Commit,
+    /// 実行の構成の欄（左の欄）
+    Run,
     /// 右の欄（データベース・Maven）
     Right,
 }
@@ -440,6 +442,8 @@ pub struct Editor {
     pub blame: Option<crate::blame::Blame>,
     /// コミットのパネル（開いている間だけ）
     pub commit: Option<crate::commit_panel::CommitPanel>,
+    /// 実行の構成の欄（左の欄の「実行」タブ）
+    pub run_panel: Option<crate::run_panel::RunPanel>,
     /// 左右並べの差分（開いている間だけ）と、閉じたときに戻るモード
     pub diff: Option<crate::diff_view::DiffView>,
     pub(crate) diff_return: Option<State>,
@@ -665,6 +669,7 @@ impl Editor {
             make: None,
             git: Default::default(),
             commit: None,
+            run_panel: None,
             blame: None,
             log: None,
             branch_popup: None,

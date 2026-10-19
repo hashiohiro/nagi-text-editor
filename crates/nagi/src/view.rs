@@ -813,7 +813,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         Some(crate::editor::Side::Left) => draw_stripe_left(&mut p, ed.windows_rows(), ed.left_visible()),
         Some(crate::editor::Side::Bottom) => draw_stripe_bottom(&mut p, rows, cols, ed),
         Some(crate::editor::Side::Right) => draw_stripe_right(&mut p, ed.windows_rows(), cols, ed.right_visible()),
-        Some(crate::editor::Side::Commit) | None => {}
+        Some(crate::editor::Side::Commit | crate::editor::Side::Run) | None => {}
     }
     // ---- 最下行: 左にモード・メッセージ・入力欄、右に位置（Vim の showmode と ruler と同じ形）
     // 右端の 2 列は設定のボタン（⚙）
@@ -1129,7 +1129,14 @@ pub(crate) fn draw_left_tabs(p: &mut Painter, r: Rect, active: crate::tree_panel
     use crate::tree_panel::LeftTab;
     let tabs: Vec<(TabIcon, &'static str, bool)> = crate::tree_panel::TABS
         .iter()
-        .map(|(l, t)| (if *t == LeftTab::Project { TabIcon::Project } else { TabIcon::Commit }, *l, *t == active))
+        .map(|(l, t)| {
+            let icon = match t {
+                LeftTab::Project => TabIcon::Project,
+                LeftTab::Commit => TabIcon::Commit,
+                LeftTab::Run => TabIcon::Run,
+            };
+            (icon, *l, *t == active)
+        })
         .collect();
     draw_icon_tabs(p, r, &tabs, focused, extra);
 }
@@ -1139,6 +1146,7 @@ pub(crate) fn draw_left_tabs(p: &mut Painter, r: Rect, active: crate::tree_panel
 pub(crate) enum TabIcon {
     Project,
     Commit,
+    Run,
     Database,
     Maven,
     Preview,
@@ -1216,6 +1224,17 @@ pub(crate) fn draw_tab_icon(p: &mut Painter, icon: TabIcon, cx: f32, y: f32, c: 
             f(x, my - px / 2.0, (s - r) / 2.0, px);
             f(x + (s + r) / 2.0, my - px / 2.0, (s - r) / 2.0, px);
             frame(&mut f, x + (s - r) / 2.0, my - r / 2.0, r, r);
+        }
+        TabIcon::Run => {
+            // 実行: 右向きの三角（細い横線を重ねて塗る）
+            let h = (s * 0.8).round();
+            let ty = y + ((s - h) / 2.0).round();
+            let mut k = 0.0;
+            while k < h {
+                let d = (k - h / 2.0).abs();
+                f(x + s * 0.2, ty + k, (s * 0.7) * (1.0 - d / (h / 2.0)), px);
+                k += px;
+            }
         }
         TabIcon::Database => {
             // データベース: 積み重ねた円筒（3 段の枠）

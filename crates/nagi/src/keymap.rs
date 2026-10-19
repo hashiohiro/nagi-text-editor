@@ -76,7 +76,7 @@ pub enum Action {
 }
 
 /// 操作（設定のキー, 操作）
-pub const ACTIONS: [(&str, Action); 14] = [
+pub const ACTIONS: [(&str, Action); 15] = [
     ("keymap.settings", Action::Cmd("Settings")),
     ("keymap.complete", Action::Key(Key::Ctrl(' '))),
     ("keymap.run", Action::Cmd("Run")),
@@ -87,6 +87,7 @@ pub const ACTIONS: [(&str, Action); 14] = [
     ("keymap.terminal", Action::Cmd("ToolTerminal")),
     ("keymap.project", Action::Cmd("ToolProject")),
     ("keymap.commit", Action::Cmd("ToolCommit")),
+    ("keymap.run_panel", Action::Cmd("ToolRun")),
     ("keymap.git", Action::Cmd("ToolGit")),
     ("keymap.find", Action::Cmd("ToolFind")),
     ("keymap.problems", Action::Cmd("ToolProblems")),
