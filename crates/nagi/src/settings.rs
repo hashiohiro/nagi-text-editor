@@ -124,8 +124,7 @@ pub static SCHEMA: &[Item] = &[
     item("terminal.utf8", "ツール", "ターミナル: UTF-8 で始める", B, "true", "オフなら Windows の既定（CP932）"),
     pitem("maven.jdk", "ビルド・実行", "JDK（コンパイル・実行）", SKind::Jdk, "", "Enter で入っているものから選ぶか、Eclipse Temurin をダウンロード（%LOCALAPPDATA%\\nagi\\jdks に置く）。空なら JAVA_HOME か nagi が入れたものから探し、無ければ動かすときに 21 を入れる"),
     item("build.jdk_env", "ビルド・実行", "JDK を nagi から起動するものに渡す", B, "true", "ターミナル・実行の構成・Maven に JAVA_HOME と PATH（JDK の bin）として"),
-    pitem("maven.path", "ビルド・実行", "Maven: mvn の場所", T, "", "空なら PATH の mvn・MAVEN_HOME・下の Maven。どれも無ければ動かすときに nagi 用にダウンロードして入れる"),
-    pitem("toolchain.maven", "ビルド・実行", "Maven", SKind::Tool("maven"), "", TOOL_HELP),
+    pitem("toolchain.maven", "ビルド・実行", "Maven", SKind::Tool("maven"), "", "Enter で入っているものから選ぶか、ダウンロード（%LOCALAPPDATA%\\nagi\\tools に置く）。空なら PATH・MAVEN_HOME・nagi が入れたもの・Wrapper のものから探し、どれも無ければ動かすときに入れる"),
     pitem("maven.use_wrapper", "ビルド・実行", "Maven: Wrapper（mvnw）を使う", B, "true", "設定ファイルもそろっているときだけ"),
     pitem("maven.options", "ビルド・実行", "Maven: 追加のオプション", T, "", "いつも付ける（-o・-T 4 など）"),
     pitem("toolchain.python", "ビルド・実行", "Python", SKind::Tool("python"), "", TOOL_HELP),
@@ -324,7 +323,7 @@ impl crate::editor::Editor {
         // 裏の処理（Maven・git・JDK・ターミナル・ブラウザ）が読む設定
         let s = &self.settings;
         nagi_workers::config::set(nagi_workers::config::Config {
-            mvn: s.text("maven.path"),
+            maven: s.text("toolchain.maven").map(PathBuf::from),
             use_wrapper: s.bool("maven.use_wrapper"),
             mvn_options: s.get("maven.options"),
             jdk: s.text("maven.jdk").map(PathBuf::from),
@@ -347,17 +346,18 @@ impl crate::editor::Editor {
                 extra.insert(0, Path::new(j).join("bin").display().to_string());
             }
             // 言語のツール（設定で選んだ bin のフォルダを PATH の頭に。WSL の中のコマンドには届かない）
-            for t in &nagi_workers::toolchains::TOOLS {
+            // Maven は下で（maven::bin が決める）
+            for t in nagi_workers::toolchains::TOOLS.iter().filter(|t| t.id != "maven") {
                 if let Some(b) = self.settings.text(&format!("toolchain.{}", t.id)).filter(|b| Path::new(b).is_dir()) {
                     extra.insert(0, b);
                 }
             }
             let extra = extra.join(";");
             let mut path = if extra.is_empty() { base.clone() } else { format!("{extra};{base}") };
-            // PATH に mvn が無ければ、見つけた Maven（MAVEN_HOME・nagi が入れたものなど）を後ろに足す（mvn と打てばどこでも動くように）
-            static MAVEN_BIN: std::sync::OnceLock<Option<PathBuf>> = std::sync::OnceLock::new();
-            if let Some(b) = MAVEN_BIN.get_or_init(nagi_workers::maven::extra_bin) {
-                path = format!("{path};{}", b.display());
+            // Maven（maven::bin が決めたもの）を頭に置く（mvn と打てばどこでも同じ mvn が動くように）。
+            // 前に置いたものが混ざらないよう、起動したときの PATH から探す
+            if let Some(b) = nagi_workers::maven::bin(Some(base.into())) {
+                path = format!("{};{path}", b.display());
             }
             // SAFETY: 下と同じ（UI のスレッドだけが書く）
             unsafe {

@@ -103,6 +103,12 @@ impl Term {
             cmd.arg(a);
         }
         cmd.cwd(cwd);
+        // nagi の環境をそのまま渡す（portable-pty は Windows ではレジストリの PATH などで上書きするので、
+        // 設定の適用が PATH に足した Maven・言語のツールや、JAVA_HOME が届かなかった）
+        cmd.env_clear();
+        for (k, v) in std::env::vars_os() {
+            cmd.env(k, v);
+        }
         let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
         drop(pair.slave);
         let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
@@ -216,6 +222,20 @@ mod tests {
         let start = std::time::Instant::now();
         while !t.exited() {
             assert!(start.elapsed().as_secs() < 15, "終わらない");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    /// nagi の環境変数がそのまま届く（レジストリにもある変数でも、nagi の値が勝つ。PATH に足した Maven が届かなかった）
+    #[test]
+    fn passes_nagi_env() {
+        // DriverData はレジストリ（HKLM の Environment）にある。nagi のほかの試験は使わない
+        unsafe { std::env::set_var("DriverData", "nagi-env-ok") };
+        let mut t = Term::spawn("cmd.exe /Q /K prompt $G", &std::env::temp_dir(), 10, 60, Arc::new(|| {})).expect("起動");
+        t.write(b"echo [%DriverData%]\r\n");
+        let start = std::time::Instant::now();
+        while !t.with_screen(|s| s.contents()).contains("[nagi-env-ok]") {
+            assert!(start.elapsed().as_secs() < 15, "nagi の値が届かない: {:?}", t.with_screen(|s| s.contents()));
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
     }

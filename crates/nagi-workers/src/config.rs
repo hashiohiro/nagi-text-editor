@@ -7,8 +7,8 @@ use std::sync::RwLock;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
-    /// mvn の場所（None なら PATH の mvn。PATH に無ければ設定の適用が maven::bundled_bin を PATH に足す）
-    pub mvn: Option<String>,
+    /// 設定の Maven（mvn のある bin。None なら maven::bin が探す）
+    pub maven: Option<PathBuf>,
     /// Maven Wrapper（mvnw）を使うか
     pub use_wrapper: bool,
     /// Maven にいつも付けるオプション
@@ -29,7 +29,7 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
-        Config { mvn: None, use_wrapper: true, mvn_options: String::new(), jdk: None, git: None, git_wsl: true, browser: None, terminal_utf8: true, exclude: Vec::new() }
+        Config { maven: None, use_wrapper: true, mvn_options: String::new(), jdk: None, git: None, git_wsl: true, browser: None, terminal_utf8: true, exclude: Vec::new() }
     }
 }
 
