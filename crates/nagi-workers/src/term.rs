@@ -48,11 +48,11 @@ pub fn split_args(s: &str) -> Vec<String> {
 /// シェルを UTF-8 で始める引数（日本語の Windows の既定 CP932 のままだと、UTF-8 で書き出すプログラムの出力が化ける）。
 /// cmd は chcp 65001、PowerShell は入出力の文字コードと Get-Content の既定を UTF-8 に、Git Bash は起動の初めに chcp.com 65001。
 /// 引数を付けて呼んだもの（cmd /C … など）はそのまま
-fn utf8_args(prog: &str, args: Vec<String>) -> Vec<String> {
+fn utf8_args(prog: &str, args: Vec<String>, utf8: bool) -> Vec<String> {
     let base = Path::new(prog).file_name().map(|n| n.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
     let s = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<_>>();
     // 設定の「UTF-8 で始める」がオフなら、Windows の既定のまま（PowerShell のロゴだけ消す）
-    if !crate::config::get().terminal_utf8 {
+    if !utf8 {
         return match base.as_str() {
             "powershell.exe" | "powershell" | "pwsh.exe" | "pwsh" if args.is_empty() => s(&["-NoLogo"]),
             _ => args,
@@ -99,7 +99,9 @@ impl Term {
         let mut words = split_args(shell);
         let prog = if words.is_empty() { "powershell.exe".to_string() } else { words.remove(0) };
         let mut cmd = CommandBuilder::new(prog.as_str());
-        for a in utf8_args(&prog, words) {
+        // このフォルダのプロジェクトの設定（UTF-8 で始めるか・JDK や言語のツールを頭に置いた PATH）
+        let cfg = crate::config::for_path(cwd);
+        for a in utf8_args(&prog, words, cfg.terminal_utf8) {
             cmd.arg(a);
         }
         cmd.cwd(cwd);
@@ -107,6 +109,9 @@ impl Term {
         // 設定の適用が PATH に足した Maven・言語のツールや、JAVA_HOME が届かなかった）
         cmd.env_clear();
         for (k, v) in std::env::vars_os() {
+            cmd.env(k, v);
+        }
+        for (k, v) in &cfg.env {
             cmd.env(k, v);
         }
         let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;

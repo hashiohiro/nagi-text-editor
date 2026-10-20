@@ -422,7 +422,7 @@ fn edit(e: &mut Editor, c: &Call) {
         e.reload();
     } else if c.arg.is_empty() {
         e.notify.error("E32: ファイル名がありません");
-    } else if std::path::Path::new(c.arg).is_dir() {
+    } else if e.resolve(c.arg).is_dir() {
         e.open_project(PathBuf::from(c.arg));
     } else {
         e.edit_file(PathBuf::from(c.arg));

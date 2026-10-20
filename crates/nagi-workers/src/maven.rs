@@ -119,7 +119,7 @@ pub fn find_root(from: &Path) -> Option<PathBuf> {
 
 /// Maven Wrapper が使えるか（mvnw だけあって `.mvn/wrapper/maven-wrapper.properties` が無いと、wrapper は起動できない）
 fn wrapper_ready(root: &Path, script: &str) -> bool {
-    crate::config::get().use_wrapper && root.join(script).is_file() && root.join(".mvn").join("wrapper").join("maven-wrapper.properties").is_file()
+    crate::config::for_path(root).use_wrapper && root.join(script).is_file() && root.join(".mvn").join("wrapper").join("maven-wrapper.properties").is_file()
 }
 
 /// ゴールを動かすコマンド（根に使える mvnw があればそれを、無ければ mvn。mvn の場所は bin が決め、設定の適用が PATH に置く）
@@ -132,7 +132,7 @@ pub fn command(root: &Path, pom_dir: &Path, goals: &str) -> String {
         return format!("{mvn} -B -f \"{}\" {goals}", ex.path(&pom));
     }
     // 設定の「追加のオプション」
-    let cfg = crate::config::get();
+    let cfg = crate::config::for_path(root);
     let mvn = if wrapper_ready(root, "mvnw.cmd") { "mvnw.cmd" } else { "mvn" };
     let goals = if cfg.mvn_options.trim().is_empty() { goals.to_string() } else { format!("{} {goals}", cfg.mvn_options.trim()) };
     format!("{mvn} -B -f \"{}\" {goals}", pom.display())
@@ -143,9 +143,9 @@ pub fn command(root: &Path, pom_dir: &Path, goals: &str) -> String {
 /// 設定の Maven → `path`（PATH）→ MAVEN_HOME・M2_HOME → nagi が入れたもの（tools\maven-<版>）→ ~\.m2\wrapper\dists → scoop。
 /// IDE（IntelliJ・Eclipse）に同梱のものは使わない（IDE が無くても同じに動くように）。
 /// どれも無ければ None（mvn を動かすときに nagi がダウンロードして入れる。missing）
-pub fn bin(path: Option<std::ffi::OsString>) -> Option<PathBuf> {
+pub fn bin(cfg: &crate::config::Config, path: Option<std::ffi::OsString>) -> Option<PathBuf> {
     // 設定の Maven（bin を選ぶが、Maven のフォルダそのものでも）
-    if let Some(m) = crate::config::get().maven {
+    if let Some(m) = cfg.maven.clone() {
         if let Some(b) = [m.clone(), m.join("bin")].into_iter().find(|b| b.join("mvn.cmd").is_file()) {
             return Some(b);
         }
@@ -159,7 +159,7 @@ pub fn bin(path: Option<std::ffi::OsString>) -> Option<PathBuf> {
 /// この行が mvn を動かすのに、mvn がどこにも無いか（bin が見つけられない）。WSL の中では見ない
 pub fn missing(line: &str, ex: &crate::exec::Exec) -> bool {
     let first = line.split_whitespace().next().unwrap_or("").to_ascii_lowercase();
-    !ex.is_wsl() && matches!(first.as_str(), "mvn" | "mvn.cmd") && bin(std::env::var_os("PATH")).is_none()
+    !ex.is_wsl() && matches!(first.as_str(), "mvn" | "mvn.cmd") && bin(ex.config(), ex.config().var("PATH")).is_none()
 }
 
 /// `dir` から `depth` 段下のフォルダ

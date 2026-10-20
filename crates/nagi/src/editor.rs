@@ -386,6 +386,11 @@ pub struct Editor {
     pub run_dialog: Option<crate::run_dialog::RunDialog>,
     /// 設定（settings.rs）
     pub settings: crate::settings::Settings,
+    /// この窓の作業フォルダ（開いたプロジェクトの根。起動したときはそのフォルダ）。プロセスの作業フォルダは
+    /// 窓をまたいで 1 つなので使わない（窓ごとにプロジェクトが違う）。打ったパスの相対もここから
+    pub cwd: PathBuf,
+    /// この窓のハンドル（ダイアログの持ち主にする。0 なら無し: 試験）
+    pub hwnd: isize,
     pub settings_dialog: Option<crate::settings_dialog::SettingsDialog>,
     /// .ideavimrc に clipboard=unnamed があるか（設定の「クリップボード」と合わせて決める）
     pub rc_clipboard: bool,
@@ -699,6 +704,8 @@ impl Editor {
             run_list: Vec::new(),
             run_dialog: None,
             settings: crate::settings::Settings::load(None),
+            cwd: std::env::current_dir().unwrap_or_default(),
+            hwnd: 0,
             settings_dialog: None,
             rc_clipboard: false,
             auto_complete_at: None,
@@ -1536,8 +1543,15 @@ impl Editor {
 
     /// `:w 名前` / `:saveas 名前`。名前の無いバッファ（と :saveas）はその名前になり、名前のあるバッファは
     /// 別のファイルへ書き出すだけ（Vim と同じ）。ほかの既にあるファイルを上書きするには `!` が要る
+    /// 打ったパスを、この窓の作業フォルダ（cwd）から見た絶対パスにする（プロセスの作業フォルダは窓をまたいで 1 つなので使わない）
+    pub(crate) fn resolve(&self, p: impl AsRef<std::path::Path>) -> PathBuf {
+        let p = p.as_ref();
+        let p = if p.is_relative() && !p.has_root() { self.cwd.join(p) } else { p.to_path_buf() };
+        std::path::absolute(&p).unwrap_or(p)
+    }
+
     pub(crate) fn write_as(&mut self, name: &str, force: bool, rename: bool) -> bool {
-        let target = PathBuf::from(name.trim().trim_matches('"'));
+        let target = self.resolve(name.trim().trim_matches('"'));
         let same = self.buf.path.as_ref().is_some_and(|p| std::path::absolute(p).ok() == std::path::absolute(&target).ok());
         if same {
             return self.write();

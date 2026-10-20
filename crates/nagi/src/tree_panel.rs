@@ -243,7 +243,7 @@ impl Editor {
             let root = current
                 .as_deref()
                 .and_then(nagi_workers::files::project_root)
-                .or_else(|| std::env::current_dir().ok())
+                .or_else(|| Some(self.cwd.clone()))
                 .unwrap_or_default();
             let root = std::path::absolute(&root).unwrap_or(root);
             let (tx, rx) = channel();

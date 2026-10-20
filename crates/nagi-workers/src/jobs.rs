@@ -76,32 +76,32 @@ fn pump(r: impl Read + Send + 'static, tx: Sender<JobMsg>, waker: Waker) -> std:
 
 /// JAVA_HOME が使えない（指す先に java.exe が無い）とき、代わりに使う JDK（設定の JDK → nagi が入れたもののいちばん新しい版 →
 /// PATH の java）。使えるなら None（そのまま）。IDE（IntelliJ の ~\.jdks など）のものは使わない
-pub fn java_home_fix() -> Option<std::path::PathBuf> {
+pub fn java_home_fix(cfg: &crate::config::Config) -> Option<std::path::PathBuf> {
     let exe = |d: &Path| d.join("bin").join("java.exe").is_file() || d.join("bin").join("java").is_file();
     // 設定の JDK があればそれ
-    if let Some(j) = crate::config::get().jdk.filter(|j| exe(j)) {
+    if let Some(j) = cfg.jdk.clone().filter(|j| exe(j)) {
         return Some(j);
     }
-    if java_home_ok() {
+    if java_home_ok(cfg) {
         return None;
     }
     if let Some(j) = crate::jdk::newest_mine() {
         return Some(j.path);
     }
     // PATH の java の 2 つ上（…\bin\java.exe → …）。javac があるものだけ（JRE では Maven がコンパイルできない）
-    std::env::var_os("PATH").and_then(|p| {
+    cfg.var("PATH").and_then(|p| {
         std::env::split_paths(&p).find(|d| d.join("javac.exe").is_file() && d.join("java.exe").is_file()).and_then(|d| d.parent().map(Path::to_path_buf))
     })
 }
 
 /// JAVA_HOME が java のある場所を指しているか
-fn java_home_ok() -> bool {
-    std::env::var_os("JAVA_HOME").is_some_and(|h| Path::new(&h).join("bin").join("java.exe").is_file() || Path::new(&h).join("bin").join("java").is_file())
+fn java_home_ok(cfg: &crate::config::Config) -> bool {
+    cfg.var("JAVA_HOME").is_some_and(|h| Path::new(&h).join("bin").join("java.exe").is_file() || Path::new(&h).join("bin").join("java").is_file())
 }
 
 /// JDK がどこにも無いか（設定の JDK・JAVA_HOME・nagi が入れたもの・PATH のどれも使えない）
-pub fn jdk_missing() -> bool {
-    !java_home_ok() && java_home_fix().is_none()
+pub fn jdk_missing(cfg: &crate::config::Config) -> bool {
+    !java_home_ok(cfg) && java_home_fix(cfg).is_none()
 }
 
 /// 組み立てた Command（exec::Exec が作る）を動かし、出力を 1 行ずつ流す

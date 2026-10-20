@@ -418,7 +418,7 @@ impl Editor {
     /// git clone して開く（置き場所は %USERPROFILE%\IdeaProjects の下、リポジトリの名前）
     fn start_clone(&mut self, url: String) {
         let name = url.trim_end_matches('/').rsplit(['/', ':']).next().unwrap_or("repo").trim_end_matches(".git").to_string();
-        let base = std::env::var_os("USERPROFILE").map(|h| PathBuf::from(h).join("IdeaProjects")).unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
+        let base = std::env::var_os("USERPROFILE").map(|h| PathBuf::from(h).join("IdeaProjects")).unwrap_or_else(|| self.cwd.clone());
         let dest = base.join(&name);
         let waker = self.waker();
         let Some(l) = &mut self.launcher else { return };
@@ -438,20 +438,20 @@ impl Editor {
 
     /// 左の操作: o フォルダ（ダイアログ）、w WSL のフォルダ（ダイアログ）、g git から取得、r 最近のファイル、n 空で始める
     pub(crate) fn launcher_action(&mut self, a: char) {
-        let waker = self.waker.clone();
+        let (waker, hwnd) = (self.waker.clone(), self.hwnd);
         let Some(l) = &mut self.launcher else { return };
         l.pick_insert = l.field.is_insert();
         match a {
             'o' => {
                 l.message = "フォルダを選んでください（ダイアログ）".into();
                 let start = std::env::var_os("USERPROFILE").map(|h| PathBuf::from(h).join("IdeaProjects")).filter(|p| p.is_dir());
-                l.picking = Some(crate::dialogs::pick_folder("開くプロジェクトのフォルダ", start, waker));
+                l.picking = Some(crate::dialogs::pick_folder("開くプロジェクトのフォルダ", start, hwnd, waker));
             }
             'w' => match nagi_workers::wsl::distros().first() {
                 Some(d) => {
                     l.message = format!("WSL のフォルダを選んでください（{d}。ほかのディストリビューションは \\\\wsl.localhost から）");
                     let start = nagi_workers::wsl::to_unc(d, "/home");
-                    l.picking = Some(crate::dialogs::pick_folder("開く WSL のプロジェクトのフォルダ", Some(start), waker));
+                    l.picking = Some(crate::dialogs::pick_folder("開く WSL のプロジェクトのフォルダ", Some(start), hwnd, waker));
                 }
                 None => l.message = "WSL のディストリビューションがありません（wsl --install で入れられます）".into(),
             },

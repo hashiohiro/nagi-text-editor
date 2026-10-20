@@ -4,7 +4,9 @@
 //! 動いている nagi は名前付きパイプで待ち、2 回目の nagi は開くファイルを書き込んで、自分は窓を作らずに終わる。
 //!
 //! パイプの名前は設定の置き場所（LOCALAPPDATA）ごとに分ける。撮影・計測は別の置き場所で動かすので、普段の nagi には渡らない。
-//! 書くのは 1 行: `open\t<絶対パス（空ならファイル無し）>\n`。
+//! 書くのは 2 行: `cwd\t<2 回目の nagi を起動したフォルダ>\n` と `open\t<絶対パス（空ならファイル無し）>\n`。
+//! 足した窓は起動したフォルダを作業フォルダにする（プロセスの作業フォルダは窓をまたいで 1 つなので、窓ごとに持つ）。
+//! 知らない行は読み飛ばすので、古い nagi に渡しても open の行は届く。
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -30,22 +32,36 @@ fn hand_off_to(name: &str, file: Option<&Path>) -> bool {
         let _ = windows::Win32::UI::WindowsAndMessaging::AllowSetForegroundWindow(windows::Win32::UI::WindowsAndMessaging::ASFW_ANY);
     }
     let abs = file.map(|p| std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf()));
-    let line = format!("open\t{}\n", abs.as_deref().map_or(String::new(), |p| p.display().to_string()));
+    let cwd = std::env::current_dir().map_or(String::new(), |d| format!("cwd\t{}\n", d.display()));
+    let line = format!("{cwd}open\t{}\n", abs.as_deref().map_or(String::new(), |p| p.display().to_string()));
     pipe.write_all(line.as_bytes()).is_ok()
 }
 
-/// 1 行を読む（`open\t...`）。開くファイル（無ければ None）。読めない行は Err
-pub fn parse(line: &str) -> Result<Option<PathBuf>, ()> {
-    let rest = line.trim_end_matches(['\r', '\n']).strip_prefix("open\t").ok_or(())?;
-    Ok((!rest.is_empty()).then(|| PathBuf::from(rest)))
+/// 届いた 1 行
+#[derive(Debug, PartialEq, Eq)]
+pub enum Msg {
+    /// 2 回目の nagi を起動したフォルダ（続く open の窓の作業フォルダ）
+    Cwd(PathBuf),
+    /// 窓を足して開くファイル（無ければ None）
+    Open(Option<PathBuf>),
 }
 
-/// 2 回目の起動を待つ（裏のスレッド）。届くたびに `on_open` を呼ぶ。パイプを作れなければ（ほかの nagi が先に作った）何もしない
-pub fn serve(on_open: impl Fn(Option<PathBuf>) + Send + 'static) {
+/// 1 行を読む（`cwd\t...`・`open\t...`）。読めない行は Err
+pub fn parse(line: &str) -> Result<Msg, ()> {
+    let line = line.trim_end_matches(['\r', '\n']);
+    if let Some(d) = line.strip_prefix("cwd\t") {
+        return if d.is_empty() { Err(()) } else { Ok(Msg::Cwd(PathBuf::from(d))) };
+    }
+    let rest = line.strip_prefix("open\t").ok_or(())?;
+    Ok(Msg::Open((!rest.is_empty()).then(|| PathBuf::from(rest))))
+}
+
+/// 2 回目の起動を待つ（裏のスレッド）。届くたびに `on_open(開くファイル, 起動したフォルダ)` を呼ぶ。パイプを作れなければ（ほかの nagi が先に作った）何もしない
+pub fn serve(on_open: impl Fn(Option<PathBuf>, Option<PathBuf>) + Send + 'static) {
     serve_on(&pipe_name(), on_open)
 }
 
-fn serve_on(name: &str, on_open: impl Fn(Option<PathBuf>) + Send + 'static) {
+fn serve_on(name: &str, on_open: impl Fn(Option<PathBuf>, Option<PathBuf>) + Send + 'static) {
     use windows::Win32::Storage::FileSystem::{FILE_FLAG_FIRST_PIPE_INSTANCE, PIPE_ACCESS_INBOUND};
     use windows::Win32::System::Pipes::{ConnectNamedPipe, CreateNamedPipeW, PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT};
     let name: Vec<u16> = name.encode_utf16().chain([0]).collect();
@@ -66,9 +82,12 @@ fn serve_on(name: &str, on_open: impl Fn(Option<PathBuf>) + Send + 'static) {
             let mut f = unsafe { <std::fs::File as std::os::windows::io::FromRawHandle>::from_raw_handle(h as *mut _) };
             let mut text = String::new();
             if f.read_to_string(&mut text).is_ok() {
+                let mut cwd = None;
                 for line in text.lines() {
-                    if let Ok(file) = parse(line) {
-                        on_open(file);
+                    match parse(line) {
+                        Ok(Msg::Cwd(d)) => cwd = Some(d),
+                        Ok(Msg::Open(file)) => on_open(file, cwd.take()),
+                        Err(()) => {}
                     }
                 }
             }
@@ -87,8 +106,9 @@ mod tests {
 
     #[test]
     fn parses_open_lines() {
-        assert_eq!(parse("open\tC:\\a\\b.rs\n"), Ok(Some(PathBuf::from("C:\\a\\b.rs"))));
-        assert_eq!(parse("open\t\r\n"), Ok(None));
+        assert_eq!(parse("open\tC:\\a\\b.rs\n"), Ok(Msg::Open(Some(PathBuf::from("C:\\a\\b.rs")))));
+        assert_eq!(parse("open\t\r\n"), Ok(Msg::Open(None)));
+        assert_eq!(parse("cwd\tC:\\proj\r\n"), Ok(Msg::Cwd(PathBuf::from("C:\\proj"))));
         assert_eq!(parse("close\tx"), Err(()));
     }
 
@@ -99,11 +119,13 @@ mod tests {
         let name = format!(r"\\.\pipe\nagi-test-{}", std::process::id());
         assert!(!hand_off_to(&name, None), "まだ誰も待っていない");
         let (tx, rx) = std::sync::mpsc::channel();
-        serve_on(&name, move |f| tx.send(f).unwrap());
+        serve_on(&name, move |f, cwd| tx.send((f, cwd)).unwrap());
         assert!(hand_off_to(&name, Some(Path::new("C:\\x\\y.txt"))));
-        assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap(), Some(PathBuf::from("C:\\x\\y.txt")));
+        // 起動したフォルダも届く（足した窓の作業フォルダ）
+        let here = Some(std::env::current_dir().unwrap());
+        assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap(), (Some(PathBuf::from("C:\\x\\y.txt")), here.clone()));
         // 2 回目も届く
         assert!(hand_off_to(&name, None));
-        assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap(), None);
+        assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap(), (None, here));
     }
 }

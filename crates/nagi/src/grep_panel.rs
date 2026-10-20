@@ -145,7 +145,7 @@ impl Editor {
             .as_deref()
             .and_then(|p| std::path::absolute(p).ok())
             .and_then(|p| nagi_workers::files::project_root(&p))
-            .or_else(|| std::env::current_dir().ok())
+            .or_else(|| Some(self.cwd.clone()))
             .unwrap_or_default();
         let root = std::path::absolute(&root).unwrap_or(root);
         let g = self.grep.get_or_insert_with(|| GrepPanel {

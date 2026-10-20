@@ -164,6 +164,7 @@ impl Editor {
 
     /// `:e path`。開いていればそのバッファへ、無ければ読み込んで足す
     pub(crate) fn edit_file(&mut self, path: PathBuf) {
+        let path = self.resolve(path);
         if let Some(id) = self.find_doc(&path) {
             self.switch_doc(id);
             return;

@@ -13,7 +13,8 @@
 //!   ログインシェル（-l）にはしない（ログインの挨拶が毎回出るため）。PATH から Windows の場所（/mnt/…）は外す。
 //! - Windows 側のツールの設定と JDK（JAVA_HOME）は渡さない。
 //!
-//! Windows では窓を出さずに cmd で動かす（設定のツールと JDK は nagi の環境変数で PATH に入っている）。
+//! Windows では窓を出さずに cmd で動かす。設定のツールと JDK は、そのフォルダのプロジェクトの設定（config::for_path）の
+//! 環境変数（PATH・JAVA_HOME）で渡す（プロセスの環境変数は全体の設定のものだけ。窓ごとにプロジェクトが違っても混ざらない）。
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -28,6 +29,8 @@ pub struct Exec {
     /// WSL なら (ディストリビューション, Linux のフォルダ)
     wsl: Option<(String, String)>,
     env: Vec<(String, String)>,
+    /// このフォルダのプロジェクトの設定（Windows で動かすときに cfg.env を渡す）
+    cfg: crate::config::Config,
 }
 
 /// WSL に渡さない環境変数（Windows のパスを指すもの）
@@ -36,17 +39,27 @@ const WINDOWS_ONLY: &[&str] = &["JAVA_HOME"];
 impl Exec {
     /// `cwd` で動かす（WSL のフォルダなら WSL の中で）
     pub fn in_dir(cwd: &Path) -> Self {
-        Self { cwd: cwd.to_path_buf(), wsl: crate::wsl::split_unc(cwd), env: Vec::new() }
+        Self { cwd: cwd.to_path_buf(), wsl: crate::wsl::split_unc(cwd), env: Vec::new(), cfg: crate::config::for_path(cwd) }
     }
 
     /// WSL のディストリビューション `distro` のホームで動かす（ツールの調べもの・~ の解決）
     pub fn in_distro(distro: &str) -> Self {
-        Self { cwd: crate::wsl::to_unc(distro, "/"), wsl: Some((distro.to_string(), "~".to_string())), env: Vec::new() }
+        Self { cwd: crate::wsl::to_unc(distro, "/"), wsl: Some((distro.to_string(), "~".to_string())), env: Vec::new(), cfg: crate::config::global() }
     }
 
     /// WSL のフォルダでも Windows のコマンドで動かす（設定で WSL の git を使わないときなど）
     pub fn windows(cwd: &Path) -> Self {
-        Self { cwd: cwd.to_path_buf(), wsl: None, env: Vec::new() }
+        Self { cwd: cwd.to_path_buf(), wsl: None, env: Vec::new(), cfg: crate::config::for_path(cwd) }
+    }
+
+    /// このフォルダのプロジェクトの設定
+    pub fn config(&self) -> &crate::config::Config {
+        &self.cfg
+    }
+
+    /// Windows で動かすときに渡す環境変数（プロジェクトの設定のもの → 足したもの。後のものが勝つ）
+    fn windows_env(&self) -> impl Iterator<Item = &(String, String)> {
+        self.cfg.env.iter().chain(self.env.iter())
     }
 
     pub fn is_wsl(&self) -> bool {
@@ -90,14 +103,14 @@ impl Exec {
         if self.is_wsl() || self.env.iter().any(|(k, _)| k == "JAVA_HOME") {
             return None;
         }
-        let j = crate::jobs::java_home_fix()?;
+        let j = crate::jobs::java_home_fix(&self.cfg)?;
         self.env.push(("JAVA_HOME".into(), j.display().to_string()));
         Some(j)
     }
 
     /// この行を動かすのに足りないもの（Maven, JDK）。どちらも nagi がダウンロードして入れられる。WSL では見ない（WSL の中のものを使う）
     pub fn missing_tools(&self, line: &str) -> (bool, bool) {
-        let jdk = !self.is_wsl() && needs_jdk(line) && !self.env.iter().any(|(k, _)| k == "JAVA_HOME") && crate::jobs::jdk_missing();
+        let jdk = !self.is_wsl() && needs_jdk(line) && !self.env.iter().any(|(k, _)| k == "JAVA_HOME") && crate::jobs::jdk_missing(&self.cfg);
         (crate::maven::missing(line, self), jdk)
     }
 
@@ -133,7 +146,7 @@ impl Exec {
                 }
                 #[cfg(not(windows))]
                 c.arg(line);
-                c.current_dir(&self.cwd).envs(self.env.iter().map(|(k, v)| (k, v)));
+                c.current_dir(&self.cwd).envs(self.windows_env().map(|(k, v)| (k, v)));
                 c
             }
         };
@@ -154,7 +167,7 @@ impl Exec {
             }
             None => {
                 let mut c = Command::new(prog);
-                c.args(args).current_dir(&self.cwd).envs(self.env.iter().map(|(k, v)| (k, v)));
+                c.args(args).current_dir(&self.cwd).envs(self.windows_env().map(|(k, v)| (k, v)));
                 c
             }
         };
@@ -181,7 +194,7 @@ impl Exec {
         // ファイルは UTF-8 で書き、コードページも UTF-8 に（ターミナルの窓と同じ。UTF-8 で書き出すプログラムが化けない）
         let mut text = String::from("@echo off\r\nchcp 65001 >nul\r\n");
         text.push_str(&format!("cd /d \"{}\"\r\n", self.cwd.display()));
-        for (k, v) in &self.env {
+        for (k, v) in self.windows_env() {
             text.push_str(&format!("set \"{k}={v}\"\r\n"));
         }
         text.push_str(line);

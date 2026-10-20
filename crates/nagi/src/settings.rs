@@ -209,6 +209,26 @@ pub fn parse(s: &str) -> HashMap<String, String> {
         .collect()
 }
 
+/// 設定のファイルを読む（無ければ空）
+fn read_file(p: &Path) -> HashMap<String, String> {
+    std::fs::read_to_string(p).map(|s| parse(&s)).unwrap_or_default()
+}
+
+/// `before` から `after` へ変えた項目だけを `disk` に重ねる（足した・変えたものは入れ、消したものは消す）
+fn merge(disk: &mut HashMap<String, String>, before: &HashMap<String, String>, after: &HashMap<String, String>) {
+    for k in before.keys().chain(after.keys()) {
+        match (before.get(k), after.get(k)) {
+            (b, a) if b == a => {}
+            (_, Some(v)) => {
+                disk.insert(k.clone(), v.clone());
+            }
+            (_, None) => {
+                disk.remove(k);
+            }
+        }
+    }
+}
+
 /// 書き出す（SCHEMA の順。既定値と同じものは書かない）
 pub fn render(values: &HashMap<String, String>, header: &str) -> String {
     let mut s = format!("# {header}（nagi の設定の画面で直せる。キー = 値）\n");
@@ -298,25 +318,87 @@ impl Settings {
         self.project.remove(key);
     }
 
-    /// ファイルに書く（試験では全体を書かない）
-    pub fn save(&self) -> nagi_core::Result<()> {
+    /// ファイルに書く（試験では全体を書かない）。`old`（この窓が前に持っていた設定）から変えた項目だけを、ファイルの今の中身に
+    /// 重ねる（窓が何枚あっても、ほかの窓が先に保存した項目を、この窓の古い値で消さない）。書いた後の中身を自分も持つ
+    pub fn save(&mut self, old: &Settings) -> nagi_core::Result<()> {
         if !cfg!(test) {
             if let Some(p) = global_path() {
-                write(&p, &render(&self.global, "nagi の設定"))?;
+                let mut disk = read_file(&p);
+                merge(&mut disk, &old.global, &self.global);
+                write(&p, &render(&disk, "nagi の設定"))?;
+                self.global = disk;
             }
         }
-        if let Some(r) = &self.root {
-            let p = project_path(r);
-            if self.project.is_empty() {
+        if let Some(r) = self.root.clone() {
+            let p = project_path(&r);
+            let mut disk = read_file(&p);
+            // プロジェクトが変わっていれば、前の上書きは別のプロジェクトのもの
+            let before = if old.root == self.root { old.project.clone() } else { HashMap::new() };
+            merge(&mut disk, &before, &self.project);
+            if disk.is_empty() {
                 if p.exists() {
                     let _ = std::fs::remove_file(&p);
                 }
             } else {
-                write(&p, &render(&self.project, "このプロジェクトの nagi の設定（全体の設定を上書き）"))?;
+                write(&p, &render(&disk, "このプロジェクトの nagi の設定（全体の設定を上書き）"))?;
             }
+            self.project = disk;
         }
         Ok(())
     }
+}
+
+/// 起動したときの PATH と JAVA_HOME（設定で足すものは、いつもここから作り直す。前に足したものが混ざらないように）
+fn base_env() -> (&'static str, Option<&'static str>) {
+    static BASE: std::sync::OnceLock<(String, Option<String>)> = std::sync::OnceLock::new();
+    let b = BASE.get_or_init(|| (std::env::var("PATH").unwrap_or_default(), std::env::var("JAVA_HOME").ok()));
+    (b.0.as_str(), b.1.as_deref())
+}
+
+/// 裏の処理が読む設定（`s` が全体の設定ならプロジェクトの上書きを除いたもの）。
+/// Windows で動かすものに渡す PATH（追加の PATH・JDK の bin・言語のツール・Maven を頭に）と JAVA_HOME も作る
+fn tool_config(s: &Settings) -> nagi_workers::config::Config {
+    let mut c = nagi_workers::config::Config {
+        maven: s.text("toolchain.maven").map(PathBuf::from),
+        use_wrapper: s.bool("maven.use_wrapper"),
+        mvn_options: s.get("maven.options"),
+        jdk: s.text("maven.jdk").map(PathBuf::from),
+        git: s.text("git.path"),
+        git_wsl: s.bool("git.wsl"),
+        browser: s.text("tools.browser"),
+        terminal_utf8: s.bool("terminal.utf8"),
+        exclude: s.list("project.exclude"),
+        env: Vec::new(),
+    };
+    if cfg!(test) {
+        return c;
+    }
+    let (base, _) = base_env();
+    let mut extra = s.list("tools.extra_path");
+    // 設定の JDK を渡す（JAVA_HOME と、java・javac が先に見つかるように PATH の頭に bin）
+    let jdk = s.text("maven.jdk").filter(|j| s.bool("build.jdk_env") && Path::new(j).join("bin").is_dir());
+    if let Some(j) = &jdk {
+        extra.insert(0, Path::new(j).join("bin").display().to_string());
+    }
+    // 言語のツール（設定で選んだ bin のフォルダを PATH の頭に。WSL の中のコマンドには届かない）
+    // Maven は下で（maven::bin が決める）
+    for t in nagi_workers::toolchains::TOOLS.iter().filter(|t| t.id != "maven") {
+        if let Some(b) = s.text(&format!("toolchain.{}", t.id)).filter(|b| Path::new(b).is_dir()) {
+            extra.insert(0, b);
+        }
+    }
+    let extra = extra.join(";");
+    let mut path = if extra.is_empty() { base.to_string() } else { format!("{extra};{base}") };
+    // Maven（maven::bin が決めたもの）を頭に置く（mvn と打てばどこでも同じ mvn が動くように）。
+    // 前に置いたものが混ざらないよう、起動したときの PATH から探す
+    if let Some(b) = nagi_workers::maven::bin(&c, Some(base.into())) {
+        path = format!("{};{path}", b.display());
+    }
+    c.env.push(("PATH".into(), path));
+    if let Some(j) = jdk {
+        c.env.push(("JAVA_HOME".into(), j));
+    }
+    c
 }
 
 impl crate::editor::Editor {
@@ -343,62 +425,63 @@ impl crate::editor::Editor {
         if !self.settings.bool("vim.hlsearch") {
             self.search.highlight = false;
         }
-        // 裏の処理（Maven・git・JDK・ターミナル・ブラウザ）が読む設定
-        let s = &self.settings;
-        nagi_workers::config::set(nagi_workers::config::Config {
-            maven: s.text("toolchain.maven").map(PathBuf::from),
-            use_wrapper: s.bool("maven.use_wrapper"),
-            mvn_options: s.get("maven.options"),
-            jdk: s.text("maven.jdk").map(PathBuf::from),
-            git: s.text("git.path"),
-            git_wsl: s.bool("git.wsl"),
-            browser: s.text("tools.browser"),
-            terminal_utf8: s.bool("terminal.utf8"),
-            exclude: s.list("project.exclude"),
-        });
-        // 追加の PATH とドライバーの置き場所は、nagi の環境変数に（nagi から起動するものに引き継がれる）。試験では変えない
+        // 裏の処理（Maven・git・JDK・ターミナル・ブラウザ）が読む設定。全体の設定と、このプロジェクトの設定（上書きつき）を分けて入れる。
+        // 1 つのプロセスに窓が何枚あっても、プロジェクトの JDK・Maven・言語のツールが別のプロジェクトの窓に混ざらないように
+        // （裏の処理はフォルダを渡して config::for_path で読む）
+        let mut global = self.settings.clone();
+        global.project.clear();
+        let g = tool_config(&global);
+        // 全体の設定の PATH・JAVA_HOME・ドライバーの置き場所は、nagi の環境変数にも（nagi の中で読むもの: Oracle の oci.dll など）。
+        // どの窓も同じ全体の設定から作るので、どの窓が書いても同じ値。試験では変えない
         if !cfg!(test) {
-            static BASE_PATH: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-            let base = BASE_PATH.get_or_init(|| std::env::var("PATH").unwrap_or_default());
-            let mut extra = self.settings.list("tools.extra_path");
-            // 設定の JDK を渡す（JAVA_HOME と、java・javac が先に見つかるように PATH の頭に bin）
-            static BASE_JAVA_HOME: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-            let base_jh = BASE_JAVA_HOME.get_or_init(|| std::env::var("JAVA_HOME").ok());
-            let jdk = self.settings.text("maven.jdk").filter(|j| self.settings.bool("build.jdk_env") && Path::new(j).join("bin").is_dir());
-            if let Some(j) = &jdk {
-                extra.insert(0, Path::new(j).join("bin").display().to_string());
-            }
-            // 言語のツール（設定で選んだ bin のフォルダを PATH の頭に。WSL の中のコマンドには届かない）
-            // Maven は下で（maven::bin が決める）
-            for t in nagi_workers::toolchains::TOOLS.iter().filter(|t| t.id != "maven") {
-                if let Some(b) = self.settings.text(&format!("toolchain.{}", t.id)).filter(|b| Path::new(b).is_dir()) {
-                    extra.insert(0, b);
-                }
-            }
-            let extra = extra.join(";");
-            let mut path = if extra.is_empty() { base.clone() } else { format!("{extra};{base}") };
-            // Maven（maven::bin が決めたもの）を頭に置く（mvn と打てばどこでも同じ mvn が動くように）。
-            // 前に置いたものが混ざらないよう、起動したときの PATH から探す
-            if let Some(b) = nagi_workers::maven::bin(Some(base.into())) {
-                path = format!("{};{path}", b.display());
-            }
-            // SAFETY: 下と同じ（UI のスレッドだけが書く）
-            unsafe {
-                match (&jdk, base_jh) {
-                    (Some(j), _) => std::env::set_var("JAVA_HOME", j),
-                    (None, Some(b)) => std::env::set_var("JAVA_HOME", b),
-                    (None, None) => std::env::remove_var("JAVA_HOME"),
-                }
-            }
             // SAFETY: 設定を適用するのは UI のスレッドだけで、ほかのスレッドが同時に環境変数を書くことはない
             unsafe {
-                std::env::set_var("PATH", path);
+                for (k, v) in &g.env {
+                    if std::env::var(k).ok().as_deref() != Some(v.as_str()) {
+                        std::env::set_var(k, v);
+                    }
+                }
+                if !g.env.iter().any(|(k, _)| k == "JAVA_HOME") {
+                    match base_env().1 {
+                        Some(b) => std::env::set_var("JAVA_HOME", b),
+                        None => std::env::remove_var("JAVA_HOME"),
+                    }
+                }
                 match self.settings.text("db.drivers_dir") {
                     Some(d) => std::env::set_var("NAGI_DRIVERS_DIR", d),
                     None => std::env::remove_var("NAGI_DRIVERS_DIR"),
                 }
             }
         }
+        nagi_workers::config::set(None, g);
+        // プロジェクトの設定は、上書きを読んだ根（settings.root）に
+        if let Some(r) = self.settings.root.clone() {
+            nagi_workers::config::set(Some(&r), tool_config(&self.settings));
+        }
+    }
+
+    /// ほかの窓が保存した設定を読み直して効かせる（窓が前に出たとき）。変わったら true
+    pub(crate) fn reload_settings(&mut self) -> bool {
+        if cfg!(test) {
+            return false;
+        }
+        let new = Settings::load(self.settings.root.as_deref());
+        if new == self.settings {
+            return false;
+        }
+        let old = std::mem::replace(&mut self.settings, new);
+        self.apply_settings(Some(&old));
+        true
+    }
+
+    /// 保存して、ほかの窓が保存していた項目を読み込んだら（save が重ねる）それも効かせる
+    pub(crate) fn save_settings(&mut self, old: &Settings) -> nagi_core::Result<()> {
+        let mine = self.settings.clone();
+        self.settings.save(old)?;
+        if self.settings != mine {
+            self.apply_settings(Some(&mine));
+        }
+        Ok(())
     }
 
     /// ドラッグで変えた欄の大きさを覚える（設定の「欄の大きさを覚える」）
@@ -406,6 +489,7 @@ impl crate::editor::Editor {
         if !self.settings.bool("appearance.remember_panels") {
             return;
         }
+        let old = self.settings.clone();
         for (k, v) in [
             ("state.left_width", self.left_w),
             ("state.right_width", self.right_w),
@@ -417,7 +501,7 @@ impl crate::editor::Editor {
                 self.settings.global.insert(k.to_string(), v.to_string());
             }
         }
-        if let Err(e) = self.settings.save() {
+        if let Err(e) = self.save_settings(&old) {
             self.notify.error(format!("欄の大きさを覚えられません: {e}"));
         }
     }
@@ -470,12 +554,26 @@ mod tests {
         }
     }
 
+    /// 保存は変えた項目だけをファイルに重ねる（ほかの窓が先に保存した項目を、この窓の古い値で消さない）
+    #[test]
+    fn save_merges_only_changes() {
+        let mut disk = HashMap::from([("a".to_string(), "other".to_string()), ("b".to_string(), "1".to_string()), ("c".to_string(), "1".to_string())]);
+        // この窓: 読んだときは a=old, b=1, c=1。b を 2 に、c を消した（a はほかの窓が other にしたが、この窓は古いまま）
+        let before = HashMap::from([("a".to_string(), "old".to_string()), ("b".to_string(), "1".to_string()), ("c".to_string(), "1".to_string())]);
+        let after = HashMap::from([("a".to_string(), "old".to_string()), ("b".to_string(), "2".to_string())]);
+        merge(&mut disk, &before, &after);
+        assert_eq!(disk.get("a").map(String::as_str), Some("other"), "変えていない項目はほかの窓の値のまま");
+        assert_eq!(disk.get("b").map(String::as_str), Some("2"));
+        assert!(!disk.contains_key("c"), "消した項目は消す");
+    }
+
     #[test]
     fn layering_and_round_trip() {
         let dir = std::env::temp_dir().join(format!("nagi-settings-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let mut s = Settings::load(Some(&dir));
+        let before = s.clone();
         assert_eq!(s.int("editor.indent_width"), 4);
         s.set("editor.indent_width", "2", false);
         s.set("editor.indent_width", "8", true);
@@ -486,7 +584,7 @@ mod tests {
         // 範囲の外は端に
         s.set("appearance.line_height", "500", false);
         assert_eq!(s.int("appearance.line_height"), 200);
-        s.save().unwrap();
+        s.save(&before).unwrap();
         let text = std::fs::read_to_string(project_path(&dir)).unwrap();
         assert!(text.contains("editor.indent_width = 8"), "{text}");
         let again = Settings::load(Some(&dir));

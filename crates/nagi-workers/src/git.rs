@@ -24,7 +24,7 @@ fn run(root: &Path, args: &[&str], input: Option<&[u8]>, env: &[(&str, &str)]) -
     // 出力を英語と UTF-8 の決まった形にする（読み取りがずれないように）
     let base = ["-c", "core.quotepath=false", "-c", "color.ui=false"];
     // WSL のプロジェクトは WSL の中の git で（Windows の git だと遅く、safe.directory で断られる）。設定で切り替えられる
-    let cfg = crate::config::get();
+    let cfg = crate::config::for_path(root);
     let ex = if cfg.git_wsl { crate::exec::Exec::in_dir(root) } else { crate::exec::Exec::windows(root) };
     let mut ex = ex.env("LANG", "C").env("LC_ALL", "C").env("GIT_TERMINAL_PROMPT", "0");
     for (k, v) in env {

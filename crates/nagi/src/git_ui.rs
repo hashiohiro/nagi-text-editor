@@ -50,7 +50,7 @@ fn abs(p: &Path) -> PathBuf {
 impl Editor {
     /// 作業ツリーの根を決めて、status と今のファイルの HEAD の版を取りに行く（App が表示の後に呼ぶ）
     pub fn start_git(&mut self) {
-        let base = self.buf.path.as_deref().map(abs).or_else(|| std::env::current_dir().ok());
+        let base = self.buf.path.as_deref().map(abs).or_else(|| Some(self.cwd.clone()));
         self.git.root = base.as_deref().and_then(nagi_workers::git::repo_root).map(|r| abs(&r));
         if self.git.root.is_some() {
             self.refresh_git();

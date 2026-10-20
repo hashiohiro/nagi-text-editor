@@ -211,7 +211,7 @@ impl Editor {
         let s = dir.to_string_lossy().into_owned();
         let linux = (s.starts_with('/') && !s.starts_with("//")) || s.starts_with("~/");
         let dir = if linux { nagi_workers::wsl::resolve_typed(&s) } else { dir };
-        let dir = std::path::absolute(&dir).unwrap_or(dir);
+        let dir = self.resolve(dir);
         if !dir.is_dir() {
             self.notify.info(format!("フォルダではありません: {}", dir.display()));
             return;
@@ -242,10 +242,12 @@ impl Editor {
     }
 
     fn switch_project(&mut self, p: project::Project) {
-        if let Err(e) = std::env::set_current_dir(&p.root) {
+        // この窓の作業フォルダにする（プロセスの作業フォルダは変えない。ほかの窓は別のプロジェクトを開いている）
+        if let Err(e) = std::fs::read_dir(&p.root) {
             self.notify.error(format!("{}: {e}", p.root.display()));
             return;
         }
+        self.cwd = std::path::absolute(&p.root).unwrap_or_else(|_| p.root.clone());
         remember_project(&p.root);
         // プロジェクトごとのパネルと索引を作り直す
         self.tree = None;
@@ -318,6 +320,46 @@ mod tests {
         assert!(e.notify.text.contains(r"\\wsl.localhost\no-such-distro\home\x"), "UNC は変換しない: {}", e.notify.text);
     }
 
+    /// 1 つのプロセスの 2 枚の窓: 違うプロジェクトを開いても、作業フォルダ・題名の根・除外するフォルダ（プロジェクトの設定）・
+    /// 打った相対パスは、それぞれの窓のもの（プロセスの作業フォルダや 1 つの設定を共有しない）
+    #[test]
+    fn two_windows_keep_their_own_project() {
+        let base = std::env::temp_dir().join(format!("nagi-two-windows-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (a, b) = (base.join("alpha"), base.join("beta"));
+        for (d, ex) in [(&a, "gen-a"), (&b, "gen-b")] {
+            std::fs::create_dir_all(d.join(".nagi")).unwrap();
+            std::fs::write(d.join(".nagi").join("settings.conf"), format!("project.exclude = {ex}\n")).unwrap();
+            std::fs::write(d.join("x.txt"), "x\n").unwrap();
+        }
+        unsafe {
+            std::env::set_var("NAGI_JETBRAINS_DIR", base.join("no-jetbrains"));
+            std::env::set_var("NAGI_INDEX_DIR", base.join("cache"));
+        }
+        let cwd = std::env::current_dir().unwrap();
+        let mut e1 = Editor::new(Buffer::from_str(""), None);
+        let mut e2 = Editor::new(Buffer::from_str(""), None);
+        e1.set_screen(120, 40);
+        e2.set_screen(120, 40);
+        e1.open_project(a.clone());
+        e2.open_project(b.clone());
+        let abs = |p: &std::path::Path| std::path::absolute(p).unwrap();
+        assert_eq!((e1.cwd.clone(), e2.cwd.clone()), (abs(&a), abs(&b)));
+        assert_eq!(std::env::current_dir().unwrap(), cwd, "プロセスの作業フォルダは変えない");
+        // ファイルを開いていなくても、題名の根はその窓のプロジェクト
+        e1.new_empty_buffer();
+        e2.new_empty_buffer();
+        assert_eq!(e1.nav_root(), abs(&a));
+        assert_eq!(e2.nav_root(), abs(&b));
+        // 裏の処理が読むプロジェクトの設定も、フォルダごとに別
+        assert_eq!(nagi_workers::config::for_path(&a.join("x.txt")).exclude, vec!["gen-a".to_string()]);
+        assert_eq!(nagi_workers::config::for_path(&b).exclude, vec!["gen-b".to_string()]);
+        // 打った相対パスはその窓の作業フォルダから
+        assert_eq!(e1.resolve("x.txt"), abs(&a.join("x.txt")));
+        e2.edit_file(std::path::PathBuf::from("x.txt"));
+        assert_eq!(e2.buf.path.as_deref(), Some(abs(&b.join("x.txt")).as_path()));
+    }
+
     #[test]
     fn opens_intellij_project_and_restores_files() {
         let d = std::env::temp_dir().join(format!("nagi-open-proj-{}", std::process::id()));
@@ -341,9 +383,9 @@ mod tests {
         let mut e = Editor::new(Buffer::from_str(""), None);
         e.set_screen(120, 40);
         e.open_project(d.clone());
-        let opened = std::env::current_dir().unwrap();
-        std::env::set_current_dir(&cwd).unwrap();
-        assert_eq!(std::path::absolute(&opened).unwrap(), std::path::absolute(&d).unwrap());
+        // 窓の作業フォルダになり、プロセスの作業フォルダ（ほかの窓と共有）は変えない
+        assert_eq!(e.cwd, std::path::absolute(&d).unwrap());
+        assert_eq!(std::env::current_dir().unwrap(), cwd);
         assert!(e.buf.path.as_ref().unwrap().ends_with("A.java"), "{:?} {}", e.buf.path, e.notify.text);
         // IntelliJ の列 9 は 9 文字目（「*/」の *）。byte では「  /* 」5 + 日本語 9 + 空白 1 = 15（byte として 9 を使うと「本」の途中）
         assert_eq!((e.cursor.line, e.cursor.byte), (1, 15));

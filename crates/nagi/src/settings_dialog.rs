@@ -63,6 +63,8 @@ pub enum SButton {
 pub struct SettingsDialog {
     /// 直している写し（適用で Editor.settings へ）
     pub work: Settings,
+    /// 開いたとき（・前に適用したとき）の写し。適用で書くのは、これから変えた項目だけ（ほかの窓が保存した項目を消さない）
+    pub base: Settings,
     pub cat: usize,
     pub selected: usize,
     pub top: usize,
@@ -509,10 +511,11 @@ impl Editor {
         let p = path.display().to_string();
         let old = self.settings.clone();
         self.settings.set(key, &p, project);
-        let _ = self.settings.save();
+        let _ = self.save_settings(&old);
         self.apply_settings(Some(&old));
         if let Some(d) = &mut self.settings_dialog {
             d.work.set(key, &p, project);
+            d.base.set(key, &p, project);
         }
         p
     }
@@ -524,6 +527,7 @@ impl Editor {
         let mut filter = VimField::new(query, false);
         filter.ed.set_state(State::Normal);
         let d = SettingsDialog {
+            base: work.clone(),
             work,
             cat: 0,
             selected: 0,
@@ -562,10 +566,13 @@ impl Editor {
                 return false;
             }
         }
-        let work = d.work.clone();
+        let mut work = d.work.clone();
         d.dirty = false;
-        match work.save() {
+        // 設定の画面で変えた項目だけを書く（ほかの窓が保存した項目は消さない。その値も読み込む）
+        match work.save(&d.base) {
             Ok(()) => {
+                d.work = work.clone();
+                d.base = work.clone();
                 let old = std::mem::replace(&mut self.settings, work);
                 self.apply_settings(Some(&old));
                 self.notify.info("設定を保存しました");
@@ -989,7 +996,11 @@ pub(crate) mod draw {
             };
             // JDK は、使う java の場所も出す
             let desc = if it.kind == SKind::Jdk {
-                let jdk = d.work.text(it.key).map(std::path::PathBuf::from).or_else(nagi_workers::jobs::java_home_fix).or_else(|| std::env::var_os("JAVA_HOME").map(std::path::PathBuf::from));
+                let jdk = d.work.text(it.key).map(std::path::PathBuf::from).or_else(|| {
+                    // この窓のプロジェクトの設定で（JAVA_HOME もそのプロジェクトのもの）
+                    let cfg = d.work.root.as_deref().map_or_else(nagi_workers::config::global, nagi_workers::config::for_path);
+                    nagi_workers::jobs::java_home_fix(&cfg).or_else(|| cfg.var("JAVA_HOME").map(std::path::PathBuf::from))
+                });
                 match jdk {
                     Some(j) => format!("java: {}", j.join("bin").join("java.exe").display()),
                     None => "java: 見つかりません（Enter でダウンロード）".into(),

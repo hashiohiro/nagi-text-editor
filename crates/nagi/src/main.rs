@@ -128,6 +128,8 @@ fn load_font_chain(names: &[String]) -> Vec<FontData> {
 
 struct Opts {
     file: Option<PathBuf>,
+    /// 窓の作業フォルダ（2 回目の起動で足した窓は、その nagi を起動したフォルダ。None ならプロセスの作業フォルダ）
+    cwd: Option<PathBuf>,
     keys: Option<String>,
     replay: Option<String>,
     startup_report: bool,
@@ -136,7 +138,7 @@ struct Opts {
 
 impl Opts {
     fn parse() -> Self {
-        let mut o = Opts { file: None, keys: None, replay: None, startup_report: false, exit_after_first_frame: false };
+        let mut o = Opts { file: None, cwd: None, keys: None, replay: None, startup_report: false, exit_after_first_frame: false };
         let mut args = std::env::args().skip(1);
         while let Some(a) = args.next() {
             match a.as_str() {
@@ -327,8 +329,6 @@ impl Frame {
             let RawWindowHandle::Win32(h) = window.window_handle().unwrap().as_raw() else { unreachable!() };
             windows::Win32::Foundation::HWND(h.hwnd.get() as *mut _)
         };
-        // ダイアログ（フォルダの選択）の持ち主にする
-        let _ = dialogs::MAIN_HWND.set(hwnd.0 as isize);
 
         // GPU の準備（最も遅い）を待つ間に、フォントとファイルを受け取って最初の画面のグリフをラスタライズしておく
         let p = self.pending.take().unwrap();
@@ -344,6 +344,13 @@ impl Frame {
         window.set_title(&title_for(buf.path.as_deref(), None));
         self.title_path = (None, None);
         self.ed = Some(Editor::new(buf, None));
+        if let Some(ed) = &mut self.ed {
+            // ダイアログ（フォルダの選択）の持ち主にする
+            ed.hwnd = hwnd.0 as isize;
+            if let Some(d) = &self.opts.cwd {
+                ed.cwd = d.clone();
+            }
+        }
         self.apply_rc();
         // 構文解析は裏で行い、終わったらイベントループを起こして色を付ける（大きなファイルでも表示を待たせない）
         if let (Some(ed), Some(proxy)) = (&mut self.ed, self.proxy.take()) {
@@ -551,7 +558,7 @@ impl Frame {
             _ => 0,
         };
         let path = ed.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
-        let dir = path.as_ref().and_then(|p| p.parent().map(|d| d.to_path_buf())).or_else(|| std::env::current_dir().ok());
+        let dir = path.as_ref().and_then(|p| p.parent().map(|d| d.to_path_buf())).or_else(|| Some(ed.cwd.clone()));
         let name = path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned());
         self.save_dialog = Some(save_dialog::open(owner, dir, name, ed.waker.clone()));
     }
@@ -1426,6 +1433,12 @@ impl Frame {
             WindowEvent::ModifiersChanged(m) => self.modifiers = m.state(),
             // 離したのが届かないことがあるので、ほかの窓へ移ったら繰り返しを止める
             WindowEvent::Focused(false) => self.held = None,
+            // 前に出たら、ほかの窓が保存した設定を読み直す（窓ごとに設定を持っているので）
+            WindowEvent::Focused(true) => {
+                if self.ed.as_mut().is_some_and(|e| e.reload_settings()) {
+                    self.draw();
+                }
+            }
             // エクスプローラーから落としたもの: フォルダはプロジェクトとして、ファイルはそのまま開く
             WindowEvent::DroppedFile(path) => {
                 if let Some(ed) = &mut self.ed {
@@ -1616,8 +1629,8 @@ fn main() {
     event_loop.set_control_flow(ControlFlow::Wait);
     if single {
         let p = proxy.clone();
-        instance::serve(move |file| {
-            let _ = p.send_event(UserEvent::Open(file));
+        instance::serve(move |file, cwd| {
+            let _ = p.send_event(UserEvent::Open(file, cwd));
         });
     }
     let mut app = App { frames: vec![new_frame(opts, pending, proxy.clone())], proxy };
@@ -1630,7 +1643,8 @@ enum UserEvent {
     /// 構文解析・検索などが終わった（全部の窓が受け取りに行く）
     Wake,
     /// 2 回目の起動から: 窓を足してこのファイル（None なら起動時と同じ）を開く
-    Open(Option<PathBuf>),
+    /// 2 回目の起動（開くファイル, 起動したフォルダ）
+    Open(Option<PathBuf>, Option<PathBuf>),
 }
 
 /// 窓を束ねる。窓の数だけ Frame があり、GPU の装置は 1 枚目のものを使い回す
@@ -1653,9 +1667,9 @@ impl ApplicationHandler<UserEvent> for App {
     fn user_event(&mut self, el: &ActiveEventLoop, event: UserEvent) {
         match event {
             UserEvent::Wake => self.frames.iter_mut().for_each(|f| f.user_event()),
-            UserEvent::Open(file) => {
+            UserEvent::Open(file, cwd) => {
                 let gpu = self.frames.iter().find_map(|f| f.renderer.as_ref().map(|r| r.gpu()));
-                let opts = Opts { file, keys: None, replay: None, startup_report: false, exit_after_first_frame: false };
+                let opts = Opts { file, cwd, keys: None, replay: None, startup_report: false, exit_after_first_frame: false };
                 let pending = spawn_pending(opts.file.clone(), gpu);
                 let mut f = new_frame(opts, pending, self.proxy.clone());
                 f.startup(el);
