@@ -1,7 +1,7 @@
-//! フォントのファイルを読み取り専用でメモリに写す。
+//! ファイルを読み取り専用でメモリに写す（フォント・型の索引）。
 //!
-//! `std::fs::read` で読むと、日本語フォント（BIZ UDGothic の TTC で 5 MB）がそのままプロセスの private になり、
-//! 窓を開くたびに増える。写したページは OS のファイルキャッシュと共有なので、private に数えられない。
+//! `std::fs::read` で読むと中身がそのままプロセスの private になる（日本語フォントの TTC だけで 5 MB、窓を開くたびに増えた）。
+//! 写したページは OS のファイルキャッシュと共有なので private に数えられず、OS がいつでも捨てて読み直せる。
 
 use std::path::Path;
 use std::sync::Arc;
@@ -11,27 +11,27 @@ use windows_sys::Win32::Storage::FileSystem::{CreateFileW, GetFileSizeEx, FILE_A
 use windows_sys::Win32::System::Memory::{CreateFileMappingW, MapViewOfFile, UnmapViewOfFile, FILE_MAP_READ, MEMORY_MAPPED_VIEW_ADDRESS, PAGE_READONLY};
 
 /// 写したファイルの中身（写せなければ読み込んだもの）
-pub struct FontBytes {
+pub struct Mapped {
     view: MEMORY_MAPPED_VIEW_ADDRESS,
     len: usize,
     owned: Vec<u8>,
 }
 
 // 読み取り専用の写しなので、どのスレッドから読んでもよい
-unsafe impl Send for FontBytes {}
-unsafe impl Sync for FontBytes {}
+unsafe impl Send for Mapped {}
+unsafe impl Sync for Mapped {}
 
-impl FontBytes {
+impl Mapped {
     /// `path` を写す。写せなければ読み込む
-    pub fn open(path: &Path) -> Option<Arc<FontBytes>> {
+    pub fn open(path: &Path) -> Option<Arc<Mapped>> {
         match map(path) {
-            Some((view, len)) => Some(Arc::new(FontBytes { view, len, owned: Vec::new() })),
-            None => Some(Arc::new(FontBytes::from_vec(std::fs::read(path).ok()?))),
+            Some((view, len)) => Some(Arc::new(Mapped { view, len, owned: Vec::new() })),
+            None => Some(Arc::new(Mapped::from_vec(std::fs::read(path).ok()?))),
         }
     }
 
-    pub fn from_vec(owned: Vec<u8>) -> FontBytes {
-        FontBytes { view: MEMORY_MAPPED_VIEW_ADDRESS { Value: std::ptr::null_mut() }, len: 0, owned }
+    pub fn from_vec(owned: Vec<u8>) -> Mapped {
+        Mapped { view: MEMORY_MAPPED_VIEW_ADDRESS { Value: std::ptr::null_mut() }, len: 0, owned }
     }
 }
 
@@ -57,7 +57,7 @@ fn map(path: &Path) -> Option<(MEMORY_MAPPED_VIEW_ADDRESS, usize)> {
     }
 }
 
-impl std::ops::Deref for FontBytes {
+impl std::ops::Deref for Mapped {
     type Target = [u8];
     fn deref(&self) -> &[u8] {
         if self.view.Value.is_null() {
@@ -68,7 +68,7 @@ impl std::ops::Deref for FontBytes {
     }
 }
 
-impl Drop for FontBytes {
+impl Drop for Mapped {
     fn drop(&mut self) {
         if !self.view.Value.is_null() {
             unsafe { UnmapViewOfFile(self.view) };

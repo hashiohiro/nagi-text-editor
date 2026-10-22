@@ -1158,10 +1158,10 @@ name = "nagi-text"
 version = "0.6.0"
 dependencies = [
  "dwrote",
+ "nagi-core",
  "swash",
  "unicode-segmentation",
  "unicode-width",
- "windows-sys 0.61.2",
 ]
 
 [[package]]

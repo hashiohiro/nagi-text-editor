@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 const NONE: u32 = u32::MAX;
 
@@ -416,12 +416,120 @@ impl<'a> Shard<'a> {
         Class { name, super_name, interfaces, signature, access, fields, methods }
     }
 
+    /// 単純名の表の k 番目の単純名
+    fn simple_at(&self, k: usize) -> &'a str {
+        self.string(self.u32_at(self.table + k * 8))
+    }
+
+    /// 単純名の表の k 番目のクラスの内部名
+    fn name_at(&self, k: usize) -> &'a str {
+        self.string(self.u32_at(self.classes + self.u32_at(self.table + k * 8 + 4) as usize))
+    }
+
+    /// 単純名の表の k 番目のクラス
+    fn class_at_table(&self, k: usize) -> Class {
+        self.class_at(self.u32_at(self.table + k * 8 + 4) as usize)
+    }
+
     /// 内部名でクラスを引く（単純名で絞ってから）
     pub fn class(&self, internal: &str) -> Option<Class> {
         let simple = internal.rsplit(['/', '$']).next().unwrap_or(internal);
         let key = |k: usize| self.string(self.u32_at(self.table + k * 8));
         let lo = partition(self.nclass, |k| key(k) < simple);
         (lo..self.nclass).take_while(|&k| key(k) == simple).map(|k| self.u32_at(self.table + k * 8 + 4) as usize).find(|&at| self.string(self.u32_at(self.classes + at)) == internal).map(|at| self.class_at(at))
+    }
+}
+
+/// jar の索引を置く場所（`%LOCALAPPDATA%\\nagi\\index\\jars`。試験では NAGI_INDEX_DIR の下）
+pub fn jars_dir() -> Option<PathBuf> {
+    let base = std::env::var_os("NAGI_INDEX_DIR").map(PathBuf::from).or_else(|| std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("nagi").join("index")))?;
+    Some(base.join("jars"))
+}
+
+/// jar のかけらのファイル名（jar のパス・大きさ・更新時刻から。jar が変われば別の名前）
+fn shard_name(jar: &Path, tag: &str) -> Option<String> {
+    let m = std::fs::metadata(jar).ok()?;
+    let t = m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    let key = format!("{}|{}|{t}|{tag}", jar.display(), m.len());
+    Some(format!("{}.ngj", &nagi_core::hash::sha256_hex(key.as_bytes())?[..24]))
+}
+
+/// 読む jar（`keep` は中の名前で読むものを選ぶ。ct.sym で版を選ぶときに使う。`tag` はその選び方の名前）
+pub struct JarSource<'a> {
+    pub path: &'a Path,
+    pub keep: &'a dyn Fn(&str) -> bool,
+    pub tag: &'a str,
+}
+
+/// クラスパス全体の型の索引。かけらはメモリに写して持ち、単純名の表だけをまとめて持つ（クラス 1 つに 8 バイト）
+pub struct JarIndex {
+    shards: Vec<std::sync::Arc<nagi_core::mmap::Mapped>>,
+    /// 単純名で並べた (かけら, かけらの中の単純名の表の番号)
+    table: Vec<(u16, u32)>,
+    /// 作り直したかけらの数
+    pub built: usize,
+}
+
+impl JarIndex {
+    /// かけらを読み（無ければ作って `dir` に書き）、写して束ねる。作る間は jar 1 つ分ずつ
+    pub fn load(sources: &[JarSource], dir: &Path) -> JarIndex {
+        let _ = std::fs::create_dir_all(dir);
+        let mut shards = Vec::new();
+        let mut built = 0;
+        for src in sources {
+            let Some(name) = shard_name(src.path, src.tag) else { continue };
+            let file = dir.join(name);
+            if !file.is_file() {
+                let Ok((bytes, _)) = build_shard(src.path, src.keep) else { continue };
+                // 書きかけを読まないよう、別の名前で書いてから置き換える
+                let tmp = file.with_extension(format!("tmp{}", std::process::id()));
+                if std::fs::write(&tmp, &bytes).is_err() || std::fs::rename(&tmp, &file).is_err() {
+                    let _ = std::fs::remove_file(&tmp);
+                    continue;
+                }
+                built += 1;
+            }
+            if let Some(m) = nagi_core::mmap::Mapped::open(&file).filter(|m| Shard::open(m).is_some()) {
+                shards.push(m);
+            }
+        }
+        let mut table: Vec<(u16, u32)> = Vec::new();
+        for (i, m) in shards.iter().enumerate() {
+            let s = Shard::open(m).unwrap();
+            table.extend((0..s.len() as u32).map(|k| (i as u16, k)));
+        }
+        let views: Vec<Shard> = shards.iter().map(|m| Shard::open(m).unwrap()).collect();
+        table.sort_by(|a, b| views[a.0 as usize].simple_at(a.1 as usize).cmp(views[b.0 as usize].simple_at(b.1 as usize)));
+        table.shrink_to_fit();
+        drop(views);
+        JarIndex { shards, table, built }
+    }
+
+    fn shard(&self, i: u16) -> Shard<'_> {
+        Shard::open(&self.shards[i as usize]).unwrap()
+    }
+
+    pub fn classes(&self) -> usize {
+        self.table.len()
+    }
+
+    /// 単純名（`List`）のクラスの内部名（`java/util/List`）。import の候補
+    pub fn by_simple_name(&self, simple: &str) -> Vec<&str> {
+        let key = |k: usize| self.shard(self.table[k].0).simple_at(self.table[k].1 as usize);
+        let lo = partition(self.table.len(), |k| key(k) < simple);
+        (lo..self.table.len()).take_while(|&k| key(k) == simple).map(|k| self.shard(self.table[k].0).name_at(self.table[k].1 as usize)).collect()
+    }
+
+    /// 内部名でクラスを引く
+    pub fn class(&self, internal: &str) -> Option<Class> {
+        let simple = internal.rsplit(['/', '$']).next().unwrap_or(internal);
+        let key = |k: usize| self.shard(self.table[k].0).simple_at(self.table[k].1 as usize);
+        let lo = partition(self.table.len(), |k| key(k) < simple);
+        (lo..self.table.len()).take_while(|&k| key(k) == simple).find_map(|k| {
+            let (i, at) = self.table[k];
+            let s = self.shard(i);
+            (s.name_at(at as usize) == internal).then(|| s.class_at_table(at as usize))
+        })
     }
 }
 
@@ -494,44 +602,49 @@ mod tests {
     }
 
     /// 索引を作る時間・メモリ・大きさ（NAGI_JARS_FILE にクラスパス（; 区切り）を書いたファイルを入れて
-    /// cargo test -p nagi-workers jar_index_cost -- --ignored --nocapture）
+    /// cargo test -p nagi-workers --release jar_index_cost -- --ignored --nocapture）。2 回目はかけらを写すだけ
     #[test]
     #[ignore]
     fn jar_index_cost() {
         let list = std::env::var("NAGI_JARS_FILE").ok().and_then(|f| std::fs::read_to_string(f).ok()).unwrap_or_default();
-        let jars: Vec<std::path::PathBuf> = list.trim().split(';').filter(|s| s.ends_with(".jar")).map(Into::into).collect();
+        let jars: Vec<PathBuf> = list.trim().split(';').filter(|s| s.ends_with(".jar")).map(Into::into).collect();
+        let dir = std::env::temp_dir().join("nagi-jar-index-cost");
+        if std::env::var_os("NAGI_FRESH").is_some() {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        let ct = jdk_home().map(|h| h.join("lib").join("ct.sym"));
+        let all = |_: &str| true;
+        let jdk16 = |n: &str| n.split('/').next().is_some_and(|d| d.contains('G'));
+        let mut sources: Vec<JarSource> = jars.iter().map(|p| JarSource { path: p, keep: &all, tag: "" }).collect();
+        if let Some(ct) = &ct {
+            sources.push(JarSource { path: ct, keep: &jdk16, tag: "G" });
+        }
         let m0 = private_bytes();
         let t0 = std::time::Instant::now();
-        let (mut classes, mut bytes, mut raw) = (0, 0, 0);
-        let mut peak = 0;
-        let mut shards = Vec::new();
-        for j in &jars {
-            raw += std::fs::metadata(j).map_or(0, |m| m.len());
-            let (b, n) = build_shard(j, |_| true).unwrap();
-            classes += n;
-            bytes += b.len();
-            shards.push(b);
-            peak = peak.max(private_bytes());
-        }
-        let build = t0.elapsed();
-        if let Some(home) = jdk_home() {
-            let t = std::time::Instant::now();
-            let (b, n) = build_shard(&home.join("lib").join("ct.sym"), |n| n.split('/').next().is_some_and(|d| d.contains('G'))).unwrap();
-            println!("JDK (ct.sym): {n} classes, {} KB, {} ms", b.len() / 1024, t.elapsed().as_millis());
-            shards.push(b);
-        }
-        // 引く速さ: よく使う単純名をすべてのかけらで
-        let t1 = std::time::Instant::now();
+        let ix = JarIndex::load(&sources, &dir);
+        let load = t0.elapsed();
+        let m1 = private_bytes();
+        let disk: u64 = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.metadata().map_or(0, |m| m.len())).sum();
+        // 引く速さ: import の候補（単純名）と、クラスを取り出す
         let names = ["List", "String", "Map", "Optional", "Autowired", "Service", "Logger", "ResponseEntity", "Transactional", "LocalDate"];
+        let t1 = std::time::Instant::now();
         let mut hits = 0;
-        for _ in 0..100 {
+        for _ in 0..1000 {
             for n in names {
-                for s in &shards {
-                    hits += Shard::open(s).unwrap().by_simple_name(n).len();
-                }
+                hits += ix.by_simple_name(n).len();
             }
         }
-        let per = t1.elapsed() / (100 * names.len() as u32);
-        println!("{} jars ({} MB) → {classes} classes, index {} KB, build {} ms, private {} → peak {} MB (shards kept in memory: {} KB), lookup over all shards {:?}, hits {}", jars.len(), raw / 1_048_576, bytes / 1024, build.as_millis(), m0 / 1_048_576, peak / 1_048_576, bytes / 1024, per, hits / 100);
+        let per_simple = t1.elapsed() / (1000 * names.len() as u32);
+        let t2 = std::time::Instant::now();
+        for _ in 0..1000 {
+            assert!(ix.class("java/util/List").is_some());
+        }
+        let per_class = t2.elapsed() / 1000;
+        let m2 = private_bytes();
+        let mb = |b: usize| b as f64 / 1_048_576.0;
+        println!(
+            "{} jars + JDK → {} classes ({} shards built), on disk {:.1} MB, load {} ms, private {:.1} → {:.1} MB after load → {:.1} MB after lookups, by_simple_name {:?} ({} hits), class() {:?}",
+            jars.len(), ix.classes(), ix.built, disk as f64 / 1_048_576.0, load.as_millis(), mb(m0), mb(m1), mb(m2), per_simple, hits / 1000, per_class
+        );
     }
 }

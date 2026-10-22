@@ -17,6 +17,7 @@ pub mod error;
 pub use error::{Context, Error, Result};
 pub mod hash;
 pub mod log;
+pub mod mmap;
 pub mod task;
 pub mod fuzzy;
 pub mod linediff;

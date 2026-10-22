@@ -9,8 +9,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-mod mmap;
-pub use mmap::FontBytes;
+/// フォントのファイルを写したもの（読み込むと日本語フォントの 5 MB が窓ごとの private になる）
+pub use nagi_core::mmap::Mapped as FontBytes;
 
 use dwrote::{
     FontCollection, FontFallback, FontStretch, FontStyle, FontWeight, TextAnalysisSource, TextAnalysisSourceMethods,
