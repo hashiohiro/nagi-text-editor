@@ -27,6 +27,8 @@ postgres-native-tls = "0.5.3"
 native-tls = "0.2.18"
 # Salesforce: REST API の JSON（項目の順を保つ）と、トークンの暗号化（DPAPI）・PKCE の乱数と SHA-256（Windows の API）
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
+# jar（zip）の中の class ファイルを展開する（DEFLATE。Rust だけ）
+miniz_oxide = "0.9.1"
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_Globalization"] }
 
 [dev-dependencies]

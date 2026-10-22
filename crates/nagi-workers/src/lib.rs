@@ -11,6 +11,7 @@ pub mod grep;
 pub mod index;
 pub mod jdk;
 pub mod jobs;
+pub mod jvm;
 pub mod maven;
 pub mod project;
 pub mod runconfig;
