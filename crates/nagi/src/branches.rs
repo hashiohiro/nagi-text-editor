@@ -175,7 +175,7 @@ impl Editor {
                     p.branches = b;
                     p.rebuild();
                 }
-                Err(e) => self.notify.error(format!("git: {}", e.last_line())),
+                Err(e) => self.notify.error(format!("git: {}", nagi_workers::git::reason(&e))),
             }
             changed = true;
         }
@@ -188,7 +188,7 @@ impl Editor {
         let Ok(r) = rx.try_recv() else { return false };
         match r {
             Ok(_) => self.notify.info(format!("{label}しました")),
-            Err(e) => self.notify.error(format!("{label}できません: {}", e.last_line())),
+            Err(e) => self.notify.error(format!("{label}できません: {}", nagi_workers::git::reason(&e))),
         }
         self.git_job = None;
         self.refresh_git();
@@ -214,7 +214,7 @@ impl Editor {
         let r = nagi_workers::git::git(&root, args);
         match &r {
             Ok(_) => self.notify.info(ok),
-            Err(e) => self.notify.error(format!("git: {}", e.last_line())),
+            Err(e) => self.notify.error(format!("git: {}", nagi_workers::git::reason(&e))),
         }
         self.refresh_git();
         r.is_ok()
@@ -298,7 +298,7 @@ impl Editor {
                 let n = name.clone();
                 self.ask(format!("{name} はマージしていません。それでも消しますか"), move |e| e.delete_branch(n, true));
             }
-            Some(Err(e)) => self.notify.error(format!("git: {}", e.last_line())),
+            Some(Err(e)) => self.notify.error(format!("git: {}", nagi_workers::git::reason(&e))),
             None => {}
         }
     }

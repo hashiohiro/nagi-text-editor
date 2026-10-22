@@ -181,7 +181,7 @@ impl Editor {
                 self.notify.info("変更を戻しました");
                 self.refresh_git();
             }
-            (_, Err(e)) => self.notify.error(format!("git: {}", e.last_line())),
+            (_, Err(e)) => self.notify.error(format!("git: {}", nagi_workers::git::reason(&e))),
         }
         true
     }
@@ -291,7 +291,7 @@ impl Editor {
         let Some(it) = p.items.get(i) else { return };
         let c = it.change.clone();
         if c.state == FileState::Untracked {
-            self.notify.warn("未追跡のファイルは戻せません（消すならファイルツリーなどから）");
+            self.notify.warn("未追跡のファイルは戻せません（消すなら D）");
             return;
         }
         let rx = run_git(self.waker.clone(), move || {
@@ -311,6 +311,35 @@ impl Editor {
             .map(|_| String::new())
         });
         p.running = Some((Job::Revert, rx));
+    }
+
+    /// 未追跡のファイルを消す（チェックしたもの。無ければカーソルの行）。消したら戻せないので、聞いてから
+    fn ask_delete_untracked(&mut self) {
+        let Some(root) = self.git.root.clone() else { return };
+        let Some(p) = &self.commit else { return };
+        let untracked = |it: &&Item| it.change.state == FileState::Untracked;
+        let mut paths: Vec<String> = p.items.iter().filter(untracked).filter(|it| it.checked).map(|it| it.change.path.clone()).collect();
+        if paths.is_empty() {
+            paths.extend(p.items.get(p.selected).filter(untracked).map(|it| it.change.path.clone()));
+        }
+        let q = match paths.len() {
+            0 => {
+                self.notify.warn("消せるのは未追跡のファイルだけです（追跡しているファイルは u で戻す）");
+                return;
+            }
+            1 => format!("{} を消しますか（元に戻せません）", paths[0]),
+            n => format!("未追跡のファイル {n} 件を消しますか（{} ほか。元に戻せません）", paths[0]),
+        };
+        self.ask(q, move |e| e.delete_untracked(&root, &paths));
+    }
+
+    fn delete_untracked(&mut self, root: &std::path::Path, paths: &[String]) {
+        let failed: Vec<String> = paths.iter().filter_map(|p| std::fs::remove_file(root.join(p)).err().map(|e| format!("{p}: {e}"))).collect();
+        match failed.first() {
+            None => self.notify.info(format!("未追跡のファイル {} 件を消しました", paths.len())),
+            Some(f) => self.notify.error(format!("{} 件のうち {} 件を消せませんでした（{f}）", paths.len(), failed.len())),
+        }
+        self.refresh_git();
     }
 
     /// マウス: 左の欄の中の (行, 列) を押した（行・列は矩形の中の位置）
@@ -388,13 +417,14 @@ impl Editor {
             Key::Char('u') => {
                 // 未追跡は戻せない（聞く前に知らせる）
                 if p.items.get(p.selected).is_some_and(|it| it.change.state == FileState::Untracked) {
-                    self.notify.warn("未追跡のファイルは戻せません（消すならファイルツリーなどから）");
+                    self.notify.warn("未追跡のファイルは戻せません（消すなら D）");
                 } else if !p.items.is_empty() {
                     let i = p.selected;
                     let q = format!("{} の変更を戻しますか", p.items[i].change.path);
                     self.ask(q, move |e| e.revert_item(i));
                 }
             }
+            Key::Char('D') => self.ask_delete_untracked(),
             Key::Char('r') => {
                 self.refresh_git();
             }
@@ -541,6 +571,7 @@ impl crate::layout::View for CommitView {
             .keys("選ぶ・外す", &[Char(' ')])
             .keys("すべて選ぶ・外す", &[Char('a')])
             .keys("変更を戻す…", &[Char('u')])
+            .keys("未追跡のファイルを削除…", &[Char('D')])
             .sep()
             .keys("メッセージを書く", &[Char('c')])
             .keys(if amend { "直前のコミットを直す: やめる" } else { "直前のコミットを直す" }, &[Char('A')])
@@ -753,6 +784,56 @@ mod tests {
     }
 
     /// 名前を変えたファイル（git mv）と、git rm で消したファイルもコミットできる（add に渡すと pathspec で断られていた）
+    /// D で未追跡のファイルを消す（チェックしたもの、無ければカーソルの行。聞いてから）。追跡しているファイルは消さない
+    #[test]
+    fn delete_untracked_files() {
+        let dir = std::env::temp_dir().join(format!("nagi-commit-del-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = |args: &[&str]| String::from_utf8_lossy(&nagi_workers::git::git(&dir, args).unwrap()).into_owned();
+        g(&["init", "-q", "-b", "main"]);
+        g(&["config", "user.email", "test@example.com"]);
+        g(&["config", "user.name", "test"]);
+        std::fs::write(dir.join("a.txt"), "a\n").unwrap();
+        g(&["add", "."]);
+        g(&["commit", "-q", "-m", "first"]);
+        std::fs::write(dir.join("a.txt"), "a2\n").unwrap();
+        for f in ["x.txt", "y.txt", "z.txt"] {
+            std::fs::write(dir.join(f), "n\n").unwrap();
+        }
+        let mut buf = Buffer::open(&dir.join("a.txt")).unwrap();
+        buf.path = Some(dir.join("a.txt"));
+        let mut e = Editor::new(buf, None);
+        e.start_git();
+        e.open_commit_panel();
+        wait(&mut e);
+        // 追跡しているファイルの上では消さない
+        keys(&mut e, "D");
+        assert!(e.menu.is_none());
+        assert!(dir.join("a.txt").exists(), "{}", e.notify.text);
+        // カーソルの行（x）だけ。いいえなら消さない
+        keys(&mut e, "j");
+        keys(&mut e, "D");
+        assert!(e.menu.as_ref().unwrap().title.as_deref().is_some_and(|t| t.contains("x.txt を消しますか")));
+        keys(&mut e, "n");
+        assert!(dir.join("x.txt").exists());
+        keys(&mut e, "D");
+        keys(&mut e, "y");
+        wait(&mut e);
+        assert!(!dir.join("x.txt").exists() && dir.join("y.txt").exists(), "{}", e.notify.text);
+        // チェックした y・z をまとめて（a はチェックしていても消さない）
+        let p = e.commit.as_mut().unwrap();
+        p.items.iter_mut().for_each(|i| i.checked = true);
+        keys(&mut e, "D");
+        assert!(e.menu.as_ref().unwrap().title.as_deref().is_some_and(|t| t.contains("2 件を消しますか")));
+        keys(&mut e, "y");
+        wait(&mut e);
+        assert!(!dir.join("y.txt").exists() && !dir.join("z.txt").exists() && dir.join("a.txt").exists());
+        let v: Vec<&str> = e.commit.as_ref().unwrap().items.iter().map(|i| i.change.path.as_str()).collect();
+        assert_eq!(v, vec!["a.txt"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn commit_rename_and_removed() {
         let dir = std::env::temp_dir().join(format!("nagi-commit-mv-{}", std::process::id()));

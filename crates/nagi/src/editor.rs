@@ -430,6 +430,8 @@ pub struct Editor {
     pub hover_buftab: Option<(usize, bool)>,
     /// マウスを載せているボタン
     pub hover_button: Option<crate::toggles::Button>,
+    /// 部品を左クリックしている間の修飾キー（Ctrl・Shift+クリックで一覧の複数を選ぶ）。押した間だけ App が入れる
+    pub click_mods: nagi_vim::Mods,
     /// マウスを載せているタブのアイコン（行, 列, 名前）と、描いたアイコンの位置
     pub hover_tab: Option<(usize, usize, &'static str)>,
     /// 状態行の「▶ 構成の名前」の列（始め, 終わり）。押すと実行のメニュー
@@ -685,6 +687,7 @@ impl Editor {
             left_hidden: false,
             bottom_hidden: false,
             hover_button: None,
+            click_mods: Default::default(),
             hover_tab: None,
             tab_hits: Default::default(),
             record_texts: false,

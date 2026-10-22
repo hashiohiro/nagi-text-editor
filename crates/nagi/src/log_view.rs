@@ -59,6 +59,8 @@ pub struct Detail {
     pub message: String,
     /// (状態の文字, パス)
     pub files: Vec<(char, String)>,
+    /// 2 つのコミットを比べているときの古い方（hash が新しい方。files はその間で変わったファイル）
+    pub base: Option<String>,
 }
 
 /// 確かめてから行う操作（確認の窓で「はい」なら log_do）
@@ -67,6 +69,10 @@ pub enum Confirm {
     Checkout(String),
     CherryPick(String),
     Revert(String),
+    /// 複数のチェリーピック（古い順）
+    CherryPickMany(Vec<String>),
+    /// 複数の取り消し（新しい順）
+    RevertMany(Vec<String>),
     /// HEAD のコミットを取り消して、変更は作業ツリーに残す（IntelliJ の Undo Commit）
     Undo(String),
     /// 親にまとめる（true ならメッセージをつなぐスカッシュ、false ならフィックスアップ）
@@ -93,6 +99,10 @@ pub struct LogView {
     /// 見せている行（rows の番号。絞り込み中はコミットの行だけ）
     pub visible: Vec<usize>,
     pub selected: usize,
+    /// 複数選んだコミット（ハッシュ。Ctrl・Shift+クリック、Space）。空なら、選んでいるのは selected の 1 つだけ
+    pub marked: Vec<String>,
+    /// Shift+クリックで範囲を選ぶ起点（visible の番号）
+    mark_anchor: Option<usize>,
     pub top: usize,
     /// 真ん中の列（グラフ・ref・題名）の左端の列。作者・日時・ハッシュは右に留めたまま
     pub left: usize,
@@ -155,7 +165,7 @@ pub fn parse_detail(out: &str) -> Detail {
             Some((st, path))
         })
         .collect();
-    Detail { hash: get(0), author: get(1), date: when(&get(2)), parents: get(3), message: get(4), files }
+    Detail { hash: get(0), author: get(1), date: when(&get(2)), parents: get(3), message: get(4), files, base: None }
 }
 
 /// グラフの文字を罫線にする
@@ -210,6 +220,47 @@ impl LogView {
         self.visible.get(self.selected).and_then(|&i| self.rows[i].commit.as_ref())
     }
 
+    fn commit_at(&self, k: usize) -> Option<&Commit> {
+        self.visible.get(k).and_then(|&i| self.rows[i].commit.as_ref())
+    }
+
+    /// 選んでいるコミット（複数選んでいればそのすべて、でなければ今の 1 つ）。並びは履歴の順（新しい方が先）
+    pub fn picked(&self) -> Vec<Commit> {
+        if self.marked.is_empty() {
+            return self.current().cloned().into_iter().collect();
+        }
+        self.visible.iter().filter_map(|&i| self.rows[i].commit.as_ref()).filter(|c| self.marked.contains(&c.hash)).cloned().collect()
+    }
+
+    /// k 番目（visible の番号）を選びに足す・外す（Ctrl+クリック）。`range` なら起点から k までを選ぶ（Shift+クリック）
+    fn mark_click(&mut self, k: usize, range: bool) {
+        if range {
+            let a = self.mark_anchor.unwrap_or(self.selected);
+            let (lo, hi) = (a.min(k), a.max(k));
+            self.marked = (lo..=hi).filter_map(|i| self.commit_at(i).map(|c| c.hash.clone())).collect();
+            self.mark_anchor = Some(a);
+        } else {
+            // 初めの Ctrl+クリックでは、今選んでいる 1 つも選びに入れる（IntelliJ と同じ）
+            if self.marked.is_empty() {
+                self.marked.extend(self.current().map(|c| c.hash.clone()));
+            }
+            self.toggle_mark(k);
+            self.mark_anchor = Some(k);
+        }
+        self.selected = k;
+    }
+
+    /// k 番目を選びに足す・外す
+    fn toggle_mark(&mut self, k: usize) {
+        let Some(h) = self.commit_at(k).map(|c| c.hash.clone()) else { return };
+        match self.marked.iter().position(|m| *m == h) {
+            Some(i) => {
+                self.marked.remove(i);
+            }
+            None => self.marked.push(h),
+        }
+    }
+
     pub fn refilter_pub(&mut self) {
         self.refilter();
         self.detail = None;
@@ -230,6 +281,9 @@ impl LogView {
         };
         self.selected = self.visible.iter().position(|&i| self.rows[i].commit.is_some()).unwrap_or(0);
         self.top = 0;
+        // 絞り込みで見えなくなったコミットに操作が及ばないよう、選びは外す
+        self.marked.clear();
+        self.mark_anchor = None;
     }
 }
 
@@ -321,6 +375,8 @@ impl Editor {
             rows: Vec::new(),
             visible: Vec::new(),
             selected: 0,
+            marked: Vec::new(),
+            mark_anchor: None,
             top: 0,
             branches: Vec::new(),
             detail: None,
@@ -397,6 +453,14 @@ impl Editor {
     pub(crate) fn log_key(&mut self, key: Key) {
         let docked = self.log.as_ref().is_some_and(|l| l.docked);
         let rows = self.log_rows();
+        // 複数選んでいれば、Esc はまず選びを外す
+        if key == Key::Esc {
+            if let Some(l) = self.log.as_mut().filter(|l| l.filter.is_none() && !l.focus_files && !l.marked.is_empty()) {
+                l.marked.clear();
+                l.mark_anchor = None;
+                return;
+            }
+        }
         // 下の欄に収めているとき: Esc は本文へ戻るだけ、q は欄を隠す（どちらも履歴は残す）。Ctrl-w k も本文へ
         if docked && self.log.as_ref().is_some_and(|l| l.filter.is_none() && !l.focus_files) {
             match key {
@@ -461,22 +525,19 @@ impl Editor {
                     self.log_ask(Confirm::Checkout(h));
                 }
             }
-            Key::Char('c') => {
-                if let Some(h) = l.current().map(|c| c.hash.clone()) {
-                    self.log_ask(Confirm::CherryPick(h));
-                }
+            Key::Char(' ') => {
+                let k = l.selected;
+                l.toggle_mark(k);
+                l.mark_anchor = Some(k);
             }
+            Key::Char('c') => self.log_cherry_pick_picked(),
             Key::Char('b') => {
                 if let Some(h) = l.current().map(|c| c.short.clone()) {
                     self.prompt_command("Gbranch ", &format!(" {h}"));
                     return;
                 }
             }
-            Key::Char('y') => {
-                if let Some(h) = l.current().map(|c| c.hash.clone()) {
-                    self.copy_text(h, "ハッシュ");
-                }
-            }
+            Key::Char('y') => self.log_copy_picked(false),
             Key::Char('q') | Key::Esc => self.close_log(),
             _ => {}
         }
@@ -490,6 +551,7 @@ impl Editor {
     pub(crate) fn log_click(&mut self, row: usize, col: usize, w: usize, clicks: u32) {
         self.set_state(State::Log);
         let (bw, dw) = self.log_cols_for(w);
+        let mods = self.click_mods;
         let Some(l) = &mut self.log else { return };
         // 0 行目（「/ で絞り込み」の見出し）を押したら絞り込みの欄を開く
         if row == 0 {
@@ -505,9 +567,17 @@ impl Editor {
         let dx = cx + cw + 1;
         if col >= cx && col < cx + cw {
             let hit = crate::list::row_at(l.top, row, 1, l.visible.len()).filter(|&k| l.rows[l.visible[k]].commit.is_some());
+            // Ctrl+クリックで 1 つずつ足す・外す、Shift+クリックで範囲を選ぶ
+            if let Some(k) = hit.filter(|_| mods.ctrl || mods.shift) {
+                l.mark_click(k, mods.shift);
+                l.focus_files = false;
+                return;
+            }
             let pick = crate::list::pick(&mut l.selected, hit, clicks, 2);
             if pick.is_some() {
                 l.focus_files = false;
+                l.marked.clear();
+                l.mark_anchor = Some(l.selected);
             }
             if matches!(pick, Some(crate::list::Pick::Accept(_))) && l.detail.as_ref().is_some_and(|d| !d.files.is_empty()) {
                 l.focus_files = true;
@@ -576,6 +646,8 @@ impl Editor {
             Confirm::Checkout(h) => format!("{} をチェックアウトしますか（HEAD を切り離す）", s(h)),
             Confirm::CherryPick(h) => format!("{} を {cur} にチェリーピックしますか", s(h)),
             Confirm::Revert(h) => format!("{} を取り消すコミットを足しますか（revert）", s(h)),
+            Confirm::CherryPickMany(hs) => format!("{} 件のコミットを {cur} にチェリーピックしますか（古い順に。衝突したら全部やめて元に戻す）", hs.len()),
+            Confirm::RevertMany(hs) => format!("{} 件のコミットを取り消すコミットを足しますか（revert。新しい順に。衝突したら全部やめて元に戻す）", hs.len()),
             Confirm::Undo(h) => format!("{} を取り消して、変更は作業ツリーに残しますか", s(h)),
             Confirm::Squash(h, true) => format!("{} を 1 つ前のコミットにまとめますか（メッセージはつなぐ）", s(h)),
             Confirm::Squash(h, false) => format!("{} を 1 つ前のコミットにまとめますか（このメッセージは捨てる）", s(h)),
@@ -599,6 +671,8 @@ impl Editor {
             Confirm::Checkout(h) => git::git(&root, &["checkout", "-q", h]).map(|_| "チェックアウトしました".into()),
             Confirm::CherryPick(h) => git::cherry_pick(&root, h).map(|_| "チェリーピックしました".into()),
             Confirm::Revert(h) => git::revert(&root, h).map(|_| "取り消すコミットを足しました".into()),
+            Confirm::CherryPickMany(hs) => git::cherry_pick_many(&root, hs).map(|_| format!("{} 件をチェリーピックしました", hs.len())),
+            Confirm::RevertMany(hs) => git::revert_many(&root, hs).map(|_| format!("{} 件を取り消すコミットを足しました", hs.len())),
             Confirm::Undo(_) => git::git(&root, &["reset", "--soft", "HEAD~1"]).map(|_| "コミットを取り消しました（変更は残っています）".into()),
             Confirm::Squash(h, keep) => git::squash_into_parent(&root, h, *keep).map(|_| "1 つ前のコミットにまとめました".into()),
             Confirm::Drop(h) => git::drop_commit(&root, h).map(|_| "コミットを消しました".into()),
@@ -623,7 +697,7 @@ impl Editor {
         };
         match r {
             Ok(m) => self.notify.info(m),
-            Err(e) => self.notify.error(format!("git: {}", e.last_line())),
+            Err(e) => self.notify.error(format!("git: {}", nagi_workers::git::reason(&e))),
         }
         self.refresh_git();
         self.reload_log();
@@ -694,6 +768,10 @@ impl Editor {
 
     /// 右クリック（欄の中の行・列・幅と、メニューを出す画面の位置）。押した行を選んでから、その行のメニューを出す
     pub(crate) fn log_context(&mut self, row: usize, col: usize, w: usize, at: (usize, usize)) -> bool {
+        // 複数選んだコミットの上なら、選びを保ったまま、選んだもの全部へのメニュー
+        if self.log_marked_at(row, col, w) {
+            return self.log_context_picked(at);
+        }
         self.log_click(row, col, w, 1);
         let (bw, dw) = self.log_cols_for(w);
         let Some(l) = &self.log else { return false };
@@ -770,6 +848,7 @@ impl Editor {
             let mut m = crate::menu::Menu::new(at.0, at.1);
             let x = h.clone();
             m = m.item("ハッシュをコピー", move |e| e.copy_text(x, "ハッシュ"));
+            m = m.item("ハッシュと題名をコピー", |e| e.log_copy_picked(true));
             let x = h.clone();
             m = m.item("チェリーピック", move |e| e.log_ask(Confirm::CherryPick(x)));
             let x = h.clone();
@@ -816,6 +895,102 @@ impl Editor {
         true
     }
 
+    /// 真ん中の列の (row, col) が、複数選んだコミットの行か（そうなら、その行を今の行にする）
+    fn log_marked_at(&mut self, row: usize, col: usize, w: usize) -> bool {
+        let (bw, dw) = self.log_cols_for(w);
+        let Some(l) = &mut self.log else { return false };
+        let cx = bw + 1;
+        let cw = w.saturating_sub(bw + dw + 2);
+        if l.marked.len() < 2 || row == 0 || col < cx || col >= cx + cw {
+            return false;
+        }
+        let hit = crate::list::row_at(l.top, row, 1, l.visible.len()).filter(|&k| l.commit_at(k).is_some_and(|c| l.marked.contains(&c.hash)));
+        if crate::list::pick(&mut l.selected, hit, 1, 2).is_none() {
+            return false;
+        }
+        l.focus_files = false;
+        l.filter = None;
+        self.set_state(State::Log);
+        true
+    }
+
+    /// 複数選んだコミットへのメニュー
+    fn log_context_picked(&mut self, at: (usize, usize)) -> bool {
+        let Some(l) = &self.log else { return false };
+        let picked = l.picked();
+        let n = picked.len();
+        let cur = self.git.status.as_ref().map(|s| s.branch.clone()).unwrap_or_default();
+        let mut m = crate::menu::Menu::new(at.0, at.1);
+        m = m.item(format!("{n} 件のハッシュをコピー"), |e| e.log_copy_picked(false));
+        m = m.item(format!("{n} 件のハッシュと題名をコピー"), |e| e.log_copy_picked(true));
+        if n == 2 {
+            let (new, old) = (picked[0].hash.clone(), picked[1].hash.clone());
+            m = m.item("2 つのコミットを比べる", move |e| e.log_compare_two(&old, &new));
+        }
+        m = m.sep();
+        m = m.item(format!("{n} 件を {cur} にチェリーピック"), |e| e.log_cherry_pick_picked());
+        let hs: Vec<String> = picked.iter().map(|c| c.hash.clone()).collect();
+        m = m.item(format!("{n} 件を取り消す（revert）"), move |e| e.log_ask(Confirm::RevertMany(hs)));
+        m = m.sep();
+        m = m.item("選びを外す", |e| {
+            if let Some(l) = &mut e.log {
+                l.marked.clear();
+                l.mark_anchor = None;
+            }
+        });
+        self.open_menu(m);
+        true
+    }
+
+    /// 選んでいるコミットをチェリーピックする（複数なら古い順に）
+    fn log_cherry_pick_picked(&mut self) {
+        let Some(l) = &self.log else { return };
+        let mut hs: Vec<String> = l.picked().into_iter().map(|c| c.hash).collect();
+        hs.reverse();
+        match hs.len() {
+            0 => {}
+            1 => self.log_ask(Confirm::CherryPick(hs.remove(0))),
+            _ => self.log_ask(Confirm::CherryPickMany(hs)),
+        }
+    }
+
+    /// 選んでいるコミットのハッシュ（`subject` なら短いハッシュと題名）を、1 行に 1 つずつコピーする
+    fn log_copy_picked(&mut self, subject: bool) {
+        let Some(l) = &self.log else { return };
+        let picked = l.picked();
+        if picked.is_empty() {
+            return;
+        }
+        let text: Vec<String> = picked.iter().map(|c| if subject { format!("{} {}", c.short, c.subject) } else { c.hash.clone() }).collect();
+        let what = match (subject, picked.len()) {
+            (false, 1) => "ハッシュ".to_string(),
+            (true, 1) => "ハッシュと題名".to_string(),
+            (false, n) => format!("{n} 件のハッシュ"),
+            (true, n) => format!("{n} 件のハッシュと題名"),
+        };
+        self.copy_text(text.join("\n"), &what);
+    }
+
+    /// 2 つのコミットを比べる: 右の列に、`old` から `new` までに変わったファイルを出す（Enter・ダブルクリックでその差分）
+    fn log_compare_two(&mut self, old: &str, new: &str) {
+        let waker = self.waker.clone();
+        let Some(root) = self.git.root.clone() else { return };
+        let Some(l) = &mut self.log else { return };
+        // 右の列は今の行のコミットの中身なので、新しい方を今の行に
+        if let Some(k) = l.visible.iter().position(|&i| l.rows[i].commit.as_ref().is_some_and(|c| c.hash == new)) {
+            l.selected = k;
+        }
+        l.detail = None;
+        l.focus_files = false;
+        let (old, new) = (old.to_string(), new.to_string());
+        l.rx_detail = spawn(waker, move || {
+            let out = nagi_workers::git::git(&root, &["diff", "--name-status", &old, &new])?;
+            let s = |h: &str| h[..7.min(h.len())].to_string();
+            let head = format!("{new}\x1f\x1f\x1f{old}\x1f{} から {} までに変わったファイル\x1e\n", s(&old), s(&new));
+            Ok(Detail { base: Some(old.clone()), ..parse_detail(&format!("{head}{}", String::from_utf8_lossy(&out))) })
+        });
+    }
+
     /// 選んでいるコミットの（1 つ目の）親の行へ
     fn log_goto_parent(&mut self) {
         let rows = self.log_rows();
@@ -836,7 +1011,7 @@ impl Editor {
         };
         match nagi_workers::git::reword(&root, h, msg.trim()) {
             Ok(()) => self.notify.info("メッセージを直しました"),
-            Err(e) => self.notify.error(format!("git: {}", e.last_line())),
+            Err(e) => self.notify.error(format!("git: {}", nagi_workers::git::reason(&e))),
         }
         self.refresh_git();
         self.reload_log();
@@ -881,11 +1056,16 @@ impl Editor {
         let Some(d) = &l.detail else { return };
         let Some((_, path)) = d.files.get(l.file_sel).cloned() else { return };
         let h = d.hash.clone();
-        let parent = d.parents.split(' ').next().filter(|p| !p.is_empty()).map(String::from);
+        // 2 つのコミットを比べているときは古い方と、でなければ（1 つ目の）親と
+        let parent = d.base.clone().or_else(|| d.parents.split(' ').next().filter(|p| !p.is_empty()).map(String::from));
         let old = parent.as_deref().and_then(|p| nagi_workers::git::blob_at(&root, p, &path)).unwrap_or_default();
         let new = nagi_workers::git::blob_at(&root, &h, &path).unwrap_or_default();
         let short = &h[..7.min(h.len())];
-        self.show_diff(format!("{short}^  {path}"), format!("{short}  {path}"), &old, &new, None);
+        let left = match &d.base {
+            Some(b) => b[..7.min(b.len())].to_string(),
+            None => format!("{short}^"),
+        };
+        self.show_diff(format!("{left}  {path}"), format!("{short}  {path}"), &old, &new, None);
         self.diff_return = Some(State::Log);
     }
 
@@ -932,7 +1112,7 @@ impl Editor {
         }
         match nagi_workers::git::git(&root, &args) {
             Ok(_) => self.notify.info(format!("ブランチ {name} を作ってチェックアウトしました")),
-            Err(e) => self.notify.error(format!("git: {}", e.last_line())),
+            Err(e) => self.notify.error(format!("git: {}", nagi_workers::git::reason(&e))),
         }
         self.refresh_git();
         // 履歴を出していれば読み直す（新しいブランチが見える）
@@ -1020,6 +1200,8 @@ pub(crate) mod draw {
     /// `ab` は今のブランチの (名前, 送るコミット数, 受け取るコミット数)
     pub(crate) fn draw_log_view(p: &mut Painter, l: &crate::log_view::LogView, r: Rect, (bw, dw): (usize, usize), preedit: &str, ab: Option<(&str, usize, usize)>) {
         const LANES: [[f32; 4]; 5] = [rgb(0x87afd7), rgb(0xd7af87), rgb(0x87af87), rgb(0xd787af), rgb(0xafafd7)];
+        // 複数選んだコミットの行
+        const MARKED_BG: [f32; 4] = rgb(0x264f78);
         let cell = p.fonts.cell();
         let (x0, y0) = (r.x as f32 * cell.w, r.y as f32 * cell.h);
         p.out.push(Instance::fill(x0, y0, r.w as f32 * cell.w, r.h as f32 * cell.h, BG));
@@ -1029,10 +1211,11 @@ pub(crate) mod draw {
         // 上の行: 絞り込みと件数
         let n = l.visible.iter().filter(|&&i| l.rows[i].commit.is_some()).count();
         let head = format!(
-            " {}{}   {} 件{}",
+            " {}{}   {} 件{}{}",
             if l.filter_text.is_empty() { "絞り込み（/）".to_string() } else { format!("/{}", l.filter_text) },
             l.path.as_ref().map_or(String::new(), |p| format!("   ファイル: {p}")),
             n,
+            if l.marked.is_empty() { String::new() } else { format!("   {} 件を選択（右クリックで操作・Esc で外す）", l.marked.len()) },
             if l.loading { " …" } else { "" }
         );
         if let Some(f) = &l.filter {
@@ -1086,8 +1269,11 @@ pub(crate) mod draw {
             let y = y0 + (1 + k - l.top) as f32 * cell.h;
             let sel = k == l.selected;
             let focused = sel && !l.focus_files;
+            let marked = row.commit.as_ref().is_some_and(|c| l.marked.contains(&c.hash));
             if focused {
                 p.out.push(Instance::fill(cx as f32 * cell.w, y, cw as f32 * cell.w, cell.h, FG));
+            } else if marked {
+                p.out.push(Instance::fill(cx as f32 * cell.w, y, cw as f32 * cell.w, cell.h, MARKED_BG));
             } else if sel {
                 p.out.push(Instance::fill(cx as f32 * cell.w, y, cw as f32 * cell.w, cell.h, MATCH_BG));
             }
@@ -1141,8 +1327,15 @@ pub(crate) mod draw {
                 p.text(s, dx + 1, *y, color);
                 *y += cell.h;
             };
-            line(p, &mut y, &format!("{}   {}   {}", &d.hash[..7.min(d.hash.len())], d.author, d.date), STATUS_FG);
-            line(p, &mut y, &format!("親 {}", d.parents.split(' ').map(|h| &h[..7.min(h.len())]).collect::<Vec<_>>().join(" ")), STATUS_FG);
+            let short = |h: &str| h[..7.min(h.len())].to_string();
+            if let Some(b) = &d.base {
+                // 2 つのコミットの比べ（行の数は 1 つのコミットのときと同じ。押した行の数え方を変えない）
+                line(p, &mut y, &format!("比較  {} → {}", short(b), short(&d.hash)), STATUS_FG);
+                line(p, &mut y, "左が古い方、右が新しい方", STATUS_FG);
+            } else {
+                line(p, &mut y, &format!("{}   {}   {}", short(&d.hash), d.author, d.date), STATUS_FG);
+                line(p, &mut y, &format!("親 {}", d.parents.split(' ').map(short).collect::<Vec<_>>().join(" ")), STATUS_FG);
+            }
             y += cell.h * 0.5;
             for (k, m) in d.message.lines().enumerate().take(8) {
                 line(p, &mut y, m, if k == 0 { rgb(0xe8e8e8) } else { STATUS_FG });
@@ -1212,6 +1405,8 @@ mod tests {
             visible: (0..rows.len()).collect(),
             rows,
             selected: 0,
+            marked: Vec::new(),
+            mark_anchor: None,
             top: 0,
             branches: Vec::new(),
             detail: Some(parse_detail("a1\x1fA\x1f1\x1fp\x1f件名\x1e\n\nM\ta.rs\nA\tb.rs\n")),
@@ -1404,6 +1599,103 @@ mod tests {
         let head = g(&["rev-parse", "--short", "HEAD"]);
         e.git_reword(&format!("{head} add c!"));
         assert_eq!(g(&["log", "-1", "--format=%s"]), "add c!");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 本物のリポジトリで: Ctrl+クリックで足す・Shift+クリックで範囲・Esc で外す・右クリックで選んだもの全部へ
+    /// （2 つを比べる・まとめてチェリーピック）
+    #[test]
+    fn multi_select_commits() {
+        let dir = std::env::temp_dir().join(format!("nagi-logmulti-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = |args: &[&str]| String::from_utf8_lossy(&nagi_workers::git::git(&dir, args).unwrap()).trim().to_string();
+        g(&["init", "-q", "-b", "main"]);
+        g(&["config", "user.email", "test@example.com"]);
+        g(&["config", "user.name", "test"]);
+        g(&["config", "core.autocrlf", "false"]);
+        for f in ["a", "b", "c"] {
+            std::fs::write(dir.join(f), format!("{f}\n")).unwrap();
+            g(&["add", "."]);
+            g(&["commit", "-q", "-m", &format!("add {f}")]);
+        }
+        g(&["checkout", "-q", "-b", "side", "HEAD~2"]);
+        std::fs::write(dir.join("d"), "d\n").unwrap();
+        g(&["add", "."]);
+        g(&["commit", "-q", "-m", "add d"]);
+        let mut buf = nagi_core::Buffer::open(&dir.join("a")).unwrap();
+        buf.path = Some(dir.join("a"));
+        let mut e = Editor::new(buf, None);
+        e.set_screen(120, 40);
+        e.start_git();
+        let wait = |e: &mut Editor, what: &dyn Fn(&Editor) -> bool| {
+            for _ in 0..500 {
+                e.poll_background();
+                if what(e) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            panic!("届かない");
+        };
+        let ready = |e: &Editor| e.log.as_ref().is_some_and(|l| !l.loading && !l.branches.is_empty() && l.rx_detail.is_none()) && e.git.status.is_some();
+        e.select_bottom_tab(crate::result_grid::BottomKind::Git);
+        wait(&mut e, &ready);
+        // 題名の行（見せている行の番号）。欄の 0 行目はタブ、1 行目は見出しなので、押す行は 2 + k
+        let at = |e: &Editor, s: &str| e.log.as_ref().unwrap().visible.iter().position(|&i| e.log.as_ref().unwrap().rows[i].commit.as_ref().is_some_and(|c| c.subject == s)).unwrap();
+        let click = |e: &mut Editor, k: usize, mods: nagi_vim::Mods| {
+            e.click_mods = mods;
+            e.bottom_click(2 + k, 60, 1);
+            e.click_mods = Default::default();
+        };
+        let ctrl = nagi_vim::Mods { ctrl: true, ..Default::default() };
+        let shift = nagi_vim::Mods { shift: true, ..Default::default() };
+        let subjects = |e: &Editor| e.log.as_ref().unwrap().picked().into_iter().map(|c| c.subject).collect::<Vec<_>>();
+        let (ka, kb, kc) = (at(&e, "add a"), at(&e, "add b"), at(&e, "add c"));
+        // 押すと 1 つ、Ctrl+クリックで今のものに足す（並びは履歴の順）
+        click(&mut e, kc, Default::default());
+        assert_eq!(subjects(&e), vec!["add c"]);
+        click(&mut e, kb, ctrl);
+        assert_eq!(subjects(&e), vec!["add c", "add b"]);
+        // Ctrl+クリックをもう一度で外す
+        click(&mut e, kb, ctrl);
+        assert_eq!(subjects(&e), vec!["add c"]);
+        // Shift+クリックで、起点から押したところまで
+        click(&mut e, kc, Default::default());
+        click(&mut e, ka, shift);
+        let l = e.log.as_ref().unwrap();
+        let want: Vec<String> = (kc.min(ka)..=kc.max(ka)).filter_map(|k| l.commit_at(k).map(|c| c.subject.clone())).collect();
+        assert_eq!(subjects(&e), want);
+        assert!(want.len() >= 3);
+        // Esc で選びを外す（履歴は閉じない）
+        e.key(Key::Esc);
+        assert!(e.log.as_ref().unwrap().marked.is_empty());
+        assert_eq!(e.state(), State::Log);
+        // 2 つを選んで右クリック → 比べる: 右の列に、a から c までに変わったファイル
+        click(&mut e, ka, Default::default());
+        click(&mut e, kc, ctrl);
+        let w = e.bottom_content_rect().unwrap().w;
+        assert!(e.log_context(1 + ka, 60, w, (10, 60)));
+        let labels: Vec<String> = e.menu.as_ref().unwrap().items.iter().map(|it| it.label.clone()).collect();
+        assert!(labels.contains(&"2 件を side にチェリーピック".to_string()), "{labels:?}");
+        assert_eq!(e.log.as_ref().unwrap().marked.len(), 2, "右クリックで選びを外さない");
+        let i = labels.iter().position(|s| s == "2 つのコミットを比べる").unwrap();
+        e.menu_run(i);
+        wait(&mut e, &|e| e.log.as_ref().unwrap().detail.as_ref().is_some_and(|d| d.base.is_some()));
+        let l = e.log.as_ref().unwrap();
+        let d = l.detail.as_ref().unwrap();
+        assert_eq!(l.current().unwrap().subject, "add c", "新しい方を今の行に");
+        assert_eq!(d.files, vec![('A', "b".to_string()), ('A', "c".to_string())]);
+        // b と c を選んで、まとめてチェリーピック（古い順に）
+        let (kb, kc) = (at(&e, "add b"), at(&e, "add c"));
+        click(&mut e, kb, Default::default());
+        click(&mut e, kc, ctrl);
+        assert!(e.log_context(1 + kb, 60, w, (10, 60)));
+        let i = e.menu.as_ref().unwrap().items.iter().position(|it| it.label == "2 件を side にチェリーピック").unwrap();
+        e.menu_run(i);
+        assert!(e.menu.as_ref().unwrap().title.as_deref().is_some_and(|t| t.contains("2 件のコミット")));
+        e.key(Key::Char('y'));
+        assert_eq!(g(&["log", "--format=%s", "side"]), "add c\nadd b\nadd d\nadd a", "{}", e.notify.text);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -1105,7 +1105,10 @@ impl Frame {
                 Some((t, c, n)) if now - t <= double_click_time() && c == (row, usize::MAX - 16 - i) => n % 3 + 1,
                 _ => 1,
             };
-            if let Some((i, done)) = layout::press(ed, screen, row, col, clicks) {
+            ed.click_mods = nagi_vim::Mods { shift: self.modifiers.shift_key(), ctrl: self.modifiers.control_key(), alt: self.modifiers.alt_key() };
+            let hit = layout::press(ed, screen, row, col, clicks);
+            ed.click_mods = Default::default();
+            if let Some((i, done)) = hit {
                 self.last_click = Some((now, (row, usize::MAX - 16 - i), clicks(i)));
                 self.list_select = done == layout::Click::SelectList;
                 self.term_select = done == layout::Click::SelectTerminal;

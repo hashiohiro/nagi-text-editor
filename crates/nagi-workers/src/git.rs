@@ -55,6 +55,57 @@ fn text(b: Vec<u8>) -> String {
     String::from_utf8_lossy(&b).into_owned()
 }
 
+/// git の失敗を、知らせる 1 行にする。最後の行は「Aborting」などで、それだけでは訳が分からない。
+/// 作業中の変更・未追跡のファイルが上書きされるので止めたときは、そのファイルと何をすればよいかを。
+/// ほかは最初の error: / fatal: の行（無ければ最後の行）
+pub fn reason(e: &nagi_core::Error) -> String {
+    let s = e.to_string();
+    let lines: Vec<&str> = s.lines().collect();
+    // 見出しの行の下に、タブで字下げしてファイルが並ぶ
+    let files = |head: usize| {
+        let v: Vec<&str> = lines[head + 1..].iter().take_while(|l| l.starts_with('\t')).map(|l| l.trim()).collect();
+        match v.len() {
+            0 => String::new(),
+            1..=3 => format!("（{}）", v.join("、")),
+            n => format!("（{} ほか {} 件）", v[..3].join("、"), n - 3),
+        }
+    };
+    if let Some(i) = lines.iter().position(|l| l.contains("Your local changes to the following files would be overwritten")) {
+        return format!("作業中の変更が上書きされるので止めました{}。コミットするか退避（stash）してから", files(i));
+    }
+    if let Some(i) = lines.iter().position(|l| l.contains("untracked working tree files would be")) {
+        return format!("未追跡のファイルが上書き・削除されるので止めました{}。移すか消してから", files(i));
+    }
+    let first = lines.iter().map(|l| l.trim()).find_map(|l| l.strip_prefix("error: ").or_else(|| l.strip_prefix("fatal: ")));
+    first.map(String::from).unwrap_or_else(|| e.last_line())
+}
+
+/// いくつかのコミットを、渡した順にチェリーピックする（古い順に渡す）。衝突したら、それまでに取り込んだものも含めてやめて元に戻す
+pub fn cherry_pick_many(root: &Path, hs: &[String]) -> nagi_core::Result<()> {
+    let args: Vec<&str> = std::iter::once("cherry-pick").chain(hs.iter().map(String::as_str)).collect();
+    git(root, &args).map(|_| ()).map_err(|e| {
+        let _ = git(root, &["cherry-pick", "--abort"]);
+        format!("{}（チェリーピックをやめて元に戻しました）", reason(&e)).into()
+    })
+}
+
+/// いくつかのコミットを、渡した順に取り消す（新しい順に渡す）。衝突したら、それまでのものも含めてやめて元に戻す
+pub fn revert_many(root: &Path, hs: &[String]) -> nagi_core::Result<()> {
+    let mut args = vec!["revert", "--no-edit"];
+    // マージのコミットがあれば 1 つ目の親を本流とみなす（-m 1 はマージでないコミットにも付けてよい）
+    for h in hs {
+        if parents(root, h)?.len() > 1 {
+            args.extend(["-m", "1"]);
+            break;
+        }
+    }
+    args.extend(hs.iter().map(String::as_str));
+    git(root, &args).map(|_| ()).map_err(|e| {
+        let _ = git(root, &["revert", "--abort"]);
+        format!("{}（revert をやめて元に戻しました）", reason(&e)).into()
+    })
+}
+
 /// 作業ツリーの根（`.git` のある所）
 pub fn repo_root(path: &Path) -> Option<PathBuf> {
     crate::files::project_root(path)
@@ -243,7 +294,7 @@ fn rebase_scripted(root: &Path, base: Option<&str>, sed: &str, msg: Option<&str>
         Ok(_) => Ok(()),
         Err(e) => {
             let _ = git(root, &["rebase", "--abort"]);
-            Err(format!("{}（rebase をやめて元に戻しました）", e.last_line()).into())
+            Err(format!("{}（rebase をやめて元に戻しました）", reason(&e)).into())
         }
     }
 }
@@ -297,24 +348,12 @@ pub fn rebasing(root: &Path) -> bool {
 
 /// 取り消すコミットを足す（revert。衝突したらやめて元に戻す）
 pub fn revert(root: &Path, h: &str) -> nagi_core::Result<()> {
-    let mut args = vec!["revert", "--no-edit"];
-    // マージのコミットは 1 つ目の親を本流とみなす
-    if parents(root, h)?.len() > 1 {
-        args.extend(["-m", "1"]);
-    }
-    args.push(h);
-    git(root, &args).map(|_| ()).map_err(|e| {
-        let _ = git(root, &["revert", "--abort"]);
-        format!("{}（revert をやめて元に戻しました）", e.last_line()).into()
-    })
+    revert_many(root, &[h.to_string()])
 }
 
 /// チェリーピック（衝突したらやめて元に戻す）
 pub fn cherry_pick(root: &Path, h: &str) -> nagi_core::Result<()> {
-    git(root, &["cherry-pick", h]).map(|_| ()).map_err(|e| {
-        let _ = git(root, &["cherry-pick", "--abort"]);
-        format!("{}（チェリーピックをやめて元に戻しました）", e.last_line()).into()
-    })
+    cherry_pick_many(root, &[h.to_string()])
 }
 
 #[cfg(test)]
@@ -439,6 +478,54 @@ mod tests {
         let e = cherry_pick(&dir, &b).unwrap_err();
         assert!(e.to_string().contains("元に戻しました"), "{e}");
         assert_eq!(g(&["status", "--porcelain"]), "", "途中の状態を残さない");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// まとめてチェリーピック・revert（渡した順。衝突したら、それまでのものも含めて元に戻す）
+    #[test]
+    fn many_commits() {
+        let (dir, g) = repo("many");
+        let (b, c) = (g(&["rev-parse", "HEAD~1"]), g(&["rev-parse", "HEAD"]));
+        g(&["checkout", "-q", "-b", "side", "HEAD~2"]);
+        cherry_pick_many(&dir, &[b.clone(), c.clone()]).unwrap();
+        assert_eq!(g(&["log", "--format=%s"]), "add c\nadd b\nadd a");
+        let (b2, c2) = (g(&["rev-parse", "HEAD~1"]), g(&["rev-parse", "HEAD"]));
+        revert_many(&dir, &[c2, b2]).unwrap();
+        assert!(!dir.join("b").exists() && !dir.join("c").exists());
+        assert_eq!(g(&["log", "-2", "--format=%s"]), "Revert \"add b\"\nRevert \"add c\"");
+        // 2 つ目で衝突したら、1 つ目も取り込まずに元へ
+        g(&["checkout", "-q", "-B", "side", "main~2"]);
+        std::fs::write(dir.join("c"), "other\n").unwrap();
+        g(&["add", "."]);
+        g(&["commit", "-q", "-m", "other c"]);
+        let head = g(&["rev-parse", "HEAD"]);
+        let e = cherry_pick_many(&dir, &[b, c]).unwrap_err();
+        assert!(e.to_string().contains("元に戻しました"), "{e}");
+        assert_eq!(g(&["rev-parse", "HEAD"]), head);
+        assert_eq!(g(&["status", "--porcelain"]), "");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 失敗の知らせ: 最後の「Aborting」ではなく、上書きされるファイルと何をすればよいか
+    #[test]
+    fn failure_reason() {
+        let (dir, g) = repo("reason");
+        g(&["branch", "old", "HEAD~2"]);
+        std::fs::write(dir.join("b"), "edited\n").unwrap();
+        let e = git(&dir, &["checkout", "-q", "old"]).unwrap_err();
+        assert_eq!(e.last_line(), "Aborting");
+        assert_eq!(reason(&e), "作業中の変更が上書きされるので止めました（b）。コミットするか退避（stash）してから");
+        g(&["checkout", "--", "b"]);
+        // old に b は無い。そこで作った未追跡の b は、main へ戻るときに上書きされる
+        g(&["checkout", "-q", "old"]);
+        std::fs::write(dir.join("b"), "mine\n").unwrap();
+        let e = git(&dir, &["checkout", "-q", "main"]).unwrap_err();
+        assert!(reason(&e).starts_with("未追跡のファイルが上書き・削除されるので止めました（b）"), "{}", reason(&e));
+        // ほかは最初の error: / fatal: の行
+        let e = git(&dir, &["checkout", "-q", "no-such"]).unwrap_err();
+        assert!(reason(&e).starts_with("pathspec 'no-such'"), "{}", reason(&e));
+        let many = nagi_core::Error::from("error: Your local changes to the following files would be overwritten by checkout:\n\ta\n\tb\n\tc\n\td\n\te\nPlease commit\nAborting".to_string());
+        assert_eq!(reason(&many), "作業中の変更が上書きされるので止めました（a、b、c ほか 2 件）。コミットするか退避（stash）してから");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
