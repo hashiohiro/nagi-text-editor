@@ -456,7 +456,7 @@ impl Editor {
             }
             // Oracle はスキーマ・テーブル・列の名前をいつも "" で囲む（WITH の名前は書いたとおり）
             let insert = if quote && oracle && matches!(mark, 'T' | 'V' | 'f' | 'c') && note != "WITH" { Some(quoted(&name)) } else { (quote && ident(&name) != name).then(|| ident(&name)) };
-            out.push(Cand { name, mark, note, call, rank, insert });
+            out.push(Cand { name, mark, note, call, rank, insert, import: None });
         };
         let tables = |out: &mut Vec<Cand>, push: &mut dyn FnMut(&mut Vec<Cand>, String, char, String, Option<bool>, u8, bool), s: &str, rank: u8, more: bool| {
             if let Some(o) = c.objects.get(s) {

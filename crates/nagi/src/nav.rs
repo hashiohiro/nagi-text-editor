@@ -22,6 +22,9 @@ pub struct IndexState {
     building: Option<nagi_core::task::Task<Progress>>,
     /// 作っている途中 (解析したファイル, 解析が要るファイル)
     pub progress: Option<(usize, usize)>,
+    /// ライブラリ（依存の jar・JDK）の型の索引（Java。jvm.rs）。補完と import に使う
+    pub jars: Option<std::sync::Arc<nagi_workers::jvm::JarIndex>>,
+    jars_task: Option<nagi_core::task::Task<Result<nagi_workers::jvm::JarIndex, String>>>,
     /// 保存したファイルの索引し直し
     reindex: Option<(Sender<Option<(String, (u64, u64), Vec<Entry>)>>, nagi_core::task::Task<Option<(String, (u64, u64), Vec<Entry>)>>)>,
 }
@@ -53,8 +56,14 @@ impl Editor {
         }
         let root = self.project_root();
         let waker = self.waker();
-        self.nav.building = Some(nagi_workers::index::build(&root, waker));
+        self.nav.building = Some(nagi_workers::index::build(&root, waker.clone()));
         self.nav.progress = Some((0, 0));
+        // Maven のプロジェクトなら、依存の jar と JDK の型の索引も（初回は mvn で依存を求めて作る。次からは写すだけ）
+        if !cfg!(test) {
+            if let Some(m) = nagi_workers::maven::find_root(&root).filter(|m| m.join("pom.xml").is_file()) {
+                self.nav.jars_task = Some(nagi_workers::jvm::load_maven(m, waker));
+            }
+        }
     }
 
     /// 索引の進み具合と、保存したファイルの索引し直しを受け取る。変わったら true
@@ -72,6 +81,16 @@ impl Editor {
                         break;
                     }
                 }
+            }
+        }
+        if let Some(Ok(r)) = self.nav.jars_task.as_ref().map(|t| t.try_recv()) {
+            self.nav.jars_task = None;
+            match r {
+                Ok(ix) => {
+                    nagi_core::log::info(&format!("ライブラリの型の索引: {} クラス（作り直したかけら {}）", ix.classes(), ix.built));
+                    self.nav.jars = Some(std::sync::Arc::new(ix));
+                }
+                Err(e) => nagi_core::log::warn(&format!("ライブラリの型の索引を作れません: {e}")),
             }
         }
         let mut updated = false;

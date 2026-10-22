@@ -32,6 +32,8 @@ pub struct Cand {
     pub rank: u8,
     /// 決めたときに入れる文字（名前と違うとき。SQL の "名前" など）
     pub insert: Option<String>,
+    /// 決めたときに足す import（Java の完全な名前 `java.util.List`）
+    pub import: Option<String>,
 }
 
 /// 補完の一覧の中身（絞り込む前の全部と、出している候補の番号）
@@ -245,7 +247,7 @@ impl Editor {
                     continue;
                 }
                 let call = matches!(kind, DefKind::Method | DefKind::Function).then(|| params != Some(0));
-                push(out, Cand { name, mark: mark_of(kind), note: owner, call, rank, insert: None });
+                push(out, Cand { name, mark: mark_of(kind), note: owner, call, rank, insert: None, import: None });
             }
         };
         if member {
@@ -261,7 +263,7 @@ impl Editor {
                 for c in re.captures_iter(&src) {
                     let w = c[1].to_string();
                     let call = src[c.get(0).unwrap().end()..].starts_with('(');
-                    push(&mut out, Cand { name: w, mark: if call { 'm' } else { 'f' }, note: ty.clone().unwrap_or_default(), call: call.then_some(true), rank: 1, insert: None });
+                    push(&mut out, Cand { name: w, mark: if call { 'm' } else { 'f' }, note: ty.clone().unwrap_or_default(), call: call.then_some(true), rank: 1, insert: None, import: None });
                 }
             }
             return out;
@@ -280,7 +282,7 @@ impl Editor {
         for (_, w) in ws_list.into_iter().filter(|_| words_on) {
             if w.len() > 1 && !all_kws.contains(&w) {
                 let call = src.contains(&format!("{w}("));
-                push(&mut out, Cand { name: w.to_string(), mark: 'v', note: String::new(), call: None, rank: 0 + u8::from(call) * 2, insert: None });
+                push(&mut out, Cand { name: w.to_string(), mark: 'v', note: String::new(), call: None, rank: 0 + u8::from(call) * 2, insert: None, import: None });
             }
         }
         // プロジェクトの型
@@ -288,12 +290,38 @@ impl Editor {
             let mut types: Vec<(&str, DefKind)> = idx.all().filter(|(_, l)| l.kind.is_type()).map(|(n, l)| (n, l.kind)).collect();
             types.sort_unstable_by(|a, b| a.0.cmp(b.0));
             for (n, k) in types {
-                push(&mut out, Cand { name: n.to_string(), mark: mark_of(k), note: String::new(), call: None, rank: 3, insert: None });
+                push(&mut out, Cand { name: n.to_string(), mark: mark_of(k), note: String::new(), call: None, rank: 3, insert: None, import: None });
+            }
+        }
+        // ライブラリの型（Java。依存の jar・JDK の索引から、打った語で始まるもの。決めたら import を足す）
+        let java = lang.or_else(|| self.buf.path.as_deref().and_then(nagi_syntax::Lang::detect)) == Some(nagi_syntax::Lang::Java);
+        if java {
+            if let Some(jars) = &self.nav.jars {
+                let b = self.cursor.byte.min(line.len());
+                let prefix = &line[ws..b];
+                let imported = |fqn: &str| src.contains(&format!("import {fqn};"));
+                let mut up = prefix.to_string();
+                if let Some(f) = up.get(0..1) {
+                    up.replace_range(0..1, &f.to_ascii_uppercase());
+                }
+                let mut names = jars.by_prefix(prefix, 200);
+                if up != prefix {
+                    names.extend(jars.by_prefix(&up, 200));
+                }
+                for internal in names {
+                    let fqn = crate::java_import::java_name(internal);
+                    let Some((pkg, simple)) = fqn.rsplit_once('.') else { continue };
+                    if out.iter().any(|c| c.name == simple && c.note == pkg) {
+                        continue;
+                    }
+                    let rank = if pkg == "java.lang" || imported(&fqn) { 2 } else { 3 };
+                    out.push(Cand { name: simple.to_string(), mark: 'c', note: pkg.to_string(), call: None, rank, insert: None, import: Some(fqn.clone()) });
+                }
             }
         }
         // 予約語
         for k in kws {
-            push(&mut out, Cand { name: k.to_string(), mark: 'K', note: String::new(), call: None, rank: 4, insert: None });
+            push(&mut out, Cand { name: k.to_string(), mark: 'K', note: String::new(), call: None, rank: 4, insert: None, import: None });
         }
         out
     }
@@ -432,12 +460,26 @@ impl Editor {
         // すでに後ろに ( があれば括弧は足さない
         let after = self.buf.slice_string(abs, (abs + 1).min(self.buf.len_bytes()));
         let name = cand.insert.clone().unwrap_or_else(|| cand.name.clone());
+        // Java のライブラリの型: import を足す（同じ単純名の別の型を import していれば完全な名前で書く）
+        let plan = cand.import.as_deref().map(|fqn| (fqn.to_string(), crate::java_import::plan(&self.buf.text(), fqn)));
+        let name = match &plan {
+            Some((fqn, crate::java_import::Plan::Conflict)) => fqn.clone(),
+            _ => name,
+        };
         let (text, back) = match cand.call {
             Some(args) if after != "(" => (format!("{name}()"), usize::from(args)),
             _ => (name, 0),
         };
+        // 打っている間の 1 つの取り消しの単位に入れる（import も一緒に戻る）
         self.edit(c.start, abs, &text);
-        self.set_abs(c.start + text.len() - back);
+        let mut cursor = c.start + text.len() - back;
+        if let Some((_, crate::java_import::Plan::Insert(at, line))) = plan {
+            if at <= c.start {
+                self.edit(at, at, &line);
+                cursor += line.len();
+            }
+        }
+        self.set_abs(cursor);
     }
 }
 
@@ -512,6 +554,41 @@ mod tests {
         // Esc は一覧だけ閉じる
         keys(&mut e, "<Esc>o<C-Space><Esc>");
         assert_eq!(e.state(), crate::editor::State::Insert);
+    }
+
+    /// Java のライブラリの型: 打った語で始まる型を出し、決めると import を足す（JDK の ct.sym から作った索引で）
+    #[test]
+    fn library_types_add_import() {
+        use nagi_workers::jvm::{JarIndex, JarSource};
+        let Some(ct) = std::env::var_os("JAVA_HOME").map(|h| std::path::PathBuf::from(h).join("lib").join("ct.sym")).filter(|p| p.is_file()) else { return };
+        let dir = std::env::temp_dir().join(format!("nagi-libtypes-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let rel = nagi_workers::jvm::ct_sym_latest(&ct).unwrap();
+        let keep = |n: &str| n.split('/').next().is_some_and(|d| d.contains(rel)) && (n.contains("/java/util/") || n.contains("/java/awt/List") || n.contains("/java/lang/"));
+        let ix = JarIndex::load(&[JarSource { path: &ct, keep: &keep, tag: "t" }], &dir.join("jars"));
+        std::fs::write(dir.join("App.java"), "package app;\n\nclass App {\n  void f() {\n    \n  }\n}\n").unwrap();
+        let mut e = Editor::new(Buffer::open(&dir.join("App.java")).unwrap(), None);
+        e.buf.path = Some(dir.join("App.java"));
+        e.set_screen(120, 40);
+        e.nav.jars = Some(std::sync::Arc::new(ix));
+        // 小文字で打っても型を出す。決めると import を足す
+        keys(&mut e, "5G$aarrayLi<C-Space>");
+        let c = e.completion.as_ref().unwrap_or_else(|| panic!("{} / {:?}", e.notify.text, e.buf.line(4)));
+        assert_eq!(c.items[0], "ArrayList", "{:?}", c.items);
+        keys(&mut e, "<CR>");
+        assert_eq!(e.buf.text(), "package app;\n\nimport java.util.ArrayList;\n\nclass App {\n  void f() {\n    ArrayList\n  }\n}\n");
+        assert_eq!((e.cursor.line, e.cursor.byte), (6, 13), "カーソルは入れた名前の後");
+        // 同じ単純名が 2 つ（java.util.List と java.awt.List）なら両方を出す。2 つ目は名前の順で後ろ
+        keys(&mut e, " <Esc>o");
+        keys(&mut e, "Lis<C-Space>");
+        let c = e.completion.as_ref().unwrap();
+        let notes: Vec<String> = c.items.iter().zip(&c.notes).filter(|(n, _)| *n == "List").map(|(_, x)| x.1.clone()).collect();
+        assert!(notes.contains(&"java.util".to_string()) && notes.contains(&"java.awt".to_string()), "{notes:?}");
+        // java.lang は import しない
+        keys(&mut e, "<Esc><Esc>oStringBui<C-Space><CR>");
+        assert!(!e.buf.text().contains("import java.lang"), "{}", e.buf.text());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 設定: 自動で出す（語の文字が 2 つ並んだら、待ち時間の後）、大文字小文字を区別する、予約語を出さない

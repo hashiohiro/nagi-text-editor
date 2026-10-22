@@ -6,8 +6,9 @@
 //! 残すもの: 公開しているクラス（入れ子・無名・合成を除く）と、その public・protected のフィールドとメソッド。
 //! 型は記述子（`(Ljava/lang/String;)V`）と、ジェネリクスの情報（Signature 属性）をそのまま持つ。
 //!
-//! かけらの形（リトルエンディアン）:
-//! `NGJ0` | 文字の数 n | 文字の終わりの位置 u32 × n | 文字のバイト列 | クラスの数 m | クラス m 個 | 単純名で並べた (文字番号, クラスの位置) × m
+//! かけらの形（リトルエンディアン。クラスは読んだ端から書くので、文字の表は後ろ）:
+//! 頭 24 バイト（`NGJ1`・文字の数 n・クラスの数 m・文字の終わりの位置の場所・文字の場所・単純名の表の場所）| クラス m 個 |
+//! 文字の終わりの位置 u32 × n | 文字のバイト列 | 単純名で並べた (文字番号, クラスの位置) × m
 //! クラス: 名前・親・Signature（文字番号。無ければ u32::MAX）・アクセス u16・インターフェースの数 u16 と文字番号・
 //! フィールドの数 u16 と (名前, 記述子, Signature, アクセス u16)・メソッドの数 u16 と同じ形
 
@@ -237,95 +238,137 @@ pub fn read_jar(path: &Path, keep: impl Fn(&str) -> bool, mut each: impl FnMut(C
     Ok(n)
 }
 
-/// かけらを書く
+/// かけらを書く。クラスと文字は読んだ端からファイルへ流し、メモリに持つのは文字のハッシュと単純名の表だけ
+/// （全部をメモリに組んでから書くと、55 MB の jar で 90 MB に達した。文字だけで 16 MB あり、伸ばすときに倍を取る）
 struct ShardWriter {
-    strings: Vec<u8>,
+    out: std::io::BufWriter<File>,
+    /// 文字を流す一時ファイル（最後に out の後ろへ写す）
+    strs: std::io::BufWriter<File>,
+    strs_path: PathBuf,
+    /// クラスの部分に書いたバイト数
+    written: u32,
+    /// 文字のバイト数（書いた分）
+    str_len: u32,
     ends: Vec<u32>,
-    ids: HashMap<String, u32>,
-    classes: Vec<u8>,
-    /// (単純名の文字番号, クラスの位置)
-    by_simple: Vec<(u32, u32)>,
+    /// 文字のハッシュ（SipHash の 64 ビット。14 万の文字で取り違える見込みは 10 億分の 1 未満）→ 文字番号
+    ids: HashMap<u64, u32>,
+    /// (単純名, クラスの位置)。並べるために単純名だけは持つ
+    by_simple: Vec<(Box<str>, u32, u32)>,
+    rec: Vec<u8>,
 }
+
+/// 文字のハッシュ
+fn str_hash(s: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    s.hash(&mut h);
+    h.finish()
+}
+
+const HEAD: usize = 24;
 
 impl ShardWriter {
-    fn new() -> Self {
-        ShardWriter { strings: Vec::new(), ends: Vec::new(), ids: HashMap::new(), classes: Vec::new(), by_simple: Vec::new() }
+    fn create(path: &Path) -> std::io::Result<Self> {
+        let mut out = std::io::BufWriter::with_capacity(64 * 1024, File::create(path)?);
+        std::io::Write::write_all(&mut out, &[0u8; HEAD])?;
+        let strs_path = path.with_extension("str");
+        let strs = std::io::BufWriter::with_capacity(64 * 1024, File::create(&strs_path)?);
+        Ok(ShardWriter { out, strs, strs_path, written: 0, str_len: 0, ends: Vec::new(), ids: HashMap::new(), by_simple: Vec::new(), rec: Vec::new() })
     }
 
-    fn id(&mut self, s: &str) -> u32 {
-        if let Some(&i) = self.ids.get(s) {
-            return i;
+    fn id(&mut self, s: &str) -> std::io::Result<u32> {
+        let h = str_hash(s);
+        if let Some(&i) = self.ids.get(&h) {
+            return Ok(i);
         }
         let i = self.ends.len() as u32;
-        self.strings.extend_from_slice(s.as_bytes());
-        self.ends.push(self.strings.len() as u32);
-        self.ids.insert(s.to_string(), i);
-        i
+        std::io::Write::write_all(&mut self.strs, s.as_bytes())?;
+        self.str_len += s.len() as u32;
+        self.ends.push(self.str_len);
+        self.ids.insert(h, i);
+        Ok(i)
     }
 
-    fn opt(&mut self, s: &Option<String>) -> u32 {
-        s.as_deref().map_or(NONE, |s| self.id(s))
+    fn opt(&mut self, s: &Option<String>) -> std::io::Result<u32> {
+        match s {
+            Some(s) => self.id(s),
+            None => Ok(NONE),
+        }
     }
 
-    fn add(&mut self, c: &Class) {
-        let at = self.classes.len() as u32;
-        let simple = c.name.rsplit(['/', '$']).next().unwrap_or(&c.name).to_string();
-        let sid = self.id(&simple);
-        self.by_simple.push((sid, at));
-        let put32 = |w: &mut Self, v: u32| w.classes.extend_from_slice(&v.to_le_bytes());
-        let v = self.id(&c.name);
-        put32(self, v);
-        let v = self.opt(&c.super_name);
-        put32(self, v);
-        let v = self.opt(&c.signature);
-        put32(self, v);
-        self.classes.extend_from_slice(&c.access.to_le_bytes());
-        self.classes.extend_from_slice(&(c.interfaces.len() as u16).to_le_bytes());
+    fn add(&mut self, c: &Class) -> std::io::Result<()> {
+        let simple = c.name.rsplit(['/', '$']).next().unwrap_or(&c.name);
+        let sid = self.id(simple)?;
+        self.by_simple.push((simple.into(), sid, self.written));
+        let mut rec = std::mem::take(&mut self.rec);
+        rec.clear();
+        let put = |rec: &mut Vec<u8>, v: u32| rec.extend_from_slice(&v.to_le_bytes());
+        put(&mut rec, self.id(&c.name)?);
+        put(&mut rec, self.opt(&c.super_name)?);
+        put(&mut rec, self.opt(&c.signature)?);
+        rec.extend_from_slice(&c.access.to_le_bytes());
+        rec.extend_from_slice(&(c.interfaces.len() as u16).to_le_bytes());
         for i in &c.interfaces {
-            let v = self.id(i);
-            put32(self, v);
+            put(&mut rec, self.id(i)?);
         }
         for list in [&c.fields, &c.methods] {
-            self.classes.extend_from_slice(&(list.len() as u16).to_le_bytes());
+            rec.extend_from_slice(&(list.len() as u16).to_le_bytes());
             for m in list {
-                let (a, b, s) = (self.id(&m.name), self.id(&m.desc), self.opt(&m.signature));
-                put32(self, a);
-                put32(self, b);
-                put32(self, s);
-                self.classes.extend_from_slice(&m.access.to_le_bytes());
+                put(&mut rec, self.id(&m.name)?);
+                put(&mut rec, self.id(&m.desc)?);
+                put(&mut rec, self.opt(&m.signature)?);
+                rec.extend_from_slice(&m.access.to_le_bytes());
             }
         }
+        std::io::Write::write_all(&mut self.out, &rec)?;
+        self.written += rec.len() as u32;
+        self.rec = rec;
+        Ok(())
     }
 
-    fn finish(mut self) -> Vec<u8> {
-        let strings = std::mem::take(&mut self.strings);
-        let name = |id: u32| {
-            let a = if id == 0 { 0 } else { self.ends[id as usize - 1] as usize };
-            &strings[a..self.ends[id as usize] as usize]
-        };
-        self.by_simple.sort_by(|x, y| name(x.0).cmp(name(y.0)));
-        let mut out = Vec::with_capacity(16 + self.ends.len() * 4 + strings.len() + self.classes.len() + self.by_simple.len() * 8);
-        out.extend_from_slice(b"NGJ0");
-        out.extend_from_slice(&(self.ends.len() as u32).to_le_bytes());
+    /// 後ろに文字の終わりの位置・文字・単純名の表を書き、頭に位置を書き込む
+    fn finish(mut self) -> std::io::Result<()> {
+        use std::io::Write;
+        self.by_simple.sort_by(|x, y| x.0.cmp(&y.0));
+        let ends_at = HEAD as u32 + self.written;
         for e in &self.ends {
-            out.extend_from_slice(&e.to_le_bytes());
+            self.out.write_all(&e.to_le_bytes())?;
         }
-        out.extend_from_slice(&strings);
-        out.extend_from_slice(&(self.by_simple.len() as u32).to_le_bytes());
-        out.extend_from_slice(&self.classes);
-        for (s, at) in &self.by_simple {
-            out.extend_from_slice(&s.to_le_bytes());
-            out.extend_from_slice(&at.to_le_bytes());
+        let strings_at = ends_at + self.ends.len() as u32 * 4;
+        drop(self.strs);
+        std::io::copy(&mut File::open(&self.strs_path)?, &mut self.out)?;
+        let _ = std::fs::remove_file(&self.strs_path);
+        let table_at = strings_at + self.str_len;
+        for (_, s, at) in &self.by_simple {
+            self.out.write_all(&s.to_le_bytes())?;
+            self.out.write_all(&at.to_le_bytes())?;
         }
-        out
+        let mut head = Vec::with_capacity(HEAD);
+        head.extend_from_slice(b"NGJ1");
+        for v in [self.ends.len() as u32, self.by_simple.len() as u32, ends_at, strings_at, table_at] {
+            head.extend_from_slice(&v.to_le_bytes());
+        }
+        let mut f = self.out.into_inner().map_err(|e| e.into_error())?;
+        f.seek(SeekFrom::Start(0))?;
+        f.write_all(&head)?;
+        Ok(())
     }
 }
 
-/// jar 1 つのかけらを作る（バイト列）。`keep` は中の名前で読むものを選ぶ
-pub fn build_shard(jar: &Path, keep: impl Fn(&str) -> bool) -> std::io::Result<(Vec<u8>, usize)> {
-    let mut w = ShardWriter::new();
-    let n = read_jar(jar, keep, |c| w.add(&c))?;
-    Ok((w.finish(), n))
+/// jar 1 つのかけらを `out` に書く。読んだクラスの数を返す。`keep` は中の名前で読むものを選ぶ
+pub fn write_shard(jar: &Path, keep: impl Fn(&str) -> bool, out: &Path) -> std::io::Result<usize> {
+    let mut w = ShardWriter::create(out)?;
+    let mut err = None;
+    let n = read_jar(jar, keep, |c| {
+        if err.is_none() {
+            err = w.add(&c).err();
+        }
+    })?;
+    if let Some(e) = err {
+        return Err(e);
+    }
+    w.finish()?;
+    Ok(n)
 }
 
 /// 読むだけのかけら（メモリに写したバイト列の上で引く）
@@ -341,18 +384,15 @@ pub struct Shard<'a> {
 
 impl<'a> Shard<'a> {
     pub fn open(b: &'a [u8]) -> Option<Shard<'a>> {
-        if b.get(0..4)? != b"NGJ0" {
+        if b.get(0..4)? != b"NGJ1" {
             return None;
         }
         let u32_at = |i: usize| -> Option<usize> { Some(u32::from_le_bytes(b.get(i..i + 4)?.try_into().ok()?) as usize) };
-        let nstr = u32_at(4)?;
-        let ends = 8;
-        let strings = ends + nstr * 4;
-        let slen = if nstr == 0 { 0 } else { u32_at(ends + (nstr - 1) * 4)? };
-        let nclass = u32_at(strings + slen)?;
-        let classes = strings + slen + 4;
-        let table = b.len().checked_sub(nclass * 8)?;
-        Some(Shard { b, ends, nstr, strings, classes, table, nclass })
+        let (nstr, nclass, ends, strings, table) = (u32_at(4)?, u32_at(8)?, u32_at(12)?, u32_at(16)?, u32_at(20)?);
+        if ends + nstr * 4 != strings || table + nclass * 8 != b.len() {
+            return None;
+        }
+        Some(Shard { b, ends, nstr, strings, classes: HEAD, table, nclass })
     }
 
     fn u32_at(&self, i: usize) -> u32 {
@@ -450,7 +490,8 @@ pub fn jars_dir() -> Option<PathBuf> {
 fn shard_name(jar: &Path, tag: &str) -> Option<String> {
     let m = std::fs::metadata(jar).ok()?;
     let t = m.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
-    let key = format!("{}|{}|{t}|{tag}", jar.display(), m.len());
+    // 形を変えたら頭の版も変える（古いかけらは使わない）
+    let key = format!("NGJ1|{}|{}|{t}|{tag}", jar.display(), m.len());
     Some(format!("{}.ngj", &nagi_core::hash::sha256_hex(key.as_bytes())?[..24]))
 }
 
@@ -480,10 +521,9 @@ impl JarIndex {
             let Some(name) = shard_name(src.path, src.tag) else { continue };
             let file = dir.join(name);
             if !file.is_file() {
-                let Ok((bytes, _)) = build_shard(src.path, src.keep) else { continue };
                 // 書きかけを読まないよう、別の名前で書いてから置き換える
                 let tmp = file.with_extension(format!("tmp{}", std::process::id()));
-                if std::fs::write(&tmp, &bytes).is_err() || std::fs::rename(&tmp, &file).is_err() {
+                if write_shard(src.path, src.keep, &tmp).is_err() || std::fs::rename(&tmp, &file).is_err() {
                     let _ = std::fs::remove_file(&tmp);
                     continue;
                 }
@@ -520,6 +560,16 @@ impl JarIndex {
         (lo..self.table.len()).take_while(|&k| key(k) == simple).map(|k| self.shard(self.table[k].0).name_at(self.table[k].1 as usize)).collect()
     }
 
+    /// 単純名が `prefix` で始まるクラスの内部名（最大 `limit` 個。単純名の順）。補完の候補
+    pub fn by_prefix(&self, prefix: &str, limit: usize) -> Vec<&str> {
+        if prefix.is_empty() {
+            return Vec::new();
+        }
+        let key = |k: usize| self.shard(self.table[k].0).simple_at(self.table[k].1 as usize);
+        let lo = partition(self.table.len(), |k| key(k) < prefix);
+        (lo..self.table.len()).take_while(|&k| key(k).starts_with(prefix)).take(limit).map(|k| self.shard(self.table[k].0).name_at(self.table[k].1 as usize)).collect()
+    }
+
     /// 内部名でクラスを引く
     pub fn class(&self, internal: &str) -> Option<Class> {
         let simple = internal.rsplit(['/', '$']).next().unwrap_or(internal);
@@ -531,6 +581,136 @@ impl JarIndex {
             (s.name_at(at as usize) == internal).then(|| s.class_at_table(at as usize))
         })
     }
+}
+
+/// ct.sym の、型のある一番新しい版の文字（上のフォルダー名の文字。`7`〜`9`・`A`〜）。JDK N の ct.sym は N-1 までの型を持つ
+pub fn ct_sym_latest(ct: &Path) -> Option<char> {
+    let mut f = File::open(ct).ok()?;
+    // 版のフォルダーは数字と大文字だけの名前（META-INF などは除く）
+    let release = |d: &str| !d.is_empty() && d.chars().all(|c| c.is_ascii_digit() || c.is_ascii_uppercase());
+    zip_entries(&mut f).ok()?.iter().filter(|e| e.name.ends_with(".sig")).filter_map(|e| e.name.split_once('/').map(|x| x.0)).filter(|d| release(d)).flat_map(|d| d.chars()).max()
+}
+
+/// プロジェクトの JDK（設定の JDK・使える JAVA_HOME・見つけた JDK）
+fn jdk_home(cfg: &crate::config::Config) -> Option<PathBuf> {
+    crate::jobs::java_home_fix(cfg).or_else(|| cfg.var("JAVA_HOME").map(PathBuf::from)).filter(|j| j.join("lib").join("ct.sym").is_file())
+}
+
+/// Maven の出力（`;` 区切り。モジュールごとに書き足すと間の `;` が無い）を jar の並びにする
+fn split_classpath(text: &str) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    for part in text.split([';', '\n', '\r']) {
+        // `…\a.jarC:\…` を 2 つに
+        let mut rest = part.trim();
+        while !rest.is_empty() {
+            let cut = rest.match_indices(".jar").map(|(i, _)| i + 4).find(|&i| rest[i..].len() >= 3 && rest.as_bytes()[i].is_ascii_alphabetic() && &rest[i + 1..i + 3] == ":\\").unwrap_or(rest.len());
+            let p = PathBuf::from(&rest[..cut]);
+            if p.extension().is_some_and(|e| e.eq_ignore_ascii_case("jar")) && !out.contains(&p) {
+                out.push(p);
+            }
+            rest = &rest[cut..];
+        }
+    }
+    out
+}
+
+/// プロジェクトの pom.xml（target・node_modules・隠しフォルダーは見ない。4 段まで）の (パス, 更新時刻) を並べた文字
+fn pom_stamp(root: &Path) -> String {
+    let mut v = Vec::new();
+    let mut stack = vec![(root.to_path_buf(), 0)];
+    while let Some((d, depth)) = stack.pop() {
+        let pom = d.join("pom.xml");
+        if let Ok(m) = std::fs::metadata(&pom) {
+            let t = m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |t| t.as_secs());
+            v.push(format!("{}|{t}", pom.display()));
+        }
+        if depth < 4 {
+            for e in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+                let n = e.file_name().to_string_lossy().into_owned();
+                if e.file_type().is_ok_and(|t| t.is_dir()) && !n.starts_with('.') && !matches!(n.as_str(), "target" | "node_modules" | "src") {
+                    stack.push((e.path(), depth + 1));
+                }
+            }
+        }
+    }
+    v.sort();
+    v.join("\n")
+}
+
+/// Maven のプロジェクトの依存の jar（コンパイルとテストに使うもの）。pom.xml が変わっていなければ前に求めたもの。
+/// 求めるときは mvn を、ヒープを 64 MB に絞って動かす（そのままだと一時的に 700 MB を超えた。絞ると約 130 MB・7 秒）
+pub fn maven_classpath(root: &Path) -> Result<Vec<PathBuf>, String> {
+    let dir = jars_dir().ok_or("LOCALAPPDATA がありません")?.with_file_name("classpath");
+    let _ = std::fs::create_dir_all(&dir);
+    let key = nagi_core::hash::sha256_hex(root.display().to_string().to_lowercase().as_bytes()).ok_or("hash")?;
+    let file = dir.join(format!("{}.txt", &key[..24]));
+    let stamp = pom_stamp(root);
+    let stamp_hash = nagi_core::hash::sha256_hex(stamp.as_bytes()).unwrap_or_default();
+    if let Ok(text) = std::fs::read_to_string(&file) {
+        if let Some((head, body)) = text.split_once('\n') {
+            if head == stamp_hash {
+                return Ok(split_classpath(body));
+            }
+        }
+    }
+    let mut ex = crate::exec::Exec::in_dir(root).env("MAVEN_OPTS", "-Xmx64m -XX:+UseSerialGC -XX:TieredStopAtLevel=1 -Xss512k -XX:ReservedCodeCacheSize=16m");
+    ex.fix_jdk();
+    let mvn = crate::maven::bin(ex.config(), ex.config().var("PATH")).map(|b| b.join("mvn.cmd")).ok_or("Maven が見つかりません")?;
+    // 出力の「Dependencies classpath:」の次の行がモジュールごとのクラスパス（-Dmdep.outputFile と appendOutput では
+    // モジュールの分が欠けた）。まず手元の .m2 だけで（-o）、足りなければダウンロードも許す
+    let mut why = String::new();
+    let mut text = String::new();
+    for offline in ["-o ", ""] {
+        let line = format!("\"{}\" -B {offline}dependency:build-classpath", mvn.display());
+        // cmd /C は行が " で始まると最初と最後の " を外すので、行全体をもう一度囲む
+        match ex.shell(&format!("\"{line}\"")).output() {
+            Ok(o) => {
+                let log = crate::jobs::decode_line(&o.stdout);
+                let mut lines = log.lines();
+                while let Some(l) = lines.next() {
+                    if l.contains("Dependencies classpath:") {
+                        text.push_str(lines.next().unwrap_or(""));
+                        text.push(';');
+                    }
+                }
+                if o.status.success() {
+                    break;
+                }
+                why = log.lines().map(str::trim).find(|l| l.contains("ERROR") || l.contains("JAVA_HOME")).unwrap_or("").to_string();
+                text.clear();
+            }
+            Err(e) => why = e.to_string(),
+        }
+    }
+    if text.is_empty() {
+        return Err(format!("Maven で依存を求められません（mvn dependency:build-classpath）: {why}"));
+    }
+    let jars = split_classpath(&text);
+    let body: Vec<String> = jars.iter().map(|p| p.display().to_string()).collect();
+    let _ = std::fs::write(&file, format!("{stamp_hash}\n{}", body.join("\n")));
+    Ok(jars)
+}
+
+/// Maven のプロジェクトの型の索引（依存の jar と JDK）を裏で用意する。終わったら 1 度だけ送る（Err は訳）
+pub fn load_maven(root: PathBuf, waker: crate::Waker) -> nagi_core::task::Task<Result<JarIndex, String>> {
+    nagi_core::task::spawn("jar-index", waker, move |ctx| {
+        let r = (|| {
+            let jars = maven_classpath(&root)?;
+            let cfg = crate::config::for_path(&root);
+            let ct = jdk_home(&cfg).map(|j| j.join("lib").join("ct.sym"));
+            let rel = ct.as_deref().and_then(ct_sym_latest);
+            let all = |_: &str| true;
+            let jdk = |n: &str| rel.is_some_and(|r| n.split('/').next().is_some_and(|d| d.contains(r)));
+            let tag = rel.map(String::from).unwrap_or_default();
+            let mut sources: Vec<JarSource> = jars.iter().map(|p| JarSource { path: p, keep: &all, tag: "" }).collect();
+            if let Some(ct) = &ct {
+                sources.push(JarSource { path: ct, keep: &jdk, tag: &tag });
+            }
+            let dir = jars_dir().ok_or("LOCALAPPDATA がありません")?;
+            Ok(JarIndex::load(&sources, &dir))
+        })();
+        ctx.send(r);
+    })
 }
 
 /// `pred` が true の並びの長さ（0..n の前から true が続く）
@@ -552,8 +732,8 @@ mod tests {
         std::env::var_os("JAVA_HOME").map(Into::into).or_else(|| crate::jdk::installed().into_iter().next().map(|j| j.path))
     }
 
-    /// このプロセスの private のバイト数
-    fn private_bytes() -> usize {
+    /// このプロセスの private のバイト数（今と、これまでの最大）
+    fn private_peak() -> (usize, usize) {
         #[repr(C)]
         #[derive(Default)]
         struct Counters {
@@ -576,7 +756,29 @@ mod tests {
         }
         let mut c = Counters { cb: std::mem::size_of::<Counters>() as u32, ..Default::default() };
         unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut c, c.cb) };
-        c.private
+        (c.private, c.peak_pagefile)
+    }
+
+    fn private_bytes() -> usize {
+        private_peak().0
+    }
+
+    /// 実際の Maven のプロジェクトで依存を求める（NAGI_MAVEN_ROOT に pom.xml のあるフォルダ。
+    /// cargo test -p nagi-workers maven_classpath_real -- --ignored --nocapture）
+    #[test]
+    #[ignore]
+    fn maven_classpath_real() {
+        let Some(root) = std::env::var_os("NAGI_MAVEN_ROOT") else { return };
+        let t = std::time::Instant::now();
+        let r = maven_classpath(Path::new(&root));
+        println!("{:?} jars, {} ms", r.map(|v| v.len()), t.elapsed().as_millis());
+    }
+
+    #[test]
+    fn classpath_split() {
+        let t = "C:\\m\\a.jar;C:\\m\\b.jarC:\\m\\c.jar;C:\\m\\a.jar\r\nC:\\x\\classes;D:\\m\\d.jar";
+        let v: Vec<String> = split_classpath(t).iter().map(|p| p.display().to_string()).collect();
+        assert_eq!(v, vec!["C:\\m\\a.jar", "C:\\m\\b.jar", "C:\\m\\c.jar", "D:\\m\\d.jar"]);
     }
 
     /// JDK の ct.sym から java.util.List を読み、かけらにして引き直す
@@ -589,16 +791,30 @@ mod tests {
         }
         // 版の文字（ct.sym の上のフォルダー名）に G（16）を含むものだけ
         let keep = |n: &str| n.split('/').next().is_some_and(|d| d.contains('G')) && n.contains("/java.base/java/util/");
-        let (bytes, n) = build_shard(&ct, keep).unwrap();
+        let file = std::env::temp_dir().join(format!("nagi-jvm-list-{}.ngj", std::process::id()));
+        let n = write_shard(&ct, keep, &file).unwrap();
         assert!(n > 100, "{n}");
+        let bytes = std::fs::read(&file).unwrap();
+        let _ = std::fs::remove_file(&file);
         let s = Shard::open(&bytes).unwrap();
         assert_eq!(s.by_simple_name("List"), vec!["java/util/List"]);
+        assert_eq!(ct_sym_latest(&ct), Some('G'), "JDK 17 の ct.sym は 16（G）まで");
         let list = s.class("java/util/List").unwrap();
         assert_eq!(list.interfaces, vec!["java/util/Collection"]);
         assert_eq!(list.signature.as_deref(), Some("<E:Ljava/lang/Object;>Ljava/lang/Object;Ljava/util/Collection<TE;>;"));
         let get = list.methods.iter().find(|m| m.name == "get").unwrap();
         assert_eq!((get.desc.as_str(), get.signature.as_deref()), ("(I)Ljava/lang/Object;", Some("(I)TE;")));
         assert_eq!(s.by_simple_name("Entry"), vec!["java/util/Map$Entry"]);
+        // 写して束ねた索引でも引ける（単純名・前方一致）
+        let dir = std::env::temp_dir().join(format!("nagi-jvm-{}", std::process::id()));
+        let ix = JarIndex::load(&[JarSource { path: &ct, keep: &keep, tag: "G-util" }], &dir);
+        assert_eq!(ix.built, 1);
+        assert_eq!(ix.by_simple_name("ArrayList"), vec!["java/util/ArrayList"]);
+        assert!(ix.by_prefix("ArrayL", 10) == vec!["java/util/ArrayList"]);
+        assert!(ix.class("java/util/List").is_some_and(|c| c.methods.iter().any(|m| m.name == "get")));
+        // 2 回目は作らずに写すだけ
+        assert_eq!(JarIndex::load(&[JarSource { path: &ct, keep: &keep, tag: "G-util" }], &dir).built, 0);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 索引を作る時間・メモリ・大きさ（NAGI_JARS_FILE にクラスパス（; 区切り）を書いたファイルを入れて
@@ -624,6 +840,7 @@ mod tests {
         let ix = JarIndex::load(&sources, &dir);
         let load = t0.elapsed();
         let m1 = private_bytes();
+        let peak = private_peak().1;
         let disk: u64 = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.metadata().map_or(0, |m| m.len())).sum();
         // 引く速さ: import の候補（単純名）と、クラスを取り出す
         let names = ["List", "String", "Map", "Optional", "Autowired", "Service", "Logger", "ResponseEntity", "Transactional", "LocalDate"];
@@ -643,8 +860,8 @@ mod tests {
         let m2 = private_bytes();
         let mb = |b: usize| b as f64 / 1_048_576.0;
         println!(
-            "{} jars + JDK → {} classes ({} shards built), on disk {:.1} MB, load {} ms, private {:.1} → {:.1} MB after load → {:.1} MB after lookups, by_simple_name {:?} ({} hits), class() {:?}",
-            jars.len(), ix.classes(), ix.built, disk as f64 / 1_048_576.0, load.as_millis(), mb(m0), mb(m1), mb(m2), per_simple, hits / 1000, per_class
+            "{} jars + JDK → {} classes ({} shards built), on disk {:.1} MB, load {} ms, peak {:.1} MB, private {:.1} → {:.1} MB after load → {:.1} MB after lookups, by_simple_name {:?} ({} hits), class() {:?}",
+            jars.len(), ix.classes(), ix.built, disk as f64 / 1_048_576.0, load.as_millis(), mb(peak), mb(m0), mb(m1), mb(m2), per_simple, hits / 1000, per_class
         );
     }
 }
