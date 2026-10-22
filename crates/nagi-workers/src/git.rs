@@ -44,7 +44,9 @@ fn run(root: &Path, args: &[&str], input: Option<&[u8]>, env: &[(&str, &str)]) -
     if out.status.success() {
         Ok(out.stdout)
     } else {
+        // 標準エラーが空なら標準出力（merge の衝突は「CONFLICT …」「Automatic merge failed …」を標準出力に出す）
         let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        let err = if err.is_empty() { String::from_utf8_lossy(&out.stdout).trim().to_string() } else { err };
         Err(if err.is_empty() { format!("git が失敗しました（{}）", out.status).into() } else { err.into() })
     }
 }
@@ -157,7 +159,8 @@ pub fn parse_status(out: &str) -> Status {
 }
 
 pub fn status(root: &Path) -> nagi_core::Result<Status> {
-    git(root, &["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"]).map(|b| parse_status(&text(b)))
+    // index を書き直させない（.git を見張って読み直すので、自分の status で .git が変わると読み直しが止まらない）
+    git_env(root, &["status", "--porcelain=v2", "--branch", "-z", "--untracked-files=all"], &[("GIT_OPTIONAL_LOCKS", "0")]).map(|b| parse_status(&text(b)))
 }
 
 /// HEAD の版のファイルの中身（HEAD に無ければ None）
@@ -275,12 +278,21 @@ pub fn reword(root: &Path, h: &str, msg: &str) -> nagi_core::Result<()> {
     rebase_scripted(root, parent.as_deref(), &todo_sed(h, "reword"), Some(msg))
 }
 
-/// 今のブランチを `onto` の上へ載せ直す（衝突したらやめて元に戻す）
+/// 今のブランチを `onto` の上へ載せ直す。衝突したら、マージと同じく途中で止める（直して続けるか、やめるかは使う人が選ぶ）。
+/// 衝突のほかで失敗したら（始められなかったなど）、途中の状態を残さない
 pub fn rebase_onto(root: &Path, onto: &str) -> nagi_core::Result<()> {
     git(root, &["rebase", "--autostash", onto]).map(|_| ()).map_err(|e| {
-        let _ = git(root, &["rebase", "--abort"]);
-        format!("{}（rebase をやめて元に戻しました）", e.last_line()).into()
+        if rebasing(root) {
+            "衝突したので、リベースの途中で止めました（直して git add → git rebase --continue。やめるなら git rebase --abort）".into()
+        } else {
+            e
+        }
     })
+}
+
+/// リベースの途中か（.git/rebase-merge か rebase-apply がある）
+pub fn rebasing(root: &Path) -> bool {
+    ["rebase-merge", "rebase-apply"].iter().any(|d| git(root, &["rev-parse", "--git-path", d]).is_ok_and(|p| root.join(text(p).trim()).exists()))
 }
 
 /// 取り消すコミットを足す（revert。衝突したらやめて元に戻す）

@@ -32,6 +32,10 @@ pub struct GitState {
     hunks: HashMap<PathBuf, (u64, Vec<Hunk>)>,
     /// ポップアップで見せている変更（作業中のバッファのまとまりの番号）
     pub popup: Option<usize>,
+    /// 見張っている .git のフォルダ（ターミナルなど外で git を動かしたら読み直す）
+    pub git_dir: Option<PathBuf>,
+    /// status を取っている間に .git が変わった（届いたらもう一度取る）
+    stale: bool,
 }
 
 /// 行頭のマーカー
@@ -53,8 +57,41 @@ impl Editor {
         let base = self.buf.path.as_deref().map(abs).or_else(|| Some(self.cwd.clone()));
         self.git.root = base.as_deref().and_then(nagi_workers::git::repo_root).map(|r| abs(&r));
         if self.git.root.is_some() {
+            self.watch_git_dir();
             self.refresh_git();
         }
+    }
+
+    /// .git のフォルダ（HEAD・index・ORIG_HEAD などの直下のファイル）を見張る。コミット・チェックアウト・リセットで変わる。
+    /// ワークツリーの .git はファイル（`gitdir: …`）なので、その先を見張る
+    fn watch_git_dir(&mut self) {
+        let Some(root) = &self.git.root else { return };
+        let dot = root.join(".git");
+        let dir = if dot.is_dir() {
+            dot
+        } else {
+            let Some(d) = std::fs::read_to_string(&dot).ok().and_then(|s| s.trim().strip_prefix("gitdir:").map(|d| root.join(d.trim()))) else { return };
+            d
+        };
+        if self.git.git_dir.as_ref() != Some(&dir) {
+            self.watch_listing(&dir);
+            self.git.git_dir = Some(dir);
+        }
+    }
+
+    /// 見張っている .git の中身が変わった（`d` がそのフォルダなら読み直して true）
+    pub(crate) fn on_git_dir_change(&mut self, d: &Path) -> bool {
+        let n = |p: &Path| abs(p).to_string_lossy().to_lowercase();
+        if !self.git.git_dir.as_deref().is_some_and(|g| n(g) == n(d)) {
+            return false;
+        }
+        // 取っている途中なら、届いてからもう一度（1 回のコミットで知らせが何度も来る）
+        if self.git.status_rx.is_some() {
+            self.git.stale = true;
+        } else {
+            self.refresh_git();
+        }
+        true
     }
 
     /// status を取り直し、HEAD の版を捨てて取り直す（コミットやチェックアウトの後）
@@ -121,6 +158,9 @@ impl Editor {
                     // 状態が変わったので差分も計算し直す（追加したファイルは全体が新しい行）
                     self.git.hunks.clear();
                     self.sync_commit_items();
+                }
+                if std::mem::take(&mut self.git.stale) {
+                    self.refresh_git();
                 }
                 changed = true;
             }

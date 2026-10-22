@@ -606,17 +606,30 @@ pub fn copy_lines(s: &mut vt100::Screen, (r0, c0): (i64, u16), (r1, c1): (i64, u
 /// 行を 1 つの文字にする（最初の行は `c0` の列から、最後の行は `c1` の列まで）。シェルが出したとおりに戻す:
 /// 折り返した行はつなぎ（長いコマンドが途中で切れない）、改行は `\n`（シェルの出したまま。貼ったスクリプトに `\r` が混ざらない）、
 /// 書かれた空白は行末でも残し、何も書かれていない行末だけを落とす。
-/// 全角の文字が行の端の 1 列に入らずに次の行へ送られたときの、端の空き（ConPTY は空白を書く）も落とす
+/// 全角の文字が行の端の 1 列に入らずに次の行へ送られたときの、端の空き（ConPTY は空白を書く）も落とす。
+/// 折り返した行の端に空白が 2 つ以上続くのは、表示する側が単語の切れ目で次の行へ送り、残りを空白で埋めたもの
+/// （Claude Code などの画面。ちょうど端まで書いた行は ConPTY が折り返しにする）なので、空白 1 つにまとめ、次の行の字下げも落とす
 fn join_rows(rows: &[Row], c0: u16, c1: u16) -> String {
+    let blank = |c: &(String, bool, bool)| !c.2 && c.0.trim().is_empty();
     let mut out = String::new();
     let last = rows.len().saturating_sub(1);
+    let mut skip_lead = false;
     for (i, r) in rows.iter().enumerate() {
         let cols = r.cells.len();
-        let (from, to) = (if i == 0 { c0 as usize } else { 0 }, if i == last { (c1 as usize + 1).min(cols) } else { cols });
+        let (mut from, to) = (if i == 0 { c0 as usize } else { 0 }, if i == last { (c1 as usize + 1).min(cols) } else { cols });
+        if std::mem::take(&mut skip_lead) {
+            while from < to && blank(&r.cells[from]) {
+                from += 1;
+            }
+        }
         let wrapped = i < last && r.wrapped;
-        let pad = wrapped && rows[i + 1].cells.first().is_some_and(|c| c.1) && r.cells.last().is_some_and(|c| !c.2 && c.0.trim().is_empty());
+        let pad = wrapped && rows[i + 1].cells.first().is_some_and(|c| c.1) && r.cells.last().is_some_and(blank);
         // 折り返していない行は、書かれたいちばん後ろのセルまで
-        let to = if wrapped { to } else { (from..to).rev().find(|&c| !r.cells[c].0.is_empty() || r.cells[c].2).map_or(from, |c| c + 1) };
+        let mut to = if wrapped { to } else { (from..to).rev().find(|&c| !r.cells[c].0.is_empty() || r.cells[c].2).map_or(from, |c| c + 1) };
+        let fill = if wrapped { (from..to).rev().take_while(|&c| blank(&r.cells[c])).count() } else { 0 };
+        if fill >= 2 {
+            to -= fill;
+        }
         for col in from..to.max(from) {
             let (text, _, cont) = &r.cells[col];
             if *cont || (pad && col == cols - 1) {
@@ -624,6 +637,10 @@ fn join_rows(rows: &[Row], c0: u16, c1: u16) -> String {
             }
             // 書かれていないセル（カーソルを動かして飛ばしたところ）は空白
             out.push_str(if text.is_empty() { " " } else { text });
+        }
+        if fill >= 2 {
+            out.push(' ');
+            skip_lead = true;
         }
         if !wrapped && i < last {
             out.push('\n');
@@ -897,6 +914,9 @@ mod tests {
         assert_eq!(copy("for i in 1  2; do echo \"$i\"; done"), "for i in 1  2; do echo \"$i\"; done");
         // 字下げ、カーソルを動かして飛ばした空き（ConPTY は空白をそうして書くことがある）は空白、消した行末（ESC[K）は落とす
         assert_eq!(copy("  if x\r\n\x1b[4Cy\r\nab   \x1b[3D\x1b[K"), "  if x\n    y\nab");
+        // 単語の切れ目で次の行へ送り、残りを空白で埋めて続けた行（Claude Code の画面など）は、空白 1 つでつなぐ。次の行の字下げも落とす
+        assert_eq!(copy("ab Sh    Docs"), "ab Sh Docs");
+        assert_eq!(copy("--to 'a  \x1b[2Cb c'"), "--to 'a b c'");
         // 途中の列から
         let mut p = vt100::Parser::new(2, 9, 0);
         p.process("abcd日本 語x".as_bytes());

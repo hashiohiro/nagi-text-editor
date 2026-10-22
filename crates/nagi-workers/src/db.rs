@@ -13,7 +13,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Receiver, Sender, channel};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::Waker;
 
@@ -110,6 +110,8 @@ pub enum Reply {
     Done,
     /// 途中の知らせ（「ブラウザでログインしてください」など。頼みごとの答えではない）
     Note(String),
+    /// 接続が切れていたので、つなぎ直した（頼みごとの答えではない）。tx_lost: 手動の Tx だった（コミットしていない変更は失われた）
+    Reconnected { tx_lost: bool },
     Error(String),
 }
 
@@ -133,6 +135,11 @@ pub enum Req {
 
 type R<T> = nagi_core::Result<T>;
 
+/// 接続が生きているか確かめるときに待つ上限
+const PING_TIMEOUT: Duration = Duration::from_secs(10);
+/// これより長く使っていなければ、頼みごとを流す前に接続が生きているか確かめる
+const IDLE: Duration = Duration::from_secs(60);
+
 /// ドライバーごとの中身
 pub(crate) trait Backend {
     fn info(&mut self) -> R<(String, String)>;
@@ -149,6 +156,10 @@ pub(crate) trait Backend {
     fn commit(&mut self) -> R<()>;
     fn rollback(&mut self) -> R<()>;
     fn ddl(&mut self, schema: &str, name: &str, kind: &str) -> R<String>;
+    /// 接続が生きているか（スリープ・アイドルで切れたものを見つける）
+    fn alive(&mut self) -> bool {
+        true
+    }
 }
 
 /// 最後の ; を外す（PL/SQL のブロックは残す。Oracle は ; で誤りになる）
@@ -381,6 +392,14 @@ impl Backend for OracleDb {
 
     fn rollback(&mut self) -> R<()> {
         self.conn.rollback().map_err(oe)
+    }
+
+    fn alive(&mut self) -> bool {
+        // スリープの後の切れた TCP で待ち続けないよう、確かめる間だけ時間を区切る
+        let _ = self.conn.set_call_timeout(Some(PING_TIMEOUT));
+        let ok = self.conn.ping().is_ok();
+        let _ = self.conn.set_call_timeout(None);
+        ok
     }
 
     fn ddl(&mut self, schema: &str, name: &str, kind: &str) -> R<String> {
@@ -900,6 +919,10 @@ impl Backend for PgDb {
         self.client.batch_execute("ROLLBACK; BEGIN").map_err(pe)
     }
 
+    fn alive(&mut self) -> bool {
+        !self.client.is_closed() && self.client.is_valid(PING_TIMEOUT).is_ok()
+    }
+
     fn ddl(&mut self, schema: &str, name: &str, kind: &str) -> R<String> {
         let full = format!("{}.{}", Self::quote(schema), Self::quote(name));
         if kind.contains("VIEW") {
@@ -958,6 +981,53 @@ pub fn forget_password(url: &str, user: &str) -> bool {
 
 // ---------------------------------------------------------------- 接続（裏のスレッド）
 
+/// 頼みごとを 1 つ流す
+fn handle(db: &mut dyn Backend, req: &Req) -> R<Reply> {
+    let t0 = Instant::now();
+    let ms = || t0.elapsed().as_millis() as u64;
+    Ok(match req {
+        Req::Schemas => Reply::Schemas(db.schemas()?),
+        Req::SetSchema(s) => {
+            db.set_schema(s)?;
+            Reply::Done
+        }
+        Req::Objects(s) => Reply::Objects(db.objects(s)?),
+        Req::Columns(s, t) => Reply::Columns(db.columns(s, t)?),
+        Req::Indexes(s, t) => {
+            let (i, k) = db.indexes(s, t)?;
+            Reply::Indexes(i, k)
+        }
+        Req::Query { sql, max, offset } => match db.query(sql, *max, *offset)? {
+            Ok((cols, types, rows, more)) => Reply::Rows { cols, types, rows, more, ms: ms() },
+            Err(count) => Reply::Updated { count, ms: ms() },
+        },
+        Req::Count(sql) => Reply::Count(db.count(sql)?),
+        Req::Batch(stmts) => Reply::Updated { count: db.batch(stmts)?, ms: ms() },
+        Req::AutoCommit(on) => {
+            db.set_autocommit(*on)?;
+            Reply::Done
+        }
+        Req::Commit => {
+            db.commit()?;
+            Reply::Done
+        }
+        Req::Rollback => {
+            db.rollback()?;
+            Reply::Done
+        }
+        Req::Ddl(s, n, k) => Reply::Ddl(db.ddl(s, n, k)?),
+    })
+}
+
+/// つなぎ直した後に流し直してよいか（読むだけのもの）
+fn retryable(req: &Req) -> bool {
+    match req {
+        Req::Query { sql, .. } => matches!(first_word(sql).as_str(), "SELECT" | "SHOW" | "DESC" | "DESCRIBE" | "EXPLAIN" | "VALUES" | "PRAGMA"),
+        Req::Batch(_) | Req::AutoCommit(_) | Req::Commit | Req::Rollback => false,
+        Req::Schemas | Req::SetSchema(_) | Req::Objects(_) | Req::Columns(..) | Req::Indexes(..) | Req::Count(_) | Req::Ddl(..) => true,
+    }
+}
+
 /// 1 つの接続
 pub struct Client {
     tx: Sender<Req>,
@@ -982,13 +1052,15 @@ impl Client {
                 let note = |s: String| {
                     send(Reply::Note(s));
                 };
-                let opened: R<Box<dyn Backend>> = match kind {
-                    Kind::Oracle => OracleDb::connect(&url, &user, &pass).map(|d| Box::new(d) as Box<dyn Backend>),
-                    Kind::Sqlite => SqliteDb::connect(&url).map(|d| Box::new(d) as Box<dyn Backend>),
-                    Kind::Postgres => PgDb::connect(&url, &user, &pass).map(|d| Box::new(d) as Box<dyn Backend>),
-                    Kind::Salesforce => crate::salesforce::SalesforceDb::connect(&url, &user, &note).map(|d| Box::new(d) as Box<dyn Backend>),
+                let open = || -> R<Box<dyn Backend>> {
+                    match kind {
+                        Kind::Oracle => OracleDb::connect(&url, &user, &pass).map(|d| Box::new(d) as Box<dyn Backend>),
+                        Kind::Sqlite => SqliteDb::connect(&url).map(|d| Box::new(d) as Box<dyn Backend>),
+                        Kind::Postgres => PgDb::connect(&url, &user, &pass).map(|d| Box::new(d) as Box<dyn Backend>),
+                        Kind::Salesforce => crate::salesforce::SalesforceDb::connect(&url, &user, &note).map(|d| Box::new(d) as Box<dyn Backend>),
+                    }
                 };
-                let mut db = match opened.and_then(|mut d| d.info().map(|i| (d, i))) {
+                let mut db = match open().and_then(|mut d| d.info().map(|i| (d, i))) {
                     Ok((d, (product, schema))) => {
                         if !send(Reply::Connected { product, schema }) {
                             return;
@@ -1000,26 +1072,73 @@ impl Client {
                         return;
                     }
                 };
+                // つなぎ直したときに戻すもの（切り替えたスキーマ・手動の Tx）
+                let mut schema: Option<String> = None;
+                let mut auto = true;
+                let reopen = |schema: &Option<String>, auto: bool| -> R<Box<dyn Backend>> {
+                    let mut d = open()?;
+                    if let Some(s) = schema {
+                        d.set_schema(s)?;
+                    }
+                    if !auto {
+                        d.set_autocommit(false)?;
+                    }
+                    Ok(d)
+                };
+                let mut last = Instant::now();
                 for req in req_rx {
-                    let t0 = Instant::now();
-                    let ms = || t0.elapsed().as_millis() as u64;
-                    let r = match req {
-                        Req::Schemas => db.schemas().map(Reply::Schemas),
-                        Req::SetSchema(s) => db.set_schema(&s).map(|_| Reply::Done),
-                        Req::Objects(s) => db.objects(&s).map(Reply::Objects),
-                        Req::Columns(s, t) => db.columns(&s, &t).map(Reply::Columns),
-                        Req::Indexes(s, t) => db.indexes(&s, &t).map(|(i, k)| Reply::Indexes(i, k)),
-                        Req::Query { sql, max, offset } => db.query(&sql, max, offset).map(|r| match r {
-                            Ok((cols, types, rows, more)) => Reply::Rows { cols, types, rows, more, ms: ms() },
-                            Err(count) => Reply::Updated { count, ms: ms() },
-                        }),
-                        Req::Count(sql) => db.count(&sql).map(Reply::Count),
-                        Req::Batch(stmts) => db.batch(&stmts).map(|count| Reply::Updated { count, ms: ms() }),
-                        Req::AutoCommit(on) => db.set_autocommit(on).map(|_| Reply::Done),
-                        Req::Commit => db.commit().map(|_| Reply::Done),
-                        Req::Rollback => db.rollback().map(|_| Reply::Done),
-                        Req::Ddl(s, n, k) => db.ddl(&s, &n, &k).map(Reply::Ddl),
+                    // しばらく使っていなければ、流す前に確かめる（スリープ・アイドルで切れていたら、つなぎ直してから流す）
+                    let mut lost = false;
+                    if last.elapsed() > IDLE && !db.alive() {
+                        match reopen(&schema, auto) {
+                            Ok(d) => {
+                                db = d;
+                                lost = true;
+                                if !send(Reply::Reconnected { tx_lost: !auto }) {
+                                    return;
+                                }
+                            }
+                            Err(e) => {
+                                last = Instant::now();
+                                if !send(Reply::Error(format!("接続が切れています。つなぎ直せません: {e}"))) {
+                                    return;
+                                }
+                                continue;
+                            }
+                        }
+                    }
+                    let mut r = if lost && !auto && matches!(req, Req::Commit) {
+                        Err(nagi_core::Error::new("接続が切れていたので、コミットしていない変更は失われました（つなぎ直しました）"))
+                    } else {
+                        handle(&mut *db, &req)
                     };
+                    // 流している間に切れた: つなぎ直す。読むだけの頼みごとは流し直し、データを変えうるものは流し直さない（反映されたかわからない）
+                    if let Err(e) = &r {
+                        if !lost && !db.alive() {
+                            r = match reopen(&schema, auto) {
+                                Ok(d) => {
+                                    db = d;
+                                    if !send(Reply::Reconnected { tx_lost: !auto }) {
+                                        return;
+                                    }
+                                    if retryable(&req) {
+                                        handle(&mut *db, &req)
+                                    } else {
+                                        Err(nagi_core::Error::new(format!("{e}（接続が切れていたので、つなぎ直しました。反映されたかを確かめて、もう一度流してください）")))
+                                    }
+                                }
+                                Err(e2) => Err(nagi_core::Error::new(format!("{e}（接続が切れています。つなぎ直せません: {e2}）"))),
+                            };
+                        }
+                    }
+                    if r.is_ok() {
+                        match &req {
+                            Req::SetSchema(s) => schema = Some(s.clone()),
+                            Req::AutoCommit(on) => auto = *on,
+                            _ => {}
+                        }
+                    }
+                    last = Instant::now();
                     if !send(r.unwrap_or_else(|e| Reply::Error(e.to_string()))) {
                         return;
                     }
@@ -1144,6 +1263,39 @@ mod tests {
         assert!(forget_password(url, "app"));
         assert_eq!(saved_password(url, "app"), None);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 本物の PostgreSQL で、切れた接続をつなぎ直す（手で流す。NAGI_TEST_PG に「URL 利用者 パスワード」）
+    #[test]
+    #[ignore]
+    fn postgres_reconnect() {
+        let conf = std::env::var("NAGI_TEST_PG").expect("NAGI_TEST_PG に「URL 利用者 パスワード」");
+        let mut it = conf.split_whitespace();
+        let (url, user, pass) = (it.next().unwrap(), it.next().unwrap(), it.next().unwrap());
+        let open = || {
+            let c = Client::connect(url, user, pass, std::sync::Arc::new(|| {})).unwrap();
+            assert!(matches!(c.rx.recv_timeout(Duration::from_secs(60)).unwrap(), Reply::Connected { .. }));
+            c
+        };
+        let (c, killer) = (open(), open());
+        let wait = |c: &Client| c.rx.recv_timeout(Duration::from_secs(60)).expect("応答が無い");
+        c.query("select pg_backend_pid()", 1);
+        let Reply::Rows { rows, .. } = wait(&c) else { panic!() };
+        let pid = rows[0][0].clone().unwrap();
+        // 手動の Tx で変更を残したまま、ほかの接続から切る
+        c.send(Req::AutoCommit(false));
+        assert!(matches!(wait(&c), Reply::Done));
+        killer.query(&format!("select pg_terminate_backend({pid})"), 1);
+        assert!(matches!(wait(&killer), Reply::Rows { .. }));
+        // 読むだけの文は、つなぎ直して流し直す（Tx は手動のまま）
+        c.query("select 1", 1);
+        assert!(matches!(wait(&c), Reply::Reconnected { tx_lost: true }));
+        assert!(matches!(wait(&c), Reply::Rows { .. }));
+        c.query("select pg_backend_pid()", 1);
+        let Reply::Rows { rows, .. } = wait(&c) else { panic!() };
+        assert_ne!(rows[0][0].clone().unwrap(), pid, "新しい接続");
+        c.send(Req::Commit);
+        assert!(matches!(wait(&c), Reply::Done));
     }
 
     /// 本物の PostgreSQL で往復する（手で流す。NAGI_TEST_PG に「URL 利用者 パスワード」。表 nagi_customer・nagi_item を作り直す）

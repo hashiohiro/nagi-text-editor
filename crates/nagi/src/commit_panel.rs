@@ -207,9 +207,16 @@ impl Editor {
         p.busy_label = Some("コミットしています…".into());
         let rx = run_git(self.waker.clone(), move || {
             use nagi_workers::git::{git, git_input};
-            if !paths.is_empty() {
+            // add に渡すのは、作業ツリーか index にあるものだけ（名前を変える前のパス・git rm で消したパスは、どちらにも無く、
+            // add が「pathspec did not match」で断る。commit --only には HEAD にあるので渡せる）
+            let mut ls = vec!["ls-files", "-z", "--"];
+            ls.extend(paths.iter().map(String::as_str));
+            let indexed = String::from_utf8_lossy(&git(&root, &ls)?).into_owned();
+            let indexed: std::collections::HashSet<&str> = indexed.split('\0').collect();
+            let add: Vec<&str> = paths.iter().map(String::as_str).filter(|p| indexed.contains(p) || root.join(p).exists()).collect();
+            if !add.is_empty() {
                 let mut args = vec!["add", "-A", "--"];
-                args.extend(paths.iter().map(String::as_str));
+                args.extend(add);
                 git(&root, &args)?;
             }
             let mut args = vec!["commit", "-q", "-F", "-"];
@@ -379,7 +386,10 @@ impl Editor {
             Key::Ctrl('m') => self.commit(false),
             Key::Char('P') => self.commit(true),
             Key::Char('u') => {
-                if !p.items.is_empty() {
+                // 未追跡は戻せない（聞く前に知らせる）
+                if p.items.get(p.selected).is_some_and(|it| it.change.state == FileState::Untracked) {
+                    self.notify.warn("未追跡のファイルは戻せません（消すならファイルツリーなどから）");
+                } else if !p.items.is_empty() {
                     let i = p.selected;
                     let q = format!("{} の変更を戻しますか", p.items[i].change.path);
                     self.ask(q, move |e| e.revert_item(i));
@@ -740,6 +750,72 @@ mod tests {
         wait(&mut e);
         assert_eq!(std::fs::read_to_string(dir.join("b.txt")).unwrap(), "b\n");
         assert!(e.commit.as_ref().unwrap().items.is_empty());
+    }
+
+    /// 名前を変えたファイル（git mv）と、git rm で消したファイルもコミットできる（add に渡すと pathspec で断られていた）
+    #[test]
+    fn commit_rename_and_removed() {
+        let dir = std::env::temp_dir().join(format!("nagi-commit-mv-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = |args: &[&str]| String::from_utf8_lossy(&nagi_workers::git::git(&dir, args).unwrap()).into_owned();
+        g(&["init", "-q", "-b", "main"]);
+        g(&["config", "user.email", "test@example.com"]);
+        g(&["config", "user.name", "test"]);
+        std::fs::write(dir.join("a.txt"), "a\n").unwrap();
+        std::fs::write(dir.join("b.txt"), "b\n").unwrap();
+        std::fs::write(dir.join("c.txt"), "c\n").unwrap();
+        g(&["add", "."]);
+        g(&["commit", "-q", "-m", "first"]);
+        g(&["mv", "c.txt", "c2.txt"]);
+        g(&["rm", "-q", "b.txt"]);
+        let mut buf = Buffer::open(&dir.join("a.txt")).unwrap();
+        buf.path = Some(dir.join("a.txt"));
+        let mut e = Editor::new(buf, None);
+        e.start_git();
+        e.open_commit_panel();
+        wait(&mut e);
+        keys(&mut e, "cmv<Esc><Esc><C-m>");
+        wait(&mut e);
+        wait(&mut e);
+        assert!(e.notify.text.starts_with("コミットしました"), "{}", e.notify.text);
+        let files = g(&["show", "--name-status", "--format=", "HEAD"]);
+        assert!(files.contains("D\tb.txt") && files.contains("c.txt\tc2.txt"), "{files}");
+        assert!(e.commit.as_ref().unwrap().items.is_empty());
+    }
+
+    /// ターミナルなど外でコミットしても、.git の変化を見て一覧を作り直す（タブを切り替えなくても）
+    #[test]
+    fn outside_commit_refreshes_list() {
+        let dir = std::env::temp_dir().join(format!("nagi-commit-out-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = |args: &[&str]| String::from_utf8_lossy(&nagi_workers::git::git(&dir, args).unwrap()).into_owned();
+        g(&["init", "-q", "-b", "main"]);
+        g(&["config", "user.email", "test@example.com"]);
+        g(&["config", "user.name", "test"]);
+        std::fs::write(dir.join("a.txt"), "a\n").unwrap();
+        g(&["add", "."]);
+        g(&["commit", "-q", "-m", "first"]);
+        std::fs::write(dir.join("a.txt"), "a2\n").unwrap();
+        let mut buf = Buffer::open(&dir.join("a.txt")).unwrap();
+        buf.path = Some(dir.join("a.txt"));
+        let mut e = Editor::new(buf, None);
+        e.start_watch(&[]);
+        e.start_git();
+        e.open_commit_panel();
+        wait(&mut e);
+        assert_eq!(e.commit.as_ref().unwrap().items.len(), 1);
+        g(&["commit", "-q", "-am", "outside"]);
+        for _ in 0..600 {
+            e.poll_watch();
+            e.poll_git();
+            if e.commit.as_ref().unwrap().items.is_empty() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("外のコミットの後も一覧が残っている");
     }
 }
 

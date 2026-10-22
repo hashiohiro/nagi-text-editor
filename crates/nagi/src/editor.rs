@@ -435,6 +435,9 @@ pub struct Editor {
     /// 状態行の「▶ 構成の名前」の列（始め, 終わり）。押すと実行のメニュー
     pub run_hit: std::cell::Cell<Option<(usize, usize)>>,
     pub tab_hits: std::cell::RefCell<Vec<(usize, usize, usize, &'static str)>>,
+    /// `--replay` の試験: 描いた文字を控える（行, 列, 文字）。replay.rs が押す所・待つ文字を探す
+    pub record_texts: bool,
+    pub drawn_texts: std::cell::RefCell<Vec<(usize, usize, String)>>,
     /// 左の欄で出しているタブ（ツリーとコミットのパネルが両方開いているとき）
     pub left_tab: crate::tree_panel::LeftTab,
     /// ブランチのポップアップ（開いている間だけ）
@@ -684,6 +687,8 @@ impl Editor {
             hover_button: None,
             hover_tab: None,
             tab_hits: Default::default(),
+            record_texts: false,
+            drawn_texts: Default::default(),
             run_hit: Default::default(),
             hover_bar: None,
             hover_buftab: None,
@@ -1011,6 +1016,10 @@ impl Editor {
             self.paste_clipboard();
             return Effect::None;
         }
+        // 表（クエリの結果・テーブルの編集）の Ctrl+C・Ctrl+V はセルのコピー・貼り付け
+        if matches!(key, Key::Ctrl('c' | 'v') | Key::Paste) && self.grid_clipboard_key(key) {
+            return Effect::None;
+        }
         // SQL コンソールの Ctrl+Enter（Ctrl-m として届く）: カーソルのある文を流す
         if key == Key::Ctrl('m') && matches!(self.state(), State::Normal | State::Insert | State::Visual { .. }) && self.console_source().is_some() {
             self.db_run_at_cursor();
@@ -1045,6 +1054,10 @@ impl Editor {
         // 変更のポップアップを開いている間の u s Esc
         if self.state() == State::Normal && self.hunk_popup_key(key) {
             self.scroll_into_view();
+            return Effect::None;
+        }
+        // Vim を使わないとき、データベースの木で打った文字は絞り込みの欄へ
+        if self.db_type_to_filter(key) {
             return Effect::None;
         }
         // Vim を使わないとき、一覧のパネル・ダイアログは文字のキーを受けない（plain.rs）

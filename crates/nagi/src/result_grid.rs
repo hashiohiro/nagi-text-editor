@@ -505,6 +505,101 @@ impl Editor {
         r.value_edit = Some(VimField::new(&v, false));
     }
 
+    /// 打っている値を、選んでいるセルに入れる（欄を閉じる）
+    fn result_commit_edit(&mut self) {
+        let r = &mut self.db_results;
+        let v = r.value_edit.take().map(|f| f.text()).unwrap_or_default();
+        if let Some(t) = r.active_tab_mut() {
+            let (row, col) = (t.row, t.col);
+            t.set_value(row, col, Some(v));
+        }
+    }
+
+    /// 表（クエリの結果・テーブルの編集）の Ctrl+C・Ctrl+V（Shift+Insert）。セルのコピー・貼り付けをしたら true。
+    /// キーマップ（Vim を使わないときの Ctrl+C・V は本文のコピー・貼り付け）より先に見る
+    pub(crate) fn grid_clipboard_key(&mut self, key: Key) -> bool {
+        let table = self.state() == State::DbTable && self.db_table.is_some();
+        let results = !table
+            && self.focus == Some(crate::editor::Panel::List)
+            && self.list_side == Side::Bottom
+            && self.bottom_kind == BottomKind::Result
+            && self.db_results.active > 0;
+        if !table && !results {
+            return false;
+        }
+        // 値・絞り込みを打っている間: Vim ならいつも通り（Ctrl+C は Insert を抜ける）。使わないなら、Ctrl+V は欄に貼り、Ctrl+C は選んだ所（選んでいなければ欄の値）をコピー
+        let field = if table {
+            self.db_table.as_ref().and_then(|t| t.editing.as_ref().or(t.filter_edit.as_ref().map(|x| &x.1))).map(|f| f.selected_text().unwrap_or_else(|| f.text()))
+        } else {
+            let r = &self.db_results;
+            r.value_edit.as_ref().or(r.editing.as_ref().map(|x| &x.1)).map(|f| f.selected_text().unwrap_or_else(|| f.text()))
+        };
+        if let Some(text) = field {
+            if self.vim_on {
+                return false;
+            }
+            if key == Key::Ctrl('c') {
+                self.copy_text(text, "値");
+            } else if table {
+                self.db_table_key(Key::Paste);
+            } else {
+                self.result_key(Key::Paste);
+            }
+            return true;
+        }
+        match (key, table) {
+            (Key::Ctrl('c'), true) => self.db_table_copy(),
+            (Key::Ctrl('c'), false) => self.result_copy(),
+            (_, true) => self.db_table_paste(),
+            (_, false) => self.result_paste(),
+        }
+        true
+    }
+
+    /// 選んでいるセルの値をコピー（NULL は空）
+    fn result_copy(&mut self) {
+        let Some(t) = self.db_results.active_tab().filter(|t| !t.rows.is_empty() && !t.cols.is_empty()) else { return };
+        let s = t.value(t.row, t.col).unwrap_or_default();
+        self.copy_text(s, "値");
+    }
+
+    /// クリップボードを選んでいるセルに貼る（タブ・改行で区切ってあれば、そこから右・下のセルへ）
+    fn result_paste(&mut self) {
+        if let Err(e) = self.result_plan() {
+            if !e.is_empty() {
+                self.notify.warn(e);
+            }
+            return;
+        }
+        let Some(cells) = self.clipboard_cells() else { return };
+        let Some(t) = self.db_results.active_tab_mut().filter(|t| !t.rows.is_empty() && !t.cols.is_empty()) else { return };
+        let (row, col) = (t.row, t.col);
+        let (rows, cols) = (t.rows.len(), t.cols.len());
+        let mut n = 0;
+        for (dr, line) in cells.iter().enumerate().filter(|(dr, _)| row + dr < rows) {
+            for (dc, v) in line.iter().enumerate().filter(|(dc, _)| col + dc < cols) {
+                t.set_value(row + dr, col + dc, Some(v.clone()));
+                n += 1;
+            }
+        }
+        if n > 1 {
+            self.notify.info(format!("{n} 個のセルに貼りました"));
+        }
+    }
+
+    /// クリップボードの文字を、表のセルに分ける（行は改行、列はタブ。最後の改行は外す）
+    pub(crate) fn clipboard_cells(&mut self) -> Option<Vec<Vec<String>>> {
+        let text = match &self.clipboard {
+            Some(cb) => (cb.get)(),
+            None => crate::clipboard::get(),
+        };
+        let Some(text) = text.filter(|t| !t.is_empty()) else {
+            self.notify.info("クリップボードが空です");
+            return None;
+        };
+        Some(cells_of(&text))
+    }
+
     /// 選んでいるセルを NULL に
     pub(crate) fn result_set_null(&mut self) {
         if let Err(e) = self.result_plan() {
@@ -565,13 +660,9 @@ impl Editor {
             match out {
                 FieldOut::Cancel => r.value_edit = None,
                 FieldOut::Submit => {
-                    let v = r.value_edit.take().map(|f| f.text()).unwrap_or_default();
-                    if let Some(t) = r.active_tab_mut() {
-                        let (row, col) = (t.row, t.col);
-                        t.set_value(row, col, Some(v));
-                        if key == Key::Tab {
-                            t.col = (t.col + 1).min(t.cols.len().saturating_sub(1));
-                        }
+                    self.result_commit_edit();
+                    if let Some(t) = self.db_results.active_tab_mut().filter(|_| key == Key::Tab) {
+                        t.col = (t.col + 1).min(t.cols.len().saturating_sub(1));
                     }
                 }
                 _ => {}
@@ -752,11 +843,19 @@ impl Editor {
     pub(crate) fn result_click(&mut self, row: usize, col: usize, clicks: u32) {
         self.list_side = Side::Bottom;
         self.set_state(State::List);
-        let r = &mut self.db_results;
-        // 値を打っている間は、選び直さない
-        if r.value_edit.is_some() {
-            return;
+        // 値を打っている間: 別のセルを押したら、打った値を決めてからそのセルへ（ダブルクリックならそのまま直し始める）。ほかは選び直さない
+        if self.db_results.value_edit.is_some() {
+            let other = self.db_results.active_tab().is_some_and(|t| {
+                let head = if t.filterable { 4 } else { 3 };
+                let hit = crate::list::row_at(t.scroll, row, head, t.rows.len()).zip(grid_col_at(t.hscroll, &t.widths, col));
+                hit.is_some_and(|h| h != (t.row, t.col))
+            });
+            if !other {
+                return;
+            }
+            self.result_commit_edit();
         }
+        let r = &mut self.db_results;
         // 1 行目: タブ
         if row == 0 {
             let mut x = 1;
@@ -798,6 +897,12 @@ impl Editor {
     }
 }
 
+/// 貼る文字を、表のセルに分ける（行は改行、列はタブ。最後の改行は外す。Excel・結果の表の gy と同じ形）
+pub fn cells_of(text: &str) -> Vec<Vec<String>> {
+    let text = text.replace("\r\n", "\n");
+    text.strip_suffix('\n').unwrap_or(&text).split('\n').map(|l| l.split('\t').map(str::to_string).collect()).collect()
+}
+
 /// 表（view.rs の draw_grid）の、表の左端から `col` 列目にある列（行番号の欄は 7 列、列は幅 + 3）
 pub fn grid_col_at(hscroll: usize, widths: &[usize], col: usize) -> Option<usize> {
     let mut x = 7;
@@ -823,8 +928,8 @@ pub struct ResultComponent;
 
 impl crate::component::Component for ResultComponent {
     fn status(&self, ed: &crate::editor::Editor) -> Option<crate::component::Status> {
-        let help = "hjkl 移動  i・F2 値を直す  x NULL  u 戻す  Ctrl+Enter 送る  y 値  Y 行  gy 表全体  q 閉じる ";
-        let plain = "矢印 移動  F2・ダブルクリック 値を直す  Ctrl+Z 戻す  Ctrl+Enter 送る  右クリック 操作  Esc 窓へ ";
+        let help = "hjkl 移動  i・F2 値を直す  x NULL  Ctrl+V 貼る  u 戻す  Ctrl+Enter 送る  y 値  Y 行  gy 表全体  q 閉じる ";
+        let plain = "矢印 移動  F2・ダブルクリック 値を直す  Ctrl+C・V コピー・貼り付け  Ctrl+Z 戻す  Ctrl+Enter 送る  右クリック 操作  Esc 窓へ ";
         match ed.db_results.active_tab().map_or(0, |t| t.changes()) {
             0 => crate::component::Status::keys("-- クエリの結果 --", help, plain),
             n => Some(crate::component::Status { name: format!("-- 編集 --  変更 {n} 行（未送信）"), warn: true, help: help.into(), plain: Some(plain.into()) }),
@@ -961,6 +1066,67 @@ mod tests {
         assert_eq!(group(12480), "12,480");
     }
 
+    #[test]
+    fn cells_from_clipboard() {
+        assert_eq!(cells_of("a"), [["a"]]);
+        assert_eq!(cells_of("a\tb\r\nc\td\r\n"), [["a", "b"], ["c", "d"]]);
+        assert_eq!(cells_of("a\n\nb"), [vec!["a"], vec![""], vec!["b"]]);
+    }
+
+    /// 結果の表: 打っている間に別の行・列をダブルクリックすると、打った値を決めてそのセルを直す。Ctrl+C・Ctrl+V でセルをコピー・貼り付け
+    #[test]
+    fn click_and_clipboard_cells() {
+        use crate::db_panel::tests::wait;
+        let mut e = Editor::new(nagi_core::Buffer::from_str("x\n"), None);
+        e.set_screen(160, 50);
+        e.open_db_panel();
+        e.db_add("mem jdbc:sqlite::memory:");
+        let i = e.db.as_ref().unwrap().sources.len() - 1;
+        e.db.as_mut().unwrap().selected = e.db.as_ref().unwrap().rows.iter().position(|r| *r == crate::db_panel::DbRow::Source(i)).unwrap();
+        let keys = |e: &mut Editor, k: &str| {
+            for key in nagi_vim::parse_keys(k, " ") {
+                e.key(key);
+            }
+        };
+        keys(&mut e, "<CR>");
+        wait(&mut e, &|e| e.db.as_ref().unwrap().conns[i].connected);
+        e.db.as_mut().unwrap().conns[i].manual = true;
+        e.db_execute(i, "create table item(id integer primary key, name text)".into());
+        e.db_execute(i, "insert into item values (1, 'a'), (2, 'b')".into());
+        e.db_execute(i, "select * from item order by id".into());
+        wait(&mut e, &|e| e.db_results.active_tab().is_some_and(|t| t.rows.len() == 2 && t.target.is_some()));
+        wait(&mut e, &|e| e.db.as_ref().unwrap().conns[i].columns.contains_key(&("main".into(), "item".into())));
+        // 表は 4 行目から（タブ・絞り込み・見出し 2 行）。id は 7 列目から、name は id の幅 + 3 の後
+        let name_x = 7 + e.db_results.active_tab().unwrap().widths[0] + 3 + 1;
+        e.result_click(4, name_x, 1);
+        e.result_click(4, name_x, 2);
+        assert!(e.db_results.value_edit.is_some());
+        keys(&mut e, "<Esc>ccz");
+        e.result_click(5, 8, 1);
+        e.result_click(5, 8, 2);
+        let t = e.db_results.active_tab().unwrap();
+        assert_eq!(t.value(0, 1).as_deref(), Some("z"));
+        assert_eq!((t.row, t.col), (1, 0));
+        assert_eq!(e.db_results.value_edit.as_ref().map(|f| f.text()).as_deref(), Some("2"));
+        keys(&mut e, "<Esc><Esc>");
+        assert!(e.db_results.value_edit.is_none());
+        thread_local! { static CLIP: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) }; }
+        fn set(t: &str) { CLIP.with(|c| *c.borrow_mut() = t.to_string()); }
+        fn get() -> Option<String> { CLIP.with(|c| Some(c.borrow().clone())) }
+        e.clipboard = Some(crate::editor::Clipboard { set, get });
+        keys(&mut e, "kl");
+        e.key(Key::Ctrl('c'));
+        assert_eq!(get().as_deref(), Some("z"));
+        keys(&mut e, "j");
+        e.key(Key::Ctrl('v'));
+        assert_eq!(e.db_results.active_tab().unwrap().value(1, 1).as_deref(), Some("z"));
+        // 表の外へははみ出さない
+        set("p\tq\nr\ts");
+        e.key(Key::Ctrl('v'));
+        let t = e.db_results.active_tab().unwrap();
+        assert_eq!((t.value(1, 1).as_deref(), t.changes()), (Some("p"), 2));
+    }
+
     /// 1 つのテーブルからの SELECT の結果を F2 で直し、Ctrl+Enter で送る（SQLite で）
     #[test]
     fn edit_result_and_send() {
@@ -1013,7 +1179,7 @@ mod tests {
         // 手動の Tx をロールバックすると、直して送った結果の表も前の値に戻る
         let id = e.db_results.tabs[e.db_results.tabs.len() - 2].id;
         e.db_commit(i, false);
-        assert_eq!(e.db_results.tab(id).unwrap().rows[1][1].as_deref(), Some("b"));
+        wait(&mut e, &|e| e.db_results.tab(id).unwrap().rows[1][1].as_deref() == Some("b"));
         wait(&mut e, &|e| e.db_results.tab(id).is_some_and(|t| !t.running));
         assert_eq!(e.db_results.tab(id).unwrap().rows[1][1].as_deref(), Some("b"));
     }

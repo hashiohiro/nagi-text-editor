@@ -695,11 +695,37 @@ impl Editor {
     /// 右クリック（欄の中の行・列・幅と、メニューを出す画面の位置）。押した行を選んでから、その行のメニューを出す
     pub(crate) fn log_context(&mut self, row: usize, col: usize, w: usize, at: (usize, usize)) -> bool {
         self.log_click(row, col, w, 1);
-        let (bw, _) = self.log_cols_for(w);
+        let (bw, dw) = self.log_cols_for(w);
         let Some(l) = &self.log else { return false };
         let cur = self.git.status.as_ref().map(|s| s.branch.clone()).unwrap_or_default();
         let upstream = self.git.status.as_ref().and_then(|s| s.upstream.clone());
-        let menu = if col < bw {
+        // 右の列（選んだコミットの変えたファイル）は w - dw から（割り付けは log_click と同じ）
+        let menu = if l.focus_files && col >= w.saturating_sub(dw) {
+            let Some(d) = &l.detail else { return false };
+            let Some((_, path)) = d.files.get(l.file_sel).cloned() else { return false };
+            let (h, short) = (d.hash.clone(), d.hash[..7.min(d.hash.len())].to_string());
+            let mut m = crate::menu::Menu::new(at.0, at.1);
+            m = m.item("差分を見る（このコミットでの変更）", |e| e.log_open_file_diff());
+            let (x, p) = (h.clone(), path.clone());
+            m = m.item("作業中のファイルと比べる", move |e| e.log_compare_worktree(&x, &p));
+            let p = path.clone();
+            m = m.item("ファイルを開く", move |e| e.log_open_worktree_file(&p));
+            let p = path.clone();
+            m = m.item("このファイルの履歴", move |e| e.open_log_file(&p));
+            m = m.sep();
+            let (x, p, s) = (h.clone(), path.clone(), short.clone());
+            m = m.item("この版に戻す…", move |e| {
+                let q = format!("{p} を {s} の版に戻しますか（作業中の変更は消える）");
+                e.ask(q, move |e| {
+                    if e.git_now(&["checkout", &x, "--", &p], format!("{p} を {s} の版に戻しました")) {
+                        e.reload_log();
+                    }
+                })
+            });
+            let p = path.clone();
+            m = m.item("パスをコピー", move |e| e.copy_text(p, "パス"));
+            m
+        } else if col < bw {
             let Some(i) = l.branch_sel.filter(|_| row >= 1 && l.branch_at(row - 1).is_some()) else { return false };
             let (sec, name, is_cur) = l.branches[i].clone();
             let local = sec == "ローカル";
@@ -861,6 +887,35 @@ impl Editor {
         let short = &h[..7.min(h.len())];
         self.show_diff(format!("{short}^  {path}"), format!("{short}  {path}"), &old, &new, None);
         self.diff_return = Some(State::Log);
+    }
+
+    /// コミット `h` の版の `path` と、作業中のファイルを比べる（右が作業中）
+    fn log_compare_worktree(&mut self, h: &str, path: &str) {
+        let Some(root) = self.git.root.clone() else { return };
+        let old = nagi_workers::git::blob_at(&root, h, path).unwrap_or_default();
+        let new = std::fs::read_to_string(root.join(path)).unwrap_or_default();
+        let short = &h[..7.min(h.len())];
+        self.show_diff(format!("{short}  {path}"), format!("作業中  {path}"), &old, &new, None);
+        self.diff_return = Some(State::Log);
+    }
+
+    /// 作業ツリーの `path` を開く（無ければ知らせる）
+    fn log_open_worktree_file(&mut self, path: &str) {
+        let Some(root) = self.git.root.clone() else { return };
+        let p = root.join(path);
+        if !p.exists() {
+            self.notify.warn(format!("{path} は作業ツリーにありません"));
+            return;
+        }
+        self.edit_file(p);
+        self.set_state(State::Normal);
+    }
+
+    /// `path`（根からの / 区切り）の履歴を開く
+    fn open_log_file(&mut self, path: &str) {
+        let Some(root) = self.git.root.clone() else { return };
+        self.log = None;
+        self.load_log(root, Some(path.to_string()), None);
     }
 
     /// `:Gbranch 名前 [起点]`: ブランチを作ってチェックアウトする

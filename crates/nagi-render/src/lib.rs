@@ -324,6 +324,9 @@ pub struct Renderer {
     instances: Option<ID3D11Buffer>,
     capacity: usize,
     atlas: Atlas,
+    /// 次に描いたフレームを読み戻す（試験の画面の写し）。読んだものは `captured`（幅, 高さ, BGRA の画素）
+    pub capture: bool,
+    pub captured: Option<(u32, u32, Vec<u8>)>,
 }
 
 impl Renderer {
@@ -348,7 +351,7 @@ impl Renderer {
         unsafe { swap_chain.SetMaximumFrameLatency(1)? };
         let waitable = unsafe { swap_chain.GetFrameLatencyWaitableObject() };
         let atlas = Atlas::new(&gpu.device)?;
-        let mut r = Self { gpu, swap_chain, waitable, flags, rtv: None, size: (desc.Width, desc.Height), instances: None, capacity: 0, atlas };
+        let mut r = Self { gpu, swap_chain, waitable, flags, rtv: None, size: (desc.Width, desc.Height), instances: None, capacity: 0, atlas, capture: false, captured: None };
         r.create_rtv()?;
         Ok(r)
     }
@@ -513,8 +516,40 @@ impl Renderer {
             ctx.PSSetShaderResources(0, Some(&[Some(self.atlas.mono.srv.clone()), self.atlas.color.as_ref().map(|c| c.srv.clone())]));
             ctx.PSSetSamplers(0, Some(&[Some(self.gpu.sampler.clone())]));
             ctx.DrawInstanced(4, insts.len() as u32, 0, 0);
+            // 表示すると中身が捨てられる（FLIP_DISCARD）ので、その前に読む
+            if std::mem::take(&mut self.capture) {
+                self.captured = self.read_back().ok();
+            }
             self.swap_chain.Present(0, DXGI_PRESENT(0)).ok()?;
         }
         Ok(())
+    }
+
+    /// 描いた後ろのバッファを CPU へ読み戻す（幅, 高さ, 上の行からの BGRA）
+    fn read_back(&self) -> windows::core::Result<(u32, u32, Vec<u8>)> {
+        let ctx = &self.gpu.ctx;
+        unsafe {
+            let back: ID3D11Texture2D = self.swap_chain.GetBuffer(0)?;
+            let mut desc = D3D11_TEXTURE2D_DESC::default();
+            back.GetDesc(&mut desc);
+            desc.Usage = D3D11_USAGE_STAGING;
+            desc.BindFlags = 0;
+            desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
+            desc.MiscFlags = 0;
+            let mut st = None;
+            self.gpu.device.CreateTexture2D(&desc, None, Some(&mut st))?;
+            let Some(st) = st else { return Err(windows::core::Error::empty()) };
+            ctx.CopyResource(&st, &back);
+            let mut m = D3D11_MAPPED_SUBRESOURCE::default();
+            ctx.Map(&st, 0, D3D11_MAP_READ, 0, Some(&mut m))?;
+            let (w, h) = (desc.Width, desc.Height);
+            let mut out = Vec::with_capacity((w * h * 4) as usize);
+            for y in 0..h {
+                let row = std::slice::from_raw_parts(m.pData.cast::<u8>().add((y * m.RowPitch) as usize), (w * 4) as usize);
+                out.extend_from_slice(row);
+            }
+            ctx.Unmap(&st, 0);
+            Ok((w, h, out))
+        }
     }
 }

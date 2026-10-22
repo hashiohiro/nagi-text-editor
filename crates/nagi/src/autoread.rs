@@ -128,6 +128,7 @@ impl Editor {
                         }
                     }
                 }
+                Change::Dir(d) if self.on_git_dir_change(&d) => redraw = true,
                 Change::Dir(d) => redraw |= self.tree_reload_dir(&d),
             }
         }

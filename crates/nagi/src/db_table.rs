@@ -359,6 +359,47 @@ impl Editor {
         self.notify.info("送信しています…");
     }
 
+    /// 選んでいるセルの値をコピー（NULL は空）
+    pub(crate) fn db_table_copy(&mut self) {
+        let Some(te) = self.db_table.as_ref().filter(|t| t.len() > 0 && !t.cols.is_empty()) else { return };
+        let s = te.value(te.row, te.col).unwrap_or_default();
+        self.copy_text(s, "値");
+    }
+
+    /// クリップボードを選んでいるセルに貼る（タブ・改行で区切ってあれば、そこから右・下のセルへ。消す行は飛ばす）
+    pub(crate) fn db_table_paste(&mut self) {
+        if !self.db_table.as_ref().is_some_and(|t| t.len() > 0 && !t.cols.is_empty()) {
+            return;
+        }
+        let Some(cells) = self.clipboard_cells() else { return };
+        let Some(te) = &mut self.db_table else { return };
+        let (row, col) = (te.row, te.col);
+        let (rows, cols) = (te.len(), te.cols.len());
+        let mut n = 0;
+        for (dr, line) in cells.iter().enumerate().filter(|(dr, _)| row + dr < rows) {
+            if te.at(row + dr).0 == RowState::Deleted {
+                continue;
+            }
+            for (dc, v) in line.iter().enumerate().filter(|(dc, _)| col + dc < cols) {
+                te.set_value(row + dr, col + dc, Some(v.clone()));
+                n += 1;
+            }
+        }
+        match n {
+            0 => self.notify.warn("消す行には貼れません（dd で取り消し）"),
+            1 => {}
+            n => self.notify.info(format!("{n} 個のセルに貼りました")),
+        }
+    }
+
+    /// 打っている値を、選んでいるセルに入れる（欄を閉じる）
+    fn db_table_commit_edit(&mut self) {
+        let Some(te) = &mut self.db_table else { return };
+        let v = te.editing.take().map(|f| f.text()).unwrap_or_default();
+        let (d, c) = (te.row, te.col);
+        te.set_value(d, c, Some(v));
+    }
+
     pub(crate) fn db_table_key(&mut self, key: Key) {
         let half = (self.windows_rows() / 2).max(1);
         let Some(te) = &mut self.db_table else {
@@ -372,10 +413,8 @@ impl Editor {
             match out {
                 FieldOut::Cancel => te.editing = None,
                 FieldOut::Submit => {
-                    let v = te.editing.take().map(|f| f.text()).unwrap_or_default();
-                    let (d, c) = (te.row, te.col);
-                    te.set_value(d, c, Some(v));
-                    if key == Key::Tab {
+                    self.db_table_commit_edit();
+                    if let Some(te) = self.db_table.as_mut().filter(|_| key == Key::Tab) {
                         te.col = (te.col + 1).min(te.cols.len().saturating_sub(1));
                     }
                 }
@@ -533,7 +572,7 @@ impl Editor {
 
 /// この部品の入口（component.rs）
 /// Vim を使わないときの状態行の説明
-const PLAIN_HELP: &str = "矢印 移動  F2・Enter 値を直す  Ctrl+Z 戻す  右クリック 操作  Ctrl+Enter 送る ";
+const PLAIN_HELP: &str = "矢印 移動  F2・Enter 値を直す  Ctrl+C・V コピー・貼り付け  Ctrl+Z 戻す  右クリック 操作  Ctrl+Enter 送る ";
 
 pub struct DbTableComponent;
 
@@ -581,12 +620,21 @@ impl crate::layout::View for DbTableView {
         // 窓を覆って出ているテーブル: 押したらテーブルへ向き、押したセルを選ぶ（ダブルクリックで直す。Enter と同じ）。下の本文へは通さない
         ed.set_state(crate::editor::State::DbTable);
         let Some(te) = &mut ed.db_table else { return crate::layout::Click::Done };
-        // 値を打っている間・送る前の確認の間は、選び直さない
-        if te.editing.is_some() || te.preview.is_some() {
+        // 送る前の確認の間は、選び直さない
+        if te.preview.is_some() {
             return crate::layout::Click::Done;
         }
         // 描き方（draw_db_table）と同じ割り付け: 見出し 2 行の下に表（表の見出し 2 行）
         let len = te.len();
+        // 値を打っている間: 別のセルを押したら、打った値を決めてからそのセルへ（ダブルクリックならそのまま直し始める）。ほかは選び直さない
+        if te.editing.is_some() {
+            let hit = crate::list::row_at(te.scroll, row - r.y, 4, len).zip(crate::result_grid::grid_col_at(te.hscroll, &te.widths, col - r.x));
+            if !hit.is_some_and(|h| h != (te.row, te.col)) {
+                return crate::layout::Click::Done;
+            }
+            ed.db_table_commit_edit();
+        }
+        let Some(te) = &mut ed.db_table else { return crate::layout::Click::Done };
         let pick = crate::list::pick_row(&mut te.row, te.scroll, row - r.y, 4, len, clicks);
         if pick.is_some() {
             if let Some(c) = crate::result_grid::grid_col_at(te.hscroll, &te.widths, col - r.x) {
@@ -772,6 +820,34 @@ mod tests {
         assert!(te.editing.is_none(), "1 回では直さない");
         crate::layout::press(&mut e, s, 5, name_x, |_| 2);
         assert!(e.db_table.as_ref().unwrap().editing.is_some(), "ダブルクリックで直し始める");
+        // 打っている間に別の行・列をダブルクリック: 打った値を決めて、押したセルを直し始める
+        keys(&mut e, "<Esc>ccz");
+        crate::layout::press(&mut e, s, 4, x + 8, |_| 1);
+        crate::layout::press(&mut e, s, 4, x + 8, |_| 2);
+        let te = e.db_table.as_ref().unwrap();
+        assert_eq!(te.value(1, 1).as_deref(), Some("z"));
+        assert_eq!((te.row, te.col), (0, 0));
+        assert_eq!(te.editing.as_ref().map(|f| f.text()).as_deref(), Some("1"));
+        // 同じセルを押しても、打っている欄は閉じない
+        crate::layout::press(&mut e, s, 4, x + 8, |_| 1);
+        assert!(e.db_table.as_ref().unwrap().editing.is_some());
+        keys(&mut e, "<Esc><Esc>");
+        assert!(e.db_table.as_ref().unwrap().editing.is_none());
+        // Ctrl+C でセルの値、Ctrl+V で貼る（タブ・改行で区切ってあれば右・下のセルへ）
+        thread_local! { static CLIP: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) }; }
+        fn set(t: &str) { CLIP.with(|c| *c.borrow_mut() = t.to_string()); }
+        fn get() -> Option<String> { CLIP.with(|c| Some(c.borrow().clone())) }
+        e.clipboard = Some(crate::editor::Clipboard { set, get });
+        keys(&mut e, "jl");
+        e.key(Key::Ctrl('c'));
+        assert_eq!(get().as_deref(), Some("z"));
+        keys(&mut e, "kh");
+        set("10\tp\r\n20\tq\r\n");
+        e.key(Key::Ctrl('v'));
+        let te = e.db_table.as_ref().unwrap();
+        assert_eq!((0..2).map(|d| (te.value(d, 0), te.value(d, 1))).collect::<Vec<_>>(), [(Some("10".into()), Some("p".into())), (Some("20".into()), Some("q".into()))]);
+        keys(&mut e, "u");
+        assert_eq!(e.db_table.as_ref().unwrap().value(1, 1).as_deref(), Some("z"), "u は 1 つのセルずつ戻す");
     }
 
     #[test]

@@ -47,6 +47,8 @@ enum Expect {
     /// まとめて送った (返す先, 文の数)
     Batch(Target, usize),
     Tx,
+    /// (コミットか, 変更の数)
+    Commit(bool, usize),
     SetSchema(String),
     Ddl(String),
 }
@@ -847,6 +849,10 @@ impl Editor {
             self.db_log_line(&s, false);
             return;
         }
+        if let Reply::Reconnected { tx_lost } = r {
+            self.db_reconnected(i, tx_lost);
+            return;
+        }
         let Some(p) = &mut self.db else { return };
         let name = p.sources[i].name.clone();
         let c = &mut p.conns[i];
@@ -984,6 +990,21 @@ impl Editor {
                 self.db_log_line(&format!("{name}: {e}"), true);
             }
             (Some(Expect::Tx), _) => {}
+            (Some(Expect::Commit(commit, n)), reply) => {
+                let what = if commit { "コミット" } else { "ロールバック" };
+                if let Reply::Error(e) = &reply {
+                    self.notify.error(format!("{name}: {what}できません: {}", e.lines().next().unwrap_or("")));
+                    self.db_log_line(&format!("{name}: {what}できません: {e}"), true);
+                    return;
+                }
+                c.pending = c.pending.saturating_sub(n);
+                self.notify.info(format!("{what}しました（{n} 件）"));
+                self.db_log_line(&format!("{what}しました（{n} 件）"), false);
+                // 結果の表で直して送った値: ロールバックなら前の値に戻して読み直す
+                for id in self.db_results.tx_ended(i, commit) {
+                    self.db_requery(id);
+                }
+            }
             (Some(Expect::SetSchema(s)), _) => {
                 c.schema = s.clone();
                 if !c.objects.contains_key(&s) {
@@ -1151,15 +1172,29 @@ impl Editor {
         if !c.connected {
             return;
         }
+        // 変更の数は、答えが届いてから減らす（その前に接続が切れていたら、失われた数として知らせる）
         let n = c.pending;
-        c.pending = 0;
-        c.send(if commit { Req::Commit } else { Req::Rollback }, Expect::Tx);
-        let what = if commit { "コミット" } else { "ロールバック" };
-        self.notify.info(format!("{what}しました（{n} 件）"));
-        self.db_log_line(&format!("{what}しました（{n} 件）"), false);
-        // 結果の表で直して送った値: ロールバックなら前の値に戻して読み直す
-        for id in self.db_results.tx_ended(i, commit) {
-            self.db_requery(id);
+        c.send(if commit { Req::Commit } else { Req::Rollback }, Expect::Commit(commit, n));
+    }
+
+    /// 裏で接続が切れていたので、つなぎ直した（手動の Tx なら、コミットしていない変更は失われた）
+    fn db_reconnected(&mut self, i: usize, tx_lost: bool) {
+        let Some(p) = &mut self.db else { return };
+        let name = p.sources[i].name.clone();
+        let c = &mut p.conns[i];
+        let n = if tx_lost { std::mem::take(&mut c.pending) } else { 0 };
+        if n > 0 {
+            self.notify.error(format!("{name} の接続が切れていたので、つなぎ直しました。コミットしていない {n} 件の変更は失われました"));
+            self.db_log_line(&format!("{name} の接続が切れていたので、つなぎ直しました。コミットしていない {n} 件の変更は失われました"), true);
+        } else {
+            self.notify.info(format!("{name} の接続が切れていたので、つなぎ直しました"));
+            self.db_log_line(&format!("{name} の接続が切れていたので、つなぎ直しました"), false);
+        }
+        if tx_lost {
+            // 結果の表で直して送った値は、ロールバックと同じく前の値に戻して読み直す
+            for id in self.db_results.tx_ended(i, false) {
+                self.db_requery(id);
+            }
         }
     }
 
@@ -1176,18 +1211,41 @@ impl Editor {
         }
     }
 
-    /// 接続先 `i` を切る（コミットしていない変更があれば切らない）
+    /// 接続先 `i` を切る（コミットしていない変更があれば、捨ててよいか聞く。接続が切れていても切れる）
     fn db_disconnect(&mut self, i: usize) {
-        let Some(p) = &mut self.db else { return };
-        if p.conns[i].pending > 0 {
-            self.notify.info(format!("まだコミットしていない変更が {} 件あります。先にコミットかロールバックを", p.conns[i].pending));
+        self.db_close(i, false);
+    }
+
+    /// 接続先 `i` をつなぎ直す（今の接続を捨てて、新しくつなぐ）
+    fn db_reconnect(&mut self, i: usize) {
+        self.db_close(i, true);
+    }
+
+    fn db_close(&mut self, i: usize, again: bool) {
+        let Some(p) = &self.db else { return };
+        let n = p.conns[i].pending;
+        if n > 0 {
+            let q = format!("まだコミットしていない変更が {n} 件あります。捨てて{}か", if again { "つなぎ直します" } else { "切ります" });
+            self.ask_or(q, move |e| e.db_close_now(i, again), |e| e.notify.info("やめました"));
             return;
         }
+        self.db_close_now(i, again);
+    }
+
+    fn db_close_now(&mut self, i: usize, again: bool) {
+        let Some(p) = &mut self.db else { return };
+        // 裏のスレッドは、送り口が無くなると今の頼みごとを終えてから接続を閉じる（コミットしていない変更は取り消される）
         p.conns[i] = Conn::default();
+        p.then.remove(&i);
         p.expanded.remove(&format!("s{i}"));
         p.rebuild();
         p.selected = p.rows.iter().position(|r| *r == DbRow::Source(i)).unwrap_or(0);
-        self.notify.info(format!("{} を切りました", p.sources[i].name));
+        let name = p.sources[i].name.clone();
+        if again {
+            self.db_begin_connect(i);
+        } else {
+            self.notify.info(format!("{name} を切りました"));
+        }
     }
 
     /// 接続先 `i` の木を読み直す（覚えたテーブル・列・索引を捨てて、今のスキーマから）
@@ -1429,7 +1487,7 @@ impl Editor {
                 if c.client.is_none() {
                     m = m.item("つなぐ", move |e| e.db_begin_connect(i));
                 } else {
-                    m = m.item("切る", move |e| e.db_disconnect(i));
+                    m = m.item("つなぎ直す", move |e| e.db_reconnect(i)).item("切る", move |e| e.db_disconnect(i));
                 }
                 m = m.item("新しいクエリ", move |e| e.db_new_query(i, None)).item("コンソールを開く", move |e| e.open_console(i, None));
                 if c.connected {
@@ -1551,6 +1609,20 @@ impl Editor {
             return true;
         }
         false
+    }
+
+    /// Vim を使わないとき、木で文字を打ったら絞り込みの欄を開いて、その文字から打ち続けられるようにする（打った文字は今の絞り込みの後ろへ）。開いたら true
+    pub(crate) fn db_type_to_filter(&mut self, key: Key) -> bool {
+        if self.vim_on || !matches!(key, Key::Char(c) if c != ' ') || !self.right_focused() || self.right_tab != RightTab::Database {
+            return false;
+        }
+        let Some(p) = &mut self.db else { return false };
+        if p.filter.is_some() || p.form.is_some() || p.password.is_some() {
+            return false;
+        }
+        p.filter = Some(VimField::new(&p.filter_text, false));
+        self.db_key(key);
+        true
     }
 
     /// IME を使う入力欄にいるか（パスワードでは使わない）
@@ -1754,8 +1826,14 @@ impl Editor {
         self.focus_right(RightTab::Database);
         match self.db_selected() {
             Some(DbRow::Object(_, _, _, Group::Tables | Group::Views, _)) if accept => self.db_open_selected(),
-            // 開け閉めできる行（接続先・テーブルを除く）は 1 回で、ほかはダブルクリックで
-            Some(r) if accept || (r.key().is_some() && !matches!(r, DbRow::Source(_) | DbRow::Object(..))) => self.db_activate(),
+            // 開け閉めできる行（テーブル・ビューを除く。接続先は、つないでいなければつなぐ）は 1 回目のクリックで。
+            // ダブルクリックの 2 回目では閉じ直さない
+            Some(r) if r.key().is_some() && !matches!(r, DbRow::Object(..)) => {
+                if clicks == 1 {
+                    self.db_activate();
+                }
+            }
+            Some(_) if accept => self.db_activate(),
             _ => {}
         }
     }
@@ -1961,6 +2039,59 @@ pub(crate) mod tests {
         assert_eq!(generate_sql("insert", "T", &cols[..2]), "INSERT INTO T (ID, NAME)\nVALUES (/* ID */ NULL, /* NAME */ NULL)");
         assert_eq!(generate_sql("update", "T", &cols[..2]), "UPDATE T\nSET NAME = NULL\nWHERE ID = NULL");
         assert_eq!(generate_sql("delete", "T", &cols[1..2]), "DELETE FROM T\nWHERE /* 条件 */", "主キーが無ければ条件は注釈だけ");
+    }
+
+    /// Vim を使わないとき、木で文字を打つと絞り込みの欄が開き、そのまま打ち続けられる
+    #[test]
+    fn type_to_filter() {
+        let mut e = Editor::new(nagi_core::Buffer::from_str("x\n"), None);
+        e.set_screen(160, 50);
+        e.set_vim(false);
+        e.open_db_panel();
+        e.db_add("mem jdbc:sqlite::memory:");
+        e.focus_right(RightTab::Database);
+        assert!(e.right_focused());
+        for c in "it".chars() {
+            e.key(Key::Char(c));
+        }
+        let p = e.db.as_ref().unwrap();
+        assert!(p.filter.is_some());
+        assert_eq!(p.filter_text, "it");
+        // 決めた後にまた打つと、今の絞り込みの後ろへ
+        e.key(Key::Enter);
+        assert!(e.db.as_ref().unwrap().filter.is_none());
+        e.key(Key::Char('e'));
+        assert_eq!(e.db.as_ref().unwrap().filter_text, "ite");
+        // Ctrl+A で全部を選んで打ち直す
+        e.key(Key::Ctrl('a'));
+        e.key(Key::Char('m'));
+        assert_eq!(e.db.as_ref().unwrap().filter_text, "m");
+        e.set_vim(true);
+    }
+
+    /// 接続先は 1 回のクリックでつなぐ・開け閉めする。ダブルクリックの 2 回目では閉じ直さない
+    #[test]
+    fn click_source() {
+        let mut e = Editor::new(nagi_core::Buffer::from_str("x\n"), None);
+        e.set_screen(160, 50);
+        e.open_db_panel();
+        e.db_add("mem jdbc:sqlite::memory:");
+        let i = e.db.as_ref().unwrap().sources.len() - 1;
+        let prow = |e: &Editor| {
+            let p = e.db.as_ref().unwrap();
+            p.rows.iter().position(|r| *r == DbRow::Source(i)).map(|k| k - p.scroll + 2).unwrap()
+        };
+        let open = |e: &Editor| e.db.as_ref().unwrap().expanded.contains(&format!("s{i}"));
+        let r = prow(&e);
+        e.db_click(r, 1);
+        assert!(e.db.as_ref().unwrap().conns[i].client.is_some(), "1 回でつなぎ始める");
+        wait(&mut e, &|e| e.db.as_ref().unwrap().conns[i].connected);
+        assert!(open(&e));
+        e.db_click(r, 1);
+        assert!(!open(&e), "もう 1 回で閉じる");
+        e.db_click(r, 1);
+        e.db_click(r, 2);
+        assert!(open(&e), "ダブルクリックでも開いたまま");
     }
 
     /// SQLite で: 木の右クリック → 接続先・テーブル・列のメニュー → SELECT 文を作る・件数・名前のコピー

@@ -75,6 +75,11 @@ impl VimField {
         self.ed.state() == State::Insert || (!self.ed.vim_on && matches!(self.ed.state(), State::Visual { .. }))
     }
 
+    /// 選んでいる文字（Vim を使わない欄で選んでいるときだけ）
+    pub fn selected_text(&self) -> Option<String> {
+        if self.ed.vim_on { None } else { self.ed.plain_selected_text() }
+    }
+
     /// 最下行に出すモードの名前
     pub fn mode_label(&self) -> &'static str {
         match self.ed.state() {
@@ -90,6 +95,10 @@ impl VimField {
             return FieldOut::None;
         }
         let t = if self.multiline { text.replace("\r\n", "\n") } else { text.trim_end_matches(['\r', '\n']).replace("\r\n", " ").replace(['\n', '\r'], " ") };
+        // Vim を使わない欄: 選んでいれば置き換える
+        if !self.ed.vim_on {
+            self.ed.plain_delete_selection();
+        }
         self.ed.insert_text(&t);
         FieldOut::Changed
     }
@@ -106,6 +115,11 @@ impl VimField {
             Key::Esc if !self.ed.vim_on && self.ed.state() == State::Insert => return FieldOut::Cancel,
             // Ex のコマンドラインは入力欄の中では使わない
             Key::Char(':') if normal => return FieldOut::None,
+            // Vim を使わない欄の Ctrl+A は全部を選ぶ
+            Key::Ctrl('a') if !self.ed.vim_on => {
+                self.ed.plain_select_all();
+                return FieldOut::None;
+            }
             Key::Paste | Key::Ctrl('v') if insert => {
                 let text = match &clip {
                     Some(cb) => (cb.get)(),
@@ -193,6 +207,23 @@ mod tests {
             last = f.key(key, regs, None);
         }
         last
+    }
+
+    /// Vim を使わない欄: Ctrl+A で全部を選び、打つ・貼ると置き換わる
+    #[test]
+    fn plain_select_all() {
+        set_vim(false);
+        let mut regs = Registers::new();
+        let mut f = VimField::new("abc", false);
+        f.key(Key::Ctrl('a'), &mut regs, None);
+        assert_eq!(f.selected_text().as_deref(), Some("abc"));
+        assert!(f.is_insert());
+        f.key(Key::Char('x'), &mut regs, None);
+        assert_eq!(f.text(), "x");
+        f.key(Key::Ctrl('a'), &mut regs, None);
+        f.insert_text("yz");
+        assert_eq!(f.text(), "yz");
+        set_vim(true);
     }
 
     #[test]

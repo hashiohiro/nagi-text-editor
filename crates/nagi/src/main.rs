@@ -1,10 +1,11 @@
 //! nagi（凪）: 静かで、余計なものがない、速いエディタ。
 //!
-//! 使い方: nagi [FILE] [--startup-report] [--exit-after-first-frame] [--keys KEYS] [--replay KEYS] [--replay-file PATH]
+//! 使い方: nagi [FILE] [--startup-report] [--exit-after-first-frame] [--keys KEYS] [--replay KEYS] [--replay-file PATH] [--headless]
 //!
 //! `--keys` は起動直後にキー列（Vim の表記。`/foo<CR>` など）を流し込み、最後に 1 回だけ描く。画面の確認やデモ用。
 //! `--replay` はキー列を 1 打ずつ、キー入力と同じ道筋（処理 → 描画 → 計測の記録）で流す。`:NagiStats` の確認用。
 //! `--replay-file` は同じキー列を UTF-8 のファイルから読む（シェルの引用符や文字コードを通さない。末尾の改行は無視）。
+//! `--headless` は窓を表に出さずに流す（試験用。ほかの作業の入力を取らない。replay.rs の `<Shot>` で画面を写せる）。
 //!
 //! 起動は並列（architecture.md §6.4）: GPU・フォント・ファイル読込を別スレッドで進め、
 //! メインスレッドはその間にイベントループと非表示のウィンドウを作る。最初のフレームを描いてから表示する。
@@ -28,6 +29,7 @@ mod settings_dialog;
 mod editor_settings;
 mod smart_complete;
 mod autoread;
+mod replay;
 mod bottom_panel;
 mod terminal;
 mod launcher;
@@ -134,11 +136,13 @@ struct Opts {
     replay: Option<String>,
     startup_report: bool,
     exit_after_first_frame: bool,
+    /// 窓を表に出さない（`--replay` の試験を、ほかの作業の入力を取らずに流す。描いたものは `<Shot>` で読み戻せる）
+    headless: bool,
 }
 
 impl Opts {
     fn parse() -> Self {
-        let mut o = Opts { file: None, cwd: None, keys: None, replay: None, startup_report: false, exit_after_first_frame: false };
+        let mut o = Opts { file: None, cwd: None, keys: None, replay: None, startup_report: false, exit_after_first_frame: false, headless: false };
         let mut args = std::env::args().skip(1);
         while let Some(a) = args.next() {
             match a.as_str() {
@@ -150,6 +154,7 @@ impl Opts {
                     None => eprintln!("--replay-file: ファイルを指定してください"),
                 },
                 "--startup-report" => o.startup_report = true,
+                "--headless" => o.headless = true,
                 "--exit-after-first-frame" => {
                     o.exit_after_first_frame = true;
                     o.startup_report = true;
@@ -293,8 +298,8 @@ struct Frame {
     /// 今のマウスのカーソルの形（区切りの上では ↔ / ↕）
     cursor_icon: winit::window::CursorIcon,
     stats: stats::Stats,
-    /// `--replay` の残りのキー（1 回のイベント処理で 1 打ずつ流す）
-    replay: std::collections::VecDeque<VKey>,
+    /// `--replay` の残りの手順（1 回のイベント処理で 1 つずつ。キーと、試験用のマウス・待ち・確かめ。replay.rs）
+    replay: std::collections::VecDeque<replay::Step>,
     replay_deadline: Option<Instant>,
     /// 上下の先読みを済ませた表示位置
     prefetched_top: Option<usize>,
@@ -322,6 +327,13 @@ impl Frame {
                 Err(_) => attrs,
             }
         };
+        // 試験（--headless）: 表に出さないうえ、万一出ても見えず前に出ない所に作る（画面の外・タスクバーに出さない）
+        let attrs = if self.opts.headless {
+            use winit::platform::windows::WindowAttributesExtWindows;
+            attrs.with_position(winit::dpi::PhysicalPosition::new(-32000, -32000)).with_active(false).with_skip_taskbar(true)
+        } else {
+            attrs
+        };
         let window = Arc::new(el.create_window(attrs).unwrap());
         clock::mark("window created (hidden)");
         self.scale = window.scale_factor();
@@ -329,6 +341,12 @@ impl Frame {
             let RawWindowHandle::Win32(h) = window.window_handle().unwrap().as_raw() else { unreachable!() };
             windows::Win32::Foundation::HWND(h.hwnd.get() as *mut _)
         };
+        // 試験（--headless）: キー・マウスを受けない窓にする（操作は --replay が中から流す。ほかの作業の入力を吸わない）
+        if self.opts.headless {
+            unsafe {
+                let _ = windows::Win32::UI::Input::KeyboardAndMouse::EnableWindow(hwnd, false);
+            }
+        }
 
         // GPU の準備（最も遅い）を待つ間に、フォントとファイルを受け取って最初の画面のグリフをラスタライズしておく
         let p = self.pending.take().unwrap();
@@ -383,13 +401,15 @@ impl Frame {
         self.draw();
         clock::mark("first present");
         // 表示だけ先に済ませる。アクティブにする処理（フォーカスと IME の準備）は 20〜35ms かかるので、見えてから行う
-        unsafe {
-            let _ = windows::Win32::UI::WindowsAndMessaging::ShowWindow(hwnd, windows::Win32::UI::WindowsAndMessaging::SW_SHOWNOACTIVATE);
+        if !self.opts.headless {
+            unsafe {
+                let _ = windows::Win32::UI::WindowsAndMessaging::ShowWindow(hwnd, windows::Win32::UI::WindowsAndMessaging::SW_SHOWNOACTIVATE);
+            }
+            clock::mark("window visible");
+            window.set_visible(true);
+            window.focus_window();
+            clock::mark("window activated");
         }
-        clock::mark("window visible");
-        window.set_visible(true);
-        window.focus_window();
-        clock::mark("window activated");
         if let (Some(r), Some(f)) = (&mut self.renderer, &mut self.fonts) {
             view::prefetch_ascii(f, r);
             clock::mark("ascii prefetched");
@@ -443,8 +463,12 @@ impl Frame {
             self.draw();
         }
         if let Some(keys) = self.opts.replay.take() {
-            self.replay = nagi_vim::parse_keys(&keys, &self.rc.leader.clone()).into();
+            self.replay = replay::parse(&keys, &self.rc.leader.clone());
             self.replay_deadline = Some(Instant::now() + replay_every());
+            // 文字の所を押す・文字が出るのを待つために、描いた文字を控える
+            if let Some(ed) = &mut self.ed {
+                ed.record_texts = true;
+            }
         }
     }
 
@@ -914,8 +938,8 @@ impl Frame {
         // 下のストライプも出さない（下の欄の 1 行目にタブがあり、隠した欄は ▴ のボタンで出す）
         let _ = (rows, row >= rows);
         let want: Option<editor::Side> = None;
-        // 区切りの上ではカーソルを ↔ / ↕ に
-        let icon = match ed.sep_at(row, col as usize) {
+        // 区切りの上ではカーソルを ↔ / ↕ に（メニューが出ている間はつかめないので、そのまま）
+        let icon = match ed.sep_at(row, col as usize).filter(|_| ed.menu.is_none()) {
             Some(s) if s.horizontal_drag() => winit::window::CursorIcon::ColResize,
             Some(_) => winit::window::CursorIcon::RowResize,
             None => winit::window::CursorIcon::Default,
@@ -1022,11 +1046,13 @@ impl Frame {
             }
         }
         self.sync_screen();
-        if self.press_stripe() {
+        // メニュー（確認の窓を含む）が出ている間は、下にある区切り・ストライプ・ボタンをつかまない（メニューの項目が押せなくなる）
+        let menu_open = self.ed.as_ref().is_some_and(|e| e.menu.is_some());
+        if !menu_open && self.press_stripe() {
             return;
         }
         // 区切りをつかむ（ダブルクリックで元の大きさに）。下のパネルの見出しは、つかみつつ従来どおりパネルへ移る
-        if let (Some(f), Some(ed)) = (&self.fonts, &mut self.ed) {
+        if let (Some(f), Some(ed), false) = (&self.fonts, &mut self.ed, menu_open) {
             let cell = f.cell();
             let (row, col) = ((self.mouse.1 as f32 / cell.h) as usize, (self.mouse.0.max(0.0) as f32 / cell.w) as usize);
             if ed.button_at(row, col).is_none() {
@@ -1050,7 +1076,7 @@ impl Frame {
             }
         }
         // 出す・隠すのボタン
-        if let (Some(f), Some(ed)) = (&self.fonts, &mut self.ed) {
+        if let (Some(f), Some(ed), false) = (&self.fonts, &mut self.ed, menu_open) {
             let cell = f.cell();
             let (row, col) = ((self.mouse.1 as f32 / cell.h) as usize, (self.mouse.0.max(0.0) as f32 / cell.w) as usize);
             if let Some(b) = ed.button_at(row, col) {
@@ -1375,10 +1401,11 @@ impl Frame {
             }
             if self.replay_deadline.is_some_and(|d| now >= d) {
                 self.replay_deadline = None;
-                if let Some(k) = self.replay.pop_front() {
-                    self.handle_keys(vec![k], el);
-                    if !self.replay.is_empty() {
-                        self.replay_deadline = Some(Instant::now() + replay_every());
+                if let Some(step) = self.replay.pop_front() {
+                    // 待つ手順（まだ出ていない）は少し後にもう一度。`<Wait>` は自分で期限を決める
+                    let again = self.run_step(step, el);
+                    if self.replay_deadline.is_none() && !self.replay.is_empty() {
+                        self.replay_deadline = Some(Instant::now() + if again { Duration::from_millis(100) } else { replay_every() });
                     }
                 }
             }
@@ -1433,8 +1460,12 @@ impl Frame {
             WindowEvent::ModifiersChanged(m) => self.modifiers = m.state(),
             // 離したのが届かないことがあるので、ほかの窓へ移ったら繰り返しを止める
             WindowEvent::Focused(false) => self.held = None,
-            // 前に出たら、ほかの窓が保存した設定を読み直す（窓ごとに設定を持っているので）
+            // 前に出たら、ほかの窓が保存した設定を読み直す（窓ごとに設定を持っているので）。
+            // git の状態も取り直す（.git を見張れない場所（WSL のフォルダなど）で、外から git を動かしたとき）
             WindowEvent::Focused(true) => {
+                if let Some(e) = &mut self.ed {
+                    e.refresh_status();
+                }
                 if self.ed.as_mut().is_some_and(|e| e.reload_settings()) {
                     self.draw();
                 }
@@ -1485,70 +1516,80 @@ impl Frame {
                     eprintln!("[{:.1}] {state:?} at {:.0},{:.0}", clock::since_process_start_ms(), self.mouse.0, self.mouse.1);
                     false
                 } => {}
-                ElementState::Pressed => {
-                    self.on_press();
-                    // 押して決めた操作（ファインダーのダブルクリックでコマンドを流したなど）の、App がすること
-                    if let Some(eff) = self.ed.as_mut().and_then(|e| e.click_effect.take()) {
-                        self.apply_effect(eff, el);
-                    }
-                }
-                ElementState::Released => {
-                    self.list_select = false;
-                    if std::mem::take(&mut self.term_select) {
-                        if let Some(ed) = &mut self.ed {
-                            ed.terminal_release();
-                        }
-                    }
-                    self.press = None;
-                    // 区切りをドラッグし終えたら、欄の大きさを覚える（設定）
-                    if self.sep_drag.take().is_some() {
-                        if let Some(ed) = &mut self.ed {
-                            ed.remember_panel_sizes();
-                        }
-                    }
-                    self.autoscroll_deadline = None;
-                }
+                ElementState::Pressed => self.on_left(true, el),
+                ElementState::Released => self.on_left(false, el),
             },
-            // 右クリック: ターミナルの上なら、選んでいればコピー、いなければ貼り付け
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: winit::event::MouseButton::Right, .. } => {
-                if let (Some(f), Some(ed)) = (&self.fonts, &mut self.ed) {
-                    let cell = f.cell();
-                    let (row, col) = ((self.mouse.1 as f32 / cell.h) as usize, (self.mouse.0.max(0.0) as f32 / cell.w) as usize);
-                    // 部品の右クリックのメニュー（layout.rs の View の context・menu.rs）
-                    if ed.on_run_label(row, col) {
-                        ed.run_menu(row, col);
-                        self.sync_ime();
-                        self.draw();
-                    } else if layout::context(ed, layout::Screen { rows: ed.screen.1, cols: ed.screen.0 }, row, col) {
-                        self.sync_ime();
-                        self.draw();
-                    } else if ed.window_at(row, col).is_some_and(|(_, r)| row < r.y + ed.text_rows(r)) && !ed.has_prompt() {
-                        // 本文: 切り取り・コピー・貼り付け・定義へ など
-                        if let Some((w, _)) = ed.window_at(row, col).filter(|(w, _)| *w != ed.cur_win) {
-                            ed.focus_window(w);
-                        }
-                        // 窓の中の位置（mouse_cell と同じ基準）
-                        let rect = ed.active_rect();
-                        let lrow = (self.mouse.1 as f32 / cell.h - rect.y as f32 + ed.frac).floor().max(0.0) as usize;
-                        ed.text_context(lrow, col.saturating_sub(rect.x), (row, col));
-                        self.sync_ime();
-                        self.draw();
-                    } else if ed.bottom_kind == result_grid::BottomKind::Terminal && ed.terminal_rect().is_some_and(|r| r.contains(row, col)) {
-                        ed.terminal_right_click();
-                        self.sync_ime();
-                        self.draw();
-                    } else if matches!(ed.bottom_kind, result_grid::BottomKind::Grep | result_grid::BottomKind::Output) && ed.bottom_content_rect().is_some_and(|r| r.contains(row, col)) {
-                        // 検索・ログ: 選んでいる行（無ければ今の行）をコピー
-                        ed.panel_copy();
-                        self.draw();
-                    }
-                }
-            }
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: winit::event::MouseButton::Right, .. } => self.on_right_press(),
             WindowEvent::MouseWheel { delta, .. } => self.on_wheel(delta),
             WindowEvent::RedrawRequested => {
                 self.draw();
             }
             _ => {}
+        }
+    }
+
+    /// 左のボタンを押した・離した（`--replay` の `<Click>` も、ここを通る）
+    fn on_left(&mut self, pressed: bool, el: &ActiveEventLoop) {
+        match pressed {
+            true => {
+                self.on_press();
+                // 押して決めた操作（ファインダーのダブルクリックでコマンドを流したなど）の、App がすること
+                if let Some(eff) = self.ed.as_mut().and_then(|e| e.click_effect.take()) {
+                    self.apply_effect(eff, el);
+                }
+            }
+            false => {
+                self.list_select = false;
+                if std::mem::take(&mut self.term_select) {
+                    if let Some(ed) = &mut self.ed {
+                        ed.terminal_release();
+                    }
+                }
+                self.press = None;
+                // 区切りをドラッグし終えたら、欄の大きさを覚える（設定）
+                if self.sep_drag.take().is_some() {
+                    if let Some(ed) = &mut self.ed {
+                        ed.remember_panel_sizes();
+                    }
+                }
+                self.autoscroll_deadline = None;
+            }
+        }
+    }
+
+    /// 右クリック: 部品のメニュー。ターミナルの上なら、選んでいればコピー、いなければ貼り付け（`--replay` の `<RClick>` も、ここを通る）
+    fn on_right_press(&mut self) {
+        if let (Some(f), Some(ed)) = (&self.fonts, &mut self.ed) {
+            let cell = f.cell();
+            let (row, col) = ((self.mouse.1 as f32 / cell.h) as usize, (self.mouse.0.max(0.0) as f32 / cell.w) as usize);
+            // 部品の右クリックのメニュー（layout.rs の View の context・menu.rs）
+            if ed.on_run_label(row, col) {
+                ed.run_menu(row, col);
+                self.sync_ime();
+                self.draw();
+            } else if layout::context(ed, layout::Screen { rows: ed.screen.1, cols: ed.screen.0 }, row, col) {
+                self.sync_ime();
+                self.draw();
+            } else if ed.window_at(row, col).is_some_and(|(_, r)| row < r.y + ed.text_rows(r)) && !ed.has_prompt() {
+                // 本文: 切り取り・コピー・貼り付け・定義へ など
+                if let Some((w, _)) = ed.window_at(row, col).filter(|(w, _)| *w != ed.cur_win) {
+                    ed.focus_window(w);
+                }
+                // 窓の中の位置（mouse_cell と同じ基準）
+                let rect = ed.active_rect();
+                let lrow = (self.mouse.1 as f32 / cell.h - rect.y as f32 + ed.frac).floor().max(0.0) as usize;
+                ed.text_context(lrow, col.saturating_sub(rect.x), (row, col));
+                self.sync_ime();
+                self.draw();
+            } else if ed.bottom_kind == result_grid::BottomKind::Terminal && ed.terminal_rect().is_some_and(|r| r.contains(row, col)) {
+                ed.terminal_right_click();
+                self.sync_ime();
+                self.draw();
+            } else if matches!(ed.bottom_kind, result_grid::BottomKind::Grep | result_grid::BottomKind::Output) && ed.bottom_content_rect().is_some_and(|r| r.contains(row, col)) {
+                // 検索・ログ: 選んでいる行（無ければ今の行）をコピー
+                ed.panel_copy();
+                self.draw();
+            }
         }
     }
 }
@@ -1669,7 +1710,7 @@ impl ApplicationHandler<UserEvent> for App {
             UserEvent::Wake => self.frames.iter_mut().for_each(|f| f.user_event()),
             UserEvent::Open(file, cwd) => {
                 let gpu = self.frames.iter().find_map(|f| f.renderer.as_ref().map(|r| r.gpu()));
-                let opts = Opts { file, cwd, keys: None, replay: None, startup_report: false, exit_after_first_frame: false };
+                let opts = Opts { file, cwd, keys: None, replay: None, startup_report: false, exit_after_first_frame: false, headless: false };
                 let pending = spawn_pending(opts.file.clone(), gpu);
                 let mut f = new_frame(opts, pending, self.proxy.clone());
                 f.startup(el);

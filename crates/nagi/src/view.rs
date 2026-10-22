@@ -137,6 +137,8 @@ pub(crate) struct Painter<'a> {
     pub(crate) wrap_rows: usize,
     /// 最後に draw で描き終えた行の y（折り返したときの行末のカーソル用）
     pub(crate) end_y: f32,
+    /// `--replay` の試験: draw で描いた文字（行, 列, 文字）。控えないときは None
+    pub(crate) texts: Option<Vec<(usize, usize, String)>>,
 }
 
 impl Painter<'_> {
@@ -152,6 +154,9 @@ impl Painter<'_> {
     /// 部品の並びを (col, y) から描く。戻り値は描き終えた列
     pub(crate) fn draw(&mut self, items: &[Item<'_>], col: usize, y: f32) -> usize {
         let cell = self.fonts.cell();
+        if let Some(t) = &mut self.texts {
+            t.push(((y / cell.h).round() as usize, col, items.iter().map(|i| i.g.as_ref()).collect()));
+        }
         let mut c = col;
         let mut y = y;
         let mut row = 1;
@@ -219,6 +224,9 @@ impl Painter<'_> {
     pub(crate) fn msg_text(&mut self, s: &str, col: usize, y: f32, fg: [f32; 4]) -> usize {
         const S: f32 = 0.82;
         let cell = self.fonts.cell();
+        if let Some(t) = &mut self.texts {
+            t.push(((y / cell.h).round() as usize, col, s.to_string()));
+        }
         let limit = self.cols as f32 * cell.w;
         let mut x = col as f32 * cell.w;
         let y = (y + cell.h * (1.0 - S) * 0.7).round();
@@ -694,7 +702,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     ed.sync_terminal();
     let bar = (cell.w / 6.0).round().max(2.0);
     let underline = (cell.h / 16.0).round().max(1.0);
-    let mut p = Painter { out: Vec::with_capacity(cols * rows + 64), fonts, r, cols, bar, underline, caret_at: None, tab_hits: Vec::new(), wrap_w: 0, wrap_rows: 1, end_y: 0.0 };
+    let mut p = Painter { out: Vec::with_capacity(cols * rows + 64), fonts, r, cols, bar, underline, caret_at: None, tab_hits: Vec::new(), wrap_w: 0, wrap_rows: 1, end_y: 0.0, texts: ed.record_texts.then(Vec::new) };
     if let (Some(r), Some(t)) = (ed.tree_rect(), &mut ed.tree) {
         crate::list::fit(t.selected, &mut t.scroll, r.h.saturating_sub(1));
     }
@@ -982,6 +990,9 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         p.cols = saved;
     }
     *ed.tab_hits.borrow_mut() = std::mem::take(&mut p.tab_hits);
+    if let Some(t) = p.texts.take() {
+        *ed.drawn_texts.borrow_mut() = t;
+    }
     // 配色（設定）: 描いた色を置き換える
     if THEME.load(Ordering::Relaxed) != 0 || ACCENT.load(Ordering::Relaxed) != DEFAULT_ACCENT {
         for i in p.out.iter_mut().filter(|i| i.kind != 2) {
