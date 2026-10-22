@@ -818,8 +818,9 @@ impl<'a> Ranker<'a> {
         }
     }
 
-    /// 型 `ty` のメンバー（メソッド・フィールド・定数）と、親の型（extends・implements）のメンバー。
-    /// 索引はメンバーと型の結びつきを持たないので、型の定義のあるファイルで、その型の定義の後から次の型の定義の前までにあるものとみなす。
+    /// 型 `ty` のメンバー（メソッド・フィールド・定数。Lombok が作る getter・setter も）と、親の型（extends・implements）のメンバー。
+    /// 索引はメンバーと型の結びつきを持たないので、型の定義のあるファイルで、その型の定義の後にあって型の中の字下げのもの
+    /// （入れ子の型の中身は除く）とみなす。
     /// (名前, 種類, 持っている型, 引数の数（メソッドで分かれば）, private か)。同じ名前は先（子の型）のもの。コンストラクタは除く
     pub fn members(&mut self, ty: &str) -> Vec<(String, DefKind, String, Option<usize>, bool)> {
         let mut out: Vec<(String, DefKind, String, Option<usize>, bool)> = Vec::new();
@@ -832,11 +833,10 @@ impl<'a> Ranker<'a> {
             let Some(idx) = self.idx else { break };
             let types: Vec<Loc> = idx.lookup(&t).iter().filter(|l| l.kind.is_type()).cloned().collect();
             for tl in types {
-                let defs = idx.defs_in(&tl.path).to_vec();
-                let start = defs.iter().position(|d| d.name == t && d.kind.is_type() && d.line == tl.line).unwrap_or(0);
-                for d in defs.iter().skip(start + 1) {
+                let defs = self.own_defs(&tl);
+                for d in &defs {
                     if d.kind.is_type() {
-                        break;
+                        continue;
                     }
                     if matches!(d.kind, DefKind::Method | DefKind::Function | DefKind::Field | DefKind::Constant) && d.name != t && !out.iter().any(|o| o.0 == d.name) {
                         let params = matches!(d.kind, DefKind::Method | DefKind::Function)
@@ -847,8 +847,97 @@ impl<'a> Ranker<'a> {
                         out.push((d.name.clone(), d.kind, t.clone(), params, private));
                     }
                 }
+                // Lombok が作るメソッド（@Data・@Getter・@Setter・@Value をクラスかフィールドに。@Builder の builder()）
+                if let Some(lines) = self.lines(&tl.path) {
+                    let class_ann = annotations_before(&lines, tl.line as usize);
+                    let has = |ann: &[String], a: &str| ann.iter().any(|x| x == a);
+                    if has(&class_ann, "Builder") && !out.iter().any(|o| o.0 == "builder") {
+                        out.push(("builder".into(), DefKind::Method, t.clone(), Some(0), false));
+                    }
+                    for d in &defs {
+                        if d.kind != DefKind::Field {
+                            continue;
+                        }
+                        let Some(decl) = lines.get(d.line as usize).map(|l| &l[..(d.col as usize).min(l.len())]) else { continue };
+                        let words: Vec<&str> = decl.split_whitespace().collect();
+                        if words.contains(&"static") {
+                            continue;
+                        }
+                        let field_ann = annotations_before(&lines, d.line as usize);
+                        let either = |a: &str| has(&class_ann, a) || has(&field_ann, a);
+                        let getter = either("Data") || either("Getter") || has(&class_ann, "Value");
+                        let setter = (either("Data") || either("Setter")) && !words.contains(&"final") && !has(&class_ann, "Value");
+                        let cap = d.name.chars().next().map(|c| c.to_uppercase().collect::<String>() + &d.name[c.len_utf8()..]).unwrap_or_default();
+                        let mut add = |name: String, params: usize| {
+                            if !out.iter().any(|o| o.0 == name) {
+                                out.push((name, DefKind::Method, t.clone(), Some(params), false));
+                            }
+                        };
+                        if getter {
+                            add(format!("{}{cap}", if words.last() == Some(&"boolean") { "is" } else { "get" }), 0);
+                        }
+                        if setter {
+                            add(format!("set{cap}"), 1);
+                        }
+                    }
+                }
                 for s in self.supers_in(&tl.path, &t) {
                     todo.insert(0, (s, depth + 1));
+                }
+            }
+        }
+        out
+    }
+
+    /// 型の定義 `tl` の中の定義（型の行の後で、型より深い字下げのうち最初のメンバーと同じ字下げのもの。
+    /// 入れ子の型そのものは入るが、その中身は入らない。型と同じ行のものも入れる）
+    fn own_defs(&mut self, tl: &Loc) -> Vec<Entry> {
+        let Some(idx) = self.idx else { return Vec::new() };
+        let defs = idx.defs_in(&tl.path);
+        let Some(start) = defs.iter().position(|d| d.kind.is_type() && d.line == tl.line && d.col == tl.col).or_else(|| defs.iter().position(|d| d.kind.is_type() && d.line == tl.line)) else {
+            return Vec::new();
+        };
+        let lines = self.lines(&tl.path);
+        let indent = |line: u32| lines.as_ref().and_then(|l| l.get(line as usize)).map_or(0, |s| s.len() - s.trim_start().len());
+        let type_indent = indent(tl.line);
+        let mut member_indent = None;
+        let mut out = Vec::new();
+        for d in &defs[start + 1..] {
+            if d.line == tl.line {
+                out.push(d.clone());
+                continue;
+            }
+            let ind = indent(d.line);
+            if ind <= type_indent {
+                break;
+            }
+            if ind == *member_indent.get_or_insert(ind) {
+                out.push(d.clone());
+            }
+        }
+        out
+    }
+
+    /// 型 `ty`（と、たどれる親）の親のうち、プロジェクトに無い型。(名前, その名前を書いたファイルの中身)。ライブラリの親のメンバーを引くのに
+    pub fn outside_supers(&mut self, ty: &str) -> Vec<(String, Arc<Vec<String>>)> {
+        let Some(idx) = self.idx else { return Vec::new() };
+        let mut out = Vec::new();
+        let mut todo = vec![(ty.to_string(), 0)];
+        let mut seen = std::collections::HashSet::new();
+        while let Some((t, depth)) = todo.pop() {
+            if depth > 5 || !seen.insert(t.clone()) {
+                continue;
+            }
+            let types: Vec<Loc> = idx.lookup(&t).iter().filter(|l| l.kind.is_type()).cloned().collect();
+            for tl in types {
+                for s in self.supers_in(&tl.path, &t) {
+                    if idx.lookup(&s).iter().any(|l| l.kind.is_type()) {
+                        todo.push((s, depth + 1));
+                    } else if let Some(lines) = self.lines(&tl.path) {
+                        if !out.iter().any(|(n, _): &(String, Arc<Vec<String>>)| *n == s) {
+                            out.push((s, lines));
+                        }
+                    }
                 }
             }
         }
@@ -1139,6 +1228,33 @@ fn import_hits(from_rel: &str, src: &str, name: &str, cands: &[Loc]) -> std::col
         }
     }
     hit
+}
+
+/// `line` の宣言に付いた注釈の名前（前の行の `@Data`・`@Getter(AccessLevel.NONE)` と、同じ行の頭のもの。`lombok.Data` は Data）
+fn annotations_before(lines: &[String], line: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut take = |l: &str| {
+        for (i, _) in l.match_indices('@') {
+            let name: String = l[i + 1..].chars().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.').collect();
+            out.push(name.rsplit('.').next().unwrap_or("").to_string());
+        }
+    };
+    if let Some(l) = lines.get(line) {
+        // 同じ行は宣言の名前より前（文字列の中の @ は気にしない）
+        take(l.split('=').next().unwrap_or(""));
+    }
+    for l in lines[..line.min(lines.len())].iter().rev().take(12) {
+        let t = l.trim();
+        if t.is_empty() || t.starts_with("//") || t.starts_with('*') || t.starts_with("/*") {
+            continue;
+        }
+        // 注釈の続き（`@Schema(` の次の行など）も見る。宣言・文の終わりで止める
+        if t.ends_with(';') || t.ends_with('{') || t.ends_with('}') {
+            break;
+        }
+        take(t);
+    }
+    out
 }
 
 #[cfg(test)]

@@ -91,37 +91,28 @@ fn keywords(lang: Option<nagi_syntax::Lang>) -> &'static [&'static str] {
 /// `text` の中の `name` の変数・引数・フィールドの宣言の型（`at` より前の最後の宣言、無ければ後ろの最初）
 pub fn var_type(text: &str, name: &str, at: usize) -> Option<String> {
     let n = regex::escape(name);
+    // Java・C#: Type name / Type<..> name / Type[] name（宣言・引数・フィールド）。型引数と配列は外す
+    let mut all: Vec<(usize, String)> = crate::java_members::typed_decls(text, name).into_iter().map(|(p, t)| (p, t.split(['<', '[']).next().unwrap_or("").rsplit('.').next().unwrap_or("").to_string())).collect();
     let pats = [
-        // Java・C#: Type name / Type<..> name / Type[] name（宣言・引数・フィールド）
-        format!(r"\b([A-Z][\w]*)(?:<[^;(){{}}=]*>)?(?:\[\])*\s+{n}\s*(?:[=;,):]|$)"),
         // TypeScript・Kotlin: name: Type
         format!(r"\b{n}\s*\??:\s*([A-Z]\w*)"),
         // var・val・let・const name = new Type( / Type(
         format!(r"\b(?:var|val|let|const|auto)\s+{n}\s*=\s*(?:new\s+)?([A-Z]\w*)"),
     ];
-    let mut best: Option<(usize, String)> = None;
     for p in pats {
         let Ok(re) = regex::Regex::new(&p) else { continue };
-        for c in re.captures_iter(text) {
-            let (pos, ty) = (c.get(0).map_or(0, |m| m.start()), c[1].to_string());
-            // 前の最後を選び、前に無ければ後ろの最初
-            let better = match &best {
-                None => true,
-                Some((b, _)) => (pos < at && (*b > at || pos > *b)) || (pos >= at && *b >= at && pos < *b),
-            };
-            if better {
-                best = Some((pos, ty));
-            }
-        }
+        all.extend(re.captures_iter(text).map(|c| (c.get(0).map_or(0, |m| m.start()), c[1].to_string())));
     }
-    best.map(|b| b.1)
+    crate::java_members::pick(all, at)
 }
 
-/// `.` の前の式を受け手にする（`a.b().c` → Call・Member の連なり）。`dot` は `.` の位置（行の中の byte）
+/// `.` の前の式を受け手にする（`a.b().c` → Call・Member の連なり）。`dot` は `.` の位置（行の中の byte）。
+/// `var` は変数の型。`new X<..>(..)` の頭は `var("new X<..>")`（無ければ X）
 pub fn receiver_before(line: &str, dot: usize, var: &dyn Fn(&str) -> Option<String>) -> Option<Receiver> {
     let s = &line[..dot];
     let mut parts: Vec<(String, bool)> = Vec::new();
     let mut end = s.len();
+    let mut newed = None;
     loop {
         let mut i = end;
         let mut call = false;
@@ -145,18 +136,29 @@ pub fn receiver_before(line: &str, dot: usize, var: &dyn Fn(&str) -> Option<Stri
             i = open?;
             call = true;
         }
+        let paren = i;
+        // new ArrayList<String>() の型引数
+        if call && s[..i].ends_with('>') {
+            i = crate::java_members::generic_open(&s[..i])?;
+        }
         let word_start = s[..i].char_indices().rev().take_while(|(_, c)| word_char(*c)).last().map(|x| x.0)?;
         parts.push((s[word_start..i].to_string(), call));
         if word_start > 0 && s[..word_start].ends_with('.') {
             end = word_start - 1;
         } else {
+            let t = s[..word_start].trim_end();
+            if call && t.ends_with("new") && !t[..t.len() - 3].ends_with(word_char) {
+                newed = Some(s[word_start..paren].to_string());
+            }
             break;
         }
     }
     parts.reverse();
     let mut it = parts.into_iter();
     let (base, call) = it.next()?;
-    let mut r = if call {
+    let mut r = if let Some(n) = newed {
+        Receiver::Type(var(&format!("new {n}")).unwrap_or(base))
+    } else if call {
         Receiver::Call(Box::new(Receiver::This), base)
     } else if base == "this" || base == "super" || base == "self" {
         Receiver::This
@@ -220,6 +222,11 @@ impl Editor {
         self.refilter_smart();
     }
 
+    /// Java のファイルか（色付けがまだでもパスから）
+    fn is_java(&self) -> bool {
+        self.syntax.as_ref().map(|s| s.lang).or_else(|| self.buf.path.as_deref().and_then(nagi_syntax::Lang::detect)) == Some(nagi_syntax::Lang::Java)
+    }
+
     /// 候補を集める（`ws` は打っている語の始まり（行の中の byte）、`start` はその絶対位置）
     fn smart_candidates(&mut self, line: &str, ws: usize, start: usize) -> Vec<Cand> {
         let src = self.buf.text();
@@ -250,12 +257,68 @@ impl Editor {
                 push(out, Cand { name, mark: mark_of(kind), note: owner, call, rank, insert: None, import: None });
             }
         };
+        // プロジェクトの型の、ライブラリの親（extends ControllerBase<..> など）のメンバー（protected も）
+        let jars = if self.is_java() { self.nav.jars.clone() } else { None };
+        let lib_super_cands = |ranker: &mut nagi_workers::index::Ranker, ty: &str, out: &mut Vec<Cand>, push: &mut dyn FnMut(&mut Vec<Cand>, Cand), rank: u8| {
+            let Some(jars) = &jars else { return };
+            for (sup, lines) in ranker.outside_supers(ty) {
+                let lib = crate::java_members::LibTypes::new(jars, &lines.join("\n"));
+                let Some(internal) = lib.resolve(&sup) else { continue };
+                for m in lib.members(&crate::java_members::JType::Class(internal, Vec::new()), false, true) {
+                    push(out, Cand { name: m.name, mark: if m.method { 'm' } else { 'f' }, note: m.owner, call: m.method.then_some(m.params), rank, insert: None, import: None });
+                }
+            }
+        };
         if member {
-            let var = |n: &str| var_type(&src, n, start);
-            let recv = receiver_before(line, ws - 1, &var);
+            // 型を書かずに宣言した変数（var・for の var・ラムダの引数）は、頭を式に置き換えてから
+            let expanded = if self.is_java() { crate::java_members::expand_head(&src, &line[..ws - 1], start) } else { line[..ws - 1].to_string() };
+            let var = |n: &str| match n.strip_prefix("new ") {
+                Some(t) => Some(t.split('<').next().unwrap_or(t).to_string()),
+                None => var_type(&src, n, start),
+            };
+            let recv = receiver_before(&expanded, expanded.len(), &var);
             let ty = recv.as_ref().and_then(|r| ranker.receiver_type_name(&rel, &src, start, r));
             if let Some(t) = &ty {
                 member_cands(&mut ranker, t, &mut out, &mut push, 0);
+                lib_super_cands(&mut ranker, t, &mut out, &mut push, 0);
+            }
+            // ライブラリの型（Java。jar・JDK の索引から、型引数もたどって）
+            if out.is_empty() && self.is_java() {
+                if let Some(jars) = &self.nav.jars {
+                    let lib = crate::java_members::LibTypes::new(jars, &src);
+                    // 変数は宣言の型（型引数つき）に印 `=` を付けて、クラス名（static の呼び出し）と分ける
+                    let decl = |n: &str| match n.strip_prefix("new ") {
+                        Some(t) => Some(format!("={t}")),
+                        None => crate::java_members::var_decl_text(&src, n, start).map(|d| format!("={d}")),
+                    };
+                    let r = receiver_before(&expanded, expanded.len(), &decl);
+                    let statics = matches!(&r, Some(Receiver::Type(t)) if !t.starts_with('='));
+                    let base = |t: &str| t.strip_prefix('=').and_then(|d| lib.parse(d));
+                    // 途中のプロジェクトの型のメンバーの型は、プロジェクトの索引で
+                    let mut project = |t: &str, n: &str, call: bool| {
+                        let inner = Box::new(Receiver::Type(t.to_string()));
+                        let r = if call { Receiver::Call(inner, n.to_string()) } else { Receiver::Member(inner, n.to_string()) };
+                        ranker.receiver_type_name(&rel, &src, start, &r)
+                    };
+                    let t = r.as_ref().and_then(|r| lib.receiver(r, &base, &mut project));
+                    match t {
+                        Some(crate::java_members::JType::Class(name, _)) if name.starts_with('?') => {
+                            member_cands(&mut ranker, &name[1..], &mut out, &mut push, 0);
+                            lib_super_cands(&mut ranker, &name[1..], &mut out, &mut push, 0);
+                        }
+                        Some(t) => {
+                            for m in lib.members(&t, statics, false) {
+                                push(&mut out, Cand { name: m.name, mark: if m.method { 'm' } else { 'f' }, note: m.owner, call: m.method.then_some(m.params), rank: 0, insert: None, import: None });
+                            }
+                        }
+                        None => {}
+                    }
+                }
+            }
+            // クラス名の後は Type.class も
+            let decl = |n: &str| crate::java_members::var_decl_text(&src, n, start).map(|d| format!("={d}"));
+            if self.is_java() && matches!(receiver_before(&expanded, expanded.len(), &decl), Some(Receiver::Type(t)) if !t.starts_with('=')) && !out.is_empty() {
+                push(&mut out, Cand { name: "class".into(), mark: 'K', note: String::new(), call: None, rank: 0, insert: None, import: None });
             }
             if out.is_empty() {
                 // 型が分からない・プロジェクトの外: ファイルの中で `.` の後に出てくる語
@@ -271,6 +334,7 @@ impl Editor {
         // 今の型のメンバー
         if let Some(t) = inside.clone() {
             member_cands(&mut ranker, &t, &mut out, &mut push, 1);
+            lib_super_cands(&mut ranker, &t, &mut out, &mut push, 1);
         }
         // ファイルの中の語（変数・引数など）。カーソルに近い順
         let words = regex::Regex::new(r"[A-Za-z_$][\w$]*").unwrap();
@@ -294,8 +358,7 @@ impl Editor {
             }
         }
         // ライブラリの型（Java。依存の jar・JDK の索引から、打った語で始まるもの。決めたら import を足す）
-        let java = lang.or_else(|| self.buf.path.as_deref().and_then(nagi_syntax::Lang::detect)) == Some(nagi_syntax::Lang::Java);
-        if java {
+        if self.is_java() {
             if let Some(jars) = &self.nav.jars {
                 let b = self.cursor.byte.min(line.len());
                 let prefix = &line[ws..b];
@@ -487,6 +550,7 @@ impl Editor {
 mod tests {
     use super::*;
     use nagi_core::Buffer;
+    use std::collections::HashMap;
 
     #[test]
     fn var_types_and_receivers() {
@@ -520,6 +584,7 @@ mod tests {
         std::fs::create_dir_all(dir.join(".git")).unwrap();
         std::fs::write(dir.join("src/Base.java"), "public class Base {\n  public String baseName() { return \"\"; }\n}\n").unwrap();
         std::fs::write(dir.join("src/User.java"), "public class User extends Base {\n  public User() {}\n  private String name;\n  public String getName() { return name; }\n  public void setName(String n) { name = n; }\n}\n").unwrap();
+        std::fs::write(dir.join("src/Dto.java"), "import lombok.Data;\n\n/** 注釈の後に説明 */\n@Data\npublic class Dto {\n  private String name;\n  private boolean active;\n  private final int id = 0;\n  private static int count;\n}\n").unwrap();
         let main = "public class App {\n  void run(User user) {\n    user.\n  }\n}\n";
         std::fs::write(dir.join("src/App.java"), main).unwrap();
         let mut e = Editor::new(Buffer::open(&dir.join("src/App.java")).unwrap(), None);
@@ -528,7 +593,7 @@ mod tests {
         e.start_index();
         for _ in 0..500 {
             e.poll_index();
-            if e.nav.index.as_ref().is_some_and(|i| i.file_count() == 3) {
+            if e.nav.index.as_ref().is_some_and(|i| i.file_count() == 4) {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
@@ -554,6 +619,13 @@ mod tests {
         // Esc は一覧だけ閉じる
         keys(&mut e, "<Esc>o<C-Space><Esc>");
         assert_eq!(e.state(), crate::editor::State::Insert);
+        // Lombok の @Data: getter・setter（boolean は is、final は setter なし、static は無し）
+        let mut ranker = nagi_workers::index::Ranker::new(e.nav.index.as_ref());
+        let names: Vec<String> = ranker.members("Dto").into_iter().filter(|m| !m.4).map(|m| m.0).collect();
+        for n in ["getName", "setName", "isActive", "setActive", "getId"] {
+            assert!(names.contains(&n.to_string()), "{n}: {names:?}");
+        }
+        assert!(!names.iter().any(|n| n == "setId" || n == "getCount"), "{names:?}");
     }
 
     /// Java のライブラリの型: 打った語で始まる型を出し、決めると import を足す（JDK の ct.sym から作った索引で）
@@ -589,6 +661,174 @@ mod tests {
         keys(&mut e, "<Esc><Esc>oStringBui<C-Space><CR>");
         assert!(!e.buf.text().contains("import java.lang"), "{}", e.buf.text());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Java のライブラリの型のメンバー: 変数の宣言の型引数から、メソッドの戻り値をたどる（JDK の ct.sym から作った索引で）
+    #[test]
+    fn library_members_after_dot() {
+        use nagi_workers::jvm::{JarIndex, JarSource};
+        let Some(ct) = std::env::var_os("JAVA_HOME").map(|h| std::path::PathBuf::from(h).join("lib").join("ct.sym")).filter(|p| p.is_file()) else { return };
+        let dir = std::env::temp_dir().join(format!("nagi-libmembers-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let rel = nagi_workers::jvm::ct_sym_latest(&ct).unwrap();
+        let keep = |n: &str| n.split('/').next().is_some_and(|d| d.contains(rel)) && (n.contains("/java/util/") || n.contains("/java/lang/"));
+        let ix = JarIndex::load(&[JarSource { path: &ct, keep: &keep, tag: "m" }], &dir.join("jars"));
+        std::fs::write(dir.join("App.java"), "package app;\n\nimport java.util.*;\nimport static java.util.Collections.emptyList;\n\nclass App {\n  void f(List<String> names, Map<String, List<Integer>> byName) {\n    var xs = new ArrayList<Integer>();\n    var s = names.get(0);\n  }\n}\n").unwrap();
+        let mut e = Editor::new(Buffer::open(&dir.join("App.java")).unwrap(), None);
+        e.buf.path = Some(dir.join("App.java"));
+        e.set_screen(120, 40);
+        e.nav.jars = Some(std::sync::Arc::new(ix));
+        let items = |e: &mut Editor, text: &str| -> Vec<String> {
+            keys(e, &format!("9GA<CR>{text}<C-Space>"));
+            let v = e.completion.as_ref().map(|c| c.items.clone()).unwrap_or_default();
+            keys(e, "<Esc><Esc>dd");
+            v
+        };
+        let has = |v: &[String], names: &[&str]| names.iter().all(|n| v.iter().any(|x| x == n));
+        let v = items(&mut e, "names.");
+        assert!(has(&v, &["add", "size", "stream", "get", "hashCode"]), "{v:?}");
+        assert!(!v.iter().any(|x| x == "of"), "変数からは static を出さない: {v:?}");
+        let v = items(&mut e, "names.get(0).");
+        assert!(has(&v, &["substring", "length", "isEmpty"]), "List<String>.get() は String: {v:?}");
+        let v = items(&mut e, "names.stream().filter(s -> true).");
+        assert!(has(&v, &["map", "collect", "forEach"]), "Stream: {v:?}");
+        let v = items(&mut e, "byName.get(\"a\").get(0).");
+        assert!(has(&v, &["intValue", "compareTo"]), "Map<String, List<Integer>> → Integer: {v:?}");
+        let v = items(&mut e, "xs.");
+        assert!(has(&v, &["ensureCapacity", "add"]), "var = new ArrayList<..>: {v:?}");
+        let v = items(&mut e, "Collections.");
+        assert!(has(&v, &["emptyList", "sort"]) && !v.iter().any(|x| x == "hashCode"), "クラス名からは static: {v:?}");
+        // 型を書かない変数（var・for の var・ラムダの引数）、new、static の import
+        let v = items(&mut e, "s.");
+        assert!(has(&v, &["substring"]), "var s = names.get(0): {v:?}");
+        let v = items(&mut e, "for (var x : names) x.");
+        assert!(has(&v, &["substring"]), "for (var x : names): {v:?}");
+        let v = items(&mut e, "names.forEach(v -> v.");
+        assert!(has(&v, &["substring"]), "Consumer<String> の引数: {v:?}");
+        let v = items(&mut e, "byName.forEach((k, w) -> w.");
+        assert!(has(&v, &["size"]), "BiConsumer<String, List<Integer>> の 2 つ目: {v:?}");
+        let v = items(&mut e, "new ArrayList<String>().");
+        assert!(has(&v, &["ensureCapacity"]), "new: {v:?}");
+        let v = items(&mut e, "emptyList().");
+        assert!(has(&v, &["size"]), "static の import: {v:?}");
+        // 決めると () を入れる（引数があれば中へ）
+        keys(&mut e, "9GA<CR>names.siz<C-Space><CR>");
+        assert_eq!(e.buf.line(9).trim(), "names.size()");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 実際の Java のプロジェクトで、`x.m` の m（コンパイルが通るコードなので正しい答え）が `.` の後の候補に入る割合
+    /// （NAGI_JAVA_ROOT=… LOCALAPPDATA=… cargo test -p nagi member_rate -- --ignored --nocapture。読むだけ）
+    #[test]
+    #[ignore]
+    fn member_rate() {
+        let Some(root) = std::env::var_os("NAGI_JAVA_ROOT").map(std::path::PathBuf::from) else { return };
+        let rx = nagi_workers::index::build(&root, std::sync::Arc::new(|| {}));
+        let idx = loop {
+            if let Ok(nagi_workers::index::Progress::Done(i)) = rx.recv() {
+                break i;
+            }
+        };
+        let mut e = Editor::new(Buffer::from_str(""), None);
+        e.nav.index = Some(*idx);
+        // NAGI_NO_JARS があればライブラリの型なしで（比べる用）
+        if std::env::var_os("NAGI_NO_JARS").is_none() {
+            let task = nagi_workers::jvm::load_maven(root.clone(), std::sync::Arc::new(|| {}));
+            let jars = loop {
+                if let Ok(r) = task.try_recv() {
+                    break r.unwrap();
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            };
+            e.nav.jars = Some(std::sync::Arc::new(jars));
+        }
+        let site = regex::Regex::new(r"[\w)]\.([A-Za-z_]\w*)").unwrap();
+        // [型が分かって当たった, 型が分かったが無い, ファイルの語で代わり, 何も無い]
+        let mut n = [0usize; 4];
+        let mut miss: HashMap<String, usize> = HashMap::new();
+        let mut untyped: HashMap<String, usize> = HashMap::new();
+        let mut example: HashMap<String, String> = HashMap::new();
+        let t0 = std::time::Instant::now();
+        let mut files = Vec::new();
+        let mut stack = vec![root.clone()];
+        while let Some(d) = stack.pop() {
+            for f in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+                let p = f.path();
+                let name = f.file_name().to_string_lossy().into_owned();
+                if p.is_dir() && !name.starts_with('.') && name != "target" && name != "node_modules" {
+                    stack.push(p);
+                } else if name.ends_with(".java") {
+                    files.push(p);
+                }
+            }
+        }
+        files.sort();
+        // NAGI_RATE_FILES があれば、その数ごとに 1 つのファイルだけ（速く測る）
+        let step = std::env::var("NAGI_RATE_FILES").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(1).max(1);
+        let mut slow: Vec<(u128, String)> = Vec::new();
+        for p in files.iter().step_by(step) {
+            let p = p.as_path();
+            let Ok(buf) = Buffer::open(p) else { continue };
+            e.buf = buf;
+            e.buf.path = Some(p.to_path_buf());
+            for li in 0..e.buf.line_count() {
+                let line = e.buf.line(li).to_string();
+                let t = line.trim_start();
+                if ["import", "package", "//", "*", "/*", "@"].iter().any(|x| t.starts_with(x)) {
+                    continue;
+                }
+                for m in site.captures_iter(&line) {
+                    let g = m.get(1).unwrap();
+                    // 文字列の中は除く
+                    if line[..g.start()].matches('"').count() % 2 == 1 {
+                        continue;
+                    }
+                    let ws = g.start();
+                    let start = e.buf.line_start(li) + ws;
+                    let t1 = std::time::Instant::now();
+                    let c = e.smart_candidates(&line, ws, start);
+                    let us = t1.elapsed().as_micros();
+                    if std::env::var("NAGI_RATE_SHOW").is_ok_and(|x| line.contains(&x)) {
+                        println!("{}:{} {} -> {:?}", p.display(), li + 1, line.trim(), c.iter().take(8).map(|x| (&x.name, x.rank)).collect::<Vec<_>>());
+                    }
+                    slow.push((us, format!("{}:{} {}", p.file_name().unwrap().to_string_lossy(), li + 1, line.trim())));
+                    let recv = line[..ws - 1].trim_start().rsplit([' ', '(', '!', '=', ',']).next().unwrap_or("").to_string();
+                    let k = if c.is_empty() {
+                        3
+                    } else if c.iter().all(|x| x.rank == 1) {
+                        2
+                    } else if c.iter().any(|x| x.name == g.as_str()) {
+                        0
+                    } else {
+                        1
+                    };
+                    n[k] += 1;
+                    match k {
+                        1 => *miss.entry(format!("{recv}.{}", g.as_str())).or_default() += 1,
+                        2 | 3 => {
+                            example.entry(recv.clone()).or_insert_with(|| line.trim().chars().take(100).collect());
+                            *untyped.entry(recv).or_default() += 1
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+        slow.sort_by(|a, b| b.0.cmp(&a.0));
+        let total: u128 = slow.iter().map(|x| x.0).sum();
+        println!("1 回: 平均 {} µs、中央 {} µs、最大 {:?}", total / slow.len().max(1) as u128, slow.get(slow.len() / 2).map_or(0, |x| x.0), &slow[..slow.len().min(5)]);
+        let all: usize = n.iter().sum();
+        let pc = |x: usize| x as f64 * 100.0 / all.max(1) as f64;
+        println!("{all} 箇所 {:?}: 当たり {:.1}% / 型は分かったが無い {:.1}% / ファイルの語 {:.1}% / 無し {:.1}%", t0.elapsed(), pc(n[0]), pc(n[1]), pc(n[2]), pc(n[3]));
+        for (title, m) in [("型は分かったが無い", miss), ("型が分からない受け手", untyped)] {
+            let mut v: Vec<_> = m.into_iter().collect();
+            v.sort_by(|a, b| b.1.cmp(&a.1));
+            println!("-- {title}");
+            for (k, c) in v.iter().take(40) {
+                println!("{c:5} {k}    {}", example.get(k).map_or("", String::as_str));
+            }
+        }
     }
 
     /// 設定: 自動で出す（語の文字が 2 つ並んだら、待ち時間の後）、大文字小文字を区別する、予約語を出さない
