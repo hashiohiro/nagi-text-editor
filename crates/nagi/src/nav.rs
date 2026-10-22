@@ -58,11 +58,17 @@ impl Editor {
         let waker = self.waker();
         self.nav.building = Some(nagi_workers::index::build(&root, waker.clone()));
         self.nav.progress = Some((0, 0));
-        // Maven のプロジェクトなら、依存の jar と JDK の型の索引も（初回は mvn で依存を求めて作る。次からは写すだけ）
-        if !cfg!(test) {
-            if let Some(m) = nagi_workers::maven::find_root(&root).filter(|m| m.join("pom.xml").is_file()) {
-                self.nav.jars_task = Some(nagi_workers::jvm::load_maven(m, waker));
-            }
+        self.start_jars(&root);
+    }
+
+    /// Maven のプロジェクトなら、依存の jar と JDK の型の索引を用意する（pom.xml から依存を求め、jar ごとのかけらは
+    /// 変わったものだけ作り直す。ほかは写すだけ）。pom.xml を保存したときも
+    fn start_jars(&mut self, root: &Path) {
+        if cfg!(test) {
+            return;
+        }
+        if let Some(m) = nagi_workers::maven::find_root(root).filter(|m| m.join("pom.xml").is_file()) {
+            self.nav.jars_task = Some(nagi_workers::jvm::load_maven(m, self.waker()));
         }
     }
 
@@ -112,6 +118,10 @@ impl Editor {
 
     /// 保存したファイルを索引し直す（裏で）
     pub(crate) fn reindex_saved(&mut self) {
+        if self.buf.path.as_deref().and_then(Path::file_name).is_some_and(|n| n.eq_ignore_ascii_case("pom.xml")) && self.settings.bool("project.index") {
+            let root = self.project_root();
+            self.start_jars(&root);
+        }
         let (Some(path), Some(idx)) = (self.buf.path.clone(), &self.nav.index) else { return };
         let Ok(abs) = std::path::absolute(&path) else { return };
         let Ok(rel) = abs.strip_prefix(&idx.root) else { return };

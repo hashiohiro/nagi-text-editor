@@ -637,9 +637,28 @@ fn pom_stamp(root: &Path) -> String {
     v.join("\n")
 }
 
-/// Maven のプロジェクトの依存の jar（コンパイルとテストに使うもの）。pom.xml が変わっていなければ前に求めたもの。
-/// 求めるときは mvn を、ヒープを 64 MB に絞って動かす（そのままだと一時的に 700 MB を超えた。絞ると約 130 MB・7 秒）
+/// プロファイルの jdk の条件に使う版（プロジェクトの JDK。わからなければ 17）
+fn java_major(cfg: &crate::config::Config) -> u32 {
+    crate::jobs::java_home_fix(cfg).or_else(|| cfg.var("JAVA_HOME").map(PathBuf::from)).and_then(|j| crate::jdk::read(&j)).and_then(|j| j.major()).unwrap_or(17)
+}
+
+/// Maven のプロジェクトの依存の jar（コンパイルとテストに使うもの）。まず pom.xml と手元のリポジトリから求め
+/// （mvn も JDK も起動しない。モジュールどうしの分は除く）、手元に無いものがあれば mvn に任せる（ダウンロードもする）
 pub fn maven_classpath(root: &Path) -> Result<Vec<PathBuf>, String> {
+    let java = java_major(&crate::config::for_path(root));
+    match crate::maven_deps::resolve(root, java) {
+        Ok(r) if r.missing.is_empty() => Ok(r.jars),
+        Ok(r) => {
+            nagi_core::log::info(&format!("手元のリポジトリに無い依存が {} 個（{} など）。mvn で求めます", r.missing.len(), r.missing[0]));
+            mvn_classpath(root).or_else(|e| if r.jars.is_empty() { Err(e) } else { Ok(r.jars) })
+        }
+        Err(e) => mvn_classpath(root).map_err(|m| format!("{e}。{m}")),
+    }
+}
+
+/// mvn で依存を求める。pom.xml が変わっていなければ前に求めたもの。
+/// mvn はヒープを 64 MB に絞って動かす（そのままだと一時的に 700 MB を超えた。絞ると約 130 MB・7 秒）
+fn mvn_classpath(root: &Path) -> Result<Vec<PathBuf>, String> {
     let dir = jars_dir().ok_or("LOCALAPPDATA がありません")?.with_file_name("classpath");
     let _ = std::fs::create_dir_all(&dir);
     let key = nagi_core::hash::sha256_hex(root.display().to_string().to_lowercase().as_bytes()).ok_or("hash")?;
@@ -724,7 +743,7 @@ fn partition(n: usize, pred: impl Fn(usize) -> bool) -> usize {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// 試験に使う JDK（JAVA_HOME か、見つけた JDK）
@@ -733,7 +752,7 @@ mod tests {
     }
 
     /// このプロセスの private のバイト数（今と、これまでの最大）
-    fn private_peak() -> (usize, usize) {
+    pub(crate) fn private_peak() -> (usize, usize) {
         #[repr(C)]
         #[derive(Default)]
         struct Counters {

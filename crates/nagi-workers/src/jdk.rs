@@ -23,6 +23,11 @@ impl Jdk {
     pub fn java(&self) -> PathBuf {
         self.path.join("bin").join("java.exe")
     }
+
+    /// 主な版（"1.8.0_402" → 8、"21.0.4" → 21）
+    pub fn major(&self) -> Option<u32> {
+        version_key(&self.version).first().copied()
+    }
 }
 
 /// ダウンロードできる版（Eclipse Temurin。LTS）

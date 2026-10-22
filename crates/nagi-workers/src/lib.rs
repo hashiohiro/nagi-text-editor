@@ -13,6 +13,7 @@ pub mod jdk;
 pub mod jobs;
 pub mod jvm;
 pub mod maven;
+pub mod maven_deps;
 pub mod project;
 pub mod runconfig;
 pub mod salesforce;
