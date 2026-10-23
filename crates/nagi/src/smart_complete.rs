@@ -322,6 +322,7 @@ impl Editor {
             };
             let recv = receiver_before(&expanded, expanded.len(), &var);
             let ty = recv.as_ref().and_then(|r| ranker.receiver_type_name(&rel, &src, start, r));
+            if std::env::var_os("NAGI_DBG").is_some() { eprintln!("DBG0 expanded={expanded:?} recv={recv:?} ty={ty:?}"); }
             if let Some(t) = &ty {
                 member_cands(&mut ranker, t, &mut out, &mut push, 0);
                 lib_super_cands(&mut ranker, t, &mut out, &mut push, 0);
@@ -343,6 +344,17 @@ impl Editor {
                     let base = |t: &str| t.strip_prefix('=').and_then(|d| lib.parse(d));
                     // 途中のプロジェクトの型のメンバーの型は、プロジェクトの索引で（型引数は宣言のファイルの import で読む）
                     let mut project = |t: &str, n: &str, call: bool| {
+                        // 今の型のメソッド: プロジェクトの定義、無ければライブラリの親のもの
+                        if t.is_empty() {
+                            let here = inside.as_deref()?;
+                            if let Some((text, path, lines)) = ranker.member_decl_text(&rel, &src, here, Some(&rel), n) {
+                                return crate::java_members::LibTypes::from_lines(jars, lines.iter().map(String::as_str)).parse(&text).map(|t| t.written_in(&path));
+                            }
+                            return ranker.outside_supers(here).into_iter().find_map(|(sup, lines)| {
+                                let l = crate::java_members::LibTypes::from_lines(jars, lines.iter().map(String::as_str));
+                                l.member_type(&crate::java_members::JType::Class(l.resolve(&sup)?, Vec::new()), n, call)
+                            });
+                        }
                         let (t, hint) = t.split_once('@').map_or((t, None), |(a, b)| (a, Some(b)));
                         if let Some((text, path, lines)) = ranker.member_decl_text(&rel, &src, t, hint, n) {
                             return crate::java_members::LibTypes::from_lines(jars, lines.iter().map(String::as_str)).parse(&text).map(|t| t.written_in(&path));
@@ -352,7 +364,22 @@ impl Editor {
                         // 型の名前（小文字はプロジェクトに無いメソッドの名前なので除く）
                         ranker.receiver_type_name(&rel, &src, start, &r).filter(|t| t.starts_with(char::is_uppercase)).and_then(|t| lib.parse(&t))
                     };
-                    let t = r.as_ref().and_then(|r| lib.receiver(r, &base, &mut project));
+                    // 呼び出しの引数の型（形を選ぶ・型変数を決める）
+                    let mut args = Vec::new();
+                    for part in crate::java_members::chain_args(&expanded) {
+                        args.push(part.map(|list| {
+                            list.iter()
+                                .map(|a| {
+                                    crate::java_members::literal_type(a).unwrap_or_else(|| {
+                                        let a = crate::java_members::expand_head(&src, a, start);
+                                        let r = receiver_before(&a, a.len(), &decl).filter(|_| crate::java_members::chain_start(&a) == Some(0))?;
+                                        lib.receiver(&r, &base, &mut project, &[])
+                                    })
+                                })
+                                .collect::<Vec<_>>()
+                        }));
+                    }
+                    let t = r.as_ref().and_then(|r| lib.receiver(r, &base, &mut project, &args));
                     match t {
                         Some(crate::java_members::JType::Class(name, _)) if name.starts_with('?') => {
                             let simple = crate::java_members::project_name(&name).map_or("", |x| x.0);
@@ -776,6 +803,15 @@ mod tests {
         assert!(has(&v, &["ensureCapacity"]), "new: {v:?}");
         let v = items(&mut e, "emptyList().");
         assert!(has(&v, &["size"]), "static の import: {v:?}");
+        // 引数の型で形を選び、メソッドの型変数を決める（<T> T requireNonNull(T)・<E> List<E> of(E)）
+        let v = items(&mut e, "Objects.requireNonNull(names).");
+        assert!(has(&v, &["size"]), "requireNonNull(List<String>): {v:?}");
+        let v = items(&mut e, "List.of(\"a\").get(0).");
+        assert!(has(&v, &["substring"]), "List.of(String): {v:?}");
+        let v = items(&mut e, "Collections.singletonList(names).get(0).");
+        assert!(has(&v, &["size"]), "singletonList(List<String>): {v:?}");
+        let v = items(&mut e, "names.get(0).split(\",\").");
+        assert!(has(&v, &["length"]), "配列: {v:?}");
         let v = items(&mut e, "new Repo().names().get(0).");
         assert!(has(&v, &["substring"]), "プロジェクトのメソッドの List<String>: {v:?}");
         // パッケージの名前の後は下のパッケージとクラス、完全な名前のクラスの後は static
