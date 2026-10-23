@@ -101,6 +101,11 @@ impl Sig<'_> {
 
     /// `<T:Ljava/lang/Object;U::Ljava/lang/Comparable<TU;>;>` → [T, U]
     fn type_params(&mut self) -> Vec<String> {
+        self.type_params_bounds().into_iter().map(|x| x.0).collect()
+    }
+
+    /// 型変数とその最初の境界（`SELF extends AbstractAssert<SELF, A>` の AbstractAssert）
+    fn type_params_bounds(&mut self) -> Vec<(String, Option<JType>)> {
         let mut out = Vec::new();
         if !self.eat(b'<') {
             return out;
@@ -110,13 +115,16 @@ impl Sig<'_> {
             while self.peek() != b':' && self.peek() != 0 {
                 self.i += 1;
             }
-            out.push(String::from_utf8_lossy(&self.s[start..self.i]).into_owned());
+            let name = String::from_utf8_lossy(&self.s[start..self.i]).into_owned();
+            let mut bound = None;
             // クラスの境界（空のこともある）と、インターフェースの境界
             while self.eat(b':') {
                 if !matches!(self.peek(), b':' | b'>') {
-                    self.ty();
+                    let t = self.ty();
+                    bound.get_or_insert(t);
                 }
             }
+            out.push((name, bound));
         }
         self.eat(b'>');
         out
@@ -400,9 +408,21 @@ impl<'a> LibTypes<'a> {
                 continue;
             }
             let Some(c) = self.jars.class(&name) else { continue };
-            let (params, supers) = class_sig(&c);
-            // 型引数が無い（生の型）なら型変数のまま
-            let env: HashMap<String, JType> = params.into_iter().zip(args).collect();
+            let (_, supers) = class_sig(&c);
+            // 型引数が ? か無い（生の型）なら、型変数の境界のクラス（型引数は外す）。境界が無ければ型変数のまま
+            let bounds = c.signature.as_deref().map(|s| Sig { s: s.as_bytes(), i: 0 }.type_params_bounds()).unwrap_or_default();
+            let mut env: HashMap<String, JType> = HashMap::new();
+            for (k, (v, bound)) in bounds.into_iter().enumerate() {
+                match (args.get(k), bound) {
+                    (Some(a), _) if *a != JType::Other => {
+                        env.insert(v, a.clone());
+                    }
+                    (_, Some(JType::Class(b, _))) if b != "java/lang/Object" => {
+                        env.insert(v, JType::Class(b, Vec::new()));
+                    }
+                    _ => {}
+                }
+            }
             for s in &supers {
                 todo.push_back(subst(s, &env));
             }
@@ -674,6 +694,56 @@ pub fn chain_start(s: &str) -> Option<usize> {
             return Some(ws);
         }
     }
+}
+
+/// 行の中の `.` の前 `before` が `.` で始まる（または空の）とき、前の行からの連なりを足す
+/// （`list.stream()\n    .filter(..)\n    .` → `list.stream().filter(..)`）。`line_start` は行の始まりの位置
+pub fn with_previous_lines(src: &str, line_start: usize, before: &str) -> String {
+    let t = before.trim_start();
+    if !(t.is_empty() || t.starts_with('.')) {
+        return before.to_string();
+    }
+    // 前の 30 行まで（コメントを外して字下げを詰める）
+    let mut lines: Vec<&str> = Vec::new();
+    let mut end = line_start.min(src.len());
+    while end > 0 && lines.len() < 30 {
+        let ls = src[..end - 1].rfind('\n').map_or(0, |i| i + 1);
+        lines.push(strip_line_comment(&src[ls..end - 1]).trim());
+        end = ls;
+    }
+    lines.reverse();
+    let joined = lines.concat();
+    // 文の切れ目（外側の ; { } = , と、閉じていない ( [）の後から
+    let mut depth = 0i32;
+    let mut cut = 0;
+    for (i, c) in joined.char_indices().rev() {
+        match c {
+            ')' | ']' | '}' if depth > 0 || c != '}' => depth += 1,
+            '(' | '[' | '{' if depth > 0 => depth -= 1,
+            '(' | '[' | '{' | '}' | ';' | '=' | ',' if depth == 0 => {
+                cut = i + 1;
+                break;
+            }
+            _ => {}
+        }
+    }
+    format!("{}{t}", joined[cut..].trim())
+}
+
+/// 行の `//` のコメントを外す（文字列の中は見ない）
+fn strip_line_comment(l: &str) -> &str {
+    let (mut quote, mut prev) = (None, ' ');
+    for (i, c) in l.char_indices() {
+        match (quote, c) {
+            (Some(q), _) if c == q && prev != '\\' => quote = None,
+            (Some(_), _) => {}
+            (None, '"' | '\'') => quote = Some(c),
+            (None, '/') if prev == '/' => return &l[..i - 1],
+            _ => {}
+        }
+        prev = c;
+    }
+    l
 }
 
 /// `.` の前の、名前を `.` でつないだだけの連なり（`java.util`・`com.x.Foo`。呼び出しや `x().a` の途中は None）
@@ -1038,6 +1108,14 @@ mod tests {
         assert_eq!(expand_head(src, "b", end), "m.λput_1_1()");
         assert_eq!(expand_head(src, "names", end), "names", "型を書いた宣言はそのまま");
         assert_eq!(expand_head("var xs = r == null ? null\n    : r.items();\n", "xs", 43), "r.items()", "三項は null でない方");
+    }
+
+    #[test]
+    fn previous_lines() {
+        let src = "  var n = list.stream() // c\n      .filter(x -> {\n        return true;\n      })\n      .map(f)\n      .";
+        let ls = src.rfind('\n').unwrap() + 1;
+        assert_eq!(with_previous_lines(src, ls, "      "), "list.stream().filter(x -> {return true;}).map(f)");
+        assert_eq!(with_previous_lines(src, ls, "  a.b"), "  a.b", "行の中で足りていればそのまま");
     }
 
     #[test]

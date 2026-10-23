@@ -274,7 +274,9 @@ impl Editor {
         };
         if member {
             // 型を書かずに宣言した変数（var・for の var・ラムダの引数）は、頭を式に置き換えてから
-            let mut expanded = if self.is_java() { crate::java_members::expand_head(&src, &line[..ws - 1], start) } else { line[..ws - 1].to_string() };
+            // `.` で始まる行は前の行からの連なり
+            let before = crate::java_members::with_previous_lines(&src, start - ws, &line[..ws - 1]);
+            let mut expanded = if self.is_java() { crate::java_members::expand_head(&src, &before, start) } else { before };
             // パッケージの名前の後（Java）: `java.` → 下のパッケージとクラス、`java.awt.Color.` → そのクラス（完全な名前で）
             let mut fqn: Option<(String, String)> = None;
             if let Some(chain) = crate::java_members::dotted_chain(&expanded).filter(|_| self.is_java()) {
@@ -900,7 +902,8 @@ mod tests {
             };
             e.nav.jars = Some(std::sync::Arc::new(jars));
         }
-        let site = regex::Regex::new(r"[\w)]\.([A-Za-z_]\w*)").unwrap();
+        // x.m と、行の頭の .m（前の行からの連なり）
+        let site = regex::Regex::new(r"(?:[\w)]|^\s*)\.([A-Za-z_]\w*)").unwrap();
         // [型が分かって当たった, 型が分かったが無い, ファイルの語で代わり, 何も無い]
         let mut n = [0usize; 4];
         let mut miss: HashMap<String, usize> = HashMap::new();
@@ -953,7 +956,8 @@ mod tests {
                     }
                     slow.push((us, format!("{}:{} {}", p.file_name().unwrap().to_string_lossy(), li + 1, line.trim())));
                     // 受け手の式（呼び出しの引数は省く）
-                    let before = &line[..ws - 1];
+                    let before = crate::java_members::with_previous_lines(&e.buf.text(), e.buf.line_start(li), &line[..ws - 1]);
+                    let before = before.as_str();
                     let recv = match crate::java_members::chain_start(before) {
                         Some(i) => {
                             let mut r = String::new();
