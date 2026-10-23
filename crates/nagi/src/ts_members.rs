@@ -577,8 +577,14 @@ impl<'a> TsTypes<'a> {
         self.collect(t, matches!(t, TT::Static(_)), &mut all, 0);
         let mut out: Vec<TsMember> = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        for (m, _, _, owner) in all {
-            if m.name == "[]" || m.name == "()" || m.name == "new" || m.name == "constructor" || m.name.starts_with('#') {
+        for (m, ctx, _, owner) in all {
+            // ライブラリ（.d.ts）の private は出さない（プロジェクトのクラスは、その中から使う）
+            let library = match &ctx {
+                Ctx::Dts(_) => true,
+                Ctx::Ns(inner, _) => matches!(**inner, Ctx::Dts(_)),
+                Ctx::Src(sf) => sf.path.to_string_lossy().ends_with(".d.ts"),
+            };
+            if m.name == "[]" || m.name == "()" || m.name == "new" || m.name == "constructor" || m.name.starts_with('#') || (m.private && library) {
                 continue;
             }
             if seen.insert(m.name.clone()) {

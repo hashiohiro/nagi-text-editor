@@ -913,6 +913,8 @@ pub struct Member {
     pub method: bool,
     pub optional: bool,
     pub is_static: bool,
+    /// private（#name も）
+    pub private: bool,
     /// メソッドの型変数（`<T, U>` の中）
     pub type_params: String,
     /// メソッドの引数（`(` `)` の中）
@@ -1061,6 +1063,9 @@ fn parse_member(text: &str) -> Option<Member> {
             if w == "static" {
                 m.is_static = true;
             }
+            if w == "private" {
+                m.private = true;
+            }
             if w == "get" || w == "set" {
                 getter = true;
             }
@@ -1087,6 +1092,7 @@ fn parse_member(text: &str) -> Option<Member> {
     } else if s.starts_with(['(', '<']) {
         ("()".to_string(), 0)
     } else {
+        m.private |= s.starts_with('#');
         let (n, k) = ident(s, s.starts_with('#') as usize, s.len())?;
         (n.to_string(), k)
     };
