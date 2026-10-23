@@ -74,6 +74,11 @@ impl Index {
         self.files.get(rel).map_or(&[], |f| f.defs.as_slice())
     }
 
+    /// 索引したファイル（根からの相対パス、/ 区切り）
+    pub fn files(&self) -> impl Iterator<Item = &str> {
+        self.files.keys().map(|k| &**k)
+    }
+
     /// 識別子の名前の一覧（補完用）
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.by_name.keys().map(String::as_str)

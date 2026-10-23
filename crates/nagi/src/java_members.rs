@@ -234,6 +234,11 @@ impl<'a> LibTypes<'a> {
         LibTypes { jars, single, wild, package, statics }
     }
 
+    /// 単純名を完全な名前（`java.awt.Color`）の型にする（import と同じ扱い）
+    pub fn alias(&mut self, simple: &str, fqn: &str) {
+        self.single.insert(simple.to_string(), fqn.to_string());
+    }
+
     fn exists(&self, internal: &str) -> bool {
         self.jars.class(internal).is_some()
     }
@@ -481,6 +486,24 @@ pub fn chain_start(s: &str) -> Option<usize> {
     }
 }
 
+/// `.` の前の、名前を `.` でつないだだけの連なり（`java.util`・`com.x.Foo`。呼び出しや `x().a` の途中は None）
+pub fn dotted_chain(s: &str) -> Option<&str> {
+    let word = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+    let i = s.char_indices().rev().take_while(|(_, c)| word(*c) || *c == '.').last()?.0;
+    let i = i + s[i..].find(word)?;
+    if s[..i].ends_with('.') || s.ends_with('.') || s[i..].contains("..") {
+        return None;
+    }
+    Some(&s[i..])
+}
+
+/// プロジェクトのソースのパッケージ（`m/src/main/java/com/x/Foo.java` → `com/x`。`java/` の下でなければ None）
+pub fn source_package(rel: &str) -> Option<String> {
+    let dir = format!("/{}/", rel.rsplit_once('/')?.0);
+    let at = dir.find("/java/")? + 6;
+    Some(dir[at.min(dir.len())..].trim_end_matches('/').to_string())
+}
+
 /// `...Foo<A<B>>` の終わりの `>` に対応する `<` の位置
 pub fn generic_open(s: &str) -> Option<usize> {
     let mut depth = 0;
@@ -712,6 +735,17 @@ mod tests {
         assert_eq!(expand_head(src, "v", end), "names.λforEach_0_0()");
         assert_eq!(expand_head(src, "b", end), "m.λput_1_1()");
         assert_eq!(expand_head(src, "names", end), "names", "型を書いた宣言はそのまま");
+    }
+
+    #[test]
+    fn chains() {
+        assert_eq!(dotted_chain("  @io.swagger.v3"), Some("io.swagger.v3"));
+        assert_eq!(dotted_chain("List<com.x"), Some("com.x"));
+        assert_eq!(dotted_chain("x = java.awt.Color"), Some("java.awt.Color"));
+        assert_eq!(dotted_chain("foo().bar"), None);
+        assert_eq!(source_package("app/src/main/java/com/x/Foo.java"), Some("com/x".into()));
+        assert_eq!(source_package("java/Foo.java"), Some("".into()));
+        assert_eq!(source_package("web/Foo.java"), None);
     }
 
     #[test]

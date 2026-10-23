@@ -303,7 +303,7 @@ pub(crate) mod draw {
                         'F' | 'T' | 'c' | 'I' | 'e' => FINDER_MATCH,
                         'V' | 'f' => rgb(0xaf87d7),
                         'm' => rgb(0xd7af87),
-                        'v' => STATUS_FG,
+                        'v' | 'p' => STATUS_FG,
                         _ => fg,
                     };
                     let x = p.text(" ", col, y, fg);

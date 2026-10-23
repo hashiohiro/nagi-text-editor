@@ -507,6 +507,8 @@ pub struct JarIndex {
     shards: Vec<std::sync::Arc<nagi_core::mmap::Mapped>>,
     /// 単純名で並べた (かけら, かけらの中の単純名の表の番号)
     table: Vec<(u16, u32)>,
+    /// クラスのあるパッケージ（内部名の `java/util`。並べて重なりなし）
+    packages: Vec<Box<str>>,
     /// 作り直したかけらの数
     pub built: usize,
 }
@@ -541,8 +543,10 @@ impl JarIndex {
         let views: Vec<Shard> = shards.iter().map(|m| Shard::open(m).unwrap()).collect();
         table.sort_by(|a, b| views[a.0 as usize].simple_at(a.1 as usize).cmp(views[b.0 as usize].simple_at(b.1 as usize)));
         table.shrink_to_fit();
+        let set: std::collections::BTreeSet<&str> = table.iter().map(|&(i, k)| views[i as usize].name_at(k as usize).rsplit_once('/').map_or("", |x| x.0)).collect();
+        let packages: Vec<Box<str>> = set.into_iter().map(Box::from).collect();
         drop(views);
-        JarIndex { shards, table, built }
+        JarIndex { shards, table, packages, built }
     }
 
     fn shard(&self, i: u16) -> Shard<'_> {
@@ -568,6 +572,38 @@ impl JarIndex {
         let key = |k: usize| self.shard(self.table[k].0).simple_at(self.table[k].1 as usize);
         let lo = partition(self.table.len(), |k| key(k) < prefix);
         (lo..self.table.len()).take_while(|&k| key(k).starts_with(prefix)).take(limit).map(|k| self.shard(self.table[k].0).name_at(self.table[k].1 as usize)).collect()
+    }
+
+    /// `pkg`（内部名の `java/util`・`com`）がパッケージか、その上か
+    pub fn is_package(&self, pkg: &str) -> bool {
+        let i = self.packages.partition_point(|p| &**p < pkg);
+        self.packages.get(i).is_some_and(|p| &**p == pkg || p.strip_prefix(pkg).is_some_and(|r| r.starts_with('/')))
+    }
+
+    /// `pkg` の下のパッケージの次の名前（`java` → `util`・`io` …）
+    pub fn subpackages(&self, pkg: &str) -> Vec<&str> {
+        let head = format!("{pkg}/");
+        let i = self.packages.partition_point(|p| **p < *head);
+        let mut out: Vec<&str> = Vec::new();
+        for p in self.packages[i..].iter().take_while(|p| p.starts_with(&head)) {
+            let next = p[head.len()..].split('/').next().unwrap_or("");
+            if out.last() != Some(&next) {
+                out.push(next);
+            }
+        }
+        out
+    }
+
+    /// `pkg` の中の（入れ子でない）クラスの内部名
+    pub fn classes_in(&self, pkg: &str) -> Vec<&str> {
+        if !self.packages.binary_search_by(|p| (**p).cmp(pkg)).is_ok() {
+            return Vec::new();
+        }
+        self.table
+            .iter()
+            .map(|&(i, k)| self.shard(i).name_at(k as usize))
+            .filter(|n| n.len() > pkg.len() && n.starts_with(pkg) && n.as_bytes()[pkg.len()] == b'/' && !n[pkg.len() + 1..].contains(['/', '$']))
+            .collect()
     }
 
     /// 内部名でクラスを引く

@@ -271,7 +271,51 @@ impl Editor {
         };
         if member {
             // 型を書かずに宣言した変数（var・for の var・ラムダの引数）は、頭を式に置き換えてから
-            let expanded = if self.is_java() { crate::java_members::expand_head(&src, &line[..ws - 1], start) } else { line[..ws - 1].to_string() };
+            let mut expanded = if self.is_java() { crate::java_members::expand_head(&src, &line[..ws - 1], start) } else { line[..ws - 1].to_string() };
+            // パッケージの名前の後（Java）: `java.` → 下のパッケージとクラス、`java.awt.Color.` → そのクラス（完全な名前で）
+            let mut fqn: Option<(String, String)> = None;
+            if let Some(chain) = crate::java_members::dotted_chain(&expanded).filter(|_| self.is_java()) {
+                let at = expanded.len() - chain.len();
+                let segs: Vec<String> = chain.split('.').map(String::from).collect();
+                if segs[0].starts_with(char::is_lowercase) && var_type(&src, &segs[0], start).is_none() {
+                    let proj: Vec<(String, &str)> = idx.map(|i| i.files().filter(|f| f.ends_with(".java")).filter_map(|f| Some((crate::java_members::source_package(f)?, f))).collect()).unwrap_or_default();
+                    let known = |pkg: &str| proj.iter().any(|(p, _)| p == pkg || p.strip_prefix(pkg).is_some_and(|r| r.starts_with('/'))) || jars.as_ref().is_some_and(|j| j.is_package(pkg));
+                    // パッケージとして知っている長さ（大文字で始まるパッケージもある）
+                    let k = (1..=segs.len()).take_while(|&k| known(&segs[..k].join("/"))).last().unwrap_or(0);
+                    let pkg = segs[..k].join("/");
+                    let under = format!("{pkg}/");
+                    let known = k > 0;
+                    if known && k == segs.len() {
+                        let dotted = segs.join(".");
+                        for (p, f) in &proj {
+                            if *p == pkg {
+                                let name = f.rsplit('/').next().unwrap_or(f).trim_end_matches(".java");
+                                let mark = idx.and_then(|i| i.file_type_kind(f)).map_or('c', mark_of);
+                                push(&mut out, Cand { name: name.to_string(), mark, note: dotted.clone(), call: None, rank: 0, insert: None, import: None });
+                            }
+                        }
+                        if let Some(j) = &jars {
+                            for c in j.classes_in(&pkg) {
+                                let name = c.rsplit('/').next().unwrap_or(c);
+                                push(&mut out, Cand { name: name.to_string(), mark: 'c', note: dotted.clone(), call: None, rank: 0, insert: None, import: None });
+                            }
+                        }
+                        let mut subs: std::collections::BTreeSet<&str> = proj.iter().filter_map(|(p, _)| p.strip_prefix(&under)?.split('/').next()).collect();
+                        if let Some(j) = &jars {
+                            subs.extend(j.subpackages(&pkg));
+                        }
+                        for s in subs {
+                            push(&mut out, Cand { name: s.to_string(), mark: 'p', note: String::new(), call: None, rank: 0, insert: None, import: None });
+                        }
+                        return out;
+                    }
+                    if known {
+                        fqn = Some((segs[k].clone(), format!("{}.{}", segs[..k].join("."), segs[k])));
+                        let cut: usize = segs[..k].iter().map(|s| s.len() + 1).sum();
+                        expanded.replace_range(at..at + cut, "");
+                    }
+                }
+            }
             let var = |n: &str| match n.strip_prefix("new ") {
                 Some(t) => Some(t.split('<').next().unwrap_or(t).to_string()),
                 None => var_type(&src, n, start),
@@ -285,7 +329,10 @@ impl Editor {
             // ライブラリの型（Java。jar・JDK の索引から、型引数もたどって）
             if out.is_empty() && self.is_java() {
                 if let Some(jars) = &self.nav.jars {
-                    let lib = crate::java_members::LibTypes::new(jars, &src);
+                    let mut lib = crate::java_members::LibTypes::new(jars, &src);
+                    if let Some((simple, full)) = &fqn {
+                        lib.alias(simple, full);
+                    }
                     // 変数は宣言の型（型引数つき）に印 `=` を付けて、クラス名（static の呼び出し）と分ける
                     let decl = |n: &str| match n.strip_prefix("new ") {
                         Some(t) => Some(format!("={t}")),
@@ -712,6 +759,15 @@ mod tests {
         assert!(has(&v, &["ensureCapacity"]), "new: {v:?}");
         let v = items(&mut e, "emptyList().");
         assert!(has(&v, &["size"]), "static の import: {v:?}");
+        // パッケージの名前の後は下のパッケージとクラス、完全な名前のクラスの後は static
+        let v = items(&mut e, "java.util.");
+        assert!(has(&v, &["function", "List", "Collections"]) && !v.iter().any(|x| x == "String"), "java.util.: {v:?}");
+        let v = items(&mut e, "java.");
+        assert!(has(&v, &["util", "lang"]), "java.: {v:?}");
+        let v = items(&mut e, "java.util.Collections.");
+        assert!(has(&v, &["emptyList", "class"]), "完全な名前: {v:?}");
+        let v = items(&mut e, "java.util.Map.");
+        assert!(has(&v, &["of"]), "import していない完全な名前: {v:?}");
         // 決めると () を入れる（引数があれば中へ）
         keys(&mut e, "9GA<CR>names.siz<C-Space><CR>");
         assert_eq!(e.buf.line(9).trim(), "names.size()");
