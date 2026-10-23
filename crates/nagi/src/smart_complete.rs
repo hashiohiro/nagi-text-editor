@@ -227,7 +227,7 @@ impl Editor {
     }
 
     /// Java のファイルか（色付けがまだでもパスから）
-    fn is_java(&self) -> bool {
+    pub(crate) fn is_java(&self) -> bool {
         self.syntax.as_ref().map(|s| s.lang).or_else(|| self.buf.path.as_deref().and_then(nagi_syntax::Lang::detect)) == Some(nagi_syntax::Lang::Java)
     }
 
@@ -277,54 +277,42 @@ impl Editor {
             }
         };
         if member {
-            // 型を書かずに宣言した変数（var・for の var・ラムダの引数）は、頭を式に置き換えてから
-            // `.` で始まる行は前の行からの連なり
-            let before = crate::java_members::with_previous_lines(&src, start - ws, &line[..ws - 1]);
-            let mut expanded = if self.is_java() { crate::java_members::expand_head(&src, &before, start) } else { before };
-            // パッケージの名前の後（Java）: `java.` → 下のパッケージとクラス、`java.awt.Color.` → そのクラス（完全な名前で）
-            let mut fqn: Option<(String, String)> = None;
-            if let Some(chain) = crate::java_members::dotted_chain(&expanded).filter(|_| self.is_java()) {
-                let at = expanded.len() - chain.len();
-                let segs: Vec<String> = chain.split('.').map(String::from).collect();
-                let known = |pkg: &str| idx.is_some_and(|i| i.is_java_package(pkg)) || jars.as_ref().is_some_and(|j| j.is_package(pkg));
-                if segs[0].starts_with(char::is_lowercase) && known(&segs[0]) && var_type(&src, &segs[0], start).is_none() {
-                    // パッケージとして知っている長さ（大文字で始まるパッケージもある）
-                    let k = (1..=segs.len()).take_while(|&k| known(&segs[..k].join("/"))).last().unwrap_or(0);
-                    let pkg = segs[..k].join("/");
+            // 頭を展開し（前の行からの連なり・型を書かない変数）、パッケージの名前の頭を外す。パッケージだけなら下のパッケージとクラス
+            let known = |pkg: &str| idx.is_some_and(|i| i.is_java_package(pkg)) || jars.as_ref().is_some_and(|j| j.is_package(pkg));
+            let head = if self.is_java() {
+                crate::java_members::receiver_text(&src, &line[..ws - 1], start - ws, start, &known)
+            } else {
+                Ok((crate::java_members::with_previous_lines(&src, start - ws, &line[..ws - 1]), None))
+            };
+            let (expanded, fqn) = match head {
+                Ok(x) => x,
+                Err(pkg) => {
+                    let dotted = pkg.replace('/', ".");
                     let under = format!("{pkg}/");
-                    let known = k > 0;
-                    if known && k == segs.len() {
-                        let dotted = segs.join(".");
-                        let proj: Vec<(String, &str)> = idx.map(|i| i.files().filter(|f| f.ends_with(".java")).filter_map(|f| Some((crate::java_members::source_package(f)?, f))).collect()).unwrap_or_default();
-                        for (p, f) in &proj {
-                            if *p == pkg {
-                                let name = f.rsplit('/').next().unwrap_or(f).trim_end_matches(".java");
-                                let mark = idx.and_then(|i| i.file_type_kind(f)).map_or('c', mark_of);
-                                push(&mut out, Cand { name: name.to_string(), mark, note: dotted.clone(), call: None, rank: 0, insert: None, import: None });
-                            }
+                    let proj: Vec<(String, &str)> = idx.map(|i| i.files().filter(|f| f.ends_with(".java")).filter_map(|f| Some((crate::java_members::source_package(f)?, f))).collect()).unwrap_or_default();
+                    for (p, f) in &proj {
+                        if *p == pkg {
+                            let name = f.rsplit('/').next().unwrap_or(f).trim_end_matches(".java");
+                            let mark = idx.and_then(|i| i.file_type_kind(f)).map_or('c', mark_of);
+                            push(&mut out, Cand { name: name.to_string(), mark, note: dotted.clone(), call: None, rank: 0, insert: None, import: None });
                         }
-                        if let Some(j) = &jars {
-                            for c in j.classes_in(&pkg) {
-                                let name = c.rsplit('/').next().unwrap_or(c);
-                                push(&mut out, Cand { name: name.to_string(), mark: 'c', note: dotted.clone(), call: None, rank: 0, insert: None, import: None });
-                            }
-                        }
-                        let mut subs: std::collections::BTreeSet<&str> = proj.iter().filter_map(|(p, _)| p.strip_prefix(&under)?.split('/').next()).collect();
-                        if let Some(j) = &jars {
-                            subs.extend(j.subpackages(&pkg));
-                        }
-                        for s in subs {
-                            push(&mut out, Cand { name: s.to_string(), mark: 'p', note: String::new(), call: None, rank: 0, insert: None, import: None });
-                        }
-                        return out;
                     }
-                    if known {
-                        fqn = Some((segs[k].clone(), format!("{}.{}", segs[..k].join("."), segs[k])));
-                        let cut: usize = segs[..k].iter().map(|s| s.len() + 1).sum();
-                        expanded.replace_range(at..at + cut, "");
+                    if let Some(j) = &jars {
+                        for c in j.classes_in(&pkg) {
+                            let name = c.rsplit('/').next().unwrap_or(c);
+                            push(&mut out, Cand { name: name.to_string(), mark: 'c', note: dotted.clone(), call: None, rank: 0, insert: None, import: None });
+                        }
                     }
+                    let mut subs: std::collections::BTreeSet<&str> = proj.iter().filter_map(|(p, _)| p.strip_prefix(&under)?.split('/').next()).collect();
+                    if let Some(j) = &jars {
+                        subs.extend(j.subpackages(&pkg));
+                    }
+                    for s in subs {
+                        push(&mut out, Cand { name: s.to_string(), mark: 'p', note: String::new(), call: None, rank: 0, insert: None, import: None });
+                    }
+                    return out;
                 }
-            }
+            };
             let var = |n: &str| match n.strip_prefix("new ") {
                 Some(t) => Some(t.split('<').next().unwrap_or(t).to_string()),
                 None => var_type(&src, n, start),
@@ -351,59 +339,8 @@ impl Editor {
             // ライブラリの型（Java。jar・JDK の索引から、型引数もたどって）
             if out.is_empty() && self.is_java() {
                 if let Some(jars) = &self.nav.jars {
-                    let mut lib = crate::java_members::LibTypes::new(jars, &src);
-                    if let Some((simple, full)) = &fqn {
-                        lib.alias(simple, full);
-                    }
-                    // 変数は宣言の型（型引数つき）に印 `=` を付けて、クラス名（static の呼び出し）と分ける
-                    let decl = |n: &str| match n.strip_prefix("new ") {
-                        Some(t) => Some(format!("={t}")),
-                        None => crate::java_members::var_decl_text(&src, n, start).map(|d| format!("={d}")),
-                    };
-                    let r = receiver_before(&expanded, expanded.len(), &decl);
                     let statics = class_recv;
-                    let base = |t: &str| t.strip_prefix('=').and_then(|d| lib.parse(d));
-                    // 途中のプロジェクトの型のメンバーの型は、プロジェクトの索引で（型引数は宣言のファイルの import で読む）
-                    let mut project = |t: &str, n: &str, call: bool| {
-                        // 型が空なら今の型（型の中から呼ぶメソッド）
-                        let (here, hint) = match t {
-                            "" => (inside.as_deref()?, Some(rel.as_str())),
-                            t => t.split_once('@').map_or((t, None), |(a, b)| (a, Some(b))),
-                        };
-                        if let Some((text, path, lines)) = ranker.member_decl_text(&rel, &src, here, hint, n) {
-                            return crate::java_members::LibTypes::from_lines(jars, lines.iter().map(String::as_str)).parse(&text).map(|t| t.written_in(&path));
-                        }
-                        // ライブラリの親（型引数つき）のメンバー
-                        let from_super = ranker.outside_supers(here).into_iter().find_map(|(sup, lines)| {
-                            let l = crate::java_members::LibTypes::from_lines(jars, lines.iter().map(String::as_str));
-                            let st = l.parse(&sup).filter(|x| matches!(x, crate::java_members::JType::Class(n, _) if !n.starts_with('?')))?;
-                            l.member_type(&st, n, call)
-                        });
-                        if from_super.is_some() || t.is_empty() {
-                            return from_super;
-                        }
-                        let t = here;
-                        let inner = Box::new(Receiver::Type(t.to_string()));
-                        let r = if call { Receiver::Call(inner, n.to_string()) } else { Receiver::Member(inner, n.to_string()) };
-                        // 型の名前（小文字はプロジェクトに無いメソッドの名前なので除く）
-                        ranker.receiver_type_name(&rel, &src, start, &r).filter(|t| t.starts_with(char::is_uppercase)).and_then(|t| lib.parse(&t))
-                    };
-                    // 呼び出しの引数の型（形を選ぶ・型変数を決める）
-                    let mut args = Vec::new();
-                    for part in crate::java_members::chain_args(&expanded) {
-                        args.push(part.map(|list| {
-                            list.iter()
-                                .map(|a| {
-                                    crate::java_members::literal_type(a).unwrap_or_else(|| {
-                                        let a = crate::java_members::expand_head(&src, a, start);
-                                        let r = receiver_before(&a, a.len(), &decl).filter(|_| crate::java_members::chain_start(&a) == Some(0))?;
-                                        lib.receiver(&r, &base, &mut project, &[])
-                                    })
-                                })
-                                .collect::<Vec<_>>()
-                        }));
-                    }
-                    let t = r.as_ref().and_then(|r| lib.receiver(r, &base, &mut project, &args));
+                    let (lib, t) = crate::java_members::lib_receiver(jars, &mut ranker, &src, &rel, start, inside.as_deref(), &expanded, fqn.as_ref());
                     match t {
                         Some(crate::java_members::JType::Class(name, _)) if name.starts_with('?') => {
                             let simple = crate::java_members::project_name(&name).map_or("", |x| x.0);
@@ -884,6 +821,12 @@ mod tests {
         // 決めると () を入れる（引数があれば中へ）
         keys(&mut e, "9GA<CR>names.siz<C-Space><CR>");
         assert_eq!(e.buf.line(9).trim(), "names.size()");
+        // 定義へ（gd）: ライブラリのメソッドは JDK の src.zip のソースへ（無ければ骨組み）
+        e.nav.sources_dir = Some(dir.join("sources"));
+        keys(&mut e, "<Esc>0fzgd");
+        let p = e.buf.path.clone().unwrap();
+        assert!(p.ends_with("java/util/List.java") || p.ends_with("java\\util\\List.java"), "{}: {}", p.display(), e.notify.text);
+        assert!(e.buf.line(e.cursor.line).contains("size()"), "{}", e.buf.line(e.cursor.line));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -25,6 +25,8 @@ pub struct IndexState {
     /// ライブラリ（依存の jar・JDK）の型の索引（Java。jvm.rs）。補完と import に使う
     pub jars: Option<std::sync::Arc<nagi_workers::jvm::JarIndex>>,
     jars_task: Option<nagi_core::task::Task<Result<nagi_workers::jvm::JarIndex, String>>>,
+    /// ライブラリのソース・骨組みを書く場所（試験で変える。None なら %LOCALAPPDATA%\nagi\index\sources）
+    pub sources_dir: Option<PathBuf>,
     /// 保存したファイルの索引し直し
     reindex: Option<(Sender<Option<(String, (u64, u64), Vec<Entry>)>>, nagi_core::task::Task<Option<(String, (u64, u64), Vec<Entry>)>>)>,
 }
@@ -222,7 +224,9 @@ impl Editor {
                     }
                     nagi_workers::index::Ranked::Outside(t) => {
                         // 受け手の型（またはその親）がライブラリ。同じ名前のプロジェクトのメソッドへは跳ばない
-                        self.notify.info(format!("定義はプロジェクトの外です: {name}（{t} から先はライブラリ）"));
+                        if !self.goto_library(&name, word_at) {
+                            self.notify.info(format!("定義はプロジェクトの外です: {name}（{t} から先はライブラリ）"));
+                        }
                         return;
                     }
                 }
@@ -248,6 +252,10 @@ impl Editor {
                 i += 1;
                 i <= best || matches!(k, DefKind::Function | DefKind::Method)
             });
+        }
+        // プロジェクトに無ければライブラリ（Java の jar・JDK）
+        if cands.is_empty() && self.goto_library(&name, word_at) {
+            return;
         }
         match cands.len() {
             0 => {
@@ -279,6 +287,87 @@ impl Editor {
                 }
             }
         }
+    }
+
+    /// Java: ライブラリ（依存の jar・JDK）の型・メンバーの定義へ（ソースか、無ければ class ファイルから作った骨組みを開く）。跳べたら true
+    fn goto_library(&mut self, name: &str, word_at: usize) -> bool {
+        let Some(jars) = self.nav.jars.clone().filter(|_| self.is_java()) else { return false };
+        let Some((owner, member)) = self.library_target(name, word_at) else { return false };
+        let Some(dir) = self.nav.sources_dir.clone().or_else(crate::java_source::sources_dir) else { return false };
+        let Some(o) = crate::java_source::open(&jars, &owner, member.as_deref(), &dir) else { return false };
+        self.jump_to(&o.path, o.line, o.col);
+        let fqn = owner.replace(['/', '$'], ".");
+        self.notify.info(if o.source { format!("ライブラリ: {fqn}（ソース。読むだけ）") } else { format!("ライブラリ: {fqn}（ソースが無いので class ファイルの宣言から作った骨組み）") });
+        true
+    }
+
+    /// Java: `word_at` の名前 `name` のライブラリの (型の内部名, メンバー)
+    pub(crate) fn library_target(&mut self, name: &str, word_at: usize) -> Option<(String, Option<String>)> {
+        use crate::java_members::{JType, LibTypes};
+        let jars = self.nav.jars.clone()?;
+        let li = self.buf.pos_of(word_at).0;
+        let line = self.buf.line(li).to_string();
+        let ls = self.buf.line_start(li);
+        let ws = word_at - ls;
+        let src = self.buf.text();
+        let idx = self.nav.index.as_ref();
+        let here = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
+        let rel = match (idx, &here) {
+            (Some(i), Some(h)) => h.strip_prefix(&i.root).ok().map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default(),
+            _ => String::new(),
+        };
+        let mut ranker = nagi_workers::index::Ranker::new(idx);
+        let inside = nagi_workers::index::enclosing_type(&src, word_at);
+        let target = if ws > 0 && line[..ws].ends_with('.') {
+            let known = |pkg: &str| idx.is_some_and(|i| i.is_java_package(pkg)) || jars.is_package(pkg);
+            match crate::java_members::receiver_text(&src, &line[..ws - 1], ls, word_at, &known) {
+                // パッケージの中のクラス
+                Err(pkg) => Some(format!("{pkg}/{name}")).filter(|c| jars.class(c).is_some()).map(|c| (c, None)),
+                Ok((expanded, fqn)) => {
+                    let (lib, t) = crate::java_members::lib_receiver(&jars, &mut ranker, &src, &rel, word_at, inside.as_deref(), &expanded, fqn.as_ref());
+                    match t {
+                        Some(t @ JType::Class(..)) if !matches!(&t, JType::Class(n, _) if n.starts_with('?')) => {
+                            let JType::Class(n, _) = &t else { unreachable!() };
+                            let nested = format!("{n}${name}");
+                            if jars.class(&nested).is_some() {
+                                Some((nested, None))
+                            } else {
+                                lib.declaring(&t, name).map(|c| (c, Some(name.to_string())))
+                            }
+                        }
+                        // プロジェクトの型のライブラリの親のメンバー
+                        Some(JType::Class(n, _)) => {
+                            let simple = crate::java_members::project_name(&n).map_or("", |x| x.0).to_string();
+                            self.lib_super_member(&mut ranker, &simple, name)
+                        }
+                        // this.・super. は今の型のライブラリの親
+                        None if crate::java_members::chain_start(&expanded).is_some_and(|i| matches!(&expanded[i..], "this" | "super")) => inside.as_deref().and_then(|t| self.lib_super_member(&mut ranker, t, name)),
+                        _ => None,
+                    }
+                }
+            }
+        } else {
+            let lib = LibTypes::new(&jars, &src);
+            if name.starts_with(char::is_uppercase) && let Some(c) = lib.resolve(name) {
+                Some((c, None))
+            } else if let Some(c) = lib.static_owner(name) {
+                Some((c, Some(name.to_string())))
+            } else {
+                // 今の型のライブラリの親のメソッド・フィールド
+                inside.as_deref().and_then(|t| self.lib_super_member(&mut ranker, t, name))
+            }
+        };
+        target
+    }
+
+    /// プロジェクトの型 `ty` のライブラリの親（型引数つき）で、メンバー `name` を宣言している型
+    fn lib_super_member(&self, ranker: &mut nagi_workers::index::Ranker, ty: &str, name: &str) -> Option<(String, Option<String>)> {
+        let jars = self.nav.jars.as_ref()?;
+        ranker.outside_supers(ty).into_iter().find_map(|(sup, lines)| {
+            let l = crate::java_members::LibTypes::from_lines(jars, lines.iter().map(String::as_str));
+            let t = l.parse(&sup).filter(|x| matches!(x, crate::java_members::JType::Class(n, _) if !n.starts_with('?')))?;
+            l.declaring(&t, name).map(|c| (c, Some(name.to_string())))
+        })
     }
 
     /// `gI`: 実装へ。型の上なら継承・実装している型、メソッドの上なら受け手の型（宣言の上なら囲む型）の子の中のそのメソッド
@@ -494,6 +583,148 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         panic!("索引が終わらない");
+    }
+
+    /// 実際の Java のプロジェクトで、プロジェクトの索引に無い名前の x.m（ライブラリのメソッド・フィールド）から、ライブラリの宣言の行へ跳べる割合
+    /// （NAGI_JAVA_ROOT=… LOCALAPPDATA=… cargo test -p nagi lib_jump_rate -- --ignored --nocapture。ソース・骨組みは LOCALAPPDATA の下に書く）
+    #[test]
+    #[ignore]
+    fn lib_jump_rate() {
+        let Some(root) = std::env::var_os("NAGI_JAVA_ROOT").map(PathBuf::from) else { return };
+        let rx = nagi_workers::index::build(&root, std::sync::Arc::new(|| {}));
+        let idx = loop {
+            if let Ok(nagi_workers::index::Progress::Done(i)) = rx.recv() {
+                break i;
+            }
+        };
+        let mut e = Editor::new(Buffer::from_str(""), None);
+        e.nav.index = Some(*idx);
+        let task = nagi_workers::jvm::load_maven(root.clone(), std::sync::Arc::new(|| {}));
+        let jars = loop {
+            if let Ok(r) = task.try_recv() {
+                break r.unwrap();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+        let jars = std::sync::Arc::new(jars);
+        e.nav.jars = Some(jars.clone());
+        let dir = crate::java_source::sources_dir().unwrap();
+        let site = regex::Regex::new(r"(?:[\w)]|^\s*)\.([A-Za-z_]\w*)").unwrap();
+        // [宣言の行へ, 型までは分かった（行が違う）, 分からない]
+        let mut n = [0usize; 3];
+        let (mut source, mut stub) = (0, 0);
+        let mut miss: std::collections::HashMap<String, (usize, String)> = Default::default();
+        let mut files = Vec::new();
+        let mut stack = vec![root.clone()];
+        while let Some(d) = stack.pop() {
+            for f in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+                let p = f.path();
+                let name = f.file_name().to_string_lossy().into_owned();
+                if p.is_dir() && !name.starts_with('.') && name != "target" && name != "node_modules" {
+                    stack.push(p);
+                } else if name.ends_with(".java") {
+                    files.push(p);
+                }
+            }
+        }
+        files.sort();
+        let step = std::env::var("NAGI_RATE_FILES").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(1).max(1);
+        let t0 = std::time::Instant::now();
+        for p in files.iter().step_by(step) {
+            let Ok(buf) = Buffer::open(p) else { continue };
+            e.buf = buf;
+            e.buf.path = Some(p.clone());
+            for li in 0..e.buf.line_count() {
+                let line = e.buf.line(li).to_string();
+                let t = line.trim_start();
+                if ["import", "package", "//", "*", "/*"].iter().any(|x| t.starts_with(x)) {
+                    continue;
+                }
+                for m in site.captures_iter(&line) {
+                    let g = m.get(1).unwrap();
+                    let idx = e.nav.index.as_ref().unwrap();
+                    if line[..g.start()].matches('"').count() % 2 == 1 || !idx.lookup(g.as_str()).is_empty() || g.as_str() == "class" {
+                        continue;
+                    }
+                    // Lombok の getter・setter（プロジェクトのフィールド）と、パッケージの名前の途中は除く
+                    let field = ["get", "set", "is"].iter().find_map(|p| g.as_str().strip_prefix(p)).filter(|f| f.starts_with(char::is_uppercase)).map(|f| f[..1].to_lowercase() + &f[1..]);
+                    if field.is_some_and(|f| !idx.lookup(&f).is_empty()) {
+                        continue;
+                    }
+                    let chain = crate::java_members::dotted_chain(&line[..g.start() - 1]).unwrap_or("").replace('.', "/");
+                    if !chain.is_empty() && (idx.is_java_package(&chain) || jars.is_package(&chain)) {
+                        continue;
+                    }
+                    let at = e.buf.line_start(li) + g.start();
+                    let k = match e.library_target(g.as_str(), at) {
+                        Some((owner, member)) => match crate::java_source::open(&jars, &owner, member.as_deref(), &dir) {
+                            Some(o) => {
+                                let text = std::fs::read_to_string(&o.path).unwrap_or_default();
+                                if o.source { source += 1 } else { stub += 1 }
+                                if text.lines().nth(o.line).is_some_and(|l| l.contains(g.as_str())) { 0 } else { 1 }
+                            }
+                            None => 2,
+                        },
+                        None => 2,
+                    };
+                    n[k] += 1;
+                    if k > 0 {
+                        let recv = line[..g.start()].trim().rsplit([' ', '(', '!', '=', ',']).next().unwrap_or("").to_string();
+                        let e = miss.entry(format!("{k} {recv}{}", g.as_str())).or_insert((0, line.trim().chars().take(90).collect()));
+                        e.0 += 1;
+                    }
+                }
+            }
+        }
+        // 型の名前（大文字で始まり小文字を含む語で、`.` の後でなく、プロジェクトの索引に無いもの）
+        let ty_re = regex::Regex::new(r"\b[A-Z][A-Za-z0-9_]*[a-z][A-Za-z0-9_]*\b").unwrap();
+        let (mut ty_ok, mut ty_all) = (0usize, 0usize);
+        let mut ty_miss: std::collections::HashMap<String, usize> = Default::default();
+        for p in files.iter().step_by(step) {
+            let Ok(buf) = Buffer::open(p) else { continue };
+            e.buf = buf;
+            e.buf.path = Some(p.clone());
+            for li in 0..e.buf.line_count() {
+                let line = e.buf.line(li).to_string();
+                let t = line.trim_start();
+                if ["import", "package", "//", "*", "/*"].iter().any(|x| t.starts_with(x)) {
+                    continue;
+                }
+                for m in ty_re.find_iter(&line) {
+                    if line[..m.start()].ends_with('.') || line[..m.start()].matches('"').count() % 2 == 1 || !e.nav.index.as_ref().unwrap().lookup(m.as_str()).is_empty() {
+                        continue;
+                    }
+                    // 型として使っている形（new X・@X・X<・X[]・X 名前・X.）
+                    let (pre, post) = (line[..m.start()].trim_end(), &line[m.end()..]);
+                    let decl = post.strip_prefix(' ').is_some_and(|r| r.starts_with(|c: char| c.is_lowercase()));
+                    if !(pre.ends_with("new") || pre.ends_with('@') || post.starts_with(['<', '.']) || post.starts_with("[]") || decl) {
+                        continue;
+                    }
+                    ty_all += 1;
+                    let at = e.buf.line_start(li) + m.start();
+                    let ok = e.library_target(m.as_str(), at).and_then(|(owner, member)| crate::java_source::open(&jars, &owner, member.as_deref(), &dir)).is_some_and(|o| {
+                        std::fs::read_to_string(&o.path).unwrap_or_default().lines().nth(o.line).is_some_and(|l| l.contains(m.as_str()))
+                    });
+                    if ok {
+                        ty_ok += 1;
+                    } else {
+                        *ty_miss.entry(m.as_str().to_string()).or_default() += 1;
+                    }
+                }
+            }
+        }
+        println!("型の名前 {ty_all} 箇所: 宣言の行へ {:.1}%", ty_ok as f64 * 100.0 / ty_all.max(1) as f64);
+        let mut v: Vec<_> = ty_miss.into_iter().collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1));
+        println!("  跳べない型: {:?}", &v[..v.len().min(25)]);
+        let all: usize = n.iter().sum();
+        let pc = |x: usize| x as f64 * 100.0 / all.max(1) as f64;
+        println!("{all} 箇所 {:?}: 宣言の行へ {:.1}% / 行が違う {:.1}% / 分からない {:.1}%（開いたうちソース {source}・骨組み {stub}）", t0.elapsed(), pc(n[0]), pc(n[1]), pc(n[2]));
+        let mut v: Vec<_> = miss.into_iter().collect();
+        v.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+        for (k, (c, ex)) in v.iter().take(40) {
+            println!("{c:5} {k}    {ex}");
+        }
     }
 
     #[test]

@@ -9,6 +9,7 @@
 use std::collections::HashMap;
 
 use nagi_syntax::defs::Receiver;
+use nagi_workers::index::Ranker;
 use nagi_workers::jvm::{ACC_PROTECTED, ACC_PUBLIC, ACC_STATIC, Class, JarIndex};
 
 const ACC_ABSTRACT: u16 = 0x0400;
@@ -193,6 +194,36 @@ impl Sig<'_> {
 }
 
 /// クラスの型引数の名前と、親・インターフェースの型（型引数つき）
+/// Signature・記述子を外から読む（骨組みを作るのに）
+pub struct SigReader<'a>(Sig<'a>);
+
+impl<'a> SigReader<'a> {
+    pub fn new(s: &'a str) -> Self {
+        SigReader(Sig { s: s.as_bytes(), i: 0 })
+    }
+
+    pub fn type_params_bounds(&mut self) -> Vec<(String, Option<JType>)> {
+        self.0.type_params_bounds()
+    }
+
+    /// 次の型（終わりなら None）
+    pub fn next_type(&mut self) -> Option<JType> {
+        (self.0.peek() != 0).then(|| self.0.ty())
+    }
+
+    /// メソッドの (戻り値, 引数)（型変数の並びは読んだ後で）
+    pub fn method(&mut self) -> (JType, Vec<JType>) {
+        let mut params = Vec::new();
+        if self.0.eat(b'(') {
+            while self.0.peek() != b')' && self.0.peek() != 0 {
+                params.push(self.0.ty());
+            }
+            self.0.eat(b')');
+        }
+        (self.0.ty(), params)
+    }
+}
+
 fn class_sig(c: &Class) -> (Vec<String>, Vec<JType>) {
     match &c.signature {
         Some(s) => {
@@ -544,6 +575,17 @@ impl<'a> LibTypes<'a> {
     }
 
     /// 型 `t` のメソッド `m` の `k` 番目の引数（関数型のインターフェース）に渡すラムダの `p` 番目の引数の型
+    /// 型 `t`（と親）の中で、メンバー `name` を宣言している型の内部名
+    pub fn declaring(&self, t: &JType, name: &str) -> Option<String> {
+        self.hierarchy(t).into_iter().find(|(c, _)| c.methods.iter().chain(&c.fields).any(|m| m.name == name)).map(|(c, _)| c.name)
+    }
+
+    /// static の import のメソッド・フィールド `name` のクラスの内部名
+    pub fn static_owner(&self, name: &str) -> Option<String> {
+        let (_, class) = self.statics.iter().find(|(m, _)| m == name)?;
+        self.dotted(class)
+    }
+
     /// 型 `t` と親の型の名前（`?Name` のプロジェクトの型は空）
     fn supertypes(&self, t: &JType) -> std::collections::HashSet<String> {
         match t {
@@ -758,6 +800,88 @@ pub fn dotted_chain(s: &str) -> Option<&str> {
 }
 
 pub use nagi_workers::index::source_package;
+
+/// Java の `.` の前の式（行の中の `before`。`line_start` は行の始まり、`at` は `.` の後の語の位置）を、前の行からの連なりと
+/// 型を書かない変数（var・for の var・ラムダの引数）を展開し、頭のパッケージの名前を外した形に（`java.awt.Color` → `Color` と
+/// (単純名, 完全な名前)）。`known` はパッケージ（内部名）か。パッケージの名前だけなら Err(その内部名 `java/util`)
+pub fn receiver_text(src: &str, before: &str, line_start: usize, at: usize, known: &dyn Fn(&str) -> bool) -> Result<(String, Option<(String, String)>), String> {
+    let before = with_previous_lines(src, line_start, before);
+    let mut expanded = expand_head(src, &before, at);
+    let Some(chain) = dotted_chain(&expanded) else { return Ok((expanded, None)) };
+    let off = expanded.len() - chain.len();
+    let segs: Vec<String> = chain.split('.').map(String::from).collect();
+    if !(segs[0].starts_with(char::is_lowercase) && known(&segs[0]) && crate::smart_complete::var_type(src, &segs[0], at).is_none()) {
+        return Ok((expanded, None));
+    }
+    // パッケージとして知っている長さ（大文字で始まるパッケージもある）
+    let k = (1..=segs.len()).take_while(|&k| known(&segs[..k].join("/"))).last().unwrap_or(0);
+    if k == segs.len() {
+        return Err(segs.join("/"));
+    }
+    let fqn = (segs[k].clone(), format!("{}.{}", segs[..k].join("."), segs[k]));
+    let cut: usize = segs[..k].iter().map(|s| s.len() + 1).sum();
+    expanded.replace_range(off..off + cut, "");
+    Ok((expanded, Some(fqn)))
+}
+
+/// Java の受け手の式 `expanded`（receiver_text の結果）の、ライブラリの型（jar・JDK の索引で、型引数・引数の型もたどって）。
+/// 途中のプロジェクトの型は `ranker` で引き、結果がプロジェクトの型なら `?Name`。`inside` は今の型
+#[allow(clippy::too_many_arguments)]
+pub fn lib_receiver<'a>(jars: &'a JarIndex, ranker: &mut Ranker, src: &str, rel: &str, at: usize, inside: Option<&str>, expanded: &str, fqn: Option<&(String, String)>) -> (LibTypes<'a>, Option<JType>) {
+    use crate::smart_complete::receiver_before;
+    let mut lib = LibTypes::new(jars, src);
+    if let Some((simple, full)) = fqn {
+        lib.alias(simple, full);
+    }
+    // 変数は宣言の型（型引数つき）に印 `=` を付けて、クラス名（static の呼び出し）と分ける
+    let decl = |n: &str| match n.strip_prefix("new ") {
+        Some(t) => Some(format!("={t}")),
+        None => var_decl_text(src, n, at).map(|d| format!("={d}")),
+    };
+    let r = receiver_before(expanded, expanded.len(), &decl);
+    let base = |t: &str| t.strip_prefix('=').and_then(|d| lib.parse(d));
+    // 途中のプロジェクトの型のメンバーの型は、プロジェクトの索引で（型引数は宣言のファイルの import で読む）
+    let mut project = |t: &str, n: &str, call: bool| {
+        // 型が空なら今の型（型の中から呼ぶメソッド）
+        let (here, hint) = match t {
+            "" => (inside?, Some(rel)),
+            t => t.split_once('@').map_or((t, None), |(a, b)| (a, Some(b))),
+        };
+        if let Some((text, path, lines)) = ranker.member_decl_text(rel, src, here, hint, n) {
+            return LibTypes::from_lines(jars, lines.iter().map(String::as_str)).parse(&text).map(|t| t.written_in(&path));
+        }
+        // ライブラリの親（型引数つき）のメンバー
+        let from_super = ranker.outside_supers(here).into_iter().find_map(|(sup, lines)| {
+            let l = LibTypes::from_lines(jars, lines.iter().map(String::as_str));
+            let st = l.parse(&sup).filter(|x| matches!(x, JType::Class(n, _) if !n.starts_with('?')))?;
+            l.member_type(&st, n, call)
+        });
+        if from_super.is_some() || t.is_empty() {
+            return from_super;
+        }
+        let inner = Box::new(Receiver::Type(here.to_string()));
+        let r = if call { Receiver::Call(inner, n.to_string()) } else { Receiver::Member(inner, n.to_string()) };
+        // 型の名前（小文字はプロジェクトに無いメソッドの名前なので除く）
+        ranker.receiver_type_name(rel, src, at, &r).filter(|t| t.starts_with(char::is_uppercase)).and_then(|t| lib.parse(&t))
+    };
+    // 呼び出しの引数の型（形を選ぶ・型変数を決める）
+    let mut args = Vec::new();
+    for part in chain_args(expanded) {
+        args.push(part.map(|list| {
+            list.iter()
+                .map(|a| {
+                    literal_type(a).unwrap_or_else(|| {
+                        let a = expand_head(src, a, at);
+                        let r = receiver_before(&a, a.len(), &decl).filter(|_| chain_start(&a) == Some(0))?;
+                        lib.receiver(&r, &base, &mut project, &[])
+                    })
+                })
+                .collect::<Vec<_>>()
+        }));
+    }
+    let t = r.as_ref().and_then(|r| lib.receiver(r, &base, &mut project, &args));
+    (lib, t)
+}
 
 /// 連なり（`.` の前の式）の各部分の呼び出しの引数の文字（呼び出しでなければ None）。頭から順に
 pub fn chain_args(s: &str) -> Vec<Option<Vec<String>>> {

@@ -20,6 +20,7 @@ mod angular;
 mod dialogs;
 mod java_import;
 mod java_members;
+mod java_source;
 mod jumplist;
 mod read_view;
 mod run_configs;

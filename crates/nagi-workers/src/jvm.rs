@@ -222,6 +222,15 @@ fn zip_read(f: &mut File, e: &Entry, comp: &mut Vec<u8>) -> Option<Vec<u8>> {
     }
 }
 
+/// zip（jar・src.zip）の中で `pred` に合う最初のものの名前と中身
+pub fn zip_find(path: &Path, pred: impl Fn(&str) -> bool) -> Option<(String, Vec<u8>)> {
+    let mut f = File::open(path).ok()?;
+    let entries = zip_entries(&mut f).ok()?;
+    let e = entries.iter().find(|e| pred(&e.name))?;
+    let mut comp = Vec::new();
+    Some((e.name.clone(), zip_read(&mut f, e, &mut comp)?))
+}
+
 /// jar（ct.sym も）の公開しているクラスを、1 つずつ `each` に渡す。`keep` は中の名前で読むものを選ぶ
 pub fn read_jar(path: &Path, keep: impl Fn(&str) -> bool, mut each: impl FnMut(Class)) -> std::io::Result<usize> {
     let mut f = File::open(path)?;
@@ -505,6 +514,8 @@ pub struct JarSource<'a> {
 /// クラスパス全体の型の索引。かけらはメモリに写して持ち、単純名の表だけをまとめて持つ（クラス 1 つに 8 バイト）
 pub struct JarIndex {
     shards: Vec<std::sync::Arc<nagi_core::mmap::Mapped>>,
+    /// かけらの元の jar（ct.sym）
+    paths: Vec<PathBuf>,
     /// 単純名で並べた (かけら, かけらの中の単純名の表の番号)
     table: Vec<(u16, u32)>,
     /// クラスのあるパッケージ（内部名の `java/util`。並べて重なりなし）
@@ -518,6 +529,7 @@ impl JarIndex {
     pub fn load(sources: &[JarSource], dir: &Path) -> JarIndex {
         let _ = std::fs::create_dir_all(dir);
         let mut shards = Vec::new();
+        let mut paths = Vec::new();
         let mut built = 0;
         for src in sources {
             let Some(name) = shard_name(src.path, src.tag) else { continue };
@@ -533,6 +545,7 @@ impl JarIndex {
             }
             if let Some(m) = nagi_core::mmap::Mapped::open(&file).filter(|m| Shard::open(m).is_some()) {
                 shards.push(m);
+                paths.push(src.path.to_path_buf());
             }
         }
         let mut table: Vec<(u16, u32)> = Vec::new();
@@ -546,7 +559,7 @@ impl JarIndex {
         let set: std::collections::BTreeSet<&str> = table.iter().map(|&(i, k)| views[i as usize].name_at(k as usize).rsplit_once('/').map_or("", |x| x.0)).collect();
         let packages: Vec<Box<str>> = set.into_iter().map(Box::from).collect();
         drop(views);
-        JarIndex { shards, table, packages, built }
+        JarIndex { shards, paths, table, packages, built }
     }
 
     fn shard(&self, i: u16) -> Shard<'_> {
@@ -616,6 +629,14 @@ impl JarIndex {
     pub fn nested(&self, outer: &str) -> Vec<&str> {
         let head = format!("{outer}$");
         self.all_names().filter(|n| n.strip_prefix(&head).is_some_and(|r| !r.contains('$') && !r.starts_with(|c: char| c.is_ascii_digit()))).collect()
+    }
+
+    /// クラスのある jar（JDK のクラスは ct.sym）
+    pub fn jar_of(&self, internal: &str) -> Option<&Path> {
+        let simple = internal.rsplit(['/', '$']).next().unwrap_or(internal);
+        let key = |k: usize| self.shard(self.table[k].0).simple_at(self.table[k].1 as usize);
+        let lo = partition(self.table.len(), |k| key(k) < simple);
+        (lo..self.table.len()).take_while(|&k| key(k) == simple).find(|&k| self.shard(self.table[k].0).name_at(self.table[k].1 as usize) == internal).map(|k| self.paths[self.table[k].0 as usize].as_path())
     }
 
     /// 内部名でクラスを引く
