@@ -881,6 +881,12 @@ impl<'a> Ranker<'a> {
                 }
                 // Lombok が作るメソッド（@Data・@Getter・@Setter・@Value をクラスかフィールドに。@Builder の builder()）
                 if let Some(lines) = self.lines(&tl.path) {
+                    // record の部品の読み出し（record P(String title, int n) の title()・n()）
+                    for name in record_components(&lines, tl.line as usize, &t) {
+                        if !out.iter().any(|o| o.0 == name) {
+                            out.push((name, DefKind::Method, t.clone(), Some(0), false));
+                        }
+                    }
                     let class_ann = annotations_before(&lines, tl.line as usize);
                     let has = |ann: &[String], a: &str| ann.iter().any(|x| x == a);
                     if has(&class_ann, "Builder") && !out.iter().any(|o| o.0 == "builder") {
@@ -1185,10 +1191,43 @@ fn ts_decl_type(after: &str) -> Option<String> {
     None
 }
 
-/// `at` より前で最後に宣言されたクラス・インタフェースの名前（`at` を囲む型の近似）
+/// `record Name(部品, …)` の部品の名前（型の定義の行 `line` から、括弧が閉じるまで）
+fn record_components(lines: &[String], line: usize, name: &str) -> Vec<String> {
+    let Some(first) = lines.get(line) else { return Vec::new() };
+    let Some(at) = first.find(&format!("record {name}")) else { return Vec::new() };
+    let mut text = String::new();
+    for l in std::iter::once(&first[at..]).chain(lines.iter().skip(line + 1).take(20).map(String::as_str)) {
+        text.push_str(l);
+        text.push(' ');
+        if l.contains(')') {
+            break;
+        }
+    }
+    let Some(open) = text.find('(') else { return Vec::new() };
+    let mut depth = 0;
+    let mut body = String::new();
+    for c in text[open..].chars() {
+        match c {
+            '(' | '<' => depth += 1,
+            ')' | '>' => depth -= 1,
+            _ => {}
+        }
+        if depth == 0 {
+            break;
+        }
+        body.push(if c == ',' && depth == 1 { '\n' } else { c });
+    }
+    body.trim_start_matches('(')
+        .split('\n')
+        .filter_map(|p| p.split_whitespace().last().map(|w| w.trim_matches(|c: char| !(c.is_alphanumeric() || c == '_')).to_string()))
+        .filter(|n| !n.is_empty())
+        .collect()
+}
+
+/// `at` を囲む型の名前（`at` より前で宣言され、本体がまだ閉じていない最後の型。近似）
 pub fn enclosing_type(src: &str, at: usize) -> Option<String> {
     let head = &src[..at.min(src.len())];
-    let mut best: Option<(usize, String)> = None;
+    let mut found: Vec<(usize, String)> = Vec::new();
     for kw in ["class ", "interface ", "enum ", "record "] {
         let mut from = 0;
         while let Some(i) = head[from..].find(kw).map(|i| i + from) {
@@ -1197,12 +1236,36 @@ pub fn enclosing_type(src: &str, at: usize) -> Option<String> {
                 continue;
             }
             let name: String = head[from..].trim_start().chars().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$').collect();
-            if !name.is_empty() && best.as_ref().is_none_or(|(b, _)| i > *b) {
-                best = Some((i, name));
+            if !name.is_empty() {
+                found.push((i, name));
             }
         }
     }
-    best.map(|(_, n)| n)
+    found.sort_by(|a, b| b.0.cmp(&a.0));
+    // 後ろの宣言から、本体の { がまだ閉じていないもの（前にある入れ子の型は閉じている）
+    let open = |i: usize| {
+        let Some(b) = head[i..].find('{') else { return false };
+        let (mut depth, mut quote) = (0i32, None);
+        let mut prev = ' ';
+        for c in head[i + b..].chars() {
+            match (quote, c) {
+                (Some(q), _) if c == q && prev != '\\' => quote = None,
+                (Some(_), _) => {}
+                (None, '"' | '\'') => quote = Some(c),
+                (None, '{') => depth += 1,
+                (None, '}') => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return false;
+                    }
+                }
+                _ => {}
+            }
+            prev = c;
+        }
+        depth > 0
+    };
+    found.iter().find(|(i, _)| open(*i)).or(found.first()).map(|(_, n)| n.clone())
 }
 
 /// クラス・インタフェースの宣言の extends / implements にある型の名前（`of` なら、その名前の宣言だけ）
@@ -1413,6 +1476,8 @@ mod tests {
         assert_eq!(impls(&mut r, "Base", Some("find")), vec!["src/Repo.java:1"]);
         assert_eq!(impls(&mut r, "GeneratedCriteria", None).len(), 2, "内部クラスの Criteria（2 つのファイル）");
         assert_eq!(enclosing_type("interface A {\n  void f();\n}\nclass B implements A {\n  void g() {}\n", 60).as_deref(), Some("B"));
+        let src = "class C {\n  enum K { A, B }\n  int x;\n  void f() { this.x = 1; }\n";
+        assert_eq!(enclosing_type(src, src.len() - 5).as_deref(), Some("C"), "閉じた入れ子の型の後");
         // mock(Repo.class).save(): mock はプロジェクトに無いのでライブラリ
         assert_eq!(chain(&mut r, "src/Use.java", src, "save", call(Recv::This, "mock")), "外 mock");
         assert_eq!(java_decl_type("    public Map<String, List<Foo>> "), Some("Map".into()));

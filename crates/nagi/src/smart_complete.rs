@@ -251,7 +251,9 @@ impl Editor {
         // `types`: 入れ子の型も出す（受け手がクラスの名前のとき）
         let member_cands = |ranker: &mut nagi_workers::index::Ranker, ty: &str, out: &mut Vec<Cand>, push: &mut dyn FnMut(&mut Vec<Cand>, Cand), rank: u8, types: bool| {
             for (name, kind, owner, params, private) in ranker.members(ty) {
-                if (private && inside.as_deref() != Some(owner.as_str())) || (kind.is_type() && !types) {
+                // private は、その型が今のファイルにあれば（入れ子のクラスどうしも）見える
+                let here = || inside.as_deref() == Some(owner.as_str()) || idx.is_some_and(|i| i.lookup(&owner).iter().any(|l| l.kind.is_type() && *l.path == *rel));
+                if (private && !here()) || (kind.is_type() && !types) {
                     continue;
                 }
                 let call = matches!(kind, DefKind::Method | DefKind::Function).then(|| params != Some(0));
@@ -336,7 +338,6 @@ impl Editor {
             let class_recv = receiver_before(&expanded, expanded.len(), &marked).as_ref().is_some_and(class_name);
             let recv = receiver_before(&expanded, expanded.len(), &var);
             let ty = recv.as_ref().and_then(|r| ranker.receiver_type_name(&rel, &src, start, r));
-            if std::env::var_os("NAGI_DBG").is_some() { eprintln!("DBG0 expanded={expanded:?} recv={recv:?} ty={ty:?}"); }
             if let Some(t) = &ty {
                 member_cands(&mut ranker, t, &mut out, &mut push, 0, class_recv);
                 lib_super_cands(&mut ranker, t, &mut out, &mut push, 0);
@@ -685,6 +686,7 @@ mod tests {
         std::fs::write(dir.join("src/Base.java"), "public class Base {\n  public String baseName() { return \"\"; }\n}\n").unwrap();
         std::fs::write(dir.join("src/User.java"), "public class User extends Base {\n  public User() {}\n  private String name;\n  public String getName() { return name; }\n  public void setName(String n) { name = n; }\n}\n").unwrap();
         std::fs::write(dir.join("src/Dto.java"), "import lombok.Data;\n\n/** 注釈の後に説明 */\n@Data\npublic class Dto {\n  private String name;\n  private boolean active;\n  private final int id = 0;\n  private static int count;\n}\n").unwrap();
+        std::fs::write(dir.join("src/Point.java"), "public record Point(String title,\n    Map<String, Integer> counts) {\n  public int size() { return 0; }\n}\n").unwrap();
         std::fs::write(dir.join("src/Outer.java"), "public class Outer {\n  public enum Kind {\n    A, B;\n    public String label() { return \"\"; }\n  }\n  public void run() {}\n}\n").unwrap();
         let main = "public class App {\n  void run(User user) {\n    user.\n  }\n}\n";
         std::fs::write(dir.join("src/App.java"), main).unwrap();
@@ -694,7 +696,7 @@ mod tests {
         e.start_index();
         for _ in 0..500 {
             e.poll_index();
-            if e.nav.index.as_ref().is_some_and(|i| i.file_count() == 5) {
+            if e.nav.index.as_ref().is_some_and(|i| i.file_count() == 6) {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
@@ -740,6 +742,11 @@ mod tests {
             assert!(names.contains(&n.to_string()), "{n}: {names:?}");
         }
         assert!(!names.iter().any(|n| n == "setId" || n == "getCount"), "{names:?}");
+        // record の部品の読み出し
+        let names: Vec<String> = ranker.members("Point").into_iter().map(|m| m.0).collect();
+        for n in ["title", "counts", "size"] {
+            assert!(names.contains(&n.to_string()), "{n}: {names:?}");
+        }
     }
 
     /// Java のライブラリの型: 打った語で始まる型を出し、決めると import を足す（JDK の ct.sym から作った索引で）
