@@ -39,6 +39,14 @@ pub struct GrepPanel {
     pub anchor: Option<usize>,
     /// ログ（コマンドの出力）の、読み取り専用の Vim の画面
     pub view: Option<crate::read_view::ReadView>,
+    /// 参照の検索（gr）で、探し終わったら定義で絞る
+    pub refs: Option<RefsFilter>,
+}
+
+/// 参照の検索の絞り込み: 名前と、その定義（根からの相対パス, 行, 列。0 始まり）
+pub struct RefsFilter {
+    pub name: String,
+    pub target: (String, usize, usize),
 }
 
 /// 最下行の入力欄の前の印
@@ -165,6 +173,7 @@ impl Editor {
             pending_w: false,
             anchor: None,
             view: None,
+            refs: None,
         });
         self.bottom_hidden = false;
         self.bottom_kind = crate::result_grid::BottomKind::Grep;
@@ -201,6 +210,7 @@ impl Editor {
         g.error = None;
         g.title = None;
         g.running = false;
+        g.refs = None;
         if g.query.text.is_empty() {
             return;
         }
@@ -215,6 +225,7 @@ impl Editor {
         let Some(g) = &mut self.grep else { return false };
         let Some(job) = &g.job else { return false };
         let mut changed = false;
+        let mut done = false;
         loop {
             match job.rx.try_recv() {
                 Ok(batch) => {
@@ -230,9 +241,14 @@ impl Editor {
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     g.job = None;
                     changed = true;
+                    done = true;
                     break;
                 }
             }
+        }
+        // 参照の検索: 探し終わったら、別の定義を指すものを除く
+        if let Some(f) = done.then(|| g.refs.take()).flatten() {
+            self.filter_refs(f);
         }
         changed
     }

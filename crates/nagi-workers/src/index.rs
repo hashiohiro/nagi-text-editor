@@ -150,6 +150,13 @@ impl Index {
         self.packages = Default::default();
     }
 
+    /// 試験用の写し（名前の表も作り直す）
+    pub fn clone_for_test(&self) -> Index {
+        let mut i = self.snapshot();
+        i.rebuild();
+        i
+    }
+
     /// 保存用の写し（名前の表は持たない）
     pub fn snapshot(&self) -> Index {
         Index { root: self.root.clone(), files: self.files.clone(), by_name: HashMap::new(), packages: Default::default(), build_sig: self.build_sig }

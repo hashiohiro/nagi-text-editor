@@ -554,6 +554,10 @@ impl<'a> LibTypes<'a> {
                     let (p, k, m) = (parts.next()?.parse().ok()?, parts.next()?.parse().ok()?, parts.next()?);
                     return self.lambda_param(&it, m, k, p);
                 }
+                // X.class は Class<X>
+                if n == "class" && !call {
+                    return Some(JType::Class("java/lang/Class".into(), vec![it]));
+                }
                 // 入れ子の型（Map.Entry・Outer.Inner）
                 if let JType::Class(name, _) = &it {
                     if !call && n.starts_with(char::is_uppercase) {

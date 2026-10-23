@@ -340,19 +340,24 @@ impl Editor {
 
     /// Java: `word_at` の名前 `name` のライブラリの (型の内部名, メンバー)
     pub(crate) fn library_target(&mut self, name: &str, word_at: usize) -> Option<(String, Option<String>)> {
-        use crate::java_members::{JType, LibTypes};
-        let jars = self.nav.jars.clone()?;
-        let li = self.buf.pos_of(word_at).0;
-        let line = self.buf.line(li).to_string();
-        let ls = self.buf.line_start(li);
-        let ws = word_at - ls;
         let src = self.buf.text();
-        let idx = self.nav.index.as_ref();
         let here = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
-        let rel = match (idx, &here) {
+        let rel = match (&self.nav.index, &here) {
             (Some(i), Some(h)) => h.strip_prefix(&i.root).ok().map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default(),
             _ => String::new(),
         };
+        self.library_target_in(&src, &rel, name, word_at)
+    }
+
+    /// `library_target` を、ほかのファイル（中身 `src`、根からの相対パス `rel`）で
+    pub(crate) fn library_target_in(&self, src: &str, rel: &str, name: &str, word_at: usize) -> Option<(String, Option<String>)> {
+        use crate::java_members::{JType, LibTypes};
+        let jars = self.nav.jars.clone()?;
+        let ls = src[..word_at].rfind('\n').map_or(0, |i| i + 1);
+        let line = src[ls..].split('\n').next().unwrap_or("").trim_end_matches('\r').to_string();
+        let ws = word_at - ls;
+        let (src, rel) = (src.to_string(), rel.to_string());
+        let idx = self.nav.index.as_ref();
         let mut ranker = nagi_workers::index::Ranker::new(idx);
         let inside = nagi_workers::index::enclosing_type(&src, word_at);
         let target = if ws > 0 && line[..ws].ends_with('.') {
@@ -473,8 +478,135 @@ impl Editor {
 
     /// `gr`: 名前が単語として一致する箇所（全文検索のパネル）
     pub(crate) fn find_references(&mut self) {
-        let Some((name, _)) = self.word_at_cursor() else { return };
+        let Some((name, word_at)) = self.word_at_cursor() else { return };
+        // 定義が 1 か所に決まれば、探し終わったところで、別の定義を指すもの（同じ名前のほかのメソッド・ライブラリのもの・ローカル変数）を除く
+        let target = self.definition_target(&name, word_at);
         self.open_grep_regex(&format!(r"\b{}\b", regex::escape(&name)));
+        if let (Some(g), Some(target)) = (&mut self.grep, target) {
+            g.refs = Some(crate::grep_panel::RefsFilter { name, target });
+        }
+    }
+
+    /// 名前 `name`（`word_at` の位置）のプロジェクトの定義が 1 か所に決まれば (根からの相対パス, 行, 列)
+    fn definition_target(&mut self, name: &str, word_at: usize) -> Option<(String, usize, usize)> {
+        let here = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok())?;
+        self.ensure_syntax();
+        let idx = self.nav.index.as_ref()?;
+        let rel = here.strip_prefix(&idx.root).ok()?.to_string_lossy().replace('\\', "/");
+        let cur = (self.cursor.line, word_at - self.buf.line_start(self.cursor.line));
+        // 定義の上なら、それ
+        if let Some(l) = idx.lookup(name).iter().find(|l| *l.path == *rel && (l.line as usize, l.col as usize) == cur) {
+            return Some((l.path.to_string(), l.line as usize, l.col as usize));
+        }
+        // ファイルの中の束縛（ローカル変数）は名前の一致で足りる
+        if self.syntax.as_ref().and_then(|s| s.local_definition(&self.buf, word_at)).is_some_and(|at| at != word_at) {
+            return None;
+        }
+        let recv = self.syntax.as_ref().and_then(|s| s.receiver(&self.buf, word_at));
+        let args = self.syntax.as_ref().and_then(|s| s.call_args(&self.buf, word_at));
+        match nagi_workers::index::Ranker::new(Some(idx)).resolve(&rel, &self.buf.text(), name, recv.as_ref(), args.as_deref(), idx.lookup(name).to_vec()) {
+            nagi_workers::index::Ranked::Locs(v, 1) => Some((v[0].path.to_string(), v[0].line as usize, v[0].col as usize)),
+            _ => None,
+        }
+    }
+
+    /// 参照の検索の結果から、別の定義を指すものを除く（呼び出し・型の参照は定義へのジャンプと同じ求め方で。コメントの行と、ほかの定義も除く）
+    pub(crate) fn filter_refs(&mut self, f: crate::grep_panel::RefsFilter) {
+        let (Some(g), Some(idx)) = (&self.grep, &self.nav.index) else { return };
+        let root = g.root.clone();
+        let hits = &g.hits;
+        let name = f.name.as_str();
+        let defs = idx.lookup(name).to_vec();
+        // ファイルごとに (ヒットの番号)
+        let mut by_file: Vec<(String, Vec<usize>)> = Vec::new();
+        for (i, h) in hits.iter().enumerate() {
+            match by_file.last_mut() {
+                Some((p, v)) if *p == h.path => v.push(i),
+                _ => by_file.push((h.path.clone(), vec![i])),
+            }
+        }
+        // ファイルが多すぎれば名前の一致のまま（固まらないように）
+        if by_file.len() > 400 {
+            self.notify.info(format!("参照: {} ファイル（多いので名前の一致のまま）", by_file.len()));
+            return;
+        }
+        let mut keep = vec![true; hits.len()];
+        let mut parser = nagi_syntax::defs::DefParser::default();
+        let mut ranker = nagi_workers::index::Ranker::new(Some(idx));
+        for (path, ix) in &by_file {
+            let abs = root.join(path);
+            // pom.xml・*.pom の <build> などは別のもの
+            if path.rsplit('/').next() == Some("pom.xml") || path.ends_with(".pom") {
+                ix.iter().for_each(|&i| keep[i] = false);
+                continue;
+            }
+            let (Ok(src), Some(lang)) = (std::fs::read_to_string(&abs), nagi_syntax::Lang::detect(&abs)) else { continue };
+            let Some(rel) = std::path::absolute(&abs).ok().and_then(|a| a.strip_prefix(&idx.root).ok().map(|r| r.to_string_lossy().replace('\\', "/"))) else { continue };
+            let starts: Vec<usize> = std::iter::once(0).chain(src.match_indices('\n').map(|(i, _)| i + 1)).collect();
+            // 一致の位置（ヒットの本文は行頭の空白を除いたもの）
+            let pos: Vec<Option<(usize, usize, usize)>> = ix
+                .iter()
+                .map(|&i| {
+                    let h = &hits[i];
+                    let ls = *starts.get(h.line.checked_sub(1)?)?;
+                    let line = src[ls..].split('\n').next().unwrap_or("").trim_end_matches('\r');
+                    let col = line.len() - line.trim_start().len() + h.range.0;
+                    line.get(col..)?.starts_with(name).then_some((ls + col, h.line - 1, col))
+                })
+                .collect();
+            let at: Vec<usize> = pos.iter().map(|p| p.map_or(usize::MAX, |x| x.0)).collect();
+            let sites = parser.sites_at(lang, &src, &at);
+            for (k, ((&i, p), site)) in ix.iter().zip(&pos).zip(sites).enumerate() {
+                // 大文字小文字が違うもの（検索は区別しない）
+                let Some((_, line, col)) = *p else {
+                    keep[i] = false;
+                    continue;
+                };
+                if (rel.as_str(), line, col) == (f.target.0.as_str(), f.target.1, f.target.2) {
+                    continue;
+                }
+                let text = hits[i].text.trim_start();
+                // 文字列の中（行の頭からの " の数が奇数）
+                let ls = starts[line];
+                let in_string = src[ls..ls + col].replace("\\\"", "").matches('"').count() % 2 == 1;
+                // コメントの行・文字列の中・ほかの定義
+                if text.starts_with("//") || text.starts_with('*') || text.starts_with("/*") || in_string || defs.iter().any(|l| *l.path == *rel && (l.line as usize, l.col as usize) == (line, col)) {
+                    keep[i] = false;
+                    continue;
+                }
+                let (kind, local, recv, args) = site;
+                // ファイルの中の束縛（受け手が無いか this のとき。ローカル変数も）: それが定義そのものか
+                if let Some(d) = local.filter(|_| matches!(recv, None | Some(nagi_syntax::defs::Receiver::This))) {
+                    let l = starts.partition_point(|&s| s <= d) - 1;
+                    keep[i] = (rel.as_str(), l, d - starts[l]) == (f.target.0.as_str(), f.target.1, f.target.2);
+                    continue;
+                }
+                // 呼び出し・型の参照でないもの（フィールドの読み書きなど）は名前の一致のまま
+                if kind.is_none() {
+                    continue;
+                }
+                // Java で受け手があれば、先にライブラリの型か（プロジェクトに同じ名前が 1 つだけだと、索引はそれに決めてしまう）
+                let dotted = src[..at[k]].trim_end().ends_with('.') && !src[..at[k]].trim_end().ends_with("this.");
+                if lang == nagi_syntax::Lang::Java && dotted && self.library_target_in(&src, &rel, name, at[k]).is_some() {
+                    keep[i] = false;
+                    continue;
+                }
+                keep[i] = match ranker.resolve(&rel, &src, name, recv.as_ref(), args.as_deref(), defs.clone()) {
+                    nagi_workers::index::Ranked::Outside(_) => false,
+                    nagi_workers::index::Ranked::Locs(v, best) if best >= 1 => v[..best.min(v.len())].iter().any(|l| (&*l.path, l.line as usize, l.col as usize) == (f.target.0.as_str(), f.target.1, f.target.2)),
+                    // プロジェクトの索引で決まらない: Java なら、受け手がライブラリの型か（補完と同じ求め方で）
+                    _ => !(lang == nagi_syntax::Lang::Java && self.library_target_in(&src, &rel, name, at[k]).is_some()),
+                };
+            }
+        }
+        let before = keep.len();
+        let Some(g) = &mut self.grep else { return };
+        let mut k = keep.iter();
+        g.hits.retain(|_| *k.next().unwrap_or(&true));
+        g.selected = 0;
+        g.scroll = 0;
+        let dropped = before - g.hits.len();
+        self.notify.info(format!("参照: {} 件（名前が同じ別のもの {dropped} 件を除いた）", g.hits.len()));
     }
 
     /// シンボル検索（`types` なら型だけ）
@@ -761,6 +893,77 @@ mod tests {
         v.sort_by(|a, b| b.1.0.cmp(&a.1.0));
         for (k, (c, ex)) in v.iter().take(40) {
             println!("{c:5} {k}    {ex}");
+        }
+    }
+
+    /// 参照の検索（gr）: 名前の一致から、別の定義を指すもの（同じ名前のほかのクラスのメソッド・その定義）を除く
+    #[test]
+    fn references_by_definition() {
+        let dir = std::env::temp_dir().join(format!("nagi-refs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::write(dir.join("A.java"), "class A {\n  void run() {}\n  void use() {\n    run();\n  }\n}\n").unwrap();
+        std::fs::write(dir.join("B.java"), "class B {\n  void run() {}\n  void go(A a) {\n    a.run();\n    run();\n    // run\n    log(\"A.run\");\n  }\n}\n").unwrap();
+        let mut e = open(&dir.join("A.java"));
+        wait_index(&mut e);
+        // A の run の定義の上で gr
+        keys(&mut e, "2G0frgr");
+        for _ in 0..1000 {
+            e.poll_grep();
+            if e.grep.as_ref().is_some_and(|g| !g.searching()) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let got: Vec<(String, usize)> = e.grep.as_ref().unwrap().hits.iter().map(|h| (h.path.clone(), h.line)).collect();
+        assert_eq!(got, vec![("A.java".to_string(), 2), ("A.java".to_string(), 4), ("B.java".to_string(), 4)], "{}", e.notify.text);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 実際のプロジェクトで参照の検索（NAGI_JAVA_ROOT・NAGI_REFS_NAME=名前。その名前の最初の定義の上で gr。読むだけ）
+    #[test]
+    #[ignore]
+    fn references_real() {
+        let (Some(root), Ok(names)) = (std::env::var_os("NAGI_JAVA_ROOT").map(PathBuf::from), std::env::var("NAGI_REFS_NAME")) else { return };
+        let rx = nagi_workers::index::build(&root, std::sync::Arc::new(|| {}));
+        let idx = loop {
+            if let Ok(nagi_workers::index::Progress::Done(i)) = rx.recv() {
+                break i;
+            }
+        };
+        let task = nagi_workers::jvm::load_maven(root.clone(), std::sync::Arc::new(|| {}));
+        let jars = loop {
+            if let Ok(r) = task.try_recv() {
+                break std::sync::Arc::new(r.unwrap());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+        for name in names.split(',') {
+            let Some(l) = idx.lookup(name).first().cloned() else { continue };
+            let n_defs = idx.lookup(name).len();
+            let mut e = open(&root.join(&*l.path));
+            e.nav.index = Some(nagi_workers::index::Index::clone_for_test(&idx));
+            e.nav.jars = Some(jars.clone());
+            e.cursor.line = l.line as usize;
+            e.cursor.byte = l.col as usize;
+            let t0 = std::time::Instant::now();
+            keys(&mut e, "gr");
+            let mut before = 0;
+            for _ in 0..20000 {
+                e.poll_grep();
+                if let Some(g) = e.grep.as_ref().filter(|g| g.searching()) {
+                    before = g.hits.len();
+                }
+                if e.grep.as_ref().is_some_and(|g| !g.searching()) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            println!("{name}（定義 {n_defs}）: {:?} {} / 名前の一致 {before}+", t0.elapsed(), e.notify.text);
+            println!("  定義: {}:{}", l.path, l.line + 1);
+            for h in e.grep.as_ref().unwrap().hits.iter().take(12) {
+                println!("  {}:{} {}", h.path, h.line, h.text.chars().take(80).collect::<String>());
+            }
         }
     }
 

@@ -640,6 +640,33 @@ impl DefParser {
     }
 }
 
+impl DefParser {
+    /// 位置（byte）ごとの参照の情報 (種類（呼び出し・型の参照でなければ None）, ファイルの中の束縛の位置（宣言なら自分）, 受け手, 引数)（参照の絞り込み用）
+    #[allow(clippy::type_complexity)]
+    pub fn sites_at(&mut self, lang: Lang, src: &str, at: &[usize]) -> Vec<(Option<RefKind>, Option<usize>, Option<Receiver>, Option<Vec<Arg>>)> {
+        let none = || at.iter().map(|_| (None, None, None, None)).collect();
+        let Some(language) = lang.language() else { return none() };
+        if self.parser.set_language(&language).is_err() {
+            return none();
+        }
+        let Some(tree) = self.parser.parse(src, None) else { return none() };
+        let text = |r: Range<usize>| src.get(r).unwrap_or("").to_string();
+        let binds = local_bindings(&tree, &text);
+        let sites: HashMap<usize, RefKind> = reference_sites(&tree, &text).into_iter().map(|(_, k, p)| (p, k)).collect();
+        at.iter()
+            .map(|&p| {
+                let k = sites.get(&p).copied();
+                // 束縛そのもの（宣言）なら自分の位置
+                let local = ident_at(&tree, p, &text).and_then(|n| pick_binding(binds.get(&n)?, p));
+                let call = k == Some(RefKind::Call);
+                let recv = if call { receiver_at(&tree, p, &text, &binds) } else { None };
+                let args = if call { call_args(&tree, p, &text, &binds) } else { None };
+                (k, local, recv, args)
+            })
+            .collect()
+    }
+}
+
 /// ファイルの中身から定義の一覧（索引用。構文木を作って捨てる）
 pub fn defs_of_source(lang: Lang, src: &str, parser: &mut Parser) -> Vec<Def> {
     let Some(language) = lang.language() else { return Vec::new() };
