@@ -235,7 +235,7 @@ impl Editor {
     fn smart_candidates(&mut self, line: &str, ws: usize, start: usize) -> Vec<Cand> {
         let src = self.buf.text();
         let here = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
-        let lang = self.syntax.as_ref().map(|s| s.lang);
+        let lang = self.syntax.as_ref().map(|s| s.lang).or_else(|| self.buf.path.as_deref().and_then(nagi_syntax::Lang::detect));
         let mut out: Vec<Cand> = Vec::new();
         let mut seen: HashSet<String> = HashSet::new();
         let mut push = |out: &mut Vec<Cand>, c: Cand| {
@@ -360,6 +360,15 @@ impl Editor {
                             }
                         }
                         None => {}
+                    }
+                }
+            }
+            // TypeScript: 組み込み・node_modules の .d.ts とプロジェクトの .ts から型を求める（プロジェクトの索引の候補に足す。
+            // コンストラクタの引数のフィールドなどは索引に無い）
+            if matches!(lang, Some(nagi_syntax::Lang::TypeScript | nagi_syntax::Lang::Tsx | nagi_syntax::Lang::JavaScript)) {
+                if let (Some(ix), Some(h), Some(i)) = (self.nav.dts.clone(), &here, idx) {
+                    for m in crate::ts_members::complete(&ix, &i.root, h, &src, &expanded, start) {
+                        push(&mut out, Cand { name: m.name, mark: if m.method { 'm' } else { 'f' }, note: m.owner, call: m.method.then_some(m.params), rank: 0, insert: None, import: None });
                     }
                 }
             }
@@ -830,6 +839,58 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// TypeScript: 組み込み（lib の .d.ts）と node_modules のパッケージの型の、. の後のメンバー
+    #[test]
+    fn typescript_members_after_dot() {
+        let dir = std::env::temp_dir().join(format!("nagi-tsmembers-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let lib = dir.join("node_modules/typescript/lib");
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::write(dir.join("tsconfig.json"), "{ // コメント\n  \"compilerOptions\": { \"target\": \"ES2022\", },\n}\n").unwrap();
+        std::fs::write(lib.join("lib.es2022.full.d.ts"), "/// <reference lib=\"es5\" />\n/// <reference lib=\"dom\" />\n").unwrap();
+        std::fs::write(lib.join("lib.es5.d.ts"), "interface String {\n  trim(): string;\n  readonly length: number;\n}\ninterface Array<T> {\n  map<U>(callbackfn: (value: T, index: number) => U): U[];\n  find(predicate: (value: T) => unknown): T | undefined;\n  readonly length: number;\n}\n").unwrap();
+        std::fs::write(lib.join("lib.dom.d.ts"), "interface Console {\n  log(...data: any[]): void;\n}\ndeclare var console: Console;\n").unwrap();
+        let pkg = dir.join("node_modules/@acme/http");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(dir.join("package.json"), "{ \"dependencies\": { \"@acme/http\": \"1.0.0\" } }").unwrap();
+        std::fs::write(pkg.join("package.json"), "{ \"types\": \"./index.d.ts\" }").unwrap();
+        std::fs::write(pkg.join("index.d.ts"), "export interface Res<T> { body: T; status: number }\nexport declare class HttpClient {\n  get<T>(url: string): Res<T>;\n}\n").unwrap();
+        std::fs::write(dir.join("app.ts"), "import { HttpClient } from '@acme/http';\n\ninterface User { name: string }\n\nexport class App {\n  constructor(private http: HttpClient) {}\n  run(users: User[]) {\n  }\n}\n").unwrap();
+        let mut e = Editor::new(Buffer::open(&dir.join("app.ts")).unwrap(), None);
+        e.buf.path = Some(dir.join("app.ts"));
+        e.set_screen(120, 40);
+        e.start_index();
+        e.nav.dts = Some(std::sync::Arc::new(nagi_workers::dts::DtsIndex::load(&dir)));
+        for _ in 0..500 {
+            e.poll_index();
+            if e.nav.index.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let items = |e: &mut Editor, text: &str| -> Vec<String> {
+            keys(e, &format!("7GA<CR>{text}<C-Space>"));
+            let v = e.completion.as_ref().map(|c| c.items.clone()).unwrap_or_default();
+            keys(e, "<Esc><Esc>dd");
+            v
+        };
+        let has = |v: &[String], names: &[&str]| names.iter().all(|n| v.iter().any(|x| x == n));
+        let v = items(&mut e, "console.");
+        assert!(has(&v, &["log"]), "大域の変数: {v:?}");
+        let v = items(&mut e, "this.http.");
+        assert!(has(&v, &["get"]), "コンストラクタの引数のフィールド・パッケージのクラス: {v:?}");
+        let v = items(&mut e, "this.http.get<User>('/u').body.");
+        assert!(has(&v, &["name"]), "型引数: {v:?}");
+        let v = items(&mut e, "users.find(u => u.name === 'a')?.name.");
+        assert!(has(&v, &["trim", "length"]), "?. と string: {v:?}");
+        let v = items(&mut e, "users.map(u => u.");
+        assert!(has(&v, &["name"]), "ラムダの引数: {v:?}");
+        let v = items(&mut e, "const xs = users;\n    xs.");
+        assert!(has(&v, &["map", "find"]), "const の初期値: {v:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// 実際の Java のプロジェクトで、`x.m` の m（コンパイルが通るコードなので正しい答え）が `.` の後の候補に入る割合
     /// （NAGI_JAVA_ROOT=… LOCALAPPDATA=… cargo test -p nagi member_rate -- --ignored --nocapture。読むだけ）
     #[test]
@@ -856,6 +917,10 @@ mod tests {
             e.nav.jars = Some(std::sync::Arc::new(jars));
         }
         // x.m と、行の頭の .m（前の行からの連なり）
+        // TypeScript の型の宣言（node_modules があれば）
+        if root.join("node_modules").join("typescript").is_dir() {
+            e.nav.dts = Some(std::sync::Arc::new(nagi_workers::dts::DtsIndex::load(&root)));
+        }
         let site = regex::Regex::new(r"(?:[\w)]|^\s*)\.([A-Za-z_]\w*)").unwrap();
         // [型が分かって当たった, 型が分かったが無い, ファイルの語で代わり, 何も無い]
         let mut n = [0usize; 4];
@@ -863,6 +928,8 @@ mod tests {
         let mut untyped: HashMap<String, usize> = HashMap::new();
         let mut example: HashMap<String, String> = HashMap::new();
         let t0 = std::time::Instant::now();
+        // NAGI_RATE_EXT（, 区切り）の拡張子のファイル（既定は java）
+        let exts: Vec<String> = std::env::var("NAGI_RATE_EXT").unwrap_or_else(|_| "java".into()).split(',').map(String::from).collect();
         let mut files = Vec::new();
         let mut stack = vec![root.clone()];
         while let Some(d) = stack.pop() {
@@ -871,7 +938,7 @@ mod tests {
                 let name = f.file_name().to_string_lossy().into_owned();
                 if p.is_dir() && !name.starts_with('.') && name != "target" && name != "node_modules" {
                     stack.push(p);
-                } else if name.ends_with(".java") {
+                } else if exts.iter().any(|x| name.ends_with(&format!(".{x}"))) && !name.ends_with(".d.ts") && !name.ends_with(".spec.ts") {
                     files.push(p);
                 }
             }
@@ -896,7 +963,7 @@ mod tests {
                 for m in site.captures_iter(&line) {
                     let g = m.get(1).unwrap();
                     // 文字列の中は除く
-                    if line[..g.start()].matches('"').count() % 2 == 1 {
+                    if ['"', '\'', '`'].iter().any(|q| line[..g.start()].matches(*q).count() % 2 == 1) {
                         continue;
                     }
                     let ws = g.start();

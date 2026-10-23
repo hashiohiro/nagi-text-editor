@@ -25,6 +25,9 @@ pub struct IndexState {
     /// ライブラリ（依存の jar・JDK）の型の索引（Java。jvm.rs）。補完と import に使う
     pub jars: Option<std::sync::Arc<nagi_workers::jvm::JarIndex>>,
     jars_task: Option<nagi_core::task::Task<Result<nagi_workers::jvm::JarIndex, String>>>,
+    /// TypeScript の型の宣言（組み込みと node_modules の .d.ts。dts.rs）。補完に使う
+    pub dts: Option<std::sync::Arc<nagi_workers::dts::DtsIndex>>,
+    dts_task: Option<nagi_core::task::Task<nagi_workers::dts::DtsIndex>>,
     /// ライブラリのソース・骨組みを書く場所（試験で変える。None なら %LOCALAPPDATA%\nagi\index\sources）
     pub sources_dir: Option<PathBuf>,
     /// 外での変更（git pull など）を探す処理と、最後に始めた時刻
@@ -75,6 +78,10 @@ impl Editor {
         if let Some(m) = nagi_workers::maven::find_root(root).filter(|m| m.join("pom.xml").is_file()) {
             self.nav.jars_task = Some(nagi_workers::jvm::load_maven(m, self.waker()));
         }
+        // TypeScript（node_modules に typescript があるプロジェクト）
+        if root.join("node_modules").join("typescript").join("lib").is_dir() {
+            self.nav.dts_task = Some(nagi_workers::dts::load_task(root.to_path_buf(), self.waker()));
+        }
     }
 
     /// 索引の進み具合と、保存したファイルの索引し直しを受け取る。変わったら true
@@ -103,6 +110,11 @@ impl Editor {
                 }
                 Err(e) => nagi_core::log::warn(&format!("ライブラリの型の索引を作れません: {e}")),
             }
+        }
+        if let Some(Ok(ix)) = self.nav.dts_task.as_ref().map(|t| t.try_recv()) {
+            self.nav.dts_task = None;
+            nagi_core::log::info(&format!("TypeScript の型の宣言: {} ファイル・{} 宣言", ix.files.len(), ix.decl_count()));
+            self.nav.dts = Some(std::sync::Arc::new(ix));
         }
         let mut updated = false;
         if let (Some((_, rx)), Some(idx)) = (&self.nav.reindex, &mut self.nav.index) {
