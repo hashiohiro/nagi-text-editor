@@ -574,6 +574,14 @@ impl JarIndex {
         (lo..self.table.len()).take_while(|&k| key(k).starts_with(prefix)).take(limit).map(|k| self.shard(self.table[k].0).name_at(self.table[k].1 as usize)).collect()
     }
 
+    /// すべてのクラスの内部名（かけらを 1 つずつ開いて）
+    fn all_names(&self) -> impl Iterator<Item = &str> {
+        self.shards.iter().flat_map(|m| {
+            let s = Shard::open(m).unwrap();
+            (0..s.len()).map(move |k| s.name_at(k))
+        })
+    }
+
     /// `pkg`（内部名の `java/util`・`com`）がパッケージか、その上か
     pub fn is_package(&self, pkg: &str) -> bool {
         let i = self.packages.partition_point(|p| &**p < pkg);
@@ -599,9 +607,7 @@ impl JarIndex {
         if !self.packages.binary_search_by(|p| (**p).cmp(pkg)).is_ok() {
             return Vec::new();
         }
-        self.table
-            .iter()
-            .map(|&(i, k)| self.shard(i).name_at(k as usize))
+        self.all_names()
             .filter(|n| n.len() > pkg.len() && n.starts_with(pkg) && n.as_bytes()[pkg.len()] == b'/' && !n[pkg.len() + 1..].contains(['/', '$']))
             .collect()
     }
@@ -609,7 +615,7 @@ impl JarIndex {
     /// `outer`（内部名）のすぐ中の入れ子のクラスの内部名（`java/util/Map` → `java/util/Map$Entry`）
     pub fn nested(&self, outer: &str) -> Vec<&str> {
         let head = format!("{outer}$");
-        self.table.iter().map(|&(i, k)| self.shard(i).name_at(k as usize)).filter(|n| n.strip_prefix(&head).is_some_and(|r| !r.contains('$') && !r.starts_with(|c: char| c.is_ascii_digit()))).collect()
+        self.all_names().filter(|n| n.strip_prefix(&head).is_some_and(|r| !r.contains('$') && !r.starts_with(|c: char| c.is_ascii_digit()))).collect()
     }
 
     /// 内部名でクラスを引く

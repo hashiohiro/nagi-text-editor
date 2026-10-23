@@ -453,7 +453,7 @@ impl<'a> LibTypes<'a> {
                 if m.access & open == 0 || (m.access & ACC_STATIC != 0) != statics || m.name.starts_with('<') {
                     continue;
                 }
-                let params = method && method_sig(&m.desc, m.signature.as_deref()).1 > 0;
+                let params = method && !m.desc.starts_with("()");
                 match at.get(&m.name) {
                     Some(&i) => out[i].params |= params,
                     None => {
@@ -757,12 +757,7 @@ pub fn dotted_chain(s: &str) -> Option<&str> {
     Some(&s[i..])
 }
 
-/// プロジェクトのソースのパッケージ（`m/src/main/java/com/x/Foo.java` → `com/x`。`java/` の下でなければ None）
-pub fn source_package(rel: &str) -> Option<String> {
-    let dir = format!("/{}/", rel.rsplit_once('/')?.0);
-    let at = dir.find("/java/")? + 6;
-    Some(dir[at.min(dir.len())..].trim_end_matches('/').to_string())
-}
+pub use nagi_workers::index::source_package;
 
 /// 連なり（`.` の前の式）の各部分の呼び出しの引数の文字（呼び出しでなければ None）。頭から順に
 pub fn chain_args(s: &str) -> Vec<Option<Vec<String>>> {
@@ -923,8 +918,19 @@ fn ternary_branch(e: &str) -> &str {
 }
 
 fn untyped_init(src: &str, name: &str, at: usize) -> Option<String> {
-    let n = regex::escape(name);
+    // 名前を入れずに一度だけ作り、合ったものの名前を比べる（呼ぶたびに作ると遅い）
+    static PATS: std::sync::OnceLock<[regex::Regex; 3]> = std::sync::OnceLock::new();
+    let [var_re, for_re, lambda_re] = PATS.get_or_init(|| {
+        [
+            regex::Regex::new(r"\bvar\s+([\w$]+)\s*=\s*([^;]+);").unwrap(),
+            regex::Regex::new(r"\bfor\s*\(\s*(?:final\s+)?var\s+([\w$]+)\s*:").unwrap(),
+            regex::Regex::new(r"(?:\(([\w\s,]*)\)|\b([\w$]+))\s*->").unwrap(),
+        ]
+    });
     let upto = &src[..at.min(src.len())];
+    if !upto.contains(name) {
+        return None;
+    }
     let mut best: Option<(usize, String)> = None;
     let mut consider = |pos: usize, e: String| {
         if best.as_ref().is_none_or(|b| pos > b.0) {
@@ -932,17 +938,15 @@ fn untyped_init(src: &str, name: &str, at: usize) -> Option<String> {
         }
     };
     // var x = 式;
-    let re = regex::Regex::new(&format!(r"\bvar\s+{n}\s*=\s*([^;]+);")).ok()?;
-    for c in re.captures_iter(upto) {
-        let e = squash(c[1].trim());
+    for c in var_re.captures_iter(upto).filter(|c| &c[1] == name) {
+        let e = squash(c[2].trim());
         let e = ternary_branch(&e).to_string();
         if chain_start(&e) == Some(0) {
             consider(c.get(0)?.start(), e);
         }
     }
     // for (var x : 式)
-    let re = regex::Regex::new(&format!(r"\bfor\s*\(\s*(?:final\s+)?var\s+{n}\s*:")).ok()?;
-    for m in re.find_iter(upto) {
+    for m in for_re.captures_iter(upto).filter(|c| &c[1] == name).filter_map(|c| c.get(0)) {
         // 式は for の ( に対応する ) まで
         let rest = &upto[m.end()..];
         let mut depth = 1;
@@ -960,12 +964,15 @@ fn untyped_init(src: &str, name: &str, at: usize) -> Option<String> {
         }
     }
     // ラムダの引数: x -> / (x, y) ->
-    let re = regex::Regex::new(&format!(r"(?:\(([\w\s,]*\b{n}\b[\w\s,]*)\)|\b{n})\s*->")).ok()?;
-    for c in re.captures_iter(upto) {
+    for c in lambda_re.captures_iter(upto) {
         let whole = c.get(0)?;
-        let p = match c.get(1) {
-            Some(list) => list.as_str().split(',').position(|x| x.trim() == name)?,
-            None => 0,
+        let p = match (c.get(1), c.get(2)) {
+            (Some(list), _) => match list.as_str().split(',').position(|x| x.trim() == name) {
+                Some(p) => p,
+                None => continue,
+            },
+            (None, Some(n)) if n.as_str() == name => 0,
+            _ => continue,
         };
         // ラムダの前は ( か , で、その呼び出しの ( までの , の数が何番目の引数か
         let pre = upto[..whole.start()].trim_end();
@@ -1058,9 +1065,9 @@ pub fn typed_decls(src: &str, name: &str) -> Vec<(usize, String)> {
 pub fn var_decl_text(src: &str, name: &str, at: usize) -> Option<String> {
     let mut all = typed_decls(src, name);
     // var x = new ArrayList<String>(...)
-    if let Ok(new) = regex::Regex::new(&format!(r"\bvar\s+{}\s*=\s*new\s+([A-Z][\w.]*(?:<[^;(){{}}=]*>)?)\s*\(", regex::escape(name))) {
-        all.extend(new.captures_iter(src).map(|c| (c.get(0).map_or(0, |m| m.start()), c[1].to_string())));
-    }
+    static NEW: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let new = NEW.get_or_init(|| regex::Regex::new(r"\bvar\s+([\w$]+)\s*=\s*new\s+([A-Z][\w.]*(?:<[^;(){}=]*>)?)\s*\(").unwrap());
+    all.extend(new.captures_iter(src).filter(|c| &c[1] == name).map(|c| (c.get(0).map_or(0, |m| m.start()), c[2].to_string())));
     pick(all, at)
 }
 

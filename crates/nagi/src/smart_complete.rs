@@ -90,18 +90,22 @@ fn keywords(lang: Option<nagi_syntax::Lang>) -> &'static [&'static str] {
 
 /// `text` の中の `name` の変数・引数・フィールドの宣言の型（`at` より前の最後の宣言、無ければ後ろの最初）
 pub fn var_type(text: &str, name: &str, at: usize) -> Option<String> {
-    let n = regex::escape(name);
     // Java・C#: Type name / Type<..> name / Type[] name（宣言・引数・フィールド）。型引数と配列は外す
     let mut all: Vec<(usize, String)> = crate::java_members::typed_decls(text, name).into_iter().map(|(p, t)| (p, t.split(['<', '[']).next().unwrap_or("").rsplit('.').next().unwrap_or("").to_string())).collect();
-    let pats = [
-        // TypeScript・Kotlin: name: Type
-        format!(r"\b{n}\s*\??:\s*([A-Z]\w*)"),
-        // var・val・let・const name = new Type( / Type(
-        format!(r"\b(?:var|val|let|const|auto)\s+{n}\s*=\s*(?:new\s+)?([A-Z]\w*)"),
-    ];
-    for p in pats {
-        let Ok(re) = regex::Regex::new(&p) else { continue };
-        all.extend(re.captures_iter(text).map(|c| (c.get(0).map_or(0, |m| m.start()), c[1].to_string())));
+    // 名前を入れずに一度だけ作り、合ったものの名前を比べる（呼ぶたびに作ると遅い）
+    static PATS: std::sync::OnceLock<[regex::Regex; 2]> = std::sync::OnceLock::new();
+    let pats = PATS.get_or_init(|| {
+        [
+            // TypeScript・Kotlin: name: Type
+            regex::Regex::new(r"([\w$]+)\s*\??:\s*([A-Z]\w*)").unwrap(),
+            // var・val・let・const name = new Type( / Type(
+            regex::Regex::new(r"\b(?:var|val|let|const|auto)\s+([\w$]+)\s*=\s*(?:new\s+)?([A-Z]\w*)").unwrap(),
+        ]
+    });
+    if text.contains(name) {
+        for re in pats {
+            all.extend(re.captures_iter(text).filter(|c| &c[1] == name).map(|c| (c.get(0).map_or(0, |m| m.start()), c[2].to_string())));
+        }
     }
     crate::java_members::pick(all, at)
 }
@@ -266,8 +270,8 @@ impl Editor {
             let Some(jars) = &jars else { return };
             for (sup, lines) in ranker.outside_supers(ty) {
                 let lib = crate::java_members::LibTypes::new(jars, &lines.join("\n"));
-                let Some(internal) = lib.resolve(&sup) else { continue };
-                for m in lib.members(&crate::java_members::JType::Class(internal, Vec::new()), false, true) {
+                let Some(t @ crate::java_members::JType::Class(..)) = lib.parse(&sup) else { continue };
+                for m in lib.members(&t, false, true) {
                     push(out, Cand { name: m.name, mark: if m.method { 'm' } else { 'f' }, note: m.owner, call: m.method.then_some(m.params), rank, insert: None, import: None });
                 }
             }
@@ -282,9 +286,8 @@ impl Editor {
             if let Some(chain) = crate::java_members::dotted_chain(&expanded).filter(|_| self.is_java()) {
                 let at = expanded.len() - chain.len();
                 let segs: Vec<String> = chain.split('.').map(String::from).collect();
-                if segs[0].starts_with(char::is_lowercase) && var_type(&src, &segs[0], start).is_none() {
-                    let proj: Vec<(String, &str)> = idx.map(|i| i.files().filter(|f| f.ends_with(".java")).filter_map(|f| Some((crate::java_members::source_package(f)?, f))).collect()).unwrap_or_default();
-                    let known = |pkg: &str| proj.iter().any(|(p, _)| p == pkg || p.strip_prefix(pkg).is_some_and(|r| r.starts_with('/'))) || jars.as_ref().is_some_and(|j| j.is_package(pkg));
+                let known = |pkg: &str| idx.is_some_and(|i| i.is_java_package(pkg)) || jars.as_ref().is_some_and(|j| j.is_package(pkg));
+                if segs[0].starts_with(char::is_lowercase) && known(&segs[0]) && var_type(&src, &segs[0], start).is_none() {
                     // パッケージとして知っている長さ（大文字で始まるパッケージもある）
                     let k = (1..=segs.len()).take_while(|&k| known(&segs[..k].join("/"))).last().unwrap_or(0);
                     let pkg = segs[..k].join("/");
@@ -292,6 +295,7 @@ impl Editor {
                     let known = k > 0;
                     if known && k == segs.len() {
                         let dotted = segs.join(".");
+                        let proj: Vec<(String, &str)> = idx.map(|i| i.files().filter(|f| f.ends_with(".java")).filter_map(|f| Some((crate::java_members::source_package(f)?, f))).collect()).unwrap_or_default();
                         for (p, f) in &proj {
                             if *p == pkg {
                                 let name = f.rsplit('/').next().unwrap_or(f).trim_end_matches(".java");
@@ -361,21 +365,24 @@ impl Editor {
                     let base = |t: &str| t.strip_prefix('=').and_then(|d| lib.parse(d));
                     // 途中のプロジェクトの型のメンバーの型は、プロジェクトの索引で（型引数は宣言のファイルの import で読む）
                     let mut project = |t: &str, n: &str, call: bool| {
-                        // 今の型のメソッド: プロジェクトの定義、無ければライブラリの親のもの
-                        if t.is_empty() {
-                            let here = inside.as_deref()?;
-                            if let Some((text, path, lines)) = ranker.member_decl_text(&rel, &src, here, Some(&rel), n) {
-                                return crate::java_members::LibTypes::from_lines(jars, lines.iter().map(String::as_str)).parse(&text).map(|t| t.written_in(&path));
-                            }
-                            return ranker.outside_supers(here).into_iter().find_map(|(sup, lines)| {
-                                let l = crate::java_members::LibTypes::from_lines(jars, lines.iter().map(String::as_str));
-                                l.member_type(&crate::java_members::JType::Class(l.resolve(&sup)?, Vec::new()), n, call)
-                            });
-                        }
-                        let (t, hint) = t.split_once('@').map_or((t, None), |(a, b)| (a, Some(b)));
-                        if let Some((text, path, lines)) = ranker.member_decl_text(&rel, &src, t, hint, n) {
+                        // 型が空なら今の型（型の中から呼ぶメソッド）
+                        let (here, hint) = match t {
+                            "" => (inside.as_deref()?, Some(rel.as_str())),
+                            t => t.split_once('@').map_or((t, None), |(a, b)| (a, Some(b))),
+                        };
+                        if let Some((text, path, lines)) = ranker.member_decl_text(&rel, &src, here, hint, n) {
                             return crate::java_members::LibTypes::from_lines(jars, lines.iter().map(String::as_str)).parse(&text).map(|t| t.written_in(&path));
                         }
+                        // ライブラリの親（型引数つき）のメンバー
+                        let from_super = ranker.outside_supers(here).into_iter().find_map(|(sup, lines)| {
+                            let l = crate::java_members::LibTypes::from_lines(jars, lines.iter().map(String::as_str));
+                            let st = l.parse(&sup).filter(|x| matches!(x, crate::java_members::JType::Class(n, _) if !n.starts_with('?')))?;
+                            l.member_type(&st, n, call)
+                        });
+                        if from_super.is_some() || t.is_empty() {
+                            return from_super;
+                        }
+                        let t = here;
                         let inner = Box::new(Receiver::Type(t.to_string()));
                         let r = if call { Receiver::Call(inner, n.to_string()) } else { Receiver::Member(inner, n.to_string()) };
                         // 型の名前（小文字はプロジェクトに無いメソッドの名前なので除く）
@@ -805,10 +812,11 @@ mod tests {
         // プロジェクトの型のメソッドが返す型引数つきの型（List<String>）
         std::fs::create_dir_all(dir.join(".git")).unwrap();
         std::fs::write(dir.join("Repo.java"), "package app;\n\nimport java.util.List;\n\npublic class Repo {\n  public List<String> names() { return null; }\n}\n").unwrap();
+        std::fs::write(dir.join("Ctx.java"), "package app;\n\nimport java.util.ArrayList;\n\npublic class Ctx extends ArrayList<String> {\n}\n").unwrap();
         e.start_index();
         for _ in 0..500 {
             e.poll_index();
-            if e.nav.index.as_ref().is_some_and(|i| i.file_count() == 2) {
+            if e.nav.index.as_ref().is_some_and(|i| i.file_count() == 3) {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
@@ -860,6 +868,8 @@ mod tests {
         assert!(has(&v, &["Entry", "of"]), "Map.: {v:?}");
         let v = items(&mut e, "Map.Entry.");
         assert!(has(&v, &["comparingByKey"]), "Map.Entry.: {v:?}");
+        let v = items(&mut e, "new Ctx().get(0).");
+        assert!(has(&v, &["substring"]), "ライブラリの親の型引数（extends ArrayList<String>）: {v:?}");
         let v = items(&mut e, "new Repo().names().get(0).");
         assert!(has(&v, &["substring"]), "プロジェクトのメソッドの List<String>: {v:?}");
         // パッケージの名前の後は下のパッケージとクラス、完全な名前のクラスの後は static

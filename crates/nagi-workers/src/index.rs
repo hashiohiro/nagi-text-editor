@@ -44,6 +44,8 @@ pub struct Index {
     pub root: PathBuf,
     files: HashMap<Arc<str>, FileDefs>,
     by_name: HashMap<String, Vec<Loc>>,
+    /// Java のソースのパッケージ（`com/x`。並べて重なりなし。引いたときに作り、ファイルが変われば作り直す）
+    packages: std::sync::OnceLock<Vec<String>>,
 }
 
 impl Index {
@@ -79,6 +81,18 @@ impl Index {
         self.files.keys().map(|k| &**k)
     }
 
+    /// Java のソースのパッケージか、その上（`com`・`com/x`）か
+    pub fn is_java_package(&self, pkg: &str) -> bool {
+        let v = self.packages.get_or_init(|| {
+            let mut v: Vec<String> = self.files.keys().filter(|f| f.ends_with(".java")).filter_map(|f| source_package(f)).collect();
+            v.sort_unstable();
+            v.dedup();
+            v
+        });
+        let i = v.partition_point(|p| p.as_str() < pkg);
+        v.get(i).is_some_and(|p| p == pkg || p.strip_prefix(pkg).is_some_and(|r| r.starts_with('/')))
+    }
+
     /// 識別子の名前の一覧（補完用）
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.by_name.keys().map(String::as_str)
@@ -111,11 +125,12 @@ impl Index {
             self.by_name.entry(d.name.clone()).or_default().push(Loc { path: key.clone(), line: d.line, col: d.col, kind: d.kind });
         }
         self.files.insert(key, FileDefs { stamp, defs });
+        self.packages = Default::default();
     }
 
     /// 保存用の写し（名前の表は持たない）
     pub fn snapshot(&self) -> Index {
-        Index { root: self.root.clone(), files: self.files.clone(), by_name: HashMap::new() }
+        Index { root: self.root.clone(), files: self.files.clone(), by_name: HashMap::new(), packages: Default::default() }
     }
 
     /// 索引を保存する（裏のスレッドから呼ぶ）
@@ -272,7 +287,7 @@ pub fn build(root: &Path, waker: Waker) -> nagi_core::task::Task<Progress> {
         for (rel, f) in Arc::try_unwrap(done).map(|m| m.into_inner().unwrap_or_default()).unwrap_or_default() {
             files.insert(rel, f);
         }
-        let mut idx = Index { root, files, by_name: HashMap::new() };
+        let mut idx = Index { root, files, by_name: HashMap::new(), packages: Default::default() };
         idx.rebuild();
         if changed {
             idx.save();
@@ -388,6 +403,8 @@ pub struct Ranker<'a> {
     supers: HashMap<String, Vec<String>>,
     /// 読んだファイル（根からの相対パス → 行）
     files: HashMap<String, Arc<Vec<String>>>,
+    /// 型 → プロジェクトの外の親（outside_supers）
+    outside: HashMap<String, Vec<(String, Arc<Vec<String>>)>>,
 }
 
 /// 受け手を型に直したもの
@@ -402,7 +419,7 @@ type Files = std::collections::HashSet<String>;
 
 impl<'a> Ranker<'a> {
     pub fn new(idx: Option<&'a Index>) -> Self {
-        Ranker { idx, supers: HashMap::new(), files: HashMap::new() }
+        Ranker { idx, supers: HashMap::new(), files: HashMap::new(), outside: HashMap::new() }
     }
 
     /// (有力な順の候補, いちばん有力なものの数)。数が 1 ならすぐ跳んでよい
@@ -956,8 +973,17 @@ impl<'a> Ranker<'a> {
         out
     }
 
-    /// 型 `ty`（と、たどれる親）の親のうち、プロジェクトに無い型。(名前, その名前を書いたファイルの中身)。ライブラリの親のメンバーを引くのに
+    /// 型 `ty`（と、たどれる親）の親のうち、プロジェクトに無い型。(型引数つきの名前, その名前を書いたファイルの中身)。ライブラリの親のメンバーを引くのに
     pub fn outside_supers(&mut self, ty: &str) -> Vec<(String, Arc<Vec<String>>)> {
+        if let Some(v) = self.outside.get(ty) {
+            return v.clone();
+        }
+        let v = self.outside_supers_uncached(ty);
+        self.outside.insert(ty.to_string(), v.clone());
+        v
+    }
+
+    fn outside_supers_uncached(&mut self, ty: &str) -> Vec<(String, Arc<Vec<String>>)> {
         let Some(idx) = self.idx else { return Vec::new() };
         let mut out = Vec::new();
         let mut todo = vec![(ty.to_string(), 0)];
@@ -972,8 +998,11 @@ impl<'a> Ranker<'a> {
                     if idx.lookup(&s).iter().any(|l| l.kind.is_type()) {
                         todo.push((s, depth + 1));
                     } else if let Some(lines) = self.lines(&tl.path) {
-                        if !out.iter().any(|(n, _): &(String, Arc<Vec<String>>)| *n == s) {
-                            out.push((s, lines));
+                        // 型引数ごと（extends ControllerBase<Req, Res>）
+                        let simple = |x: &str| x.split('<').next().unwrap_or(x).rsplit('.').next().unwrap_or(x).trim().to_string();
+                        let text = supertype_texts(&lines.join("\n"), &t).into_iter().find(|x| simple(x) == s).unwrap_or_else(|| s.clone());
+                        if !out.iter().any(|(n, _): &(String, Arc<Vec<String>>)| simple(n) == s) {
+                            out.push((text, lines));
                         }
                     }
                 }
@@ -1269,6 +1298,62 @@ pub fn enclosing_type(src: &str, at: usize) -> Option<String> {
 }
 
 /// クラス・インタフェースの宣言の extends / implements にある型の名前（`of` なら、その名前の宣言だけ）
+/// Java のソースのパッケージ（`m/src/main/java/com/x/Foo.java` → `com/x`。`java/` の下でなければ None）
+pub fn source_package(rel: &str) -> Option<String> {
+    let dir = format!("/{}/", rel.rsplit_once('/')?.0);
+    let at = dir.find("/java/")? + 6;
+    Some(dir[at.min(dir.len())..].trim_end_matches('/').to_string())
+}
+
+/// 型 `of` の宣言の extends・implements の型を、型引数ごとの文字で（`ServiceContextBase<Req, Res>`）
+pub fn supertype_texts(src: &str, of: &str) -> Vec<String> {
+    let ident = |c: u8| c.is_ascii_alphanumeric() || c == b'_' || c == b'$';
+    for kw in ["class ", "interface ", "enum ", "record "] {
+        let mut from = 0;
+        while let Some(i) = src[from..].find(kw).map(|i| i + from) {
+            from = i + kw.len();
+            if i > 0 && ident(src.as_bytes()[i - 1]) {
+                continue;
+            }
+            let rest = src[from..].trim_start();
+            if !rest.starts_with(of) || rest[of.len()..].starts_with(|c: char| c.is_alphanumeric() || c == '_') {
+                continue;
+            }
+            let rest = &rest[of.len()..];
+            let head = &rest[..rest.find(['{', ';']).unwrap_or(rest.len()).min(600)];
+            // 外側の空白と , で語に分ける（< > ( ) の中はつなげたまま）
+            let (mut toks, mut cur, mut depth) = (Vec::new(), String::new(), 0);
+            for c in head.chars() {
+                match c {
+                    '<' | '(' => depth += 1,
+                    '>' | ')' => depth -= 1,
+                    _ => {}
+                }
+                if depth == 0 && (c.is_whitespace() || c == ',') {
+                    if !cur.is_empty() {
+                        toks.push(std::mem::take(&mut cur));
+                    }
+                } else {
+                    cur.push(c);
+                }
+            }
+            toks.push(cur);
+            let mut on = false;
+            let mut out = Vec::new();
+            for t in toks {
+                match t.as_str() {
+                    "extends" | "implements" => on = true,
+                    "permits" => on = false,
+                    t if on && t.starts_with(|c: char| c.is_alphabetic()) => out.push(t.to_string()),
+                    _ => {}
+                }
+            }
+            return out;
+        }
+    }
+    Vec::new()
+}
+
 pub fn supertypes(src: &str, of: Option<&str>) -> Vec<String> {
     let mut out = Vec::new();
     let b = src.as_bytes();
