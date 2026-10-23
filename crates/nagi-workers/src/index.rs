@@ -46,6 +46,8 @@ pub struct Index {
     by_name: HashMap<String, Vec<Loc>>,
     /// Java のソースのパッケージ（`com/x`。並べて重なりなし。引いたときに作り、ファイルが変われば作り直す）
     packages: std::sync::OnceLock<Vec<String>>,
+    /// ビルドの設定（pom.xml・.mvn/maven.config）の (パス, 更新時刻, 大きさ) のハッシュ。変われば依存を求め直す
+    pub build_sig: u64,
 }
 
 impl Index {
@@ -79,6 +81,26 @@ impl Index {
     /// 索引したファイル（根からの相対パス、/ 区切り）
     pub fn files(&self) -> impl Iterator<Item = &str> {
         self.files.keys().map(|k| &**k)
+    }
+
+    /// 索引したファイルの (更新時刻, 大きさ)（外での変更を探すのに）
+    pub fn stamps(&self) -> HashMap<Arc<str>, (u64, u64)> {
+        self.files.iter().map(|(k, f)| (k.clone(), f.stamp)).collect()
+    }
+
+    /// 1 ファイルを索引から外す（消されたとき）
+    pub fn remove_file(&mut self, rel: &str) {
+        if let Some(old) = self.files.remove(rel) {
+            for d in &old.defs {
+                if let Some(v) = self.by_name.get_mut(&d.name) {
+                    v.retain(|l| &*l.path != rel);
+                    if v.is_empty() {
+                        self.by_name.remove(&d.name);
+                    }
+                }
+            }
+            self.packages = Default::default();
+        }
     }
 
     /// Java のソースのパッケージか、その上（`com`・`com/x`）か
@@ -130,7 +152,7 @@ impl Index {
 
     /// 保存用の写し（名前の表は持たない）
     pub fn snapshot(&self) -> Index {
-        Index { root: self.root.clone(), files: self.files.clone(), by_name: HashMap::new(), packages: Default::default() }
+        Index { root: self.root.clone(), files: self.files.clone(), by_name: HashMap::new(), packages: Default::default(), build_sig: self.build_sig }
     }
 
     /// 索引を保存する（裏のスレッドから呼ぶ）
@@ -236,12 +258,7 @@ pub fn build(root: &Path, waker: Waker) -> nagi_core::task::Task<Progress> {
         let (tx, waker) = (ctx.sender(), ctx.waker());
         let cached = load_cache(&root);
         // 対応する言語のファイルを集める
-        let mut paths = Vec::new();
-        for e in crate::files::walker(&root).build().flatten() {
-            if e.file_type().is_some_and(|t| t.is_file()) && Lang::detect(e.path()).is_some_and(|l| l.available()) {
-                paths.push(e.into_path());
-            }
-        }
+        let (paths, build_sig) = source_files(&root);
         let mut files: HashMap<Arc<str>, FileDefs> = HashMap::new();
         let mut todo = Vec::new();
         for p in paths {
@@ -287,12 +304,70 @@ pub fn build(root: &Path, waker: Waker) -> nagi_core::task::Task<Progress> {
         for (rel, f) in Arc::try_unwrap(done).map(|m| m.into_inner().unwrap_or_default()).unwrap_or_default() {
             files.insert(rel, f);
         }
-        let mut idx = Index { root, files, by_name: HashMap::new(), packages: Default::default() };
+        let mut idx = Index { root, files, by_name: HashMap::new(), packages: Default::default(), build_sig };
         idx.rebuild();
         if changed {
             idx.save();
         }
         ctx.send(Progress::Done(Box::new(idx)));
+    })
+}
+
+/// 索引するファイルと、ビルドの設定（pom.xml・.mvn/maven.config）の (パス, 更新時刻, 大きさ) のハッシュ
+fn source_files(root: &Path) -> (Vec<PathBuf>, u64) {
+    use std::hash::{Hash, Hasher};
+    let mut paths = Vec::new();
+    let mut poms: Vec<(PathBuf, Option<(u64, u64)>)> = Vec::new();
+    for e in crate::files::walker(root).build().flatten() {
+        if !e.file_type().is_some_and(|t| t.is_file()) {
+            continue;
+        }
+        if e.file_name() == "pom.xml" {
+            poms.push((e.path().to_path_buf(), stamp(e.path())));
+        } else if Lang::detect(e.path()).is_some_and(|l| l.available()) {
+            paths.push(e.into_path());
+        }
+    }
+    let config = root.join(".mvn").join("maven.config");
+    poms.push((config.clone(), stamp(&config)));
+    poms.sort();
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    poms.hash(&mut h);
+    (paths, h.finish())
+}
+
+/// 外での変更（git pull など）を探した結果
+pub struct Rescan {
+    /// 変わった・増えたファイル（Some）と消えたファイル（None）。根からの相対パス
+    pub changed: Vec<(String, Option<((u64, u64), Vec<Entry>)>)>,
+    pub build_sig: u64,
+}
+
+/// 外での変更を探す（裏で）: 今の索引のファイルの (更新時刻, 大きさ) `known` と比べ、変わった・増えたファイルを解析し直し、消えたものを知らせる
+pub fn rescan(root: &Path, known: HashMap<Arc<str>, (u64, u64)>, waker: Waker) -> nagi_core::task::Task<Rescan> {
+    let root = root.to_path_buf();
+    nagi_core::task::spawn("index-rescan", waker, move |ctx| {
+        let (paths, build_sig) = source_files(&root);
+        let mut parser = DefParser::default();
+        let mut changed = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for p in paths {
+            let rel = p.strip_prefix(&root).unwrap_or(&p).to_string_lossy().replace('\\', "/");
+            let st = stamp(&p);
+            if st.is_some() && known.get(rel.as_str()) == st.as_ref() {
+                seen.insert(rel);
+                continue;
+            }
+            let r = index_file(&p, &mut parser);
+            seen.insert(rel.clone());
+            changed.push((rel, r));
+        }
+        for k in known.keys() {
+            if !seen.contains(&**k) {
+                changed.push((k.to_string(), None));
+            }
+        }
+        ctx.send(Rescan { changed, build_sig });
     })
 }
 

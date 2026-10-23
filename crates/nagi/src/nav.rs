@@ -27,6 +27,9 @@ pub struct IndexState {
     jars_task: Option<nagi_core::task::Task<Result<nagi_workers::jvm::JarIndex, String>>>,
     /// ライブラリのソース・骨組みを書く場所（試験で変える。None なら %LOCALAPPDATA%\nagi\index\sources）
     pub sources_dir: Option<PathBuf>,
+    /// 外での変更（git pull など）を探す処理と、最後に始めた時刻
+    rescan: Option<nagi_core::task::Task<nagi_workers::index::Rescan>>,
+    last_rescan: Option<std::time::Instant>,
     /// 保存したファイルの索引し直し
     reindex: Option<(Sender<Option<(String, (u64, u64), Vec<Entry>)>>, nagi_core::task::Task<Option<(String, (u64, u64), Vec<Entry>)>>)>,
 }
@@ -108,6 +111,30 @@ impl Editor {
                 updated = true;
             }
         }
+        // 外での変更: 変わったファイルを差し替え、消えたものを外す。ビルドの設定が変わっていれば依存を求め直す
+        if let Some(Ok(r)) = self.nav.rescan.as_ref().map(|t| t.try_recv()) {
+            self.nav.rescan = None;
+            let mut jars_root = None;
+            if let Some(idx) = &mut self.nav.index {
+                for (rel, v) in r.changed {
+                    match v {
+                        Some((st, defs)) => idx.replace_file(&rel, st, defs),
+                        None => idx.remove_file(&rel),
+                    }
+                    updated = true;
+                }
+                if r.build_sig != idx.build_sig {
+                    idx.build_sig = r.build_sig;
+                    jars_root = Some(idx.root.clone());
+                    updated = true;
+                }
+            }
+            if let Some(root) = jars_root {
+                nagi_core::log::info("ビルドの設定（pom.xml）が外で変わったので、依存を求め直します");
+                self.start_jars(&root);
+            }
+            changed |= updated;
+        }
         if updated {
             // 保存は裏で（UI スレッドでファイルを書かない）。中身は今の索引の写し
             if let Some(idx) = &self.nav.index {
@@ -116,6 +143,16 @@ impl Editor {
             }
         }
         changed
+    }
+
+    /// 外での変更（git pull・ほかのエディタ）を探す（前に出たとき。裏で。2 秒に 1 回まで）
+    pub(crate) fn rescan_index(&mut self) {
+        if self.nav.building.is_some() || self.nav.rescan.is_some() || self.nav.last_rescan.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(2)) {
+            return;
+        }
+        let Some(idx) = &self.nav.index else { return };
+        self.nav.last_rescan = Some(std::time::Instant::now());
+        self.nav.rescan = Some(nagi_workers::index::rescan(&idx.root, idx.stamps(), self.waker()));
     }
 
     /// 保存したファイルを索引し直す（裏で）
@@ -725,6 +762,41 @@ mod tests {
         for (k, (c, ex)) in v.iter().take(40) {
             println!("{c:5} {k}    {ex}");
         }
+    }
+
+    /// 外での変更（git pull など）: 前に出たときに見直して、増えた・変わった・消えたファイルと pom.xml の変更を拾う
+    #[test]
+    fn rescan_external_changes() {
+        let dir = std::env::temp_dir().join(format!("nagi-rescan-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::write(dir.join("A.java"), "class A {\n  void alpha() {}\n}\n").unwrap();
+        std::fs::write(dir.join("B.java"), "class B {}\n").unwrap();
+        let mut e = open(&dir.join("A.java"));
+        wait_index(&mut e);
+        let sig = e.nav.index.as_ref().unwrap().build_sig;
+        // 外で: 足す・変える（大きさも変わる）・消す・pom.xml を作る
+        std::fs::write(dir.join("C.java"), "class C {\n  void gamma() {}\n}\n").unwrap();
+        std::fs::write(dir.join("A.java"), "class A {\n  void alpha2() {}\n}\n").unwrap();
+        std::fs::remove_file(dir.join("B.java")).unwrap();
+        std::fs::write(dir.join("pom.xml"), "<project/>").unwrap();
+        e.rescan_index();
+        for _ in 0..1000 {
+            e.poll_index();
+            if e.nav.rescan.is_none() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let idx = e.nav.index.as_ref().unwrap();
+        assert!(!idx.lookup("gamma").is_empty(), "増えたファイル");
+        assert!(!idx.lookup("alpha2").is_empty() && idx.lookup("alpha").is_empty(), "変わったファイル");
+        assert!(idx.lookup("B").is_empty(), "消えたファイル");
+        assert_ne!(idx.build_sig, sig, "pom.xml の変更");
+        // すぐもう一度は見直さない（2 秒に 1 回まで）
+        e.rescan_index();
+        assert!(e.nav.rescan.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

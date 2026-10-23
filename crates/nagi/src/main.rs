@@ -1471,6 +1471,8 @@ impl Frame {
             WindowEvent::Focused(true) => {
                 if let Some(e) = &mut self.ed {
                     e.refresh_status();
+                    // 索引も（外で git pull などをしたとき）
+                    e.rescan_index();
                 }
                 if self.ed.as_mut().is_some_and(|e| e.reload_settings()) {
                     self.draw();
