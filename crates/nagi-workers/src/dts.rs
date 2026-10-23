@@ -84,6 +84,14 @@ pub struct DtsIndex {
     by_path: HashMap<PathBuf, u32>,
     /// import の解決の結果（(フォルダ, 指定) → パス）
     resolved: std::sync::Mutex<HashMap<(PathBuf, String), Option<PathBuf>>>,
+    /// 依存のパッケージ（とその exports の入口）が export する名前: (名前, モジュールの番号)。名前で並べる
+    export_table: Vec<(Box<str>, u16)>,
+    /// export_table のモジュールの指定（`@angular/common/http`）
+    export_modules: Vec<String>,
+    /// プロジェクトの .ts が import しているモジュールの回数（import の候補の順）
+    pub spec_usage: HashMap<String, u32>,
+    /// (名前, モジュール) ごとの回数（rxjs/operators の map など、名前ごとの習慣）
+    pub name_usage: HashMap<(String, String), u32>,
 }
 
 impl DtsIndex {
@@ -108,6 +116,45 @@ impl DtsIndex {
     /// ファイル `file` の中の宣言 `name`（export していないものも）
     pub fn in_file(&self, file: u32, name: &str) -> Vec<&Decl> {
         self.named(name).iter().filter(|d| d.file == file).collect()
+    }
+
+    /// 名前が `prefix` で始まる、依存のパッケージが export する名前と、そのモジュールの指定（名前の順。最大 `limit`）
+    pub fn exports_with_prefix(&self, prefix: &str, limit: usize) -> Vec<(&str, &str)> {
+        if prefix.is_empty() {
+            return Vec::new();
+        }
+        let lo = self.export_table.partition_point(|(n, _)| &**n < prefix);
+        self.export_table[lo..].iter().take_while(|(n, _)| n.starts_with(prefix)).take(limit).map(|(n, m)| (&**n, self.export_modules[*m as usize].as_str())).collect()
+    }
+
+    /// 名前 `name` を export している依存のモジュールの指定
+    pub fn modules_exporting(&self, name: &str) -> Vec<&str> {
+        let lo = self.export_table.partition_point(|(n, _)| &**n < name);
+        self.export_table[lo..].iter().take_while(|(n, _)| &**n == name).map(|(_, m)| self.export_modules[*m as usize].as_str()).collect()
+    }
+
+    /// ファイル `file` が export する名前（re-export もたどる。`by_file` はファイルごとの宣言の番号）
+    fn export_names(&self, file: u32, by_file: &[Vec<u32>], out: &mut std::collections::HashSet<String>, seen: &mut std::collections::HashSet<u32>, depth: usize) {
+        if depth > 16 || !seen.insert(file) {
+            return;
+        }
+        let f = &self.files[file as usize];
+        for &k in &by_file[file as usize] {
+            let d = &self.decls[k as usize];
+            if d.exported && !d.name.contains('.') {
+                out.insert(d.name.clone());
+            }
+        }
+        for (outer, _) in &f.exports {
+            out.insert(outer.clone());
+        }
+        for r in &f.reexports {
+            match (&r.names, r.file) {
+                (Some(list), _) => out.extend(list.iter().map(|(o, _)| o.clone())),
+                (None, Some(t)) => self.export_names(t, by_file, out, seen, depth + 1),
+                _ => {}
+            }
+        }
     }
 
     /// パッケージの入口
@@ -705,14 +752,24 @@ impl DtsIndex {
         for e in lib_entries(root) {
             todo.push(lib_dir.join(e));
         }
-        // package.json の依存の入口
+        // package.json の依存の入口（exports の入口 `@angular/common/http` なども）
+        let mut deps: Vec<String> = Vec::new();
         if let Some(pj) = read_json(&root.join("package.json")) {
             for key in ["dependencies", "devDependencies"] {
                 for name in pj.get(key).and_then(|d| d.as_object()).into_iter().flat_map(|m| m.keys()) {
-                    if let Some(p) = resolve_package(&nm, name) {
-                        ix.modules.entry(name.clone()).or_insert(u32::MAX);
-                        todo.push(p.clone());
-                        by_path.entry(p).or_insert(u32::MAX);
+                    let mut specs = vec![name.clone()];
+                    if let Some(ex) = read_json(&nm.join(name).join("package.json")).and_then(|j| j.get("exports").and_then(|e| e.as_object().cloned())) {
+                        for k in ex.keys().filter(|k| k.starts_with("./") && !k.contains('*') && !k.ends_with(".json") && k.as_str() != "./package.json") {
+                            specs.push(format!("{name}/{}", &k[2..]));
+                        }
+                    }
+                    for spec in specs {
+                        if let Some(p) = resolve_package(&nm, &spec) {
+                            ix.modules.entry(spec.clone()).or_insert(u32::MAX);
+                            deps.push(spec);
+                            todo.push(p.clone());
+                            by_path.entry(p).or_insert(u32::MAX);
+                        }
                     }
                 }
             }
@@ -803,6 +860,24 @@ impl DtsIndex {
         ix.decls.shrink_to_fit();
         (ix.base_url, ix.paths) = tsconfig_paths(root);
         ix.by_path = ix.files.iter().enumerate().map(|(i, f)| (f.path.clone(), i as u32)).collect();
+        // 依存のモジュールが export する名前の表（import の補完）
+        let mut table: Vec<(Box<str>, u16)> = Vec::new();
+        let mut by_file: Vec<Vec<u32>> = vec![Vec::new(); ix.files.len()];
+        for (k, d) in ix.decls.iter().enumerate() {
+            by_file[d.file as usize].push(k as u32);
+        }
+        for spec in deps {
+            let Some(f) = ix.modules.get(&spec).copied() else { continue };
+            let mut names = std::collections::HashSet::new();
+            ix.export_names(f, &by_file, &mut names, &mut std::collections::HashSet::new(), 0);
+            let m = ix.export_modules.len() as u16;
+            ix.export_modules.push(spec);
+            table.extend(names.into_iter().filter(|n| !n.starts_with('ɵ') && n != "default").map(|n| (n.into_boxed_str(), m)));
+        }
+        table.sort();
+        table.shrink_to_fit();
+        ix.export_table = table;
+        (ix.spec_usage, ix.name_usage) = project_imports(root);
         ix
     }
 
@@ -897,6 +972,32 @@ impl DtsIndex {
         let p = std::path::absolute(path).ok()?;
         self.by_path.get(&p).copied()
     }
+}
+
+/// プロジェクトの .ts・.tsx が import しているモジュール（パッケージ・tsconfig の別名。相対は数えない）の回数と、(名前, モジュール) ごとの回数
+#[allow(clippy::type_complexity)]
+fn project_imports(root: &Path) -> (HashMap<String, u32>, HashMap<(String, String), u32>) {
+    let mut out: HashMap<String, u32> = HashMap::new();
+    let mut names: HashMap<(String, String), u32> = HashMap::new();
+    for e in crate::files::walker(root).build().flatten() {
+        let p = e.path();
+        let ext = p.extension().and_then(|x| x.to_str()).unwrap_or("");
+        if !(ext == "ts" || ext == "tsx") || p.to_string_lossy().ends_with(".d.ts") {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(p) else { continue };
+        let mut sc = Scan::default();
+        // import は頭にあるので、最初の宣言までを読めば足りる
+        scan_block(&text, 0, text.len(), "", false, &mut sc);
+        let mut seen = std::collections::HashSet::new();
+        for i in sc.imports.iter().filter(|i| !i.from.starts_with('.')) {
+            if seen.insert(i.from.clone()) {
+                *out.entry(i.from.clone()).or_default() += 1;
+            }
+            *names.entry((i.imported.clone(), i.from.clone())).or_default() += 1;
+        }
+    }
+    (out, names)
 }
 
 /// 裏で読む
@@ -1246,6 +1347,7 @@ mod tests {
         for n in ["String", "Array", "Console", "console", "HTMLElement", "Promise"] {
             println!("{n}: {}", ix.globals(n).len());
         }
+        println!("export の表: {} 名前・{} モジュール。HttpClient → {:?}・Observable → {:?}", ix.export_table.len(), ix.export_modules.len(), ix.modules_exporting("HttpClient"), ix.modules_exporting("Observable"));
         for spec in ["@angular/core", "@angular/common/http", "@angular/forms", "rxjs", "@angular/router"] {
             let m = ix.module(spec);
             println!("{spec}: {:?}", m.map(|f| ix.files[f as usize].path.display().to_string()));

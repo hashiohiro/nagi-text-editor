@@ -405,6 +405,26 @@ impl Editor {
                 push(&mut out, Cand { name: w.to_string(), mark: 'v', note: String::new(), call: None, rank: 0 + u8::from(call) * 2, insert: None, import: None });
             }
         }
+        let ts = matches!(lang, Some(nagi_syntax::Lang::TypeScript | nagi_syntax::Lang::Tsx));
+        // TypeScript: 依存のパッケージとプロジェクトのほかのファイルの名前（打った語で始まるもの。決めたら import を足す）
+        if ts {
+            if let (Some(ix), Some(h)) = (self.nav.dts.clone(), &here) {
+                let b = self.cursor.byte.min(line.len());
+                let prefix = &line[ws..b];
+                let mut names: Vec<&str> = ix.exports_with_prefix(prefix, 300).into_iter().map(|x| x.0).collect();
+                if let Some(idx) = idx.filter(|_| !prefix.is_empty()) {
+                    names.extend(idx.names().filter(|n| n.starts_with(prefix)).take(300));
+                }
+                names.sort_unstable();
+                names.dedup();
+                let imported: Vec<String> = nagi_workers::dts::scan_source(&src).imports.into_iter().map(|i| i.from).collect();
+                for n in names {
+                    let Some(spec) = crate::ts_import::candidates_with(&ix, idx, h, &imported, n, None).into_iter().next() else { continue };
+                    let kind = idx.and_then(|i| i.lookup(n).first().map(|l| l.kind)).map_or('c', mark_of);
+                    push(&mut out, Cand { name: n.to_string(), mark: kind, note: spec.clone(), call: None, rank: 3, insert: None, import: Some(format!("ts:{spec}")) });
+                }
+            }
+        }
         // プロジェクトの型
         if let Some(idx) = idx {
             let mut types: Vec<(&str, DefKind)> = idx.all().filter(|(_, l)| l.kind.is_type()).map(|(n, l)| (n, l.kind)).collect();
@@ -579,8 +599,11 @@ impl Editor {
         // すでに後ろに ( があれば括弧は足さない
         let after = self.buf.slice_string(abs, (abs + 1).min(self.buf.len_bytes()));
         let name = cand.insert.clone().unwrap_or_else(|| cand.name.clone());
-        // Java のライブラリの型: import を足す（同じ単純名の別の型を import していれば完全な名前で書く）
-        let plan = cand.import.as_deref().map(|fqn| (fqn.to_string(), crate::java_import::plan(&self.buf.text(), fqn)));
+        // Java のライブラリの型: import を足す（同じ単純名の別の型を import していれば完全な名前で書く）。TypeScript は `ts:モジュール`
+        let plan = cand.import.as_deref().map(|fqn| match fqn.strip_prefix("ts:") {
+            Some(spec) => (name.clone(), crate::ts_import::plan(&self.buf.text(), &name, spec)),
+            None => (fqn.to_string(), crate::java_import::plan(&self.buf.text(), fqn)),
+        });
         let name = match &plan {
             Some((fqn, crate::java_import::Plan::Conflict)) => fqn.clone(),
             _ => name,
@@ -888,6 +911,11 @@ mod tests {
         assert!(has(&v, &["name"]), "ラムダの引数: {v:?}");
         let v = items(&mut e, "const xs = users;\n    xs.");
         assert!(has(&v, &["map", "find"]), "const の初期値: {v:?}");
+        // パッケージの名前を決めると import を足す（同じモジュールの import の { } の中へ）
+        keys(&mut e, "7GA<CR>let r: Re<C-Space><CR><Esc>");
+        assert_eq!(e.buf.line(0), "import { HttpClient, Res } from '@acme/http';", "{}", e.buf.text());
+        keys(&mut e, "uu");
+        assert_eq!(e.buf.line(0), "import { HttpClient } from '@acme/http';");
         // 定義へ（gd）: パッケージの .d.ts のメソッドの宣言の行
         keys(&mut e, "7GA<CR>this.http.get('/u');<Esc>0fggd");
         assert!(e.buf.path.as_ref().unwrap().ends_with("index.d.ts"), "{:?} {}", e.buf.path, e.notify.text);
