@@ -606,6 +606,12 @@ impl JarIndex {
             .collect()
     }
 
+    /// `outer`（内部名）のすぐ中の入れ子のクラスの内部名（`java/util/Map` → `java/util/Map$Entry`）
+    pub fn nested(&self, outer: &str) -> Vec<&str> {
+        let head = format!("{outer}$");
+        self.table.iter().map(|&(i, k)| self.shard(i).name_at(k as usize)).filter(|n| n.strip_prefix(&head).is_some_and(|r| !r.contains('$') && !r.starts_with(|c: char| c.is_ascii_digit()))).collect()
+    }
+
     /// 内部名でクラスを引く
     pub fn class(&self, internal: &str) -> Option<Class> {
         let simple = internal.rsplit(['/', '$']).next().unwrap_or(internal);

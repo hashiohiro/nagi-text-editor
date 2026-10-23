@@ -248,9 +248,10 @@ impl Editor {
         let mut ranker = nagi_workers::index::Ranker::new(idx);
         // 今いる型（その中からは private も出す）
         let inside = nagi_workers::index::enclosing_type(&src, start);
-        let member_cands = |ranker: &mut nagi_workers::index::Ranker, ty: &str, out: &mut Vec<Cand>, push: &mut dyn FnMut(&mut Vec<Cand>, Cand), rank: u8| {
+        // `types`: 入れ子の型も出す（受け手がクラスの名前のとき）
+        let member_cands = |ranker: &mut nagi_workers::index::Ranker, ty: &str, out: &mut Vec<Cand>, push: &mut dyn FnMut(&mut Vec<Cand>, Cand), rank: u8, types: bool| {
             for (name, kind, owner, params, private) in ranker.members(ty) {
-                if private && inside.as_deref() != Some(owner.as_str()) {
+                if (private && inside.as_deref() != Some(owner.as_str())) || (kind.is_type() && !types) {
                     continue;
                 }
                 let call = matches!(kind, DefKind::Method | DefKind::Function).then(|| params != Some(0));
@@ -320,11 +321,24 @@ impl Editor {
                 Some(t) => Some(t.split('<').next().unwrap_or(t).to_string()),
                 None => var_type(&src, n, start),
             };
+            // 受け手がクラスの名前（Outer・Map.Entry）か。変数は宣言の型に印 `=` を付けて分ける
+            fn class_name(r: &Receiver) -> bool {
+                match r {
+                    Receiver::Type(t) => !t.starts_with('='),
+                    Receiver::Member(i, n) => n.starts_with(char::is_uppercase) && class_name(i),
+                    _ => false,
+                }
+            }
+            let marked = |n: &str| match n.strip_prefix("new ") {
+                Some(t) => Some(format!("={t}")),
+                None => crate::java_members::var_decl_text(&src, n, start).map(|d| format!("={d}")),
+            };
+            let class_recv = receiver_before(&expanded, expanded.len(), &marked).as_ref().is_some_and(class_name);
             let recv = receiver_before(&expanded, expanded.len(), &var);
             let ty = recv.as_ref().and_then(|r| ranker.receiver_type_name(&rel, &src, start, r));
             if std::env::var_os("NAGI_DBG").is_some() { eprintln!("DBG0 expanded={expanded:?} recv={recv:?} ty={ty:?}"); }
             if let Some(t) = &ty {
-                member_cands(&mut ranker, t, &mut out, &mut push, 0);
+                member_cands(&mut ranker, t, &mut out, &mut push, 0, class_recv);
                 lib_super_cands(&mut ranker, t, &mut out, &mut push, 0);
             }
             // ライブラリの型（Java。jar・JDK の索引から、型引数もたどって）
@@ -340,7 +354,7 @@ impl Editor {
                         None => crate::java_members::var_decl_text(&src, n, start).map(|d| format!("={d}")),
                     };
                     let r = receiver_before(&expanded, expanded.len(), &decl);
-                    let statics = matches!(&r, Some(Receiver::Type(t)) if !t.starts_with('='));
+                    let statics = class_recv;
                     let base = |t: &str| t.strip_prefix('=').and_then(|d| lib.parse(d));
                     // 途中のプロジェクトの型のメンバーの型は、プロジェクトの索引で（型引数は宣言のファイルの import で読む）
                     let mut project = |t: &str, n: &str, call: bool| {
@@ -383,12 +397,19 @@ impl Editor {
                     match t {
                         Some(crate::java_members::JType::Class(name, _)) if name.starts_with('?') => {
                             let simple = crate::java_members::project_name(&name).map_or("", |x| x.0);
-                            member_cands(&mut ranker, simple, &mut out, &mut push, 0);
+                            member_cands(&mut ranker, simple, &mut out, &mut push, 0, class_recv);
                             lib_super_cands(&mut ranker, simple, &mut out, &mut push, 0);
                         }
                         Some(t) => {
                             for m in lib.members(&t, statics, false) {
                                 push(&mut out, Cand { name: m.name, mark: if m.method { 'm' } else { 'f' }, note: m.owner, call: m.method.then_some(m.params), rank: 0, insert: None, import: None });
+                            }
+                            // クラスの名前の後は入れ子のクラスも
+                            if let (true, crate::java_members::JType::Class(n, _)) = (statics, &t) {
+                                for c in jars.nested(n) {
+                                    let simple = c.rsplit('$').next().unwrap_or(c);
+                                    push(&mut out, Cand { name: simple.to_string(), mark: 'c', note: String::new(), call: None, rank: 0, insert: None, import: None });
+                                }
                             }
                         }
                         None => {}
@@ -396,8 +417,7 @@ impl Editor {
                 }
             }
             // クラス名の後は Type.class も
-            let decl = |n: &str| crate::java_members::var_decl_text(&src, n, start).map(|d| format!("={d}"));
-            if self.is_java() && matches!(receiver_before(&expanded, expanded.len(), &decl), Some(Receiver::Type(t)) if !t.starts_with('=')) && !out.is_empty() {
+            if self.is_java() && class_recv && !out.is_empty() {
                 push(&mut out, Cand { name: "class".into(), mark: 'K', note: String::new(), call: None, rank: 0, insert: None, import: None });
             }
             if out.is_empty() {
@@ -413,7 +433,7 @@ impl Editor {
         }
         // 今の型のメンバー
         if let Some(t) = inside.clone() {
-            member_cands(&mut ranker, &t, &mut out, &mut push, 1);
+            member_cands(&mut ranker, &t, &mut out, &mut push, 1, false);
             lib_super_cands(&mut ranker, &t, &mut out, &mut push, 1);
         }
         // ファイルの中の語（変数・引数など）。カーソルに近い順
@@ -665,6 +685,7 @@ mod tests {
         std::fs::write(dir.join("src/Base.java"), "public class Base {\n  public String baseName() { return \"\"; }\n}\n").unwrap();
         std::fs::write(dir.join("src/User.java"), "public class User extends Base {\n  public User() {}\n  private String name;\n  public String getName() { return name; }\n  public void setName(String n) { name = n; }\n}\n").unwrap();
         std::fs::write(dir.join("src/Dto.java"), "import lombok.Data;\n\n/** 注釈の後に説明 */\n@Data\npublic class Dto {\n  private String name;\n  private boolean active;\n  private final int id = 0;\n  private static int count;\n}\n").unwrap();
+        std::fs::write(dir.join("src/Outer.java"), "public class Outer {\n  public enum Kind {\n    A, B;\n    public String label() { return \"\"; }\n  }\n  public void run() {}\n}\n").unwrap();
         let main = "public class App {\n  void run(User user) {\n    user.\n  }\n}\n";
         std::fs::write(dir.join("src/App.java"), main).unwrap();
         let mut e = Editor::new(Buffer::open(&dir.join("src/App.java")).unwrap(), None);
@@ -673,7 +694,7 @@ mod tests {
         e.start_index();
         for _ in 0..500 {
             e.poll_index();
-            if e.nav.index.as_ref().is_some_and(|i| i.file_count() == 4) {
+            if e.nav.index.as_ref().is_some_and(|i| i.file_count() == 5) {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
@@ -699,6 +720,19 @@ mod tests {
         // Esc は一覧だけ閉じる
         keys(&mut e, "<Esc>o<C-Space><Esc>");
         assert_eq!(e.state(), crate::editor::State::Insert);
+        // 入れ子の型: クラスの名前の後に出し、その中のメンバーへ
+        let items = |e: &mut Editor, text: &str| -> Vec<String> {
+            keys(e, &format!("<Esc>o{text}<C-Space>"));
+            let v = e.completion.as_ref().map(|c| c.items.clone()).unwrap_or_default();
+            keys(e, "<Esc><Esc>dd");
+            v
+        };
+        let v = items(&mut e, "Outer.");
+        assert!(v.contains(&"Kind".to_string()), "{v:?}");
+        let v = items(&mut e, "user.");
+        assert!(!v.contains(&"Kind".to_string()), "変数の後に入れ子の型は出さない: {v:?}");
+        let v = items(&mut e, "Outer.Kind.");
+        assert!(v.contains(&"A".to_string()) || v.contains(&"label".to_string()), "{v:?}");
         // Lombok の @Data: getter・setter（boolean は is、final は setter なし、static は無し）
         let mut ranker = nagi_workers::index::Ranker::new(e.nav.index.as_ref());
         let names: Vec<String> = ranker.members("Dto").into_iter().filter(|m| !m.4).map(|m| m.0).collect();
@@ -812,6 +846,11 @@ mod tests {
         assert!(has(&v, &["size"]), "singletonList(List<String>): {v:?}");
         let v = items(&mut e, "names.get(0).split(\",\").");
         assert!(has(&v, &["length"]), "配列: {v:?}");
+        // 入れ子の型
+        let v = items(&mut e, "Map.");
+        assert!(has(&v, &["Entry", "of"]), "Map.: {v:?}");
+        let v = items(&mut e, "Map.Entry.");
+        assert!(has(&v, &["comparingByKey"]), "Map.Entry.: {v:?}");
         let v = items(&mut e, "new Repo().names().get(0).");
         assert!(has(&v, &["substring"]), "プロジェクトのメソッドの List<String>: {v:?}");
         // パッケージの名前の後は下のパッケージとクラス、完全な名前のクラスの後は static

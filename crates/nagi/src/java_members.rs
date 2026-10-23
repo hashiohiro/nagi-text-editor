@@ -503,7 +503,17 @@ impl<'a> LibTypes<'a> {
                     let (p, k, m) = (parts.next()?.parse().ok()?, parts.next()?.parse().ok()?, parts.next()?);
                     return self.lambda_param(&it, m, k, p);
                 }
+                // 入れ子の型（Map.Entry・Outer.Inner）
                 if let JType::Class(name, _) = &it {
+                    if !call && n.starts_with(char::is_uppercase) {
+                        if let Some((_, hint)) = project_name(name) {
+                            return Some(JType::Class(format!("?{n}{}", hint.map(|h| format!("@{h}")).unwrap_or_default()), Vec::new()));
+                        }
+                        let inner_name = format!("{name}${n}");
+                        if self.exists(&inner_name) {
+                            return Some(JType::Class(inner_name, Vec::new()));
+                        }
+                    }
                     if let Some(simple) = name.strip_prefix('?') {
                         return project(simple, n, call);
                     }

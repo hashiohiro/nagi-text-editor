@@ -704,6 +704,8 @@ impl<'a> Ranker<'a> {
                     return None;
                 }
                 match self.member_def(from_rel, src, inner, m, depth)? {
+                    // 入れ子の型（Outer.Inner）
+                    Ok(l) if l.kind.is_type() => Some(Ty::Named(m.clone(), Some(l.path.to_string()))),
                     Ok(l) => {
                         let t = self.decl_type(&l)?;
                         Some(Ty::Named(t, Some(l.path.to_string())))
@@ -861,7 +863,11 @@ impl<'a> Ranker<'a> {
             for tl in types {
                 let defs = self.own_defs(&tl);
                 for d in &defs {
+                    // 入れ子の型（Outer.Inner）
                     if d.kind.is_type() {
+                        if !out.iter().any(|o| o.0 == d.name) {
+                            out.push((d.name.clone(), d.kind, t.clone(), None, false));
+                        }
                         continue;
                     }
                     if matches!(d.kind, DefKind::Method | DefKind::Function | DefKind::Field | DefKind::Constant) && d.name != t && !out.iter().any(|o| o.0 == d.name) {
@@ -1104,7 +1110,7 @@ fn java_decl_type(before: &str) -> Option<String> {
     }
     let word: String = b.chars().rev().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$' || *c == '.').collect::<Vec<_>>().into_iter().rev().collect();
     let last = word.rsplit('.').next().unwrap_or("").to_string();
-    let not_type = ["void", "public", "private", "protected", "static", "final", "abstract", "synchronized", "default", "native", "transient", "volatile", "int", "long", "short", "byte", "char", "boolean", "float", "double", "var", "return", "new"];
+    let not_type = ["class", "interface", "enum", "record", "void", "public", "private", "protected", "static", "final", "abstract", "synchronized", "default", "native", "transient", "volatile", "int", "long", "short", "byte", "char", "boolean", "float", "double", "var", "return", "new"];
     (!last.is_empty() && last.chars().next().is_some_and(|c| c.is_alphabetic()) && !not_type.contains(&last.as_str())).then_some(last)
 }
 
