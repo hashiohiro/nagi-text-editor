@@ -341,17 +341,23 @@ impl Editor {
                     let r = receiver_before(&expanded, expanded.len(), &decl);
                     let statics = matches!(&r, Some(Receiver::Type(t)) if !t.starts_with('='));
                     let base = |t: &str| t.strip_prefix('=').and_then(|d| lib.parse(d));
-                    // 途中のプロジェクトの型のメンバーの型は、プロジェクトの索引で
+                    // 途中のプロジェクトの型のメンバーの型は、プロジェクトの索引で（型引数は宣言のファイルの import で読む）
                     let mut project = |t: &str, n: &str, call: bool| {
+                        let (t, hint) = t.split_once('@').map_or((t, None), |(a, b)| (a, Some(b)));
+                        if let Some((text, path, lines)) = ranker.member_decl_text(&rel, &src, t, hint, n) {
+                            return crate::java_members::LibTypes::from_lines(jars, lines.iter().map(String::as_str)).parse(&text).map(|t| t.written_in(&path));
+                        }
                         let inner = Box::new(Receiver::Type(t.to_string()));
                         let r = if call { Receiver::Call(inner, n.to_string()) } else { Receiver::Member(inner, n.to_string()) };
-                        ranker.receiver_type_name(&rel, &src, start, &r)
+                        // 型の名前（小文字はプロジェクトに無いメソッドの名前なので除く）
+                        ranker.receiver_type_name(&rel, &src, start, &r).filter(|t| t.starts_with(char::is_uppercase)).and_then(|t| lib.parse(&t))
                     };
                     let t = r.as_ref().and_then(|r| lib.receiver(r, &base, &mut project));
                     match t {
                         Some(crate::java_members::JType::Class(name, _)) if name.starts_with('?') => {
-                            member_cands(&mut ranker, &name[1..], &mut out, &mut push, 0);
-                            lib_super_cands(&mut ranker, &name[1..], &mut out, &mut push, 0);
+                            let simple = crate::java_members::project_name(&name).map_or("", |x| x.0);
+                            member_cands(&mut ranker, simple, &mut out, &mut push, 0);
+                            lib_super_cands(&mut ranker, simple, &mut out, &mut push, 0);
                         }
                         Some(t) => {
                             for m in lib.members(&t, statics, false) {
@@ -726,6 +732,17 @@ mod tests {
         e.buf.path = Some(dir.join("App.java"));
         e.set_screen(120, 40);
         e.nav.jars = Some(std::sync::Arc::new(ix));
+        // プロジェクトの型のメソッドが返す型引数つきの型（List<String>）
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::write(dir.join("Repo.java"), "package app;\n\nimport java.util.List;\n\npublic class Repo {\n  public List<String> names() { return null; }\n}\n").unwrap();
+        e.start_index();
+        for _ in 0..500 {
+            e.poll_index();
+            if e.nav.index.as_ref().is_some_and(|i| i.file_count() == 2) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         let items = |e: &mut Editor, text: &str| -> Vec<String> {
             keys(e, &format!("9GA<CR>{text}<C-Space>"));
             let v = e.completion.as_ref().map(|c| c.items.clone()).unwrap_or_default();
@@ -759,6 +776,8 @@ mod tests {
         assert!(has(&v, &["ensureCapacity"]), "new: {v:?}");
         let v = items(&mut e, "emptyList().");
         assert!(has(&v, &["size"]), "static の import: {v:?}");
+        let v = items(&mut e, "new Repo().names().get(0).");
+        assert!(has(&v, &["substring"]), "プロジェクトのメソッドの List<String>: {v:?}");
         // パッケージの名前の後は下のパッケージとクラス、完全な名前のクラスの後は static
         let v = items(&mut e, "java.util.");
         assert!(has(&v, &["function", "List", "Collections"]) && !v.iter().any(|x| x == "String"), "java.util.: {v:?}");
@@ -823,7 +842,9 @@ mod tests {
         // NAGI_RATE_FILES があれば、その数ごとに 1 つのファイルだけ（速く測る）
         let step = std::env::var("NAGI_RATE_FILES").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(1).max(1);
         let mut slow: Vec<(u128, String)> = Vec::new();
-        for p in files.iter().step_by(step) {
+        // NAGI_RATE_ONLY があれば、パスにその文字を含むファイルだけ
+        let only = std::env::var("NAGI_RATE_ONLY").ok();
+        for p in files.iter().step_by(step).filter(|p| only.as_ref().is_none_or(|o| p.to_string_lossy().contains(o.as_str()))) {
             let p = p.as_path();
             let Ok(buf) = Buffer::open(p) else { continue };
             e.buf = buf;
@@ -849,7 +870,34 @@ mod tests {
                         println!("{}:{} {} -> {:?}", p.display(), li + 1, line.trim(), c.iter().take(8).map(|x| (&x.name, x.rank)).collect::<Vec<_>>());
                     }
                     slow.push((us, format!("{}:{} {}", p.file_name().unwrap().to_string_lossy(), li + 1, line.trim())));
-                    let recv = line[..ws - 1].trim_start().rsplit([' ', '(', '!', '=', ',']).next().unwrap_or("").to_string();
+                    // 受け手の式（呼び出しの引数は省く）
+                    let before = &line[..ws - 1];
+                    let recv = match crate::java_members::chain_start(before) {
+                        Some(i) => {
+                            let mut r = String::new();
+                            let mut depth = 0;
+                            for c in before[i..].chars() {
+                                match c {
+                                    '(' => {
+                                        if depth == 0 {
+                                            r.push('(');
+                                        }
+                                        depth += 1
+                                    }
+                                    ')' => {
+                                        depth -= 1;
+                                        if depth == 0 {
+                                            r.push(')');
+                                        }
+                                    }
+                                    _ if depth == 0 => r.push(c),
+                                    _ => {}
+                                }
+                            }
+                            r
+                        }
+                        None => before.trim_start().rsplit([' ', '(', '!', '=', ',']).next().unwrap_or("").to_string(),
+                    };
                     let k = if c.is_empty() {
                         3
                     } else if c.iter().all(|x| x.rank == 1) {

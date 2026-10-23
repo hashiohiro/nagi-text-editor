@@ -703,26 +703,47 @@ impl<'a> Ranker<'a> {
                 if depth > 6 {
                     return None;
                 }
-                let it = self.type_of(from_rel, src, inner, depth + 1)?;
-                if let Ty::Outside(t) = it {
-                    return Some(Ty::Outside(t));
-                }
-                let idx = self.idx?;
-                let cands = idx.lookup(m).to_vec();
-                let none = cands.is_empty();
-                match self.resolve_ty(from_rel, src, m, Some(it), cands) {
-                    Ranked::Outside(t) => Some(Ty::Outside(t)),
-                    // プロジェクトのどこにも無い（Lombok のフィールドでもない）メソッド・フィールド: ライブラリのもの（Mockito の mock() など）
-                    Ranked::Locs(v, _) if v.is_empty() && none => Some(Ty::Outside(m.clone())),
-                    Ranked::Locs(v, 1) => {
-                        let l = &v[0];
-                        let t = self.decl_type(l)?;
+                match self.member_def(from_rel, src, inner, m, depth)? {
+                    Ok(l) => {
+                        let t = self.decl_type(&l)?;
                         Some(Ty::Named(t, Some(l.path.to_string())))
                     }
-                    Ranked::Locs(..) => None,
+                    Err(t) => Some(t),
                 }
             }
         }
+    }
+
+    /// `inner.m` の m の定義（1 つに決まれば Ok）。プロジェクトの外の型なら Err(Ty::Outside)
+    fn member_def(&mut self, from_rel: &str, src: &str, inner: &Recv, m: &str, depth: usize) -> Option<Result<Loc, Ty>> {
+        let it = self.type_of(from_rel, src, inner, depth + 1)?;
+        self.member_def_of(from_rel, src, it, m)
+    }
+
+    fn member_def_of(&mut self, from_rel: &str, src: &str, it: Ty, m: &str) -> Option<Result<Loc, Ty>> {
+        if let Ty::Outside(t) = it {
+            return Some(Err(Ty::Outside(t)));
+        }
+        let idx = self.idx?;
+        let cands = idx.lookup(m).to_vec();
+        let none = cands.is_empty();
+        match self.resolve_ty(from_rel, src, m, Some(it), cands) {
+            Ranked::Outside(t) => Some(Err(Ty::Outside(t))),
+            // プロジェクトのどこにも無い（Lombok のフィールドでもない）メソッド・フィールド: ライブラリのもの（Mockito の mock() など）
+            Ranked::Locs(v, _) if v.is_empty() && none => Some(Err(Ty::Outside(m.to_string()))),
+            Ranked::Locs(mut v, 1) => Some(Ok(v.swap_remove(0))),
+            Ranked::Locs(..) => None,
+        }
+    }
+
+    /// Java: 型 `ty` のメンバー `m` の宣言の型を型引数ごと（`List<Dto>`・`Map<String, Foo>`）と、宣言のあるファイル・その行（import を読む用）。
+    /// `hint` は `ty` の名前を書いたファイル（同じ名前の型が複数あるとき、その import で選ぶ）
+    pub fn member_decl_text(&mut self, from_rel: &str, src: &str, ty: &str, hint: Option<&str>, m: &str) -> Option<(String, String, Arc<Vec<String>>)> {
+        let l = self.member_def_of(from_rel, src, Ty::Named(ty.to_string(), hint.map(String::from)), m)?.ok()?;
+        let lines = self.lines(&l.path)?;
+        let line = lines.get(l.line as usize)?;
+        let t = java_decl_text(&line[..(l.col as usize).min(line.len())])?;
+        Some((t, l.path.to_string(), lines))
     }
 
     fn lines(&mut self, path: &str) -> Option<Arc<Vec<String>>> {
@@ -1085,6 +1106,36 @@ fn java_decl_type(before: &str) -> Option<String> {
     let last = word.rsplit('.').next().unwrap_or("").to_string();
     let not_type = ["void", "public", "private", "protected", "static", "final", "abstract", "synchronized", "default", "native", "transient", "volatile", "int", "long", "short", "byte", "char", "boolean", "float", "double", "var", "return", "new"];
     (!last.is_empty() && last.chars().next().is_some_and(|c| c.is_alphabetic()) && !not_type.contains(&last.as_str())).then_some(last)
+}
+
+/// Java: 名前の前の型を型引数・配列ごと（`List<Foo>`・`String[]`）
+fn java_decl_text(before: &str) -> Option<String> {
+    let b = before.trim_end();
+    let mut i = b.len();
+    while b[..i].ends_with("[]") {
+        i -= 2;
+    }
+    if b[..i].ends_with('>') {
+        let mut depth = 0;
+        let mut cut = None;
+        for (k, c) in b[..i].char_indices().rev() {
+            match c {
+                '>' => depth += 1,
+                '<' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        cut = Some(k);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        i = cut?;
+    }
+    let head = b[..i].char_indices().rev().take_while(|(_, c)| c.is_alphanumeric() || *c == '_' || *c == '$' || *c == '.').last()?.0;
+    java_decl_type(&b[..i])?;
+    Some(b[head..].to_string())
 }
 
 /// TS: 名前の後ろの型（`f: Foo` / `m(a, b): Foo {` / `x = inject(Foo)` / `x = new Foo(`）

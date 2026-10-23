@@ -24,6 +24,28 @@ pub enum JType {
     Other,
 }
 
+impl JType {
+    /// プロジェクトの型（`?Name`）に、その名前を書いたファイルを付ける（`?Name@path`。同じ名前の型を選ぶ手がかり）
+    pub fn written_in(self, path: &str) -> JType {
+        match self {
+            JType::Class(n, args) => {
+                let n = if n.starts_with('?') && !n.contains('@') { format!("{n}@{path}") } else { n };
+                JType::Class(n, args.into_iter().map(|a| a.written_in(path)).collect())
+            }
+            t => t,
+        }
+    }
+}
+
+/// `?Name@path` → (Name, path)
+pub fn project_name(n: &str) -> Option<(&str, Option<&str>)> {
+    let n = n.strip_prefix('?')?;
+    Some(match n.split_once('@') {
+        Some((a, b)) => (a, Some(b)),
+        None => (n, None),
+    })
+}
+
 /// Signature・記述子を読む
 struct Sig<'a> {
     s: &'a [u8],
@@ -199,15 +221,21 @@ pub struct LibTypes<'a> {
 }
 
 /// プロジェクトの型（ライブラリの索引に無い型。`?名前` で表す）のメンバーの型を、プロジェクトの索引で引く（型, メンバー, 呼び出しか → 型の名前）
-pub type ProjectMember<'b> = dyn FnMut(&str, &str, bool) -> Option<String> + 'b;
+/// プロジェクトの型（`?` の後の名前。`Name@path` もある）のメンバーの型
+pub type ProjectMember<'b> = dyn FnMut(&str, &str, bool) -> Option<JType> + 'b;
 
 impl<'a> LibTypes<'a> {
     pub fn new(jars: &'a JarIndex, src: &str) -> Self {
+        Self::from_lines(jars, src.lines())
+    }
+
+    /// ファイルの行から（package と import を読む）
+    pub fn from_lines<'l>(jars: &'a JarIndex, lines: impl Iterator<Item = &'l str>) -> Self {
         let mut single = HashMap::new();
         let mut wild = Vec::new();
         let mut package = String::new();
         let mut statics = Vec::new();
-        for line in src.lines() {
+        for line in lines {
             let l = line.trim();
             if let Some(p) = l.strip_prefix("package ") {
                 package = p.trim_end_matches(';').trim().replace('.', "/");
@@ -416,8 +444,7 @@ impl<'a> LibTypes<'a> {
                 }
                 if let JType::Class(name, _) = &it {
                     if let Some(simple) = name.strip_prefix('?') {
-                        let t = project(simple, n, call)?;
-                        return self.parse(&t);
+                        return project(simple, n, call);
                     }
                 }
                 self.member_type(&it, n, call)
@@ -644,8 +671,8 @@ pub fn typed_decls(src: &str, name: &str) -> Vec<(usize, String)> {
         }
         let before = &src[..at];
         let t = before.trim_end();
-        // 名前の前に空白が要る（`a.name` などは除く）
-        if t.len() == before.len() {
+        // 名前の前に空白が要る（`a.name` などは除く）。型は同じ行に（前の行の終わりの語を型にしない）
+        if t.len() == before.len() || before[t.len()..].contains('\n') {
             continue;
         }
         let mut end = t.len();
@@ -675,7 +702,9 @@ pub fn typed_decls(src: &str, name: &str) -> Vec<(usize, String)> {
         }
         let head = t[..i].char_indices().rev().take_while(|(_, c)| c.is_alphanumeric() || *c == '_' || *c == '.').last().map_or(i, |x| x.0);
         let ty = &t[head..];
-        if ty.starts_with(|c: char| c.is_ascii_uppercase()) && !matches!(&t[head..i], "return" | "new") {
+        // 行のコメントの中は除く
+        let line_start = t[..head].rfind('\n').map_or(0, |k| k + 1);
+        if ty.starts_with(|c: char| c.is_ascii_uppercase()) && !matches!(&t[head..i], "return" | "new") && !t[line_start..head].contains("//") && !t[line_start..head].trim_start().starts_with('*') {
             out.push((head, ty.to_string()));
         }
     }
@@ -755,6 +784,8 @@ mod tests {
         assert_eq!(var_decl_text(src, "names", 200).as_deref(), Some("List<String>"));
         assert_eq!(var_decl_text(src, "e", 200).as_deref(), Some("Map.Entry<String, Integer>"));
         assert_eq!(var_decl_text(src, "n", 200), None);
+        let src = "  Result r;\n  // see Foo\n  r = make();\n  r.x();";
+        assert_eq!(typed_decls(src, "r"), vec![(2, "Result".to_string())], "代入は宣言にしない");
         assert_eq!(var_decl_text("var xs = new ArrayList<String>();", "xs", 0).as_deref(), Some("ArrayList<String>"));
     }
 }
