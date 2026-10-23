@@ -888,6 +888,10 @@ mod tests {
         assert!(has(&v, &["name"]), "ラムダの引数: {v:?}");
         let v = items(&mut e, "const xs = users;\n    xs.");
         assert!(has(&v, &["map", "find"]), "const の初期値: {v:?}");
+        // 定義へ（gd）: パッケージの .d.ts のメソッドの宣言の行
+        keys(&mut e, "7GA<CR>this.http.get('/u');<Esc>0fggd");
+        assert!(e.buf.path.as_ref().unwrap().ends_with("index.d.ts"), "{:?} {}", e.buf.path, e.notify.text);
+        assert!(e.buf.line(e.cursor.line).contains("get<T>(url: string)"), "{}", e.buf.line(e.cursor.line));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

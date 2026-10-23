@@ -456,8 +456,8 @@ impl<'a> TsTypes<'a> {
         self.eval(ctx, &parse_type(text), &Rc::new(HashMap::new()), 0)
     }
 
-    /// メンバーを集める: (メンバー, その宣言の ctx, 型変数, 持っている型の名前)
-    fn collect(&self, t: &TT, statics: bool, out: &mut Vec<(Member, Ctx, Env, String)>, depth: usize) {
+    /// メンバーを集める: (メンバー, その宣言の ctx, 型変数, (持っている型の名前, その宣言))
+    fn collect(&self, t: &TT, statics: bool, out: &mut Vec<(Member, Ctx, Env, Owner)>, depth: usize) {
         if depth > 10 {
             return;
         }
@@ -486,7 +486,7 @@ impl<'a> TsTypes<'a> {
             }
             TT::Obj(body, ctx, env) => {
                 for m in dts::members(body) {
-                    out.push((m, ctx.clone(), env.clone(), String::new()));
+                    out.push((m, ctx.clone(), env.clone(), (String::new(), None)));
                 }
             }
             TT::Static(decls) => {
@@ -497,7 +497,7 @@ impl<'a> TsTypes<'a> {
                             let (_, supers, body) = dts::split_decl(&text);
                             let env: Env = Rc::new(HashMap::new());
                             for m in dts::members(body).into_iter().filter(|m| m.is_static) {
-                                out.push((m, inner_ctx(d), env.clone(), d.name.clone()));
+                                out.push((m, inner_ctx(d), env.clone(), (d.name.clone(), Some(d.clone()))));
                             }
                             // 親クラスの static
                             if let Some(s) = supers.first() {
@@ -511,7 +511,7 @@ impl<'a> TsTypes<'a> {
                             for part in split_top(&strip_comments(body), b',') {
                                 let n = part.split('=').next().unwrap_or("").trim().trim_matches(['\'', '"']);
                                 if !n.is_empty() {
-                                    out.push((Member { name: n.to_string(), ty: String::new(), ..Default::default() }, d.ctx.clone(), Rc::new(HashMap::new()), d.name.clone()));
+                                    out.push((Member { name: n.to_string(), ty: String::new(), ..Default::default() }, d.ctx.clone(), Rc::new(HashMap::new()), (d.name.clone(), Some(d.clone()))));
                                 }
                             }
                         }
@@ -522,7 +522,7 @@ impl<'a> TsTypes<'a> {
                                 for x in self.ix.with_prefix(&prefix) {
                                     let short = &x.name[prefix.len()..];
                                     if !short.contains('.') {
-                                        out.push((Member { name: short.to_string(), method: x.kind == DeclKind::Function, ..Default::default() }, Ctx::Dts(x.file), Rc::new(HashMap::new()), d.name.clone()));
+                                        out.push((Member { name: short.to_string(), method: x.kind == DeclKind::Function, ..Default::default() }, Ctx::Dts(x.file), Rc::new(HashMap::new()), (d.name.clone(), Some(d.clone()))));
                                     }
                                 }
                             }
@@ -550,12 +550,12 @@ impl<'a> TsTypes<'a> {
                                             if let Some((n, ty)) = rest.split_once(':') {
                                                 let n = n.trim().trim_end_matches('?').to_string();
                                                 let ty = ty.split('=').next().unwrap_or("").trim().to_string();
-                                                out.push((Member { name: n, ty, ..Default::default() }, dctx.clone(), env.clone(), d.name.clone()));
+                                                out.push((Member { name: n, ty, ..Default::default() }, dctx.clone(), env.clone(), (d.name.clone(), Some(d.clone()))));
                                             }
                                         }
                                     }
                                 }
-                                out.push((m, dctx.clone(), env.clone(), d.name.clone()));
+                                out.push((m, dctx.clone(), env.clone(), (d.name.clone(), Some(d.clone()))));
                             }
                             for s in supers {
                                 let st = self.eval(&dctx, &parse_type(&s), &env, depth + 1);
@@ -577,7 +577,7 @@ impl<'a> TsTypes<'a> {
         self.collect(t, matches!(t, TT::Static(_)), &mut all, 0);
         let mut out: Vec<TsMember> = Vec::new();
         let mut seen = std::collections::HashSet::new();
-        for (m, ctx, _, owner) in all {
+        for (m, ctx, _, (owner, _)) in all {
             // ライブラリ（.d.ts）の private は出さない（プロジェクトのクラスは、その中から使う）
             let library = match &ctx {
                 Ctx::Dts(_) => true,
@@ -886,6 +886,71 @@ fn cached_src(p: &Path) -> Option<Arc<SrcFile>> {
     }
     Some(f)
 }
+
+/// 定義へ（gd）: `.` の後の名前（`before` は `.` の前の式）か、頭の名前の宣言の (ファイル, 行, 列)
+pub fn definition(ix: &DtsIndex, root: &Path, path: &Path, src: &str, before: Option<&str>, name: &str, at: usize) -> Option<(PathBuf, usize, usize)> {
+    let tt = TsTypes::new(ix, root);
+    let sf = tt.src(path, Some(src))?;
+    let (d, off) = match before {
+        Some(b) => {
+            let clean = strip_optional(b.trim_end_matches(['?', '!']));
+            let start = crate::java_members::chain_start(&clean).unwrap_or(0);
+            let t = tt.expr_type(&sf, &clean[start..], at, 0)?;
+            let mut all = Vec::new();
+            tt.collect(&t, matches!(t, TT::Static(_)), &mut all, 0);
+            let (_, _, _, (_, d)) = all.into_iter().find(|(m, ..)| m.name == name)?;
+            let d = d?;
+            let text = tt.decl_text(&d);
+            let off = member_offset(&text, name).unwrap_or(0);
+            (d, off)
+        }
+        None => {
+            let d = tt.resolve_name(&Ctx::Src(sf.clone()), name).into_iter().next()?;
+            let text = tt.decl_text(&d);
+            let off = word_offset(&text, name.rsplit('.').next().unwrap_or(name)).unwrap_or(0);
+            (d, off)
+        }
+    };
+    let (file, text): (PathBuf, String) = {
+        let mut c = &d.ctx;
+        while let Ctx::Ns(inner, _) = c {
+            c = inner;
+        }
+        match c {
+            Ctx::Dts(f) => (ix.files[*f as usize].path.clone(), ix.files[*f as usize].text().to_string()),
+            Ctx::Src(s) => (s.path.clone(), s.text.clone()),
+            Ctx::Ns(..) => return None,
+        }
+    };
+    let pos = (d.start as usize + off).min(text.len());
+    let line = text[..pos].matches('\n').count();
+    let col = pos - text[..pos].rfind('\n').map_or(0, |k| k + 1);
+    Some((file, line, col))
+}
+
+/// 語として出てくる最初の位置
+fn word_offset(text: &str, name: &str) -> Option<usize> {
+    let w = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+    text.match_indices(name).map(|(i, _)| i).find(|&i| !text[..i].ends_with(w) && !text[i + name.len()..].starts_with(w))
+}
+
+/// 型の宣言の本体の中のメンバー `name` の宣言の位置（名前の後が ( : ? < ! = ; , のもの。コメントの行は除く）
+fn member_offset(text: &str, name: &str) -> Option<usize> {
+    let body = text.find('{').map_or(0, |k| k + 1);
+    let w = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+    text[body..]
+        .match_indices(name)
+        .map(|(i, _)| body + i)
+        .find(|&i| {
+            let line = &text[text[..i].rfind('\n').map_or(0, |k| k + 1)..i];
+            let t = line.trim_start();
+            !text[..i].ends_with(w) && !text[..i].ends_with('.') && !text[i + name.len()..].starts_with(w) && !t.starts_with('*') && !t.starts_with("//") && !t.starts_with("/*")
+                && text[i + name.len()..].trim_start().starts_with(['(', ':', '?', '<', '!', '=', ';', ','])
+        })
+}
+
+/// メンバーを持っている型の名前とその宣言
+type Owner = (String, Option<DRef>);
 
 /// 型変数の並び（`T, U extends X = Y`）を型引数に結ぶ（足りないものは分からないもの）
 fn bind(tparams: &str, args: &[TT]) -> Env {

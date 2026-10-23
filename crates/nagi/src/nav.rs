@@ -273,7 +273,7 @@ impl Editor {
                     }
                     nagi_workers::index::Ranked::Outside(t) => {
                         // 受け手の型（またはその親）がライブラリ。同じ名前のプロジェクトのメソッドへは跳ばない
-                        if !self.goto_library(&name, word_at) {
+                        if !self.goto_library(&name, word_at) && !self.goto_ts_declaration(&name, word_at) {
                             self.notify.info(format!("定義はプロジェクトの外です: {name}（{t} から先はライブラリ）"));
                         }
                         return;
@@ -302,8 +302,8 @@ impl Editor {
                 i <= best || matches!(k, DefKind::Function | DefKind::Method)
             });
         }
-        // プロジェクトに無ければライブラリ（Java の jar・JDK）
-        if cands.is_empty() && self.goto_library(&name, word_at) {
+        // プロジェクトに無ければライブラリ（Java の jar・JDK、TypeScript の .d.ts）
+        if cands.is_empty() && (self.goto_library(&name, word_at) || self.goto_ts_declaration(&name, word_at)) {
             return;
         }
         match cands.len() {
@@ -348,6 +348,32 @@ impl Editor {
         let fqn = owner.replace(['/', '$'], ".");
         self.notify.info(if o.source { format!("ライブラリ: {fqn}（ソース。読むだけ）") } else { format!("ライブラリ: {fqn}（ソースが無いので class ファイルの宣言から作った骨組み）") });
         true
+    }
+
+    /// TypeScript: 型の宣言（.d.ts・import したプロジェクトの .ts）へ。跳べたら true
+    fn goto_ts_declaration(&mut self, name: &str, word_at: usize) -> bool {
+        match self.ts_declaration(name, word_at) {
+            Some((p, l, c)) => {
+                self.jump_to(&p, l, c);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// TypeScript: `word_at` の名前 `name` の宣言の (ファイル, 行, 列)
+    pub(crate) fn ts_declaration(&self, name: &str, word_at: usize) -> Option<(PathBuf, usize, usize)> {
+        let lang = self.syntax.as_ref().map(|s| s.lang).or_else(|| self.buf.path.as_deref().and_then(nagi_syntax::Lang::detect));
+        if !matches!(lang, Some(nagi_syntax::Lang::TypeScript | nagi_syntax::Lang::Tsx | nagi_syntax::Lang::JavaScript)) {
+            return None;
+        }
+        let ix = self.nav.dts.clone()?;
+        let root = self.nav.index.as_ref().map(|i| i.root.clone())?;
+        let path = std::path::absolute(self.buf.path.as_deref()?).ok()?;
+        let src = self.buf.text();
+        let ls = src[..word_at].rfind('\n').map_or(0, |i| i + 1);
+        let before = src[ls..word_at].ends_with('.').then(|| crate::java_members::with_previous_lines(&src, ls, &src[ls..word_at - 1]));
+        crate::ts_members::definition(&ix, &root, &path, &src, before.as_deref(), name, word_at)
     }
 
     /// Java: `word_at` の名前 `name` のライブラリの (型の内部名, メンバー)
@@ -904,6 +930,75 @@ mod tests {
         let mut v: Vec<_> = miss.into_iter().collect();
         v.sort_by(|a, b| b.1.0.cmp(&a.1.0));
         for (k, (c, ex)) in v.iter().take(40) {
+            println!("{c:5} {k}    {ex}");
+        }
+    }
+
+    /// 実際の TypeScript のプロジェクトで、プロジェクトの索引に無い名前の x.m から、宣言（.d.ts・import したもの）の行へ跳べる割合
+    /// （NAGI_TS_ROOT=… cargo test -p nagi ts_jump_rate -- --ignored --nocapture。読むだけ）
+    #[test]
+    #[ignore]
+    fn ts_jump_rate() {
+        let Some(root) = std::env::var_os("NAGI_TS_ROOT").map(PathBuf::from) else { return };
+        let rx = nagi_workers::index::build(&root, std::sync::Arc::new(|| {}));
+        let idx = loop {
+            if let Ok(nagi_workers::index::Progress::Done(i)) = rx.recv() {
+                break i;
+            }
+        };
+        let mut e = Editor::new(Buffer::from_str(""), None);
+        e.nav.index = Some(*idx);
+        e.nav.dts = Some(std::sync::Arc::new(nagi_workers::dts::DtsIndex::load(&root)));
+        let site = regex::Regex::new(r"(?:[\w)]|^\s*)\.([A-Za-z_]\w*)").unwrap();
+        let (mut ok, mut all) = (0usize, 0usize);
+        let mut miss: std::collections::HashMap<String, (usize, String)> = Default::default();
+        let mut files = Vec::new();
+        let mut stack = vec![root.clone()];
+        while let Some(d) = stack.pop() {
+            for f in std::fs::read_dir(&d).into_iter().flatten().flatten() {
+                let p = f.path();
+                let name = f.file_name().to_string_lossy().into_owned();
+                if p.is_dir() && !name.starts_with('.') && name != "node_modules" && name != "dist" {
+                    stack.push(p);
+                } else if name.ends_with(".ts") && !name.ends_with(".d.ts") && !name.ends_with(".spec.ts") {
+                    files.push(p);
+                }
+            }
+        }
+        files.sort();
+        let t0 = std::time::Instant::now();
+        for p in &files {
+            let Ok(buf) = Buffer::open(p) else { continue };
+            e.buf = buf;
+            e.buf.path = Some(p.clone());
+            for li in 0..e.buf.line_count() {
+                let line = e.buf.line(li).to_string();
+                let t = line.trim_start();
+                if ["import", "//", "*", "/*"].iter().any(|x| t.starts_with(x)) {
+                    continue;
+                }
+                for m in site.captures_iter(&line) {
+                    let g = m.get(1).unwrap();
+                    if ['"', '\'', '`'].iter().any(|q| line[..g.start()].matches(*q).count() % 2 == 1) || !e.nav.index.as_ref().unwrap().lookup(g.as_str()).is_empty() {
+                        continue;
+                    }
+                    all += 1;
+                    let at = e.buf.line_start(li) + g.start();
+                    let hit = e.ts_declaration(g.as_str(), at).is_some_and(|(f, l, _)| std::fs::read_to_string(&f).unwrap_or_default().lines().nth(l).is_some_and(|x| x.contains(g.as_str())));
+                    if hit {
+                        ok += 1;
+                    } else {
+                        let recv = line[..g.start()].trim().rsplit([' ', '(', '!', '=', ',']).next().unwrap_or("").to_string();
+                        let e = miss.entry(format!("{recv}{}", g.as_str())).or_insert((0, line.trim().chars().take(90).collect()));
+                        e.0 += 1;
+                    }
+                }
+            }
+        }
+        println!("{all} 箇所 {:?}: 宣言の行へ {:.1}%", t0.elapsed(), ok as f64 * 100.0 / all.max(1) as f64);
+        let mut v: Vec<_> = miss.into_iter().collect();
+        v.sort_by(|a, b| b.1.0.cmp(&a.1.0));
+        for (k, (c, ex)) in v.iter().take(30) {
             println!("{c:5} {k}    {ex}");
         }
     }
