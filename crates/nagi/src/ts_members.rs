@@ -8,6 +8,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use nagi_syntax::defs::Receiver;
 use nagi_workers::dts::{self, DeclKind, DtsIndex, Member};
@@ -153,13 +154,39 @@ pub struct SrcFile {
     pub path: PathBuf,
     pub text: String,
     scan: dts::SourceScan,
+    /// ラムダ（`(a, b) =>`・`x =>`）の (始まり, 引数の名前)。使うときに 1 回だけ作る
+    lambdas: std::sync::OnceLock<Vec<(usize, Vec<String>)>>,
+}
+
+impl SrcFile {
+    fn new(path: PathBuf, text: String) -> SrcFile {
+        let scan = dts::scan_source(&text);
+        SrcFile { path, text, scan, lambdas: Default::default() }
+    }
+
+    fn lambdas(&self) -> &[(usize, Vec<String>)] {
+        self.lambdas.get_or_init(|| {
+            static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+            let re = RE.get_or_init(|| regex::Regex::new(r"(?:\(([^()]*)\)|\b([\w$]+))\s*(?::\s*[\w<>\[\]|. ]+)?\s*=>").unwrap());
+            re.captures_iter(&self.text)
+                .filter_map(|c| {
+                    let names = match (c.get(1), c.get(2)) {
+                        (Some(list), _) => split_top(list.as_str(), b',').iter().map(|x| x.split(':').next().unwrap_or("").trim().trim_end_matches('?').to_string()).collect(),
+                        (None, Some(n)) => vec![n.as_str().to_string()],
+                        _ => return None,
+                    };
+                    Some((c.get(0)?.start(), names))
+                })
+                .collect()
+        })
+    }
 }
 
 /// 型の名前を引く場所
 #[derive(Clone)]
 pub enum Ctx {
     Dts(u32),
-    Src(Rc<SrcFile>),
+    Src(Arc<SrcFile>),
     /// namespace の中（`NS.` を付けた名前を先に引く）
     Ns(Box<Ctx>, Rc<str>),
 }
@@ -231,30 +258,31 @@ pub struct TsMember {
 pub struct TsTypes<'a> {
     ix: &'a DtsIndex,
     root: PathBuf,
-    files: RefCell<HashMap<PathBuf, Rc<SrcFile>>>,
+    files: RefCell<HashMap<PathBuf, Arc<SrcFile>>>,
     /// 呼び出しに書いた型引数（`get<User>(` の User。名前の `$G番号` で指す）と、それを書いたファイル
-    targs: RefCell<Vec<(String, Rc<SrcFile>)>>,
+    targs: RefCell<Vec<(String, Arc<SrcFile>)>>,
+    /// モジュールが export する名前の結果（(パス, 名前) → 宣言）
+    exports: RefCell<HashMap<(PathBuf, String), Vec<DRef>>>,
 }
 
 type Env = Rc<HashMap<String, TT>>;
 
 impl<'a> TsTypes<'a> {
     pub fn new(ix: &'a DtsIndex, root: &Path) -> Self {
-        TsTypes { ix, root: root.to_path_buf(), files: RefCell::new(HashMap::new()), targs: RefCell::new(Vec::new()) }
+        TsTypes { ix, root: root.to_path_buf(), files: RefCell::new(HashMap::new()), targs: RefCell::new(Vec::new()), exports: RefCell::new(HashMap::new()) }
     }
 
     /// ソースを読む（今のバッファは `text` を渡す）
-    pub fn src(&self, path: &Path, text: Option<&str>) -> Option<Rc<SrcFile>> {
+    pub fn src(&self, path: &Path, text: Option<&str>) -> Option<Arc<SrcFile>> {
         let p = std::path::absolute(path).ok()?;
         if let Some(f) = self.files.borrow().get(&p) {
             return Some(f.clone());
         }
-        let text = match text {
-            Some(t) => t.to_string(),
-            None => std::fs::read_to_string(&p).ok()?,
+        let f = match text {
+            // 今のバッファ（打っている途中）は覚えない
+            Some(t) => Arc::new(SrcFile::new(p.clone(), t.to_string())),
+            None => cached_src(&p)?,
         };
-        let scan = dts::scan_source(&text);
-        let f = Rc::new(SrcFile { path: p.clone(), text, scan });
         self.files.borrow_mut().insert(p, f.clone());
         Some(f)
     }
@@ -276,17 +304,50 @@ impl<'a> TsTypes<'a> {
         }
     }
 
-    /// モジュールのファイル（`.d.ts` は索引の番号、`.ts` はソース）が export している `name`
+    /// モジュールのファイル（索引にある `.d.ts` は索引で、ほかはソースとして読んで）が export している `name`（re-export もたどる）
     fn module_export(&self, target: &Path, name: &str) -> Vec<DRef> {
-        let s = target.to_string_lossy();
-        if s.ends_with(".d.ts") || s.ends_with(".d.mts") {
-            return match self.ix.file_of(target) {
-                Some(f) => self.ix.exported(f, name).into_iter().map(|d| self.dref_dts(d)).collect(),
-                None => Vec::new(),
-            };
+        let key = (target.to_path_buf(), name.to_string());
+        if let Some(v) = self.exports.borrow().get(&key) {
+            return v.clone();
+        }
+        let v = self.module_export_depth(target, name, 0);
+        self.exports.borrow_mut().insert(key, v.clone());
+        v
+    }
+
+    fn module_export_depth(&self, target: &Path, name: &str, depth: usize) -> Vec<DRef> {
+        if depth > 8 {
+            return Vec::new();
+        }
+        if let Some(f) = self.ix.file_of(target) {
+            return self.ix.exported(f, name).into_iter().map(|d| self.dref_dts(d)).collect();
         }
         let Some(sf) = self.src(target, None) else { return Vec::new() };
-        sf.scan.decls.iter().filter(|d| d.0 == name && d.4).map(|d| DRef { ctx: Ctx::Src(sf.clone()), kind: d.1, name: d.0.clone(), start: d.2, end: d.3 }).collect()
+        let mut out: Vec<DRef> = sf.scan.decls.iter().filter(|d| d.0 == name && d.4).map(|d| DRef { ctx: Ctx::Src(sf.clone()), kind: d.1, name: d.0.clone(), start: d.2, end: d.3 }).collect();
+        if !out.is_empty() {
+            return out;
+        }
+        let dir = sf.path.parent().map(Path::to_path_buf).unwrap_or_default();
+        // export { A as B }（中の名前を、宣言か import から）
+        for (_, inner) in sf.scan.exports.iter().filter(|(o, _)| o == name) {
+            out.extend(self.resolve_name(&Ctx::Src(sf.clone()), inner));
+        }
+        for r in &sf.scan.reexports {
+            if !out.is_empty() {
+                break;
+            }
+            let want = match &r.names {
+                None => name.to_string(),
+                Some(list) => match list.iter().find(|(o, _)| o == name) {
+                    Some((_, inner)) => inner.clone(),
+                    None => continue,
+                },
+            };
+            if let Some(t) = self.ix.resolve_import(&self.root, &dir, &r.from) {
+                out = self.module_export_depth(&t, &want, depth + 1);
+            }
+        }
+        out
     }
 
     /// 名前 `name`（`NS.X` も）が `ctx` で指す宣言（そのファイル → import → 大域）
@@ -313,7 +374,7 @@ impl<'a> TsTypes<'a> {
                 let (head, rest) = name.split_once('.').map_or((name, None), |(a, b)| (a, Some(b)));
                 let dir = sf.path.parent().map(Path::to_path_buf).unwrap_or_default();
                 for imp in sf.scan.imports.iter().filter(|i| i.local == head) {
-                    let Some(target) = dts::resolve_spec(&self.root, &dir, &imp.from) else { continue };
+                    let Some(target) = self.ix.resolve_import(&self.root, &dir, &imp.from) else { continue };
                     let want = match (imp.imported.as_str(), rest) {
                         ("*", Some(r)) => r.to_string(),
                         ("*", None) => continue,
@@ -556,7 +617,15 @@ impl<'a> TsTypes<'a> {
         let (mem, ctx, env) = self.find_member(t, m)?;
         let param = split_top(&mem.params, b',').into_iter().nth(k)?;
         let ty = param.split_once(':')?.1;
-        match self.eval(&ctx, &parse_type(ty), &env, 0) {
+        // 関数の型（共用体・交差の中のものも。subscribe の Partial<Observer<T>> | ((value: T) => void) など）
+        fn func(t: TT) -> Option<TT> {
+            match t {
+                TT::Func(..) => Some(t),
+                TT::Union(v) | TT::Inter(v) => v.into_iter().find_map(func),
+                _ => None,
+            }
+        }
+        match func(self.eval(&ctx, &parse_type(ty), &env, 0))? {
             TT::Func(ps, _) => ps.into_iter().nth(p).filter(|t| !matches!(t, TT::Var(_) | TT::Any)),
             _ => None,
         }
@@ -586,7 +655,7 @@ impl<'a> TsTypes<'a> {
     // ---- 式 ----
 
     /// ソース `sf` の位置 `at` での名前 `name` の型（変数・引数・フィールド・import・大域）
-    pub fn name_type(&self, sf: &Rc<SrcFile>, name: &str, at: usize, depth: usize) -> Option<TT> {
+    pub fn name_type(&self, sf: &Arc<SrcFile>, name: &str, at: usize, depth: usize) -> Option<TT> {
         if depth > 6 {
             return None;
         }
@@ -596,7 +665,7 @@ impl<'a> TsTypes<'a> {
             return Some(TT::Decl(vec![DRef { ctx, kind: d.1, name: d.0.clone(), start: d.2, end: d.3 }], Vec::new()));
         }
         // 書いた型・初期値・ラムダの引数・for of（at より前の、いちばん近いもの）
-        let found = [decl_of(&sf.text, name, at), lambda_of(&sf.text, name, at), for_of(&sf.text, name, at)].into_iter().flatten().max_by_key(|x| x.0);
+        let found = [decl_of(&sf.text, name, at), lambda_of(sf, name, at), for_of(&sf.text, name, at)].into_iter().flatten().max_by_key(|x| x.0);
         if let Some((_, t)) = found {
             return match t {
                 Decl::Typed(ty) => Some(self.type_of_text(&ctx, &ty)),
@@ -605,6 +674,11 @@ impl<'a> TsTypes<'a> {
                     let rt = self.expr_type(sf, &recv, pos, depth + 1)?;
                     self.lambda_param(&rt, &m, k, p)
                 }
+                // rxjs の pipe の中の演算子（tap・filter など）: 元の Observable<T> の T
+                Decl::PipeOp(source, pos) => match self.expr_type(sf, &source, pos, depth + 1)? {
+                    TT::Decl(_, args) => args.into_iter().next().filter(|t| !matches!(t, TT::Var(_) | TT::Any)),
+                    _ => None,
+                },
                 Decl::Elem(e, pos) => match self.expr_type(sf, &e, pos, depth + 1)? {
                     TT::Array(el) => Some(*el),
                     _ => None,
@@ -639,7 +713,7 @@ impl<'a> TsTypes<'a> {
     }
 
     /// 式 `e`（ソース `sf` の位置 `at` の）の型
-    pub fn expr_type(&self, sf: &Rc<SrcFile>, e: &str, at: usize, depth: usize) -> Option<TT> {
+    pub fn expr_type(&self, sf: &Arc<SrcFile>, e: &str, at: usize, depth: usize) -> Option<TT> {
         if depth > 6 {
             return None;
         }
@@ -669,13 +743,20 @@ impl<'a> TsTypes<'a> {
             let body = e.trim_end_matches("as const").trim().trim_start_matches('{').trim_end_matches('}');
             return Some(TT::Obj(body.into(), Ctx::Src(sf.clone()), Rc::new(HashMap::new())));
         }
+        // Angular の inject(X)（inject<T>(token: ProviderToken<T>): T）は X の値
+        if let Some(arg) = e.strip_prefix("inject(").and_then(|r| r.strip_suffix(')')) {
+            let arg = split_top(arg, b',').into_iter().next().unwrap_or("").trim().to_string();
+            if let Some(TT::Static(d)) = self.name_type(sf, &arg, at, depth + 1) {
+                return Some(TT::Decl(d, Vec::new()));
+            }
+        }
         let clean = self.encode_targs(sf, &strip_optional(e));
         let r = crate::smart_complete::receiver_before(&clean, clean.len(), &|n: &str| n.strip_prefix("new ").map(|t| format!("new:{}", t.split('<').next().unwrap_or(t))))?;
         self.receiver(sf, &r, at, depth + 1)
     }
 
     /// 呼び出しに書いた型引数 `name<A, B>(` を `name$G番号(` に（番号の先に文字を覚える）
-    fn encode_targs(&self, sf: &Rc<SrcFile>, e: &str) -> String {
+    fn encode_targs(&self, sf: &Arc<SrcFile>, e: &str) -> String {
         let b = e.as_bytes();
         let mut out = String::with_capacity(e.len());
         let mut i = 0;
@@ -714,7 +795,7 @@ impl<'a> TsTypes<'a> {
     }
 
     /// 受け手の連なりの型
-    pub fn receiver(&self, sf: &Rc<SrcFile>, r: &Receiver, at: usize, depth: usize) -> Option<TT> {
+    pub fn receiver(&self, sf: &Arc<SrcFile>, r: &Receiver, at: usize, depth: usize) -> Option<TT> {
         match r {
             Receiver::This => self.name_type(sf, "this", at, depth),
             Receiver::Type(t) => {
@@ -734,14 +815,16 @@ impl<'a> TsTypes<'a> {
             Receiver::Call(inner, n) if matches!(**inner, Receiver::This) => {
                 // 関数の呼び出し: import・大域の関数、inject(T)
                 let n = n.split("$G").next().unwrap_or(n);
-                if n == "inject" {
-                    return None;
-                }
                 let decls = self.resolve_name(&Ctx::Src(sf.clone()), n);
-                let f = decls.iter().find(|d| d.kind == DeclKind::Function)?;
-                let text = self.decl_text(f);
-                let ret = fn_ret(&text)?;
-                Some(self.type_of_text(&f.ctx, &ret))
+                if let Some(f) = decls.iter().find(|d| d.kind == DeclKind::Function) {
+                    let text = self.decl_text(f);
+                    let ret = fn_ret(&text)?;
+                    return Some(self.type_of_text(&inner_ctx(f), &ret));
+                }
+                // 呼べる変数（String(x) の StringConstructor など）
+                let v = self.name_type(sf, n, at, depth + 1)?;
+                let (m, ctx, env) = self.find_member(&v, "()")?;
+                Some(self.eval(&ctx, &parse_type(&m.ty), &env, 0))
             }
             Receiver::Member(inner, n) | Receiver::Call(inner, n) => {
                 let call = matches!(r, Receiver::Call(..));
@@ -760,6 +843,42 @@ pub fn complete(ix: &DtsIndex, root: &Path, path: &Path, src: &str, before: &str
     let start = crate::java_members::chain_start(&clean).unwrap_or(0);
     let Some(t) = tt.expr_type(&sf, &clean[start..], at, 0) else { return Vec::new() };
     tt.members(&t)
+}
+
+/// 読んだソース（補完をまたいで。(更新時刻, 大きさ) が変われば読み直す。合計 8 MB まで、古いものから捨てる）
+struct SrcCache {
+    files: HashMap<PathBuf, ((u64, u64), Arc<SrcFile>, u64)>,
+    bytes: usize,
+    tick: u64,
+}
+
+static SRC_CACHE: Mutex<Option<SrcCache>> = Mutex::new(None);
+
+fn cached_src(p: &Path) -> Option<Arc<SrcFile>> {
+    let st = nagi_workers::index::stamp(p)?;
+    let mut guard = SRC_CACHE.lock().ok()?;
+    let c = guard.get_or_insert_with(|| SrcCache { files: HashMap::new(), bytes: 0, tick: 0 });
+    c.tick += 1;
+    let tick = c.tick;
+    if let Some((s, f, t)) = c.files.get_mut(p) {
+        if *s == st {
+            *t = tick;
+            return Some(f.clone());
+        }
+    }
+    let text = std::fs::read_to_string(p).ok()?;
+    let f = Arc::new(SrcFile::new(p.to_path_buf(), text));
+    if let Some((_, old, _)) = c.files.insert(p.to_path_buf(), (st, f.clone(), tick)) {
+        c.bytes -= old.text.len();
+    }
+    c.bytes += f.text.len();
+    while c.bytes > 8 << 20 && c.files.len() > 1 {
+        let Some(oldest) = c.files.iter().min_by_key(|x| x.1.2).map(|x| x.0.clone()) else { break };
+        if let Some((_, f, _)) = c.files.remove(&oldest) {
+            c.bytes -= f.text.len();
+        }
+    }
+    Some(f)
 }
 
 /// 型変数の並び（`T, U extends X = Y`）を型引数に結ぶ（足りないものは分からないもの）
@@ -866,29 +985,17 @@ enum Decl {
     Lambda(String, String, usize, usize, usize),
     /// for (const x of 式) の要素
     Elem(String, usize),
+    /// `src.pipe(…, tap(x => …))` のラムダの引数（元の式・位置）
+    PipeOp(String, usize),
 }
 
 /// `name` がラムダの引数なら（`recv.m(a, (x, name) => …)`）、at より前の最後のもの
-fn lambda_of(src: &str, name: &str, at: usize) -> Option<(usize, Decl)> {
-    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    let re = RE.get_or_init(|| regex::Regex::new(r"(?:\(([^()]*)\)|\b([\w$]+))\s*(?::\s*[\w<>\[\]|. ]+)?\s*=>").unwrap());
-    let upto = &src[..at.min(src.len())];
-    if !upto.contains(name) {
-        return None;
-    }
-    let mut best = None;
-    for c in re.captures_iter(upto) {
-        let whole = c.get(0)?;
-        let p = match (c.get(1), c.get(2)) {
-            (Some(list), _) => match split_top(list.as_str(), b',').iter().position(|x| x.split(':').next().unwrap_or("").trim().trim_end_matches('?') == name) {
-                Some(p) => p,
-                None => continue,
-            },
-            (None, Some(n)) if n.as_str() == name => 0,
-            _ => continue,
-        };
+fn lambda_of(sf: &SrcFile, name: &str, at: usize) -> Option<(usize, Decl)> {
+    let upto = &sf.text[..at.min(sf.text.len())];
+    for (start, names) in sf.lambdas().iter().rev().filter(|(st, _)| *st < upto.len()) {
+        let Some(p) = names.iter().position(|n| n == name) else { continue };
         // ラムダの前は ( か , で、その呼び出しの ( までの , の数が何番目の引数か
-        let pre = upto[..whole.start()].trim_end();
+        let pre = upto[..*start].trim_end();
         if !pre.ends_with(['(', ',']) {
             continue;
         }
@@ -908,16 +1015,56 @@ fn lambda_of(src: &str, name: &str, at: usize) -> Option<(usize, Decl)> {
             }
         }
         let Some(open) = open else { continue };
-        let call = strip_optional(&pre[..open]);
+        let call = strip_optional(&squash_tail(&pre[..open]));
         let Some(cs) = crate::java_members::chain_start(&call) else { continue };
         let chain = &call[cs..];
-        let Some((recv, m)) = chain.rsplit_once('.') else { continue };
-        if recv.is_empty() {
-            continue;
+        match chain.rsplit_once('.') {
+            Some((recv, m)) if !recv.is_empty() => return Some((*start, Decl::Lambda(recv.to_string(), m.to_string(), k, p, *start))),
+            // 受け手の無い呼び出し（tap(x => …)）が pipe( の中なら、元の Observable の要素
+            _ if PIPE_OPS.contains(&chain) && p == 0 && k == 0 => {
+                let outer = pre[..open].trim_end_matches(chain).trim_end();
+                if let Some(src) = pipe_source(outer) {
+                    return Some((*start, Decl::PipeOp(src, *start)));
+                }
+            }
+            _ => {}
         }
-        best = Some((whole.start(), Decl::Lambda(recv.to_string(), m.to_string(), k, p, whole.start())));
+        // ここで決まらなければ外側のラムダは見ない（いちばん近い束縛がこれ）
+        return None;
     }
-    best
+    None
+}
+
+/// 元の Observable の要素を受け取る rxjs の演算子（前の演算子が型を変えないとみなす）
+const PIPE_OPS: &[&str] = &["tap", "filter", "takeWhile", "skipWhile", "first", "last", "find", "map", "switchMap", "mergeMap", "concatMap", "exhaustMap", "distinctUntilChanged"];
+
+/// `…src.pipe(a, b, ` の src（pipe の ( の中にいるとき）
+fn pipe_source(before: &str) -> Option<String> {
+    // 外側の ( を探す（, を飛ばして）
+    let b = before.as_bytes();
+    let mut depth = 0i32;
+    for i in (0..b.len()).rev() {
+        match b[i] {
+            b')' | b']' | b'}' => depth += 1,
+            b'(' | b'[' | b'{' if depth > 0 => depth -= 1,
+            b'(' => {
+                let call = squash_tail(&before[..i]);
+                let call = strip_optional(&call);
+                let cs = crate::java_members::chain_start(&call)?;
+                let (src, m) = call[cs..].rsplit_once('.')?;
+                return (m == "pipe" && !src.is_empty()).then(|| src.to_string());
+            }
+            b';' | b'{' | b'[' => return None,
+            _ => {}
+        }
+    }
+    None
+}
+
+/// 末尾の数行を、改行と字下げを詰めて 1 行に（`foo()\n    .bar(` → `foo().bar(`）
+fn squash_tail(s: &str) -> String {
+    let start = s.char_indices().rev().filter(|(_, c)| *c == '\n').nth(40).map_or(0, |x| x.0 + 1);
+    s[start..].lines().map(str::trim).collect::<Vec<_>>().concat()
 }
 
 /// `for (const name of 式)`

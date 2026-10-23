@@ -77,6 +77,13 @@ pub struct DtsIndex {
     decls: Vec<Decl>,
     /// パッケージの名前（`rxjs`・`@angular/common/http`）→ 入口のファイル
     modules: HashMap<String, u32>,
+    /// tsconfig の baseUrl と paths（`my-lib` → [`dist/my-lib`]、`@app/*` → [`src/app/*`]）
+    pub base_url: PathBuf,
+    pub paths: Vec<(String, Vec<String>)>,
+    /// パス → ファイルの番号
+    by_path: HashMap<PathBuf, u32>,
+    /// import の解決の結果（(フォルダ, 指定) → パス）
+    resolved: std::sync::Mutex<HashMap<(PathBuf, String), Option<PathBuf>>>,
 }
 
 impl DtsIndex {
@@ -794,6 +801,8 @@ impl DtsIndex {
         }
         ix.decls.sort_by(|a, b| a.name.cmp(&b.name));
         ix.decls.shrink_to_fit();
+        (ix.base_url, ix.paths) = tsconfig_paths(root);
+        ix.by_path = ix.files.iter().enumerate().map(|(i, f)| (f.path.clone(), i as u32)).collect();
         ix
     }
 
@@ -808,30 +817,85 @@ pub struct SourceScan {
     /// (名前, 種類, 範囲の始まり, 終わり, export しているか)
     pub decls: Vec<(String, DeclKind, u32, u32, bool)>,
     pub imports: Vec<Import>,
+    pub reexports: Vec<ReExport>,
+    /// export { A as B }: (外, 中)
+    pub exports: Vec<(String, String)>,
 }
 
 /// ソースの上の段の宣言と import
 pub fn scan_source(text: &str) -> SourceScan {
     let mut sc = Scan::default();
     scan_block(text, 0, text.len(), "", false, &mut sc);
-    SourceScan { decls: sc.decls.into_iter().map(|(n, k, a, b, e, _)| (n, k, a, b, e)).collect(), imports: sc.imports }
+    SourceScan { decls: sc.decls.into_iter().map(|(n, k, a, b, e, _)| (n, k, a, b, e)).collect(), imports: sc.imports, reexports: sc.reexports, exports: sc.exports }
 }
 
-/// 解決: パッケージの名前・相対の指定（`from` のファイル `dir` から）を `.d.ts`・`.ts` のパスに
-pub fn resolve_spec(root: &Path, dir: &Path, spec: &str) -> Option<PathBuf> {
-    if spec.starts_with('.') {
-        let base = dir.join(spec);
-        let s = base.to_string_lossy().to_string();
-        return [format!("{s}.ts"), format!("{s}.tsx"), format!("{s}/index.ts"), format!("{s}.d.ts")].into_iter().map(PathBuf::from).find(|p| p.is_file());
+/// ソースの候補（`x` → x.ts・x.tsx・x.d.ts・x/index.ts・x/index.d.ts。フォルダはその package.json の types・Angular の public-api.ts も）
+fn source_file(base: &Path) -> Option<PathBuf> {
+    let s = base.to_string_lossy().to_string();
+    let found = [format!("{s}.ts"), format!("{s}.tsx"), format!("{s}.d.ts"), format!("{s}/index.ts"), format!("{s}/index.d.ts"), format!("{s}/src/public-api.ts"), format!("{s}/public-api.ts")].into_iter().map(PathBuf::from).find(|p| p.is_file());
+    if found.is_some() || !base.is_dir() {
+        return found.or_else(|| base.is_file().then(|| base.to_path_buf()));
     }
-    resolve_package(&root.join("node_modules"), spec)
+    let t = read_json(&base.join("package.json"))?;
+    let types = t.get("types").or_else(|| t.get("typings")).and_then(|v| v.as_str())?;
+    dts_file(&base.join(types.trim_start_matches("./")))
+}
+
+/// tsconfig の baseUrl と paths
+fn tsconfig_paths(root: &Path) -> (PathBuf, Vec<(String, Vec<String>)>) {
+    let cfg = read_json(&root.join("tsconfig.json"));
+    let opts = cfg.as_ref().and_then(|c| c.get("compilerOptions"));
+    let base = root.join(opts.and_then(|o| o.get("baseUrl")).and_then(|v| v.as_str()).unwrap_or("."));
+    let paths = opts
+        .and_then(|o| o.get("paths"))
+        .and_then(|p| p.as_object())
+        .map(|m| m.iter().map(|(k, v)| (k.clone(), v.as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default())).collect())
+        .unwrap_or_default();
+    (base, paths)
+}
+
+impl DtsIndex {
+    /// import の指定（ファイル `dir` から）を `.ts`・`.d.ts` のパスに: 相対・tsconfig の paths・node_modules
+    pub fn resolve_import(&self, root: &Path, dir: &Path, spec: &str) -> Option<PathBuf> {
+        let key = (if spec.starts_with('.') { dir.to_path_buf() } else { PathBuf::new() }, spec.to_string());
+        if let Some(r) = self.resolved.lock().ok().and_then(|m| m.get(&key).cloned()) {
+            return r;
+        }
+        let r = self.resolve_import_uncached(root, dir, spec);
+        if let Ok(mut m) = self.resolved.lock() {
+            m.insert(key, r.clone());
+        }
+        r
+    }
+
+    fn resolve_import_uncached(&self, root: &Path, dir: &Path, spec: &str) -> Option<PathBuf> {
+        if spec.starts_with('.') {
+            return source_file(&dir.join(spec));
+        }
+        for (pat, targets) in &self.paths {
+            let captured = match pat.strip_suffix('*') {
+                Some(prefix) => match spec.strip_prefix(prefix) {
+                    Some(rest) => rest,
+                    None => continue,
+                },
+                None if pat == spec => "",
+                None => continue,
+            };
+            for t in targets {
+                if let Some(p) = source_file(&self.base_url.join(t.replace('*', captured))) {
+                    return Some(p);
+                }
+            }
+        }
+        resolve_package(&root.join("node_modules"), spec)
+    }
 }
 
 /// 読み込んだファイルの番号（パスから）
 impl DtsIndex {
     pub fn file_of(&self, path: &Path) -> Option<u32> {
         let p = std::path::absolute(path).ok()?;
-        self.files.iter().position(|f| f.path == p).map(|i| i as u32)
+        self.by_path.get(&p).copied()
     }
 }
 
