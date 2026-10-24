@@ -17,6 +17,7 @@ nagi-render.workspace = true
 nagi-vim.workspace = true
 nagi-syntax.workspace = true
 nagi-workers.workspace = true
+nagi-lang.workspace = true
 winit.workspace = true
 unicode-segmentation.workspace = true
 # nagi-core と同じ版（:s :g の大文字小文字の指定のため直接使う）

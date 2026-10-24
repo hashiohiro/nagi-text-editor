@@ -979,7 +979,7 @@ impl DtsIndex {
 fn project_imports(root: &Path) -> (HashMap<String, u32>, HashMap<(String, String), u32>) {
     let mut out: HashMap<String, u32> = HashMap::new();
     let mut names: HashMap<(String, String), u32> = HashMap::new();
-    for e in crate::files::walker(root).build().flatten() {
+    for e in nagi_workers::files::walker(root).build().flatten() {
         let p = e.path();
         let ext = p.extension().and_then(|x| x.to_str()).unwrap_or("");
         if !(ext == "ts" || ext == "tsx") || p.to_string_lossy().ends_with(".d.ts") {
@@ -1001,7 +1001,7 @@ fn project_imports(root: &Path) -> (HashMap<String, u32>, HashMap<(String, Strin
 }
 
 /// 裏で読む
-pub fn load_task(root: PathBuf, waker: crate::Waker) -> nagi_core::task::Task<DtsIndex> {
+pub fn load_task(root: PathBuf, waker: nagi_workers::Waker) -> nagi_core::task::Task<DtsIndex> {
     nagi_core::task::spawn("dts-index", waker, move |ctx| {
         ctx.send(DtsIndex::load(&root));
     })

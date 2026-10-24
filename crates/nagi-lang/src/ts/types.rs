@@ -1,6 +1,6 @@
 //! TypeScript の `.` の後の補完の型（LSP も tsc も使わない）。
 //!
-//! 型の宣言は、`.d.ts` の索引（nagi_workers::dts。組み込みの型と node_modules）と、プロジェクトの `.ts`（その場で読む）から。
+//! 型の宣言は、`.d.ts` の索引（crate::eco::dts。組み込みの型と node_modules）と、プロジェクトの `.ts`（その場で読む）から。
 //! 受け手の式の頭（変数・引数・フィールド・import・大域）の型を、書いた型（`x: T`）か初期値（`const x = 式`）から求め、
 //! メソッドの戻り値・プロパティの型をたどる。型引数は宣言の型変数に置き換え、extends・implements・同じ名前の宣言の合併もたどる。
 
@@ -11,7 +11,11 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use nagi_syntax::defs::Receiver;
-use nagi_workers::dts::{self, DeclKind, DtsIndex, Member};
+use crate::eco::dts::{self, DeclKind, DtsIndex, Member};
+use crate::text::{self, Lexis};
+
+/// TypeScript の字句
+pub const LX: &Lexis = &text::JS_LIKE;
 
 /// 型の文字を読んだもの
 #[derive(Clone, Debug, PartialEq)]
@@ -26,35 +30,6 @@ enum Ast {
     Num,
     Bool,
     Any,
-}
-
-/// 外側の括弧の外で `sep` の位置ごとに分ける（`=>` の > は括弧に数えない）
-fn split_top(s: &str, sep: u8) -> Vec<&str> {
-    let b = s.as_bytes();
-    let mut out = Vec::new();
-    let (mut depth, mut start, mut i) = (0i32, 0, 0);
-    while i < b.len() {
-        match b[i] {
-            b'\'' | b'"' | b'`' => {
-                let q = b[i];
-                i += 1;
-                while i < b.len() && b[i] != q {
-                    i += 1 + usize::from(b[i] == b'\\');
-                }
-            }
-            b'(' | b'[' | b'{' | b'<' => depth += 1,
-            b')' | b']' | b'}' => depth -= 1,
-            b'>' if i > 0 && b[i - 1] != b'=' => depth -= 1,
-            c if c == sep && depth == 0 => {
-                out.push(&s[start..i]);
-                start = i + 1;
-            }
-            _ => {}
-        }
-        i += 1;
-    }
-    out.push(&s[start..]);
-    out
 }
 
 /// 外側の `=>` の位置
@@ -87,21 +62,21 @@ fn parse_type(text: &str) -> Ast {
     if (t.starts_with('(') || t.starts_with('<')) && let Some(k) = top_arrow(t) {
         let params = t[..k].trim();
         let params = params.find('(').map_or("", |o| params[o + 1..].trim_end().trim_end_matches(')'));
-        let ps = split_top(params, b',').into_iter().filter(|p| !p.trim().is_empty()).map(|p| parse_type(p.split_once(':').map_or("any", |x| x.1))).collect();
+        let ps = text::split_top(LX, params, b',', true).into_iter().filter(|p| !p.trim().is_empty()).map(|p| parse_type(p.split_once(':').map_or("any", |x| x.1))).collect();
         return Ast::Func(ps, Box::new(parse_type(&t[k + 2..])));
     }
-    let parts = split_top(t, b'|');
+    let parts = text::split_top(LX, t, b'|', true);
     if parts.len() > 1 {
         return Ast::Union(parts.into_iter().filter(|p| !p.trim().is_empty()).map(parse_type).collect());
     }
-    let parts = split_top(t, b'&');
+    let parts = text::split_top(LX, t, b'&', true);
     if parts.len() > 1 {
         return Ast::Inter(parts.into_iter().map(parse_type).collect());
     }
     // 条件の型 A extends B ? C : D は C（よくある形の近似）
-    if let Some(q) = t.find(" ? ").filter(|_| t.contains(" extends ") && split_top(t, b'?').len() > 1) {
+    if let Some(q) = t.find(" ? ").filter(|_| t.contains(" extends ") && text::split_top(LX, t, b'?', true).len() > 1) {
         let rest = &t[q + 3..];
-        let c = split_top(rest, b':');
+        let c = text::split_top(LX, rest, b':', true);
         return parse_type(c[0]);
     }
     let t = t.strip_prefix("readonly ").unwrap_or(t).trim();
@@ -117,7 +92,7 @@ fn parse_type(text: &str) -> Ast {
     if t.starts_with('[') {
         // 組（タプル）は要素の共用体の配列として
         let inner = t.trim_start_matches('[').trim_end_matches(']');
-        let first = split_top(inner, b',').into_iter().next().unwrap_or("");
+        let first = text::split_top(LX, inner, b',', true).into_iter().next().unwrap_or("");
         let first = first.split_once(':').map_or(first, |x| x.1).trim_start_matches("...");
         return Ast::Array(Box::new(parse_type(first)));
     }
@@ -139,7 +114,7 @@ fn parse_type(text: &str) -> Ast {
     }
     // 名前<型引数>（T[K] などは Any）
     let (head, args) = match t.find('<') {
-        Some(k) if t.ends_with('>') => (&t[..k], split_top(&t[k + 1..t.len() - 1], b',').into_iter().map(parse_type).collect()),
+        Some(k) if t.ends_with('>') => (&t[..k], text::split_top(LX, &t[k + 1..t.len() - 1], b',', true).into_iter().map(parse_type).collect()),
         Some(_) => return Ast::Any,
         None => (t, Vec::new()),
     };
@@ -171,7 +146,7 @@ impl SrcFile {
             re.captures_iter(&self.text)
                 .filter_map(|c| {
                     let names = match (c.get(1), c.get(2)) {
-                        (Some(list), _) => split_top(list.as_str(), b',').iter().map(|x| x.split(':').next().unwrap_or("").trim().trim_end_matches('?').to_string()).collect(),
+                        (Some(list), _) => text::split_top(LX, list.as_str(), b',', true).iter().map(|x| x.split(':').next().unwrap_or("").trim().trim_end_matches('?').to_string()).collect(),
                         (None, Some(n)) => vec![n.as_str().to_string()],
                         _ => return None,
                     };
@@ -508,7 +483,7 @@ impl<'a> TsTypes<'a> {
                         }
                         DeclKind::Enum => {
                             let (_, _, body) = dts::split_decl(&text);
-                            for part in split_top(&strip_comments(body), b',') {
+                            for part in text::split_top(LX, &text::strip_comments(LX, body), b',', true) {
                                 let n = part.split('=').next().unwrap_or("").trim().trim_matches(['\'', '"']);
                                 if !n.is_empty() {
                                     out.push((Member { name: n.to_string(), ty: String::new(), ..Default::default() }, d.ctx.clone(), Rc::new(HashMap::new()), (d.name.clone(), Some(d.clone()))));
@@ -542,7 +517,7 @@ impl<'a> TsTypes<'a> {
                             for m in dts::members(body).into_iter().filter(|m| !m.is_static || statics) {
                                 // コンストラクタの引数のフィールド（private x: T）
                                 if m.name == "constructor" {
-                                    for p in split_top(&m.params, b',') {
+                                    for p in text::split_top(LX, &m.params, b',', true) {
                                         let p = strip_decorators(p.trim());
                                         let words: Vec<&str> = p.split_whitespace().collect();
                                         if words.first().is_some_and(|w| ["private", "public", "protected", "readonly"].contains(w)) {
@@ -606,10 +581,10 @@ impl<'a> TsTypes<'a> {
         let (m, ctx, env, _) = all.into_iter().find(|(m, ..)| m.name == name)?;
         let mut env2 = (*env).clone();
         let given: Vec<TT> = match &targs {
-            Some((text, sf)) => split_top(text, b',').into_iter().map(|a| self.type_of_text(&Ctx::Src(sf.clone()), a)).collect(),
+            Some((text, sf)) => text::split_top(LX, text, b',', true).into_iter().map(|a| self.type_of_text(&Ctx::Src(sf.clone()), a)).collect(),
             None => Vec::new(),
         };
-        for (k, tp) in split_top(&m.type_params, b',').into_iter().enumerate() {
+        for (k, tp) in text::split_top(LX, &m.type_params, b',', true).into_iter().enumerate() {
             let n = tp.split(['=', ' ']).next().unwrap_or("").trim();
             if !n.is_empty() {
                 env2.insert(n.to_string(), given.get(k).cloned().unwrap_or(TT::Var(n.to_string())));
@@ -621,7 +596,7 @@ impl<'a> TsTypes<'a> {
     /// 型 `t` のメソッド `m` の `k` 番目の引数（関数の型）の `p` 番目の引数の型（ラムダの引数）
     fn lambda_param(&self, t: &TT, m: &str, k: usize, p: usize) -> Option<TT> {
         let (mem, ctx, env) = self.find_member(t, m)?;
-        let param = split_top(&mem.params, b',').into_iter().nth(k)?;
+        let param = text::split_top(LX, &mem.params, b',', true).into_iter().nth(k)?;
         let ty = param.split_once(':')?.1;
         // 関数の型（共用体・交差の中のものも。subscribe の Partial<Observer<T>> | ((value: T) => void) など）
         fn func(t: TT) -> Option<TT> {
@@ -751,13 +726,13 @@ impl<'a> TsTypes<'a> {
         }
         // Angular の inject(X)（inject<T>(token: ProviderToken<T>): T）は X の値
         if let Some(arg) = e.strip_prefix("inject(").and_then(|r| r.strip_suffix(')')) {
-            let arg = split_top(arg, b',').into_iter().next().unwrap_or("").trim().to_string();
+            let arg = text::split_top(LX, arg, b',', true).into_iter().next().unwrap_or("").trim().to_string();
             if let Some(TT::Static(d)) = self.name_type(sf, &arg, at, depth + 1) {
                 return Some(TT::Decl(d, Vec::new()));
             }
         }
         let clean = self.encode_targs(sf, &strip_optional(e));
-        let r = crate::smart_complete::receiver_before(&clean, clean.len(), &|n: &str| n.strip_prefix("new ").map(|t| format!("new:{}", t.split('<').next().unwrap_or(t))))?;
+        let r = text::receiver_before(LX, &clean, clean.len(), &|n: &str| n.strip_prefix("new ").map(|t| format!("new:{}", t.split('<').next().unwrap_or(t))))?;
         self.receiver(sf, &r, at, depth + 1)
     }
 
@@ -846,7 +821,7 @@ pub fn complete(ix: &DtsIndex, root: &Path, path: &Path, src: &str, before: &str
     let tt = TsTypes::new(ix, root);
     let Some(sf) = tt.src(path, Some(src)) else { return Vec::new() };
     let clean = strip_optional(before.trim_end_matches(['?', '!']));
-    let start = crate::java_members::chain_start(&clean).unwrap_or(0);
+    let start = text::chain_start(LX, &clean).unwrap_or(0);
     let Some(t) = tt.expr_type(&sf, &clean[start..], at, 0) else { return Vec::new() };
     tt.members(&t)
 }
@@ -894,7 +869,7 @@ pub fn definition(ix: &DtsIndex, root: &Path, path: &Path, src: &str, before: Op
     let (d, off) = match before {
         Some(b) => {
             let clean = strip_optional(b.trim_end_matches(['?', '!']));
-            let start = crate::java_members::chain_start(&clean).unwrap_or(0);
+            let start = text::chain_start(LX, &clean).unwrap_or(0);
             let t = tt.expr_type(&sf, &clean[start..], at, 0)?;
             let mut all = Vec::new();
             tt.collect(&t, matches!(t, TT::Static(_)), &mut all, 0);
@@ -907,7 +882,7 @@ pub fn definition(ix: &DtsIndex, root: &Path, path: &Path, src: &str, before: Op
         None => {
             let d = tt.resolve_name(&Ctx::Src(sf.clone()), name).into_iter().next()?;
             let text = tt.decl_text(&d);
-            let off = word_offset(&text, name.rsplit('.').next().unwrap_or(name)).unwrap_or(0);
+            let off = text::word_offset(LX, &text, name.rsplit('.').next().unwrap_or(name)).unwrap_or(0);
             (d, off)
         }
     };
@@ -926,12 +901,6 @@ pub fn definition(ix: &DtsIndex, root: &Path, path: &Path, src: &str, before: Op
     let line = text[..pos].matches('\n').count();
     let col = pos - text[..pos].rfind('\n').map_or(0, |k| k + 1);
     Some((file, line, col))
-}
-
-/// 語として出てくる最初の位置
-fn word_offset(text: &str, name: &str) -> Option<usize> {
-    let w = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
-    text.match_indices(name).map(|(i, _)| i).find(|&i| !text[..i].ends_with(w) && !text[i + name.len()..].starts_with(w))
 }
 
 /// 型の宣言の本体の中のメンバー `name` の宣言の位置（名前の後が ( : ? < ! = ; , のもの。コメントの行は除く）
@@ -955,7 +924,7 @@ type Owner = (String, Option<DRef>);
 /// 型変数の並び（`T, U extends X = Y`）を型引数に結ぶ（足りないものは分からないもの）
 fn bind(tparams: &str, args: &[TT]) -> Env {
     let mut env = HashMap::new();
-    for (k, tp) in split_top(tparams, b',').into_iter().enumerate() {
+    for (k, tp) in text::split_top(LX, tparams, b',', true).into_iter().enumerate() {
         let n = tp.trim().split([' ', '=']).next().unwrap_or("").trim();
         if n.is_empty() {
             continue;
@@ -963,31 +932,6 @@ fn bind(tparams: &str, args: &[TT]) -> Env {
         env.insert(n.to_string(), args.get(k).cloned().unwrap_or(TT::Var(n.to_string())));
     }
     Rc::new(env)
-}
-
-/// コメントを外す
-fn strip_comments(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let b = s.as_bytes();
-    let mut i = 0;
-    while i < b.len() {
-        if b[i..].starts_with(b"//") {
-            while i < b.len() && b[i] != b'\n' {
-                i += 1;
-            }
-        } else if b[i..].starts_with(b"/*") {
-            i += 2;
-            while i + 1 < b.len() && !(b[i] == b'*' && b[i + 1] == b'/') {
-                i += 1;
-            }
-            i += 2;
-        } else {
-            let c = s[i..].chars().next().unwrap_or(' ');
-            out.push(c);
-            i += c.len_utf8();
-        }
-    }
-    out
 }
 
 /// 頭のデコレーター（`@Optional() @Inject(X) x: T`）を外す
@@ -1087,7 +1031,7 @@ fn lambda_of(sf: &SrcFile, name: &str, at: usize) -> Option<(usize, Decl)> {
         }
         let Some(open) = open else { continue };
         let call = strip_optional(&squash_tail(&pre[..open]));
-        let Some(cs) = crate::java_members::chain_start(&call) else { continue };
+        let Some(cs) = text::chain_start(LX, &call) else { continue };
         let chain = &call[cs..];
         match chain.rsplit_once('.') {
             Some((recv, m)) if !recv.is_empty() => return Some((*start, Decl::Lambda(recv.to_string(), m.to_string(), k, p, *start))),
@@ -1121,7 +1065,7 @@ fn pipe_source(before: &str) -> Option<String> {
             b'(' => {
                 let call = squash_tail(&before[..i]);
                 let call = strip_optional(&call);
-                let cs = crate::java_members::chain_start(&call)?;
+                let cs = text::chain_start(LX, &call)?;
                 let (src, m) = call[cs..].rsplit_once('.')?;
                 return (m == "pipe" && !src.is_empty()).then(|| src.to_string());
             }

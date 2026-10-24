@@ -23,11 +23,11 @@ pub struct IndexState {
     /// 作っている途中 (解析したファイル, 解析が要るファイル)
     pub progress: Option<(usize, usize)>,
     /// ライブラリ（依存の jar・JDK）の型の索引（Java。jvm.rs）。補完と import に使う
-    pub jars: Option<std::sync::Arc<nagi_workers::jvm::JarIndex>>,
-    jars_task: Option<nagi_core::task::Task<Result<nagi_workers::jvm::JarIndex, String>>>,
+    pub jars: Option<std::sync::Arc<nagi_lang::eco::jvm::JarIndex>>,
+    jars_task: Option<nagi_core::task::Task<Result<nagi_lang::eco::jvm::JarIndex, String>>>,
     /// TypeScript の型の宣言（組み込みと node_modules の .d.ts。dts.rs）。補完に使う
-    pub dts: Option<std::sync::Arc<nagi_workers::dts::DtsIndex>>,
-    dts_task: Option<nagi_core::task::Task<nagi_workers::dts::DtsIndex>>,
+    pub dts: Option<std::sync::Arc<nagi_lang::eco::dts::DtsIndex>>,
+    dts_task: Option<nagi_core::task::Task<nagi_lang::eco::dts::DtsIndex>>,
     /// ライブラリのソース・骨組みを書く場所（試験で変える。None なら %LOCALAPPDATA%\nagi\index\sources）
     pub sources_dir: Option<PathBuf>,
     /// 外での変更（git pull など）を探す処理と、最後に始めた時刻
@@ -76,11 +76,11 @@ impl Editor {
             return;
         }
         if let Some(m) = nagi_workers::maven::find_root(root).filter(|m| m.join("pom.xml").is_file()) {
-            self.nav.jars_task = Some(nagi_workers::jvm::load_maven(m, self.waker()));
+            self.nav.jars_task = Some(nagi_lang::eco::jvm::load_maven(m, self.waker()));
         }
         // TypeScript（node_modules に typescript があるプロジェクト）
         if root.join("node_modules").join("typescript").join("lib").is_dir() {
-            self.nav.dts_task = Some(nagi_workers::dts::load_task(root.to_path_buf(), self.waker()));
+            self.nav.dts_task = Some(nagi_lang::eco::dts::load_task(root.to_path_buf(), self.waker()));
         }
     }
 
@@ -342,8 +342,8 @@ impl Editor {
     fn goto_library(&mut self, name: &str, word_at: usize) -> bool {
         let Some(jars) = self.nav.jars.clone().filter(|_| self.is_java()) else { return false };
         let Some((owner, member)) = self.library_target(name, word_at) else { return false };
-        let Some(dir) = self.nav.sources_dir.clone().or_else(crate::java_source::sources_dir) else { return false };
-        let Some(o) = crate::java_source::open(&jars, &owner, member.as_deref(), &dir) else { return false };
+        let Some(dir) = self.nav.sources_dir.clone().or_else(nagi_lang::java::source::sources_dir) else { return false };
+        let Some(o) = nagi_lang::java::source::open(&jars, &owner, member.as_deref(), &dir) else { return false };
         self.jump_to(&o.path, o.line, o.col);
         let fqn = owner.replace(['/', '$'], ".");
         self.notify.info(if o.source { format!("ライブラリ: {fqn}（ソース。読むだけ）") } else { format!("ライブラリ: {fqn}（ソースが無いので class ファイルの宣言から作った骨組み）") });
@@ -372,8 +372,8 @@ impl Editor {
         let path = std::path::absolute(self.buf.path.as_deref()?).ok()?;
         let src = self.buf.text();
         let ls = src[..word_at].rfind('\n').map_or(0, |i| i + 1);
-        let before = src[ls..word_at].ends_with('.').then(|| crate::java_members::with_previous_lines(&src, ls, &src[ls..word_at - 1]));
-        crate::ts_members::definition(&ix, &root, &path, &src, before.as_deref(), name, word_at)
+        let before = src[ls..word_at].ends_with('.').then(|| nagi_lang::text::with_previous_lines(nagi_lang::ts::types::LX, &src, ls, &src[ls..word_at - 1]));
+        nagi_lang::ts::types::definition(&ix, &root, &path, &src, before.as_deref(), name, word_at)
     }
 
     /// Java: `word_at` の名前 `name` のライブラリの (型の内部名, メンバー)
@@ -389,7 +389,7 @@ impl Editor {
 
     /// `library_target` を、ほかのファイル（中身 `src`、根からの相対パス `rel`）で
     pub(crate) fn library_target_in(&self, src: &str, rel: &str, name: &str, word_at: usize) -> Option<(String, Option<String>)> {
-        use crate::java_members::{JType, LibTypes};
+        use nagi_lang::java::types::{JType, LibTypes};
         let jars = self.nav.jars.clone()?;
         let ls = src[..word_at].rfind('\n').map_or(0, |i| i + 1);
         let line = src[ls..].split('\n').next().unwrap_or("").trim_end_matches('\r').to_string();
@@ -400,11 +400,11 @@ impl Editor {
         let inside = nagi_workers::index::enclosing_type(&src, word_at);
         let target = if ws > 0 && line[..ws].ends_with('.') {
             let known = |pkg: &str| idx.is_some_and(|i| i.is_java_package(pkg)) || jars.is_package(pkg);
-            match crate::java_members::receiver_text(&src, &line[..ws - 1], ls, word_at, &known) {
+            match nagi_lang::java::types::receiver_text(&src, &line[..ws - 1], ls, word_at, &known) {
                 // パッケージの中のクラス
                 Err(pkg) => Some(format!("{pkg}/{name}")).filter(|c| jars.class(c).is_some()).map(|c| (c, None)),
                 Ok((expanded, fqn)) => {
-                    let (lib, t) = crate::java_members::lib_receiver(&jars, &mut ranker, &src, &rel, word_at, inside.as_deref(), &expanded, fqn.as_ref());
+                    let (lib, t) = nagi_lang::java::types::lib_receiver(&jars, &mut ranker, &src, &rel, word_at, inside.as_deref(), &expanded, fqn.as_ref());
                     match t {
                         Some(t @ JType::Class(..)) if !matches!(&t, JType::Class(n, _) if n.starts_with('?')) => {
                             let JType::Class(n, _) = &t else { unreachable!() };
@@ -417,11 +417,11 @@ impl Editor {
                         }
                         // プロジェクトの型のライブラリの親のメンバー
                         Some(JType::Class(n, _)) => {
-                            let simple = crate::java_members::project_name(&n).map_or("", |x| x.0).to_string();
+                            let simple = nagi_lang::java::types::project_name(&n).map_or("", |x| x.0).to_string();
                             self.lib_super_member(&mut ranker, &simple, name)
                         }
                         // this.・super. は今の型のライブラリの親
-                        None if crate::java_members::chain_start(&expanded).is_some_and(|i| matches!(&expanded[i..], "this" | "super")) => inside.as_deref().and_then(|t| self.lib_super_member(&mut ranker, t, name)),
+                        None if nagi_lang::text::chain_start(nagi_lang::java::types::LX, &expanded).is_some_and(|i| matches!(&expanded[i..], "this" | "super")) => inside.as_deref().and_then(|t| self.lib_super_member(&mut ranker, t, name)),
                         _ => None,
                     }
                 }
@@ -444,8 +444,8 @@ impl Editor {
     fn lib_super_member(&self, ranker: &mut nagi_workers::index::Ranker, ty: &str, name: &str) -> Option<(String, Option<String>)> {
         let jars = self.nav.jars.as_ref()?;
         ranker.outside_supers(ty).into_iter().find_map(|(sup, lines)| {
-            let l = crate::java_members::LibTypes::from_lines(jars, lines.iter().map(String::as_str));
-            let t = l.parse(&sup).filter(|x| matches!(x, crate::java_members::JType::Class(n, _) if !n.starts_with('?')))?;
+            let l = nagi_lang::java::types::LibTypes::from_lines(jars, lines.iter().map(String::as_str));
+            let t = l.parse(&sup).filter(|x| matches!(x, nagi_lang::java::types::JType::Class(n, _) if !n.starts_with('?')))?;
             l.declaring(&t, name).map(|c| (c, Some(name.to_string())))
         })
     }
@@ -806,7 +806,7 @@ mod tests {
         };
         let mut e = Editor::new(Buffer::from_str(""), None);
         e.nav.index = Some(*idx);
-        let task = nagi_workers::jvm::load_maven(root.clone(), std::sync::Arc::new(|| {}));
+        let task = nagi_lang::eco::jvm::load_maven(root.clone(), std::sync::Arc::new(|| {}));
         let jars = loop {
             if let Ok(r) = task.try_recv() {
                 break r.unwrap();
@@ -815,7 +815,7 @@ mod tests {
         };
         let jars = std::sync::Arc::new(jars);
         e.nav.jars = Some(jars.clone());
-        let dir = crate::java_source::sources_dir().unwrap();
+        let dir = nagi_lang::java::source::sources_dir().unwrap();
         let site = regex::Regex::new(r"(?:[\w)]|^\s*)\.([A-Za-z_]\w*)").unwrap();
         // [宣言の行へ, 型までは分かった（行が違う）, 分からない]
         let mut n = [0usize; 3];
@@ -866,13 +866,13 @@ mod tests {
                     if field.is_some_and(|f| !idx.lookup(&f).is_empty()) {
                         continue;
                     }
-                    let chain = crate::java_members::dotted_chain(&line[..g.start() - 1]).unwrap_or("").replace('.', "/");
+                    let chain = nagi_lang::text::dotted_chain(nagi_lang::java::types::LX, &line[..g.start() - 1]).unwrap_or("").replace('.', "/");
                     if !chain.is_empty() && (idx.is_java_package(&chain) || jars.is_package(&chain)) {
                         continue;
                     }
                     let at = e.buf.line_start(li) + g.start();
                     let target = e.library_target(g.as_str(), at);
-                    let opened = target.as_ref().and_then(|(owner, member)| crate::java_source::open(&jars, owner, member.as_deref(), &dir));
+                    let opened = target.as_ref().and_then(|(owner, member)| nagi_lang::java::source::open(&jars, owner, member.as_deref(), &dir));
                     put(p, li, g.start(), format!("{target:?} {:?}", opened.as_ref().map(|o| (o.path.file_name().map(|x| x.to_string_lossy().into_owned()), o.line, o.col, o.source))));
                     let k = match target {
                         Some(_) => match opened {
@@ -921,7 +921,7 @@ mod tests {
                     ty_all += 1;
                     let at = e.buf.line_start(li) + m.start();
                     let target = e.library_target(m.as_str(), at);
-                    let opened = target.as_ref().and_then(|(owner, member)| crate::java_source::open(&jars, owner, member.as_deref(), &dir));
+                    let opened = target.as_ref().and_then(|(owner, member)| nagi_lang::java::source::open(&jars, owner, member.as_deref(), &dir));
                     put(p, li, m.start(), format!("T {target:?} {:?}", opened.as_ref().map(|o| (o.line, o.col, o.source))));
                     let ok = opened.is_some_and(|o| {
                         std::fs::read_to_string(&o.path).unwrap_or_default().lines().nth(o.line).is_some_and(|l| l.contains(m.as_str()))
@@ -962,7 +962,7 @@ mod tests {
         };
         let mut e = Editor::new(Buffer::from_str(""), None);
         e.nav.index = Some(*idx);
-        e.nav.dts = Some(std::sync::Arc::new(nagi_workers::dts::DtsIndex::load(&root)));
+        e.nav.dts = Some(std::sync::Arc::new(nagi_lang::eco::dts::DtsIndex::load(&root)));
         let site = regex::Regex::new(r"(?:[\w)]|^\s*)\.([A-Za-z_]\w*)").unwrap();
         let (mut ok, mut all) = (0usize, 0usize);
         let mut miss: std::collections::HashMap<String, (usize, String)> = Default::default();
@@ -1058,7 +1058,7 @@ mod tests {
                 break i;
             }
         };
-        let task = nagi_workers::jvm::load_maven(root.clone(), std::sync::Arc::new(|| {}));
+        let task = nagi_lang::eco::jvm::load_maven(root.clone(), std::sync::Arc::new(|| {}));
         let jars = loop {
             if let Ok(r) = task.try_recv() {
                 break std::sync::Arc::new(r.unwrap());

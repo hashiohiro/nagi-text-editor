@@ -9,10 +9,15 @@
 use std::collections::HashMap;
 
 use nagi_syntax::defs::Receiver;
+
+use crate::text::{self, Lexis};
 use nagi_workers::index::Ranker;
-use nagi_workers::jvm::{ACC_PROTECTED, ACC_PUBLIC, ACC_STATIC, Class, JarIndex};
+use crate::eco::jvm::{ACC_PROTECTED, ACC_PUBLIC, ACC_STATIC, Class, JarIndex};
 
 const ACC_ABSTRACT: u16 = 0x0400;
+
+/// Java の字句
+pub const LX: &Lexis = &text::C_LIKE;
 
 /// 型（ジェネリクスの情報から）
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -702,119 +707,18 @@ impl<'a> LibTypes<'a> {
     }
 }
 
-/// `.` の前の式（`s`）の連なりの頭の位置（`a.b(x).c` の a、`new X<..>(..).c` の new）
-pub fn chain_start(s: &str) -> Option<usize> {
-    let word = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
-    let mut end = s.len();
-    loop {
-        let mut i = end;
-        if s[..i].ends_with(')') {
-            let mut depth = 0;
-            let mut open = None;
-            for (k, c) in s[..i].char_indices().rev() {
-                match c {
-                    ')' => depth += 1,
-                    '(' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            open = Some(k);
-                            break;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            i = open?;
-            if s[..i].ends_with('>') {
-                i = generic_open(&s[..i])?;
-            }
-        }
-        let ws = s[..i].char_indices().rev().take_while(|(_, c)| word(*c)).last().map(|x| x.0)?;
-        if ws > 0 && s[..ws].ends_with('.') {
-            end = ws - 1;
-        } else {
-            let t = s[..ws].trim_end();
-            if t.ends_with("new") && !t[..t.len() - 3].ends_with(word) {
-                return Some(t.len() - 3);
-            }
-            return Some(ws);
-        }
-    }
-}
-
-/// 行の中の `.` の前 `before` が `.` で始まる（または空の）とき、前の行からの連なりを足す
-/// （`list.stream()\n    .filter(..)\n    .` → `list.stream().filter(..)`）。`line_start` は行の始まりの位置
-pub fn with_previous_lines(src: &str, line_start: usize, before: &str) -> String {
-    let t = before.trim_start();
-    if !(t.is_empty() || t.starts_with('.')) {
-        return before.to_string();
-    }
-    // 前の 30 行まで（コメントを外して字下げを詰める）
-    let mut lines: Vec<&str> = Vec::new();
-    let mut end = line_start.min(src.len());
-    while end > 0 && lines.len() < 30 {
-        let ls = src[..end - 1].rfind('\n').map_or(0, |i| i + 1);
-        lines.push(strip_line_comment(&src[ls..end - 1]).trim());
-        end = ls;
-    }
-    lines.reverse();
-    let joined = lines.concat();
-    // 文の切れ目（外側の ; { } = , と、閉じていない ( [）の後から
-    let mut depth = 0i32;
-    let mut cut = 0;
-    for (i, c) in joined.char_indices().rev() {
-        match c {
-            ')' | ']' | '}' if depth > 0 || c != '}' => depth += 1,
-            '(' | '[' | '{' if depth > 0 => depth -= 1,
-            '(' | '[' | '{' | '}' | ';' | '=' | ',' if depth == 0 => {
-                cut = i + 1;
-                break;
-            }
-            _ => {}
-        }
-    }
-    format!("{}{t}", joined[cut..].trim())
-}
-
-/// 行の `//` のコメントを外す（文字列の中は見ない）
-fn strip_line_comment(l: &str) -> &str {
-    let (mut quote, mut prev) = (None, ' ');
-    for (i, c) in l.char_indices() {
-        match (quote, c) {
-            (Some(q), _) if c == q && prev != '\\' => quote = None,
-            (Some(_), _) => {}
-            (None, '"' | '\'') => quote = Some(c),
-            (None, '/') if prev == '/' => return &l[..i - 1],
-            _ => {}
-        }
-        prev = c;
-    }
-    l
-}
-
-/// `.` の前の、名前を `.` でつないだだけの連なり（`java.util`・`com.x.Foo`。呼び出しや `x().a` の途中は None）
-pub fn dotted_chain(s: &str) -> Option<&str> {
-    let word = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
-    let i = s.char_indices().rev().take_while(|(_, c)| word(*c) || *c == '.').last()?.0;
-    let i = i + s[i..].find(word)?;
-    if s[..i].ends_with('.') || s.ends_with('.') || s[i..].contains("..") {
-        return None;
-    }
-    Some(&s[i..])
-}
-
 pub use nagi_workers::index::source_package;
 
 /// Java の `.` の前の式（行の中の `before`。`line_start` は行の始まり、`at` は `.` の後の語の位置）を、前の行からの連なりと
 /// 型を書かない変数（var・for の var・ラムダの引数）を展開し、頭のパッケージの名前を外した形に（`java.awt.Color` → `Color` と
 /// (単純名, 完全な名前)）。`known` はパッケージ（内部名）か。パッケージの名前だけなら Err(その内部名 `java/util`)
 pub fn receiver_text(src: &str, before: &str, line_start: usize, at: usize, known: &dyn Fn(&str) -> bool) -> Result<(String, Option<(String, String)>), String> {
-    let before = with_previous_lines(src, line_start, before);
+    let before = text::with_previous_lines(LX, src, line_start, before);
     let mut expanded = expand_head(src, &before, at);
-    let Some(chain) = dotted_chain(&expanded) else { return Ok((expanded, None)) };
+    let Some(chain) = text::dotted_chain(LX, &expanded) else { return Ok((expanded, None)) };
     let off = expanded.len() - chain.len();
     let segs: Vec<String> = chain.split('.').map(String::from).collect();
-    if !(segs[0].starts_with(char::is_lowercase) && known(&segs[0]) && crate::smart_complete::var_type(src, &segs[0], at).is_none()) {
+    if !(segs[0].starts_with(char::is_lowercase) && known(&segs[0]) && crate::project::var_type(src, &segs[0], at).is_none()) {
         return Ok((expanded, None));
     }
     // パッケージとして知っている長さ（大文字で始まるパッケージもある）
@@ -832,7 +736,6 @@ pub fn receiver_text(src: &str, before: &str, line_start: usize, at: usize, know
 /// 途中のプロジェクトの型は `ranker` で引き、結果がプロジェクトの型なら `?Name`。`inside` は今の型
 #[allow(clippy::too_many_arguments)]
 pub fn lib_receiver<'a>(jars: &'a JarIndex, ranker: &mut Ranker, src: &str, rel: &str, at: usize, inside: Option<&str>, expanded: &str, fqn: Option<&(String, String)>) -> (LibTypes<'a>, Option<JType>) {
-    use crate::smart_complete::receiver_before;
     let mut lib = LibTypes::new(jars, src);
     if let Some((simple, full)) = fqn {
         lib.alias(simple, full);
@@ -842,7 +745,7 @@ pub fn lib_receiver<'a>(jars: &'a JarIndex, ranker: &mut Ranker, src: &str, rel:
         Some(t) => Some(format!("={t}")),
         None => var_decl_text(src, n, at).map(|d| format!("={d}")),
     };
-    let r = receiver_before(expanded, expanded.len(), &decl);
+    let r = text::receiver_before(LX, expanded, expanded.len(), &decl);
     let base = |t: &str| t.strip_prefix('=').and_then(|d| lib.parse(d));
     // 途中のプロジェクトの型のメンバーの型は、プロジェクトの索引で（型引数は宣言のファイルの import で読む）
     let mut project = |t: &str, n: &str, call: bool| {
@@ -870,13 +773,13 @@ pub fn lib_receiver<'a>(jars: &'a JarIndex, ranker: &mut Ranker, src: &str, rel:
     };
     // 呼び出しの引数の型（形を選ぶ・型変数を決める）
     let mut args = Vec::new();
-    for part in chain_args(expanded) {
+    for part in text::chain_args(LX, expanded) {
         args.push(part.map(|list| {
             list.iter()
                 .map(|a| {
                     literal_type(a).unwrap_or_else(|| {
                         let a = expand_head(src, a, at);
-                        let r = receiver_before(&a, a.len(), &decl).filter(|_| chain_start(&a) == Some(0))?;
+                        let r = text::receiver_before(LX, &a, a.len(), &decl).filter(|_| text::chain_start(LX, &a) == Some(0))?;
                         lib.receiver(&r, &base, &mut project, &[])
                     })
                 })
@@ -885,75 +788,6 @@ pub fn lib_receiver<'a>(jars: &'a JarIndex, ranker: &mut Ranker, src: &str, rel:
     }
     let t = r.as_ref().and_then(|r| lib.receiver(r, &base, &mut project, &args));
     (lib, t)
-}
-
-/// 連なり（`.` の前の式）の各部分の呼び出しの引数の文字（呼び出しでなければ None）。頭から順に
-pub fn chain_args(s: &str) -> Vec<Option<Vec<String>>> {
-    let word = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
-    let mut out = Vec::new();
-    let mut end = s.len();
-    loop {
-        let mut i = end;
-        let mut args = None;
-        if s[..i].ends_with(')') {
-            let mut depth = 0;
-            let mut open = None;
-            for (k, c) in s[..i].char_indices().rev() {
-                match c {
-                    ')' => depth += 1,
-                    '(' => {
-                        depth -= 1;
-                        if depth == 0 {
-                            open = Some(k);
-                            break;
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            let Some(o) = open else { break };
-            args = Some(split_args(&s[o + 1..i - 1]));
-            i = o;
-            if s[..i].ends_with('>') {
-                let Some(g) = generic_open(&s[..i]) else { break };
-                i = g;
-            }
-        }
-        let Some(ws) = s[..i].char_indices().rev().take_while(|(_, c)| word(*c)).last().map(|x| x.0) else { break };
-        out.push(args);
-        if ws > 0 && s[..ws].ends_with('.') {
-            end = ws - 1;
-        } else {
-            break;
-        }
-    }
-    out.reverse();
-    out
-}
-
-/// 引数の並びを外側の , で分ける（括弧・文字列の中は見ない）
-fn split_args(a: &str) -> Vec<String> {
-    let (mut out, mut depth, mut start, mut quote) = (Vec::new(), 0i32, 0, None);
-    let mut prev = ' ';
-    for (i, c) in a.char_indices() {
-        match (quote, c) {
-            (Some(q), _) if c == q && prev != '\\' => quote = None,
-            (Some(_), _) => {}
-            (None, '"' | '\'') => quote = Some(c),
-            (None, '(' | '[' | '{') => depth += 1,
-            (None, ')' | ']' | '}') => depth -= 1,
-            (None, ',') if depth == 0 => {
-                out.push(a[start..i].trim().to_string());
-                start = i + 1;
-            }
-            _ => {}
-        }
-        prev = c;
-    }
-    if !a.trim().is_empty() {
-        out.push(a[start..].trim().to_string());
-    }
-    out
 }
 
 /// 字句だけで分かる引数の型（文字列・数・文字・真偽の値）。Some(None) は null などの分からないもの
@@ -976,25 +810,6 @@ pub fn literal_type(a: &str) -> Option<Option<JType>> {
     }))
 }
 
-/// `...Foo<A<B>>` の終わりの `>` に対応する `<` の位置
-pub fn generic_open(s: &str) -> Option<usize> {
-    let mut depth = 0;
-    for (k, c) in s.char_indices().rev() {
-        match c {
-            '>' => depth += 1,
-            '<' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(k);
-                }
-            }
-            ';' | '{' | '}' | '=' => return None,
-            _ => {}
-        }
-    }
-    None
-}
-
 /// 改行と字下げをまたいだ連なり（`foo\n    .bar()`）を 1 行に
 fn squash(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -1012,7 +827,7 @@ fn squash(s: &str) -> String {
 pub fn expand_head(src: &str, before: &str, at: usize) -> String {
     let mut cur = before.to_string();
     for _ in 0..5 {
-        let Some(start) = chain_start(&cur) else { break };
+        let Some(start) = text::chain_start(LX, &cur) else { break };
         let head: String = cur[start..].chars().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$').collect();
         let after = &cur[start + head.len()..];
         if head.is_empty() || head == "new" || after.starts_with('(') || head.starts_with(char::is_uppercase) || var_decl_text(src, &head, at).is_some() {
@@ -1069,7 +884,7 @@ fn untyped_init(src: &str, name: &str, at: usize) -> Option<String> {
     for c in var_re.captures_iter(upto).filter(|c| &c[1] == name) {
         let e = squash(c[2].trim());
         let e = ternary_branch(&e).to_string();
-        if chain_start(&e) == Some(0) {
+        if text::chain_start(LX, &e) == Some(0) {
             consider(c.get(0)?.start(), e);
         }
     }
@@ -1087,7 +902,7 @@ fn untyped_init(src: &str, name: &str, at: usize) -> Option<String> {
             depth == 0
         })?;
         let e = squash(rest[..close.0].trim());
-        if chain_start(&e) == Some(0) {
+        if text::chain_start(LX, &e) == Some(0) {
             consider(m.start(), format!("{e}.iterator().next()"));
         }
     }
@@ -1123,7 +938,7 @@ fn untyped_init(src: &str, name: &str, at: usize) -> Option<String> {
         }
         let Some(open) = open else { continue };
         let call = squash(&pre[..open]);
-        let Some(cs) = chain_start(&call) else { continue };
+        let Some(cs) = text::chain_start(LX, &call) else { continue };
         let chain = &call[cs..];
         let Some((recv, m)) = chain.rsplit_once('.') else { continue };
         if recv.is_empty() || !m.chars().all(|c| c.is_alphanumeric() || c == '_') {
@@ -1233,8 +1048,6 @@ mod tests {
 
     #[test]
     fn heads() {
-        assert_eq!(chain_start("  x = a.b(c(d)).e"), Some(6));
-        assert_eq!(chain_start("  y = new ArrayList<String>(n).stream()"), Some(6));
         let src = "class A {\n  void f(List<String> names) {\n    var s = names.stream()\n        .filter(x -> true);\n    for (var n : names) {}\n    names.forEach(v -> v);\n    m.put(k, (a, b) -> a);\n  }\n}\n";
         let end = src.len() - 8;
         assert_eq!(expand_head(src, "s", end), "names.stream().filter(x -> true)");
@@ -1246,19 +1059,7 @@ mod tests {
     }
 
     #[test]
-    fn previous_lines() {
-        let src = "  var n = list.stream() // c\n      .filter(x -> {\n        return true;\n      })\n      .map(f)\n      .";
-        let ls = src.rfind('\n').unwrap() + 1;
-        assert_eq!(with_previous_lines(src, ls, "      "), "list.stream().filter(x -> {return true;}).map(f)");
-        assert_eq!(with_previous_lines(src, ls, "  a.b"), "  a.b", "行の中で足りていればそのまま");
-    }
-
-    #[test]
     fn chains() {
-        assert_eq!(dotted_chain("  @io.swagger.v3"), Some("io.swagger.v3"));
-        assert_eq!(dotted_chain("List<com.x"), Some("com.x"));
-        assert_eq!(dotted_chain("x = java.awt.Color"), Some("java.awt.Color"));
-        assert_eq!(dotted_chain("foo().bar"), None);
         assert_eq!(source_package("app/src/main/java/com/x/Foo.java"), Some("com/x".into()));
         assert_eq!(source_package("java/Foo.java"), Some("".into()));
         assert_eq!(source_package("web/Foo.java"), None);

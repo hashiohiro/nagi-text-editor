@@ -1070,7 +1070,7 @@ mod tests {
         let Some(root) = std::env::var_os("NAGI_MAVEN_ROOT") else {
             return;
         };
-        let before = crate::jvm::tests::private_peak();
+        let before = crate::sys::private_peak();
         for _ in 0..2 {
             let t = std::time::Instant::now();
             let r = resolve(Path::new(&root), 17).unwrap();
@@ -1083,7 +1083,7 @@ mod tests {
                 r.missing
             );
         }
-        let after = crate::jvm::tests::private_peak();
+        let after = crate::sys::private_peak();
         println!(
             "private {} -> {} MB, peak {} -> {} MB",
             before.0 >> 20,

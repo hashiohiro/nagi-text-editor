@@ -3,7 +3,6 @@
 pub mod config;
 pub mod db;
 pub mod drivers;
-pub mod dts;
 pub mod exec;
 pub mod files;
 pub mod git;
@@ -12,7 +11,6 @@ pub mod grep;
 pub mod index;
 pub mod jdk;
 pub mod jobs;
-pub mod jvm;
 pub mod maven;
 pub mod maven_deps;
 pub mod project;

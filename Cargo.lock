@@ -1102,6 +1102,7 @@ name = "nagi"
 version = "0.6.0"
 dependencies = [
  "nagi-core",
+ "nagi-lang",
  "nagi-render",
  "nagi-syntax",
  "nagi-text",
@@ -1125,6 +1126,18 @@ dependencies = [
  "unicode-segmentation",
  "unicode-width",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "nagi-lang"
+version = "0.6.0"
+dependencies = [
+ "miniz_oxide",
+ "nagi-core",
+ "nagi-syntax",
+ "nagi-workers",
+ "regex",
+ "serde_json",
 ]
 
 [[package]]

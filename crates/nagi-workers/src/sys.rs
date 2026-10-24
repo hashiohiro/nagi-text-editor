@@ -25,6 +25,33 @@ pub fn version_key(v: &str) -> Vec<u32> {
     v.split(|c: char| !c.is_ascii_digit()).filter_map(|p| p.parse().ok()).collect()
 }
 
+/// このプロセスの private のバイト数（今と、これまでの最大。メモリを測る試験に）
+pub fn private_peak() -> (usize, usize) {
+    #[repr(C)]
+    #[derive(Default)]
+    struct Counters {
+        cb: u32,
+        page_faults: u32,
+        peak_ws: usize,
+        ws: usize,
+        qpp: usize,
+        qp: usize,
+        qnpp: usize,
+        qnp: usize,
+        pagefile: usize,
+        peak_pagefile: usize,
+        private: usize,
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn K32GetProcessMemoryInfo(h: isize, c: *mut Counters, cb: u32) -> i32;
+        fn GetCurrentProcess() -> isize;
+    }
+    let mut c = Counters { cb: std::mem::size_of::<Counters>() as u32, ..Default::default() };
+    unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut c, c.cb) };
+    (c.private, c.peak_pagefile)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -17,6 +17,7 @@ nagi-platform = { path = "crates/nagi-platform" }
 nagi-vim = { path = "crates/nagi-vim" }
 nagi-syntax = { path = "crates/nagi-syntax" }
 nagi-workers = { path = "crates/nagi-workers" }
+nagi-lang = { path = "crates/nagi-lang" }
 winit = "=0.30.13"
 windows = "0.62.2"
 windows-sys = "0.61.2"

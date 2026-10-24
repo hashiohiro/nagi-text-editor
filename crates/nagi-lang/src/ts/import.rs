@@ -4,11 +4,11 @@
 //! 足し方: 同じモジュールからの `import { … } from 'm'` があれば `{ }` の中の最後に足し、無ければ import の並びの後に
 //! `import { X } from 'm';` の行を足す（import が無ければ先頭に、空行を挟んで）。引用符はファイルの import に合わせる。
 
-pub use crate::java_import::Plan;
+pub use crate::java::import::Plan;
 
 /// `src` で名前 `name` をモジュール `spec` から使うための import の足し方
 pub fn plan(src: &str, name: &str, spec: &str) -> Plan {
-    let scan = nagi_workers::dts::scan_source(src);
+    let scan = crate::eco::dts::scan_source(src);
     if scan.imports.iter().any(|i| i.local == name) || scan.decls.iter().any(|d| d.0 == name) {
         return Plan::None;
     }
@@ -73,7 +73,7 @@ pub fn plan(src: &str, name: &str, spec: &str) -> Plan {
 /// 定義のあるファイル。ワークスペースの別のライブラリは tsconfig の別名、ほかは相対の指定）
 /// `imported` はファイルの import の指定（先に読んでおく）。
 /// `minus` の (名前, モジュール) は回数から 1 つ引く（測るとき、測っている import 自身を数えない）
-pub fn candidates_with(ix: &nagi_workers::dts::DtsIndex, idx: Option<&nagi_workers::index::Index>, here: &std::path::Path, imported: &[String], name: &str, minus: Option<(&str, &str)>) -> Vec<String> {
+pub fn candidates_with(ix: &crate::eco::dts::DtsIndex, idx: Option<&nagi_workers::index::Index>, here: &std::path::Path, imported: &[String], name: &str, minus: Option<(&str, &str)>) -> Vec<String> {
     // 依存のパッケージ: プロジェクトでよく import しているものから（同じ名前のアイコンなどより、使っているパッケージ）
     let mut pkgs: Vec<&str> = ix.modules_exporting(name);
     let sub = |n: &str, m: &str| u32::from(minus.is_some_and(|(a, b)| (a.is_empty() || a == n) && b == m));
@@ -163,7 +163,7 @@ mod tests {
                 break i;
             }
         };
-        let ix = nagi_workers::dts::DtsIndex::load(&root);
+        let ix = crate::eco::dts::DtsIndex::load(&root);
         let mut files = Vec::new();
         let mut stack = vec![root.clone()];
         while let Some(d) = stack.pop() {
@@ -185,7 +185,7 @@ mod tests {
         let t0 = std::time::Instant::now();
         for p in &files {
             let Ok(src) = std::fs::read_to_string(p) else { continue };
-            let imports = nagi_workers::dts::scan_source(&src).imports;
+            let imports = crate::eco::dts::scan_source(&src).imports;
             let dir = p.parent().unwrap().to_path_buf();
             for (k, imp) in imports.iter().enumerate() {
                 if imp.imported == "*" || imp.imported == "default" {

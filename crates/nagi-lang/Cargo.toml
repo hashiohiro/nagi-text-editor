@@ -1,0 +1,14 @@
+[package]
+name = "nagi-lang"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+# 言語の意味（補完・定義へ・参照・import）。画面を持たない。手順は共通で、言語ごとに違う部分だけを差し込む（docs/adr/0017）
+[dependencies]
+nagi-core.workspace = true
+nagi-syntax.workspace = true
+nagi-workers.workspace = true
+regex = "1.13.1"
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
+miniz_oxide = "0.9.1"

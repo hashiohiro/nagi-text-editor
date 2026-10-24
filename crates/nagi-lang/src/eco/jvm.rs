@@ -661,8 +661,8 @@ pub fn ct_sym_latest(ct: &Path) -> Option<char> {
 }
 
 /// プロジェクトの JDK（設定の JDK・使える JAVA_HOME・見つけた JDK）
-fn jdk_home(cfg: &crate::config::Config) -> Option<PathBuf> {
-    crate::jobs::java_home_fix(cfg).or_else(|| cfg.var("JAVA_HOME").map(PathBuf::from)).filter(|j| j.join("lib").join("ct.sym").is_file())
+fn jdk_home(cfg: &nagi_workers::config::Config) -> Option<PathBuf> {
+    nagi_workers::jobs::java_home_fix(cfg).or_else(|| cfg.var("JAVA_HOME").map(PathBuf::from)).filter(|j| j.join("lib").join("ct.sym").is_file())
 }
 
 /// Maven の出力（`;` 区切り。モジュールごとに書き足すと間の `;` が無い）を jar の並びにする
@@ -707,15 +707,15 @@ fn pom_stamp(root: &Path) -> String {
 }
 
 /// プロファイルの jdk の条件に使う版（プロジェクトの JDK。わからなければ 17）
-fn java_major(cfg: &crate::config::Config) -> u32 {
-    crate::jobs::java_home_fix(cfg).or_else(|| cfg.var("JAVA_HOME").map(PathBuf::from)).and_then(|j| crate::jdk::read(&j)).and_then(|j| j.major()).unwrap_or(17)
+fn java_major(cfg: &nagi_workers::config::Config) -> u32 {
+    nagi_workers::jobs::java_home_fix(cfg).or_else(|| cfg.var("JAVA_HOME").map(PathBuf::from)).and_then(|j| nagi_workers::jdk::read(&j)).and_then(|j| j.major()).unwrap_or(17)
 }
 
 /// Maven のプロジェクトの依存の jar（コンパイルとテストに使うもの）。まず pom.xml と手元のリポジトリから求め
 /// （mvn も JDK も起動しない。モジュールどうしの分は除く）、手元に無いものがあれば mvn に任せる（ダウンロードもする）
 pub fn maven_classpath(root: &Path) -> Result<Vec<PathBuf>, String> {
-    let java = java_major(&crate::config::for_path(root));
-    match crate::maven_deps::resolve(root, java) {
+    let java = java_major(&nagi_workers::config::for_path(root));
+    match nagi_workers::maven_deps::resolve(root, java) {
         Ok(r) if r.missing.is_empty() => Ok(r.jars),
         Ok(r) => {
             nagi_core::log::info(&format!("手元のリポジトリに無い依存が {} 個（{} など）。mvn で求めます", r.missing.len(), r.missing[0]));
@@ -741,9 +741,9 @@ fn mvn_classpath(root: &Path) -> Result<Vec<PathBuf>, String> {
             }
         }
     }
-    let mut ex = crate::exec::Exec::in_dir(root).env("MAVEN_OPTS", "-Xmx64m -XX:+UseSerialGC -XX:TieredStopAtLevel=1 -Xss512k -XX:ReservedCodeCacheSize=16m");
+    let mut ex = nagi_workers::exec::Exec::in_dir(root).env("MAVEN_OPTS", "-Xmx64m -XX:+UseSerialGC -XX:TieredStopAtLevel=1 -Xss512k -XX:ReservedCodeCacheSize=16m");
     ex.fix_jdk();
-    let mvn = crate::maven::bin(ex.config(), ex.config().var("PATH")).map(|b| b.join("mvn.cmd")).ok_or("Maven が見つかりません")?;
+    let mvn = nagi_workers::maven::bin(ex.config(), ex.config().var("PATH")).map(|b| b.join("mvn.cmd")).ok_or("Maven が見つかりません")?;
     // 出力の「Dependencies classpath:」の次の行がモジュールごとのクラスパス（-Dmdep.outputFile と appendOutput では
     // モジュールの分が欠けた）。まず手元の .m2 だけで（-o）、足りなければダウンロードも許す
     let mut why = String::new();
@@ -753,7 +753,7 @@ fn mvn_classpath(root: &Path) -> Result<Vec<PathBuf>, String> {
         // cmd /C は行が " で始まると最初と最後の " を外すので、行全体をもう一度囲む
         match ex.shell(&format!("\"{line}\"")).output() {
             Ok(o) => {
-                let log = crate::jobs::decode_line(&o.stdout);
+                let log = nagi_workers::jobs::decode_line(&o.stdout);
                 let mut lines = log.lines();
                 while let Some(l) = lines.next() {
                     if l.contains("Dependencies classpath:") {
@@ -780,11 +780,11 @@ fn mvn_classpath(root: &Path) -> Result<Vec<PathBuf>, String> {
 }
 
 /// Maven のプロジェクトの型の索引（依存の jar と JDK）を裏で用意する。終わったら 1 度だけ送る（Err は訳）
-pub fn load_maven(root: PathBuf, waker: crate::Waker) -> nagi_core::task::Task<Result<JarIndex, String>> {
+pub fn load_maven(root: PathBuf, waker: nagi_workers::Waker) -> nagi_core::task::Task<Result<JarIndex, String>> {
     nagi_core::task::spawn("jar-index", waker, move |ctx| {
         let r = (|| {
             let jars = maven_classpath(&root)?;
-            let cfg = crate::config::for_path(&root);
+            let cfg = nagi_workers::config::for_path(&root);
             let ct = jdk_home(&cfg).map(|j| j.join("lib").join("ct.sym"));
             let rel = ct.as_deref().and_then(ct_sym_latest);
             let all = |_: &str| true;
@@ -812,43 +812,16 @@ fn partition(n: usize, pred: impl Fn(usize) -> bool) -> usize {
 }
 
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use super::*;
 
     /// 試験に使う JDK（JAVA_HOME か、見つけた JDK）
     fn jdk_home() -> Option<std::path::PathBuf> {
-        std::env::var_os("JAVA_HOME").map(Into::into).or_else(|| crate::jdk::installed().into_iter().next().map(|j| j.path))
-    }
-
-    /// このプロセスの private のバイト数（今と、これまでの最大）
-    pub(crate) fn private_peak() -> (usize, usize) {
-        #[repr(C)]
-        #[derive(Default)]
-        struct Counters {
-            cb: u32,
-            page_faults: u32,
-            peak_ws: usize,
-            ws: usize,
-            qpp: usize,
-            qp: usize,
-            qnpp: usize,
-            qnp: usize,
-            pagefile: usize,
-            peak_pagefile: usize,
-            private: usize,
-        }
-        #[link(name = "kernel32")]
-        unsafe extern "system" {
-            fn K32GetProcessMemoryInfo(h: isize, c: *mut Counters, cb: u32) -> i32;
-            fn GetCurrentProcess() -> isize;
-        }
-        let mut c = Counters { cb: std::mem::size_of::<Counters>() as u32, ..Default::default() };
-        unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut c, c.cb) };
-        (c.private, c.peak_pagefile)
+        std::env::var_os("JAVA_HOME").map(Into::into).or_else(|| nagi_workers::jdk::installed().into_iter().next().map(|j| j.path))
     }
 
     fn private_bytes() -> usize {
-        private_peak().0
+        nagi_workers::sys::private_peak().0
     }
 
     /// 実際の Maven のプロジェクトで依存を求める（NAGI_MAVEN_ROOT に pom.xml のあるフォルダ。
@@ -928,7 +901,7 @@ pub(crate) mod tests {
         let ix = JarIndex::load(&sources, &dir);
         let load = t0.elapsed();
         let m1 = private_bytes();
-        let peak = private_peak().1;
+        let peak = nagi_workers::sys::private_peak().1;
         let disk: u64 = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.metadata().map_or(0, |m| m.len())).sum();
         // 引く速さ: import の候補（単純名）と、クラスを取り出す
         let names = ["List", "String", "Map", "Optional", "Autowired", "Service", "Logger", "ResponseEntity", "Transactional", "LocalDate"];

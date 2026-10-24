@@ -7,9 +7,9 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use nagi_workers::jvm::{ACC_PROTECTED, ACC_PUBLIC, ACC_STATIC, Class, JarIndex};
+use crate::eco::jvm::{ACC_PROTECTED, ACC_PUBLIC, ACC_STATIC, Class, JarIndex};
 
-use crate::java_members::JType;
+use crate::java::types::JType;
 
 const ACC_FINAL: u16 = 0x0010;
 const ACC_VARARGS: u16 = 0x0080;
@@ -29,7 +29,7 @@ pub struct Opened {
 
 /// 書く場所（`%LOCALAPPDATA%\nagi\index\sources`）
 pub fn sources_dir() -> Option<PathBuf> {
-    Some(nagi_workers::jvm::jars_dir()?.parent()?.join("sources"))
+    Some(crate::eco::jvm::jars_dir()?.parent()?.join("sources"))
 }
 
 /// 内部名 `owner`（`java/util/Map$Entry`）の定義（`member` があればそのメンバー）を `dir` の下に書いて、その位置
@@ -55,7 +55,7 @@ pub fn open(jars: &JarIndex, owner: &str, member: Option<&str>, dir: &Path) -> O
         if file.is_file() {
             return std::fs::read_to_string(&file).ok().map(|t| (file, t));
         }
-        let (_, bytes) = nagi_workers::jvm::zip_find(z, |n| n == want || n.ends_with(&format!("/{want}")))?;
+        let (_, bytes) = crate::eco::jvm::zip_find(z, |n| n == want || n.ends_with(&format!("/{want}")))?;
         let text = String::from_utf8_lossy(&bytes).replace("\r\n", "\n");
         write_read_only(&file, &text)?;
         Some((file, text))
@@ -262,7 +262,7 @@ fn class_text(jars: &JarIndex, c: &Class, pkg: &str, imports: &mut BTreeSet<Stri
     } else {
         "class"
     };
-    let mut sig = crate::java_members::SigReader::new(c.signature.as_deref().unwrap_or(""));
+    let mut sig = crate::java::types::SigReader::new(c.signature.as_deref().unwrap_or(""));
     let params = sig.type_params_bounds();
     let mut supers: Vec<JType> = Vec::new();
     if c.signature.is_some() {
@@ -296,14 +296,14 @@ fn class_text(jars: &JarIndex, c: &Class, pkg: &str, imports: &mut BTreeSet<Stri
         out.push_str(&format!("{inner}{};\n\n", constants.join(", ")));
     }
     for f in c.fields.iter().filter(|f| f.access & ACC_ENUM == 0) {
-        let t = crate::java_members::SigReader::new(f.signature.as_deref().unwrap_or(&f.desc)).next_type().unwrap_or(JType::Other);
+        let t = crate::java::types::SigReader::new(f.signature.as_deref().unwrap_or(&f.desc)).next_type().unwrap_or(JType::Other);
         out.push_str(&format!("{inner}{}{} {};\n", modifiers(f.access, false), render(&t, pkg, imports), f.name));
     }
     if !c.fields.is_empty() {
         out.push('\n');
     }
     for m in c.methods.iter().filter(|m| m.name != "<clinit>") {
-        let mut s = crate::java_members::SigReader::new(m.signature.as_deref().unwrap_or(&m.desc));
+        let mut s = crate::java::types::SigReader::new(m.signature.as_deref().unwrap_or(&m.desc));
         let tparams = s.type_params_bounds();
         let (ret, args) = s.method();
         let n = args.len();
@@ -337,12 +337,12 @@ mod tests {
     /// JDK の ct.sym と src.zip から（JAVA_HOME が無ければ何もしない）
     #[test]
     fn jdk_source_and_skeleton() {
-        use nagi_workers::jvm::JarSource;
+        use crate::eco::jvm::JarSource;
         let Some(home) = std::env::var_os("JAVA_HOME").map(PathBuf::from).filter(|h| h.join("lib").join("ct.sym").is_file()) else { return };
         let ct = home.join("lib").join("ct.sym");
         let dir = std::env::temp_dir().join(format!("nagi-jsrc-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
-        let rel = nagi_workers::jvm::ct_sym_latest(&ct).unwrap();
+        let rel = crate::eco::jvm::ct_sym_latest(&ct).unwrap();
         let keep = |n: &str| n.split('/').next().is_some_and(|d| d.contains(rel)) && (n.contains("/java/util/") || n.contains("/java/lang/"));
         let ix = JarIndex::load(&[JarSource { path: &ct, keep: &keep, tag: "s" }], &dir.join("jars"));
         if home.join("lib").join("src.zip").is_file() {
