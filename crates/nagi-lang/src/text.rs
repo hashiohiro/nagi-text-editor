@@ -147,6 +147,40 @@ pub fn strip_comments(lx: &Lexis, s: &str) -> String {
     out
 }
 
+/// コメントと文字列の中を空白にする（引用符と改行は残し、長さ・位置は変えない）。ファイルの中の語を集める前に
+pub fn blank_literals(lx: &Lexis, s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = b.to_vec();
+    let blank = |out: &mut Vec<u8>, from: usize, to: usize| {
+        for c in &mut out[from..to] {
+            if *c != b'\n' {
+                *c = b' ';
+            }
+        }
+    };
+    let mut i = 0;
+    while i < b.len() {
+        if lx.is_quote(b[i]) {
+            let e = lx.skip_quoted(s, i);
+            let close = usize::from(e > i + 1 && b[e - 1] == b[i]);
+            blank(&mut out, i + 1, e - close);
+            i = e;
+        } else if lx.line_comment.is_some_and(|lc| b[i..].starts_with(lc.as_bytes())) {
+            let e = s[i..].find('\n').map_or(b.len(), |k| i + k);
+            blank(&mut out, i, e);
+            i = e;
+        } else if let Some((open, close)) = lx.block_comment.filter(|(o, _)| b[i..].starts_with(o.as_bytes())) {
+            let e = s[i + open.len()..].find(close).map_or(b.len(), |k| i + open.len() + k + close.len());
+            blank(&mut out, i, e);
+            i = e;
+        } else {
+            i += 1;
+        }
+    }
+    // 空白にする範囲の端はいつも ASCII の文字（引用符・改行・コメントの印）の所なので、UTF-8 として崩れない
+    String::from_utf8(out).unwrap_or_default()
+}
+
 /// `...Foo<A<B>>` の終わりの `>` に対応する `<` の位置（文の切れ目 `; { } =` を越えない）
 pub fn generic_open(s: &str) -> Option<usize> {
     let mut depth = 0;
@@ -352,6 +386,16 @@ pub fn receiver_before(lx: &Lexis, line: &str, dot: usize, var: &dyn Fn(&str) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn blank_literals_keeps_positions() {
+        let s = "a // 説明 x\nb = \"文字 \\\" y\"; /* z\n w */ c 'q'";
+        let t = blank_literals(&C_LIKE, s);
+        assert_eq!(t.len(), s.len());
+        assert_eq!(t.split_whitespace().collect::<Vec<_>>(), ["a", "b", "=", "\"", "\";", "c", "'", "'"]);
+        assert_eq!(t.matches('\n').count(), 2);
+    }
+
 
     #[test]
     fn heads() {

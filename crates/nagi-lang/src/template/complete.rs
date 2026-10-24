@@ -106,14 +106,20 @@ fn after_dot(lang: &dyn Language, cx: &Cx, ranker: &mut Ranker, out: &mut Out) {
         }
     }
     if out.items.is_empty() {
-        // 型が分からない・プロジェクトの外: ファイルの中で `.` の後に出てくる語
+        // 型が分からない・プロジェクトの外: ファイルの中で `.` の後に出てくる語（コメント・文字列の中の `www.example.com` などは除く）
         static DOT_WORD: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
         let re = DOT_WORD.get_or_init(|| regex::Regex::new(r"\.([A-Za-z_$][\w$]*)").unwrap());
+        let src = &code_words(lang, src);
         for c in re.captures_iter(src) {
             let call = src[c.get(0).unwrap().end()..].starts_with('(');
             out.push(Item { name: c[1].to_string(), mark: if call { 'm' } else { 'f' }, note: ty.clone().unwrap_or_default(), call: call.then_some(true), rank: 1, insert: None, import: None });
         }
     }
+}
+
+/// 語を集める元の文字（言語が除くなら、コメントと文字列の中を空白にする。位置は変えない）
+fn code_words<'a>(lang: &dyn Language, src: &'a str) -> std::borrow::Cow<'a, str> {
+    if lang.words_skip_literals() { std::borrow::Cow::Owned(text::blank_literals(lang.lexis(), src)) } else { std::borrow::Cow::Borrowed(src) }
 }
 
 fn in_scope(lang: &dyn Language, cx: &Cx, ranker: &mut Ranker, out: &mut Out) {
@@ -125,6 +131,7 @@ fn in_scope(lang: &dyn Language, cx: &Cx, ranker: &mut Ranker, out: &mut Out) {
     // ファイルの中の語（変数・引数など）。カーソルに近い順
     let all_kws = lang.keywords();
     if cx.words {
+        let src = &code_words(lang, src);
         static WORDS: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
         let words = WORDS.get_or_init(|| regex::Regex::new(r"[A-Za-z_$][\w$]*").unwrap());
         let mut list: Vec<(usize, &str)> = words.find_iter(src).filter(|m| m.start() != cx.start).map(|m| (m.start().abs_diff(cx.start), m.as_str())).collect();
@@ -159,5 +166,40 @@ fn in_scope(lang: &dyn Language, cx: &Cx, ranker: &mut Ranker, out: &mut Out) {
         for k in all_kws {
             out.push(Item::new(*k, 'K', "", 4));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::lang::{Cx, Language};
+
+    /// `@` の所で補完した名前
+    fn names(lang: &dyn Language, src: &str) -> Vec<String> {
+        let libs = crate::libs::Libraries::default();
+        let at = src.find('@').unwrap();
+        let src = src.replace('@', "");
+        let ls = src[..at].rfind('\n').map_or(0, |i| i + 1);
+        let line = src[ls..].lines().next().unwrap_or("");
+        let cx = Cx::new(lang, &src, None, line, at - ls, at, "", None, &libs);
+        super::complete(&cx).into_iter().map(|i| i.name).collect()
+    }
+
+    /// ファイルの中の語は、コメントと文字列の中から集めない（前は説明の文や URL の語まで出た）
+    #[test]
+    fn words_skip_comments_and_strings() {
+        let src = "// see www.example.com for details\nclass A {\n  /* block comment words */\n  void run(int count) {\n    String s = \"hello world.text\";\n    co@\n  }\n}";
+        let v = names(&crate::java::lang::JAVA, src);
+        assert!(v.contains(&"count".to_string()) && v.contains(&"run".to_string()), "{v:?}");
+        for w in ["details", "example", "block", "comment", "words", "hello", "world"] {
+            assert!(!v.contains(&w.to_string()), "{w}: {v:?}");
+        }
+        let v = names(&crate::ts::lang::TS, "const t = `template words`; // note here\nlet value = 1;\nva@");
+        assert!(v.contains(&"value".to_string()) && !v.contains(&"template".to_string()) && !v.contains(&"note".to_string()), "{v:?}");
+        // `.` の後で型が分からないときの語も
+        let v = names(&crate::java::lang::JAVA, "// call www.example.com\nclass A {\n  void f(Object o) {\n    o.toString();\n    x.@\n  }\n}");
+        assert!(v.contains(&"toString".to_string()) && !v.contains(&"example".to_string()), "{v:?}");
+        // 文章のファイル（知らない種類）は ' の後も語として集める
+        let v = names(&crate::plain::OTHER, "don't forget the meeting\nfo@");
+        assert!(v.contains(&"forget".to_string()) && v.contains(&"meeting".to_string()), "{v:?}");
     }
 }

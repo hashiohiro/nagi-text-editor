@@ -29,6 +29,11 @@ impl Language for Plain {
         self.keywords
     }
 
+    // 知らない種類のファイル（.txt・.md など）は文章なので、' や # の後も語として集める
+    fn words_skip_literals(&self) -> bool {
+        !std::ptr::eq(self, &OTHER)
+    }
+
     fn ecosystem(&self) -> Option<&'static str> {
         self.ecosystem
     }

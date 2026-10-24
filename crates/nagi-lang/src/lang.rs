@@ -180,6 +180,11 @@ pub trait Language: Sync {
         &[]
     }
 
+    /// ファイルの中の語を候補に集めるとき、コメントと文字列の中を除くか（既定は除く。文章を書くファイルは除かない）
+    fn words_skip_literals(&self) -> bool {
+        true
+    }
+
     /// 打った後に補完の一覧を出すか（`before` はカーソルの前の行。既定は `.` の後）
     fn trigger(&self, before: &str) -> bool {
         before.ends_with('.')
