@@ -121,7 +121,7 @@ pub fn strip_line_comment<'a>(lx: &Lexis, l: &'a str) -> &'a str {
             i = lx.skip_quoted(l, i);
             continue;
         }
-        if l[i..].starts_with(lc) {
+        if b[i..].starts_with(lc.as_bytes()) {
             return &l[..i];
         }
         i += 1;
@@ -139,11 +139,11 @@ pub fn strip_comments(lx: &Lexis, s: &str) -> String {
             let e = lx.skip_quoted(s, i);
             out.push_str(&s[i..e]);
             i = e;
-        } else if lx.line_comment.is_some_and(|lc| s[i..].starts_with(lc)) {
+        } else if lx.line_comment.is_some_and(|lc| b[i..].starts_with(lc.as_bytes())) {
             while i < b.len() && b[i] != b'\n' {
                 i += 1;
             }
-        } else if let Some((open, close)) = lx.block_comment.filter(|(o, _)| s[i..].starts_with(o)) {
+        } else if let Some((open, close)) = lx.block_comment.filter(|(o, _)| b[i..].starts_with(o.as_bytes())) {
             i += open.len();
             i = s[i..].find(close).map_or(b.len(), |k| i + k + close.len());
         } else {
@@ -392,5 +392,7 @@ mod tests {
         assert_eq!(split_top(&JS_LIKE, "Map<K, V>, (a, b) => c, `x,y`", b',', true), vec!["Map<K, V>", " (a, b) => c", " `x,y`"]);
         assert_eq!(strip_comments(&JS_LIKE, "a /* b */ c // d\ne 'f//g'"), "a  c \ne 'f//g'");
         assert_eq!(strip_line_comment(&C_LIKE, r#"x("a//b") // c"#), r#"x("a//b") "#);
+        assert_eq!(strip_line_comment(&C_LIKE, "x(\"例\\あ\") // 例"), "x(\"例\\あ\") ", "文字の途中で切らない");
+        assert_eq!(strip_comments(&C_LIKE, "a // 例\n/* 例 */b"), "a \nb");
     }
 }
