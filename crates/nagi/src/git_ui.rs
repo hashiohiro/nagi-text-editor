@@ -537,7 +537,8 @@ mod tests {
     }
 
     fn settle(e: &mut Editor) {
-        for _ in 0..400 {
+        // git を何度も起こすので、ほかの試験と並ぶと 2 秒を超えることがある（10 秒まで待つ）
+        for _ in 0..2000 {
             e.poll_git();
             e.prepare_git();
             if e.git.status.is_some() && e.git.pending.is_empty() && e.git.status_rx.is_none() {

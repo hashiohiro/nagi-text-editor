@@ -740,10 +740,28 @@ pub fn lib_receiver<'a>(jars: &'a JarIndex, ranker: &mut Ranker, src: &str, rel:
     if let Some((simple, full)) = fqn {
         lib.alias(simple, full);
     }
+    lib_receiver_in(lib, ranker, src, rel, at, inside, expanded, &|n| var_decl_text(src, n, at), &|a| expand_head(src, a, at))
+}
+
+/// `lib_receiver` を、型の名前の表 `lib`・変数の宣言の型の文字 `var_decl`・頭の展開 `expand` を渡して（Kotlin も使う）
+#[allow(clippy::too_many_arguments)]
+pub fn lib_receiver_in<'a>(
+    lib: LibTypes<'a>,
+    ranker: &mut Ranker,
+    src: &str,
+    rel: &str,
+    _at: usize,
+    inside: Option<&str>,
+    expanded: &str,
+    var_decl: &dyn Fn(&str) -> Option<String>,
+    expand: &dyn Fn(&str) -> String,
+) -> (LibTypes<'a>, Option<JType>) {
+    let jars = lib.jars;
+    let at = _at;
     // 変数は宣言の型（型引数つき）に印 `=` を付けて、クラス名（static の呼び出し）と分ける
     let decl = |n: &str| match n.strip_prefix("new ") {
         Some(t) => Some(format!("={t}")),
-        None => var_decl_text(src, n, at).map(|d| format!("={d}")),
+        None => var_decl(n).map(|d| format!("={d}")),
     };
     let r = text::receiver_before(LX, expanded, expanded.len(), &decl);
     let base = |t: &str| t.strip_prefix('=').and_then(|d| lib.parse(d));
@@ -778,7 +796,7 @@ pub fn lib_receiver<'a>(jars: &'a JarIndex, ranker: &mut Ranker, src: &str, rel:
             list.iter()
                 .map(|a| {
                     literal_type(a).unwrap_or_else(|| {
-                        let a = expand_head(src, a, at);
+                        let a = expand(a);
                         let r = text::receiver_before(LX, &a, a.len(), &decl).filter(|_| text::chain_start(LX, &a) == Some(0))?;
                         lib.receiver(&r, &base, &mut project, &[])
                     })

@@ -561,15 +561,23 @@ impl<'a> Ranker<'a> {
         let type_indent = indent(tl.line);
         let mut member_indent = None;
         let mut out = Vec::new();
+        // 型の字下げ以下で } から始まる行が間にあれば、型はそこで終わっている（言語が決める。Rust の struct の後の impl など。
+        // 字下げのずれた } がある言語（TS の getter など）では使わない）
+        let by_brace = for_path(&tl.path).type_ends_at_brace();
+        let closed = |from: u32, to: u32| {
+            by_brace && lines.as_ref().is_some_and(|l| l.iter().take(to as usize).skip(from as usize + 1).any(|x| x.trim_start().starts_with('}') && x.len() - x.trim_start().len() <= type_indent))
+        };
+        let mut prev = tl.line;
         for d in &defs[start + 1..] {
             if d.line == tl.line {
                 out.push(d.clone());
                 continue;
             }
             let ind = indent(d.line);
-            if ind <= type_indent {
+            if ind <= type_indent || closed(prev, d.line) {
                 break;
             }
+            prev = d.line;
             if ind == *member_indent.get_or_insert(ind) {
                 out.push(d.clone());
             }
@@ -619,7 +627,7 @@ impl<'a> Ranker<'a> {
     pub fn receiver_type_name(&mut self, from_rel: &str, src: &str, at: usize, recv: &Recv) -> Option<String> {
         match self.type_of(from_rel, src, recv, 0)? {
             Ty::Named(t, _) | Ty::Outside(t) => Some(t),
-            Ty::This => enclosing_type(for_path(from_rel).lexis(), src, at),
+            Ty::This => for_path(from_rel).enclosing_type(src, at),
         }
     }
 

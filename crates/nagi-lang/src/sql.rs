@@ -66,10 +66,6 @@ impl Language for Sql {
         &LX
     }
 
-    fn triggers(&self) -> &'static [char] {
-        &['.']
-    }
-
     fn complete_all(&self, cx: &Cx) -> Option<Vec<Item>> {
         let c = cx.console.as_ref()?;
         Some(complete(c.kind, c.stmt, c.cur, cx.prefix, c.catalog))

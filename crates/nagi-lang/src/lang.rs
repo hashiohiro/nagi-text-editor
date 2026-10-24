@@ -105,7 +105,7 @@ impl<'a> Cx<'a> {
             (Some(i), Some(h)) => h.strip_prefix(&i.root).ok().map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default(),
             _ => String::new(),
         };
-        let inside = crate::project::enclosing_type(lang.lexis(), src, start);
+        let inside = lang.enclosing_type(src, start);
         Cx { lang, src, here, line, ws, start, prefix, index, rel, inside, libs, words: true, keywords: true, out_dir: None, console: None }
     }
 
@@ -180,9 +180,19 @@ pub trait Language: Sync {
         &[]
     }
 
-    /// 補完を始める文字（打ったら一覧を出す）
-    fn triggers(&self) -> &'static [char] {
-        &['.']
+    /// 打った後に補完の一覧を出すか（`before` はカーソルの前の行。既定は `.` の後）
+    fn trigger(&self, before: &str) -> bool {
+        before.ends_with('.')
+    }
+
+    /// `at` を囲む型の名前（`this`・`self` の型）。既定は字句の範囲の決まり方で class・interface・enum・record を
+    fn enclosing_type(&self, src: &str, at: usize) -> Option<String> {
+        crate::project::enclosing_type(self.lexis(), src, at)
+    }
+
+    /// 変数 `name` の型の名前（`at` に近い宣言から）。既定は var_styles の書き方で
+    fn var_type(&self, src: &str, name: &str, at: usize) -> Option<String> {
+        crate::project::var_type_with(self.var_styles(), src, name, at)
     }
 
     /// 言語の手順が丸ごと違うときの候補（SQL）。None なら共通の手順で
@@ -261,6 +271,11 @@ pub trait Language: Sync {
     /// import の書き方（定義の候補を import で選ぶ）。既定はどちらも
     fn import_style(&self) -> crate::project::ImportStyle {
         crate::project::ImportStyle::Both
+    }
+
+    /// 型の本体が、型の字下げの `}` で必ず終わるか（整形がそろう言語。Rust）。そうなら、その後の定義を型のメンバーにしない
+    fn type_ends_at_brace(&self) -> bool {
+        false
     }
 
     /// 同じファイルの同じ名前の定義が、引数で選ぶオーバーロードか（Java・Kotlin）

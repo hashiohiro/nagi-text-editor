@@ -606,7 +606,8 @@ mod tests {
     }
 
     fn wait(e: &mut Editor) {
-        for _ in 0..400 {
+        // ほかの試験と並ぶと 2 秒を超えることがある（10 秒まで待つ）
+        for _ in 0..2000 {
             e.poll_branches();
             e.poll_git();
             if e.branch_popup.as_ref().is_none_or(|p| p.rx.is_none()) {

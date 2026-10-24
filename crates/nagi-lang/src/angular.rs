@@ -7,6 +7,10 @@
 //! - 部品の属性（[width]、(clicked)）→ その部品の @Input・@Output のプロパティ
 //!
 //! `x.y` の `y` のように受け手のあるもの、テンプレートの中の変数（let item of items、#ref）は扱わず、いつもの gd に任せる。
+//!
+//! 補完: `{{ }}`・`[x]="…"`・`(x)="…"`・`*ngIf="…"`・`@if (…)`・`@for (…)` の中は、部品のクラスの中の TypeScript の式として
+//! （頭の名前は `this.` を付けて）TypeScript の型の求め方で。`let item of items`・`@for (item of items` の変数は `items.find(…)` に
+//! 置き換える。`<` の後は、プロジェクトの部品の selector
 
 use std::path::{Path, PathBuf};
 
@@ -14,7 +18,7 @@ use nagi_syntax::HtmlCtx;
 use nagi_syntax::defs::Receiver;
 use nagi_workers::index::{Index, Loc};
 
-use crate::lang::{Cx, Found, Language, Target};
+use crate::lang::{Cx, Found, Item, Language, Target};
 use crate::project::{Ranked, Ranker, supertypes};
 use crate::text::{C_LIKE, Lexis};
 
@@ -59,6 +63,46 @@ impl Language for Template {
 
     fn lexis(&self) -> &'static Lexis {
         &C_LIKE
+    }
+
+    /// テンプレートの式の中（部品のクラスのメンバー・テンプレートの変数）と、`<` の後（部品の selector）。ほかは None（いつもの手順へ）
+    fn complete_all(&self, cx: &Cx) -> Option<Vec<Item>> {
+        let html = cx.here?;
+        let idx = cx.index?;
+        let before = &cx.src[..cx.start];
+        if before.ends_with('<') {
+            return Some(selectors(idx).into_iter().map(|(sel, file)| Item::new(sel, 'c', file, 0)).collect());
+        }
+        let start = expression_start(before)?;
+        let comp = component_of(html)?;
+        let comp_src = std::fs::read_to_string(&comp).ok()?;
+        let at = class_body_end(&comp_src)?;
+        let ix = crate::eco::dts(cx.libs)?;
+        let vars = template_vars(before);
+        let types = |recv: &str| crate::ts::types::complete(&ix, &idx.root, &comp, &comp_src, recv, at);
+        let item = |m: crate::ts::types::TsMember| Item::member(m.name, m.method, m.params, m.owner, 0);
+        if cx.after_dot() {
+            // 受け手の式（テンプレートの変数は置き換え、ほかは this. を付ける）
+            let recv = &cx.src[start..cx.start - 1];
+            let head_at = crate::text::chain_start(crate::ts::types::LX, recv.trim_end_matches(['?', '!']))?;
+            let chain = &recv[head_at..];
+            let head: String = chain.chars().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$').collect();
+            let rest = &chain[head.len()..];
+            let expr = match vars.iter().rev().find(|(n, _)| *n == head) {
+                Some((_, of)) => format!("this.{}.find(x => true){rest}", of.split('|').next().unwrap_or(of).trim()),
+                None if head == "this" => chain.to_string(),
+                None => format!("this.{chain}"),
+            };
+            return Some(types(&expr).into_iter().map(item).collect());
+        }
+        // 頭の名前: テンプレートの変数と部品のクラスのメンバー
+        let mut out: Vec<Item> = vars.iter().rev().map(|(n, of)| Item::new(n.clone(), 'v', of.trim().to_string(), 0)).collect();
+        for m in types("this") {
+            if !out.iter().any(|x| x.name == m.name) {
+                out.push(item(m));
+            }
+        }
+        Some(out)
     }
 
     /// 式の中の名前・部品のタグ・部品の属性。部品が無い・テンプレートの中の変数かもしれないものは None（いつもの手順へ）
@@ -141,4 +185,89 @@ fn in_hierarchy(idx: &Index, ts_rel: &str, src: &str, l: &Loc) -> bool {
         }
     }
     *l.path == *ts_rel
+}
+
+/// カーソルの前 `before` が Angular の式の中なら、その式の始まり（`{{ }}`・バインドの属性の値・@if などの括弧の中）
+fn expression_start(before: &str) -> Option<usize> {
+    let mut best: Option<usize> = None;
+    let mut take = |k: usize| best = Some(best.map_or(k, |b: usize| b.max(k)));
+    // {{ … （閉じていない）
+    if let Some(i) = before.rfind("{{").filter(|&i| !before[i..].contains("}}")) {
+        take(i + 2);
+    }
+    // [x]="… ・(x)="… ・*ngIf="… ・bind-x="…（引用符が閉じていない）
+    for q in ['"', '\''] {
+        if let Some(i) = before.rfind(&format!("={q}")).filter(|&i| !before[i + 2..].contains(q)) {
+            let name: String = before[..i].trim_end().chars().rev().take_while(|c| !c.is_whitespace() && *c != '<').collect::<Vec<_>>().into_iter().rev().collect();
+            if name.starts_with(['[', '(', '*']) || name.starts_with("bind-") || name.starts_with("on-") {
+                take(i + 2);
+            }
+        }
+    }
+    // @if ( … ・@for ( … ・@switch ( … ・@case ( … （括弧が閉じていない）
+    static CTRL: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = CTRL.get_or_init(|| regex::Regex::new(r"@(?:if|for|switch|case|else if|defer)\s*\(").unwrap());
+    if let Some(m) = re.find_iter(before).last() {
+        let rest = &before[m.end()..];
+        if rest.matches('(').count() >= rest.matches(')').count() {
+            take(m.end());
+        }
+    }
+    best
+}
+
+/// テンプレートの変数（`let item of items`・`@for (item of items`）の (名前, 並びの式)
+fn template_vars(before: &str) -> Vec<(String, String)> {
+    static VARS: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = VARS.get_or_init(|| regex::Regex::new(r#"(?:\blet\s+|@for\s*\(\s*)(\w+)\s+of\s+([^;"')]+)"#).unwrap());
+    re.captures_iter(before).map(|c| (c[1].to_string(), c[2].to_string())).collect()
+}
+
+/// 部品のクラス（@Component の後の最初の class、無ければ最初の class）の本体の終わりの } の位置（そこはクラスの中）
+fn class_body_end(src: &str) -> Option<usize> {
+    let from = src.find("@Component").unwrap_or(0);
+    let k = from + src[from..].find("class ")?;
+    let open = k + src[k..].find('{')?;
+    let b = src.as_bytes();
+    let (mut depth, mut i) = (0i32, open);
+    while i < b.len() {
+        match b[i] {
+            b'\'' | b'"' | b'`' => {
+                let q = b[i];
+                i += 1;
+                while i < b.len() && b[i] != q {
+                    i += 1 + usize::from(b[i] == b'\\');
+                }
+            }
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// プロジェクトの部品の (selector, ファイル)（索引から作って覚える。ファイルが変われば作り直す）
+fn selectors(idx: &Index) -> Vec<(String, String)> {
+    let table = idx.derived("angular.selectors", |i| {
+        static SEL: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+        let re = SEL.get_or_init(|| regex::Regex::new(r#"selector:\s*['"`]([A-Za-z][\w-]*)['"`]"#).unwrap());
+        let mut v: Vec<String> = Vec::new();
+        for f in i.files().filter(|f| f.ends_with(".ts") && !f.ends_with(".spec.ts")) {
+            let Ok(text) = std::fs::read_to_string(i.root.join(f)) else { continue };
+            if !text.contains("@Component") {
+                continue;
+            }
+            v.extend(re.captures_iter(&text).map(|c| format!("{}\t{f}", &c[1])));
+        }
+        v.sort();
+        v
+    });
+    table.iter().filter_map(|x| x.split_once('\t').map(|(a, b)| (a.to_string(), b.to_string()))).collect()
 }

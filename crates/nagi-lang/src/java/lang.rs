@@ -258,7 +258,7 @@ pub fn library_target(cx: &Cx, name: &str) -> Option<(String, Option<String>)> {
 }
 
 /// プロジェクトの型 `ty` のライブラリの親（型引数つき）で、メンバー `name` を宣言している型
-fn lib_super_member(jars: &crate::eco::jvm::JarIndex, ranker: &mut Ranker, ty: &str, name: &str) -> Option<(String, Option<String>)> {
+pub(crate) fn lib_super_member(jars: &crate::eco::jvm::JarIndex, ranker: &mut Ranker, ty: &str, name: &str) -> Option<(String, Option<String>)> {
     ranker.outside_supers(ty).into_iter().find_map(|(sup, lines)| {
         let l = LibTypes::from_lines(jars, lines.iter().map(String::as_str));
         let t = l.parse(&sup).filter(|x| matches!(x, JType::Class(n, _) if !n.starts_with('?')))?;

@@ -389,7 +389,7 @@ impl Editor {
             let recv = self.syntax.as_ref().and_then(|s| s.receiver(&self.buf, word_at));
             let ty = match recv {
                 Some(rc) => r.receiver_type_name(&rel, &src, word_at, &rc),
-                None => nagi_lang::project::enclosing_type(self.language().lexis(), &src, word_at),
+                None => self.language().enclosing_type(&src, word_at),
             };
             (ty, Some(name.as_str()))
         };

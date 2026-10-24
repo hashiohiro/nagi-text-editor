@@ -247,7 +247,7 @@ impl Editor {
         let sql_table = c == ' '
             && self.console_source().is_some()
             && line[..b.saturating_sub(1)].rsplit(|ch: char| !word_char(ch)).next().is_some_and(|w| ["from", "join", "update", "into"].contains(&w.to_ascii_lowercase().as_str()));
-        if self.language().triggers().contains(&c) || sql_table || (word_char(c) && n >= self.settings.int("completion.min_chars") as usize) {
+        if self.language().trigger(&line[..b]) || sql_table || (word_char(c) && n >= self.settings.int("completion.min_chars") as usize) {
             self.auto_complete_at = Some(std::time::Instant::now() + std::time::Duration::from_millis(self.settings.int("completion.delay_ms") as u64));
         }
     }
@@ -524,6 +524,178 @@ mod tests {
     }
 
     /// TypeScript: 組み込み（lib の .d.ts）と node_modules のパッケージの型の、. の後のメンバー
+    /// Kotlin: jar・JDK のライブラリの型のメンバー（Java の索引で）、import（; なし）、定義へ
+    #[test]
+    fn kotlin_library_members() {
+        use nagi_lang::eco::jvm::{JarIndex, JarSource};
+        let Some(ct) = std::env::var_os("JAVA_HOME").map(|h| std::path::PathBuf::from(h).join("lib").join("ct.sym")).filter(|p| p.is_file()) else { return };
+        let dir = std::env::temp_dir().join(format!("nagi-ktlib-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        let rel = nagi_lang::eco::jvm::ct_sym_latest(&ct).unwrap();
+        let keep = |n: &str| n.split('/').next().is_some_and(|d| d.contains(rel)) && (n.contains("/java/util/") || n.contains("/java/lang/"));
+        let ix = JarIndex::load(&[JarSource { path: &ct, keep: &keep, tag: "k" }], &dir.join("jars"));
+        std::fs::write(
+            dir.join("App.kt"),
+            "package app\n\nimport java.util.UUID\n\nclass App(private val names: List<String>) {\n    fun f(m: MutableMap<String, Int>?) {\n        val xs = ArrayList<Long>()\n        val id = UUID.randomUUID()\n        val s = \"a\"\n    }\n}\n",
+        )
+        .unwrap();
+        let mut e = Editor::new(Buffer::open(&dir.join("App.kt")).unwrap(), None);
+        e.buf.path = Some(dir.join("App.kt"));
+        e.set_screen(120, 40);
+        e.nav.libs.set(nagi_lang::eco::JVM, std::sync::Arc::new(ix));
+        unsafe { std::env::set_var("NAGI_INDEX_DIR", dir.join("cache")) };
+        e.start_index();
+        for _ in 0..500 {
+            e.poll_index();
+            if e.nav.index.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let items = |e: &mut Editor, text: &str| -> Vec<String> {
+            keys(e, &format!("9GA<CR>{text}<C-Space>"));
+            let v = e.completion.as_ref().map(|c| c.items.clone()).unwrap_or_default();
+            keys(e, "<Esc><Esc>dd");
+            v
+        };
+        let has = |v: &[String], names: &[&str]| names.iter().all(|n| v.iter().any(|x| x == n));
+        let v = items(&mut e, "names.");
+        assert!(has(&v, &["size", "get", "stream"]), "Kotlin の List は java.util.List: {v:?}");
+        let v = items(&mut e, "xs.");
+        assert!(has(&v, &["add", "ensureCapacity"]), "コンストラクタの呼び出し ArrayList<Long>(): {v:?}");
+        let v = items(&mut e, "m?.");
+        assert!(has(&v, &["put", "entrySet"]), "?. と MutableMap: {v:?}");
+        let v = items(&mut e, "id.");
+        assert!(has(&v, &["getMostSignificantBits"]), "import した型の static メソッドの戻り値: {v:?}");
+        let v = items(&mut e, "s.");
+        assert!(has(&v, &["substring", "length"]), "文字列: {v:?}");
+        let v = items(&mut e, "xs.stream().");
+        assert!(has(&v, &["filter", "map"]), "連なり: {v:?}");
+        // import（; なし）
+        keys(&mut e, "9GA<CR>Optiona<C-Space>");
+        let pos = e.completion.as_ref().and_then(|c| c.items.iter().position(|x| x == "Optional"));
+        assert!(pos.is_some(), "{:?}", e.completion.as_ref().map(|c| c.items.clone()));
+        e.completion.as_mut().unwrap().sel = pos;
+        keys(&mut e, "<CR><Esc>");
+        assert!(e.buf.text().contains("import java.util.UUID\nimport java.util.Optional\n"), "{}", e.buf.text());
+        keys(&mut e, "u");
+        // 定義へ（gd）: JDK のソース（無ければ骨組み）の UUID の randomUUID
+        e.nav.sources_dir = Some(dir.join("sources"));
+        keys(&mut e, "<Esc>8G0frgd");
+        let p = e.buf.path.clone().unwrap();
+        assert!(p.ends_with("java/util/UUID.java") || p.ends_with("java\\util\\UUID.java"), "{}: {}", p.display(), e.notify.text);
+        assert!(e.buf.line(e.cursor.line).contains("randomUUID"), "{}", e.buf.line(e.cursor.line));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Rust: `x.` に impl のメソッド、`Type::` に関連関数・enum の値、`crate::`・`module::` にモジュールの項目
+    #[test]
+    fn rust_paths_and_impl_methods() {
+        let dir = std::env::temp_dir().join(format!("nagi-rs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/shapes.rs"), "pub fn area() -> u32 {\n    0\n}\npub struct Sq;\n").unwrap();
+        std::fs::write(
+            dir.join("src/lib.rs"),
+            "pub mod shapes;\n\npub struct Counter {\n    pub n: u32,\n}\n\nimpl Counter {\n    pub fn new() -> Counter {\n        Counter { n: 0 }\n    }\n\n    pub fn bump(&mut self, by: u32) {\n    }\n\n    const MAX: u32 = 9;\n}\n\npub enum Mode {\n    Fast,\n    Slow,\n}\n\nfn use_it() {\n    let mut c = Counter::new();\n}\n",
+        )
+        .unwrap();
+        let mut e = Editor::new(Buffer::open(&dir.join("src/lib.rs")).unwrap(), None);
+        e.buf.path = Some(dir.join("src/lib.rs"));
+        e.set_screen(120, 40);
+        unsafe { std::env::set_var("NAGI_INDEX_DIR", dir.join("cache")) };
+        e.start_index();
+        for _ in 0..500 {
+            e.poll_index();
+            if e.nav.index.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let items = |e: &mut Editor, line: usize, text: &str| -> Vec<String> {
+            keys(e, &format!("{line}GA<CR>{text}<C-Space>"));
+            let v = e.completion.as_ref().map(|c| c.items.clone()).unwrap_or_default();
+            keys(e, "<Esc><Esc>dd");
+            v
+        };
+        let has = |v: &[String], names: &[&str]| names.iter().all(|n| v.iter().any(|x| x == n));
+        let v = items(&mut e, 25, "c.");
+        assert!(has(&v, &["bump", "n"]) && !v.iter().any(|x| x == "new"), "impl の self を取るメソッドとフィールド: {v:?}");
+        let v = items(&mut e, 25, "Counter::");
+        assert!(has(&v, &["new", "MAX"]), "関連関数・定数: {v:?}");
+        assert_eq!(v.first().map(String::as_str), Some("new"), "self を取らないものを先に: {v:?}");
+        let v = items(&mut e, 25, "Mode::");
+        assert!(has(&v, &["Fast", "Slow"]), "enum の値: {v:?}");
+        let v = items(&mut e, 25, "crate::");
+        assert!(has(&v, &["shapes", "Counter", "Mode"]), "クレートの根の項目: {v:?}");
+        let v = items(&mut e, 25, "shapes::");
+        assert!(has(&v, &["area", "Sq"]), "下のモジュール: {v:?}");
+        let v = items(&mut e, 13, "self.");
+        assert!(has(&v, &["n", "bump"]), "今いる impl の型: {v:?}");
+        assert!(e.language().trigger("Counter::") && !e.language().trigger("let x:"), "`::` で出す、`:` では出さない");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Angular のテンプレート: 式の中は部品のクラスのメンバー・テンプレートの変数、`.` の後はその型のメンバー、`<` の後は部品の selector
+    #[test]
+    fn angular_template_completion() {
+        let dir = std::env::temp_dir().join(format!("nagi-ngc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let lib = dir.join("node_modules/typescript/lib");
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("tsconfig.json"), "{ \"compilerOptions\": { \"target\": \"ES2022\" } }").unwrap();
+        std::fs::write(lib.join("lib.es2022.full.d.ts"), "/// <reference lib=\"es5\" />\n").unwrap();
+        std::fs::write(lib.join("lib.es5.d.ts"), "interface String {\n  trim(): string;\n}\ninterface Array<T> {\n  find(predicate: (value: T) => unknown): T | undefined;\n  readonly length: number;\n}\n").unwrap();
+        std::fs::write(dir.join("src/user.ts"), "export interface User {\n  name: string;\n  age: number;\n}\n").unwrap();
+        std::fs::write(dir.join("src/button.component.ts"), "@Component({ selector: 'app-button', template: '' })\nexport class ButtonComponent {}\n").unwrap();
+        std::fs::write(
+            dir.join("src/page.component.ts"),
+            "import { User } from './user';\n@Component({ selector: 'app-page', templateUrl: './page.component.html' })\nexport class PageComponent {\n  title = 'x';\n  user!: User;\n  users: User[] = [];\n  onGo(n: number) {}\n}\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("src/page.component.html"), "<p>x</p>\n").unwrap();
+        let path = dir.join("src/page.component.html");
+        let mut e = Editor::new(Buffer::open(&path).unwrap(), None);
+        e.buf.path = Some(path);
+        e.set_screen(120, 40);
+        unsafe { std::env::set_var("NAGI_INDEX_DIR", dir.join("cache")) };
+        e.start_index();
+        e.nav.libs.set(nagi_lang::eco::JS, std::sync::Arc::new(nagi_lang::eco::dts::DtsIndex::load(&dir)));
+        for _ in 0..500 {
+            e.poll_index();
+            if e.nav.index.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let items = |e: &mut Editor, text: &str| -> Vec<String> {
+            keys(e, &format!("GA<CR>{text}<C-Space>"));
+            let v = e.completion.as_ref().map(|c| c.items.clone()).unwrap_or_default();
+            keys(e, "<Esc><Esc>dd");
+            v
+        };
+        let has = |v: &[String], names: &[&str]| names.iter().all(|n| v.iter().any(|x| x == n));
+        let v = items(&mut e, "<h1>{{ ");
+        assert!(has(&v, &["title", "user", "users", "onGo"]), "部品のメンバー: {v:?}");
+        let v = items(&mut e, "<h1>{{ user.");
+        assert!(has(&v, &["name", "age"]), "メンバーの型: {v:?}");
+        let v = items(&mut e, "<b [title]=\"user.name.");
+        assert!(has(&v, &["trim"]), "バインドの属性の値・連なり: {v:?}");
+        let v = items(&mut e, "<li *ngFor=\"let u of users\">{{ u.");
+        assert!(has(&v, &["name", "age"]), "*ngFor の変数: {v:?}");
+        let v = items(&mut e, "@for (u of users; track u) { {{ u.");
+        assert!(has(&v, &["name"]), "@for の変数: {v:?}");
+        let v = items(&mut e, "@if (");
+        assert!(has(&v, &["user", "title"]), "@if の括弧の中: {v:?}");
+        let v = items(&mut e, "<");
+        assert!(has(&v, &["app-button", "app-page"]), "部品の selector: {v:?}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// ライブラリの索引が読み込み中に補完を出したら、届いたところで一覧を作り直す（出せていなければ出す）
     #[test]
     fn library_arrives_while_completing() {
