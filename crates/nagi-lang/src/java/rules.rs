@@ -158,3 +158,22 @@ pub fn implicit_members(lines: &[String], line: usize, ty: &str, defs: &[Entry])
     }
     out
 }
+
+/// Java のソースのパッケージ（`m/src/main/java/com/x/Foo.java` → `com/x`。`java/` の下でなければ None）
+pub fn source_package(rel: &str) -> Option<String> {
+    let dir = format!("/{}/", rel.rsplit_once('/')?.0);
+    let at = dir.find("/java/")? + 6;
+    Some(dir[at.min(dir.len())..].trim_end_matches('/').to_string())
+}
+
+/// プロジェクトの Java のソースのパッケージか、その上（`com`・`com/x`）か
+pub fn is_project_package(idx: &nagi_workers::index::Index, pkg: &str) -> bool {
+    let v = idx.derived("java.packages", |i| {
+        let mut v: Vec<String> = i.files().filter(|f| f.ends_with(".java")).filter_map(source_package).collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    });
+    let i = v.partition_point(|p| p.as_str() < pkg);
+    v.get(i).is_some_and(|p| p == pkg || p.strip_prefix(pkg).is_some_and(|r| r.starts_with('/')))
+}

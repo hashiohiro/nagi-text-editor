@@ -33,7 +33,7 @@ impl Language for Java {
     /// 前の行からの連なりと型を書かない変数を広げ、頭のパッケージの名前を外す。パッケージだけなら下のパッケージとクラス
     fn head(&self, cx: &Cx, before: &str) -> Head {
         let jars = eco::jars(cx.libs);
-        let known = |pkg: &str| cx.index.is_some_and(|i| i.is_java_package(pkg)) || jars.as_ref().is_some_and(|j| j.is_package(pkg));
+        let known = |pkg: &str| cx.index.is_some_and(|i| super::rules::is_project_package(i, pkg)) || jars.as_ref().is_some_and(|j| j.is_package(pkg));
         match super::types::receiver_text(cx.src, before, cx.start - cx.ws, cx.start, &known) {
             Ok((e, f)) => Head::Expr(e, f),
             Err(pkg) => Head::Items(package_items(cx, &pkg)),
@@ -198,7 +198,7 @@ pub fn library_target(cx: &Cx, name: &str) -> Option<(String, Option<String>)> {
     let mut ranker = Ranker::new(idx);
     let inside = cx.inside.as_deref();
     if ws > 0 && line[..ws].ends_with('.') {
-        let known = |pkg: &str| idx.is_some_and(|i| i.is_java_package(pkg)) || jars.is_package(pkg);
+        let known = |pkg: &str| idx.is_some_and(|i| super::rules::is_project_package(i, pkg)) || jars.is_package(pkg);
         match super::types::receiver_text(src, &line[..ws - 1], ls, word_at, &known) {
             // パッケージの中のクラス
             Err(pkg) => Some(format!("{pkg}/{name}")).filter(|c| jars.class(c).is_some()).map(|c| (c, None)),

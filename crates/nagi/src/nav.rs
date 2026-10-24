@@ -775,7 +775,7 @@ mod tests {
                         continue;
                     }
                     let chain = nagi_lang::text::dotted_chain(nagi_lang::java::types::LX, &line[..g.start() - 1]).unwrap_or("").replace('.', "/");
-                    if !chain.is_empty() && (idx.is_java_package(&chain) || jars.is_package(&chain)) {
+                    if !chain.is_empty() && (nagi_lang::java::rules::is_project_package(idx, &chain) || jars.is_package(&chain)) {
                         continue;
                     }
                     let at = e.buf.line_start(li) + g.start();

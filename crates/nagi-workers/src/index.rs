@@ -49,8 +49,8 @@ pub struct Index {
     pub root: PathBuf,
     files: HashMap<Arc<str>, FileDefs>,
     by_name: HashMap<String, Vec<Loc>>,
-    /// Java のソースのパッケージ（`com/x`。並べて重なりなし。引いたときに作り、ファイルが変われば作り直す）
-    packages: std::sync::OnceLock<Vec<String>>,
+    /// 言語が索引から作る表（Java のソースのパッケージなど。引いたときに作り、ファイルが変われば作り直す）
+    derived: Mutex<HashMap<&'static str, Arc<Vec<String>>>>,
     /// ビルドの設定（pom.xml・.mvn/maven.config）の (パス, 更新時刻, 大きさ) のハッシュ。変われば依存を求め直す
     pub build_sig: u64,
 }
@@ -104,20 +104,20 @@ impl Index {
                     }
                 }
             }
-            self.packages = Default::default();
+            self.derived = Default::default();
         }
     }
 
-    /// Java のソースのパッケージか、その上（`com`・`com/x`）か
-    pub fn is_java_package(&self, pkg: &str) -> bool {
-        let v = self.packages.get_or_init(|| {
-            let mut v: Vec<String> = self.files.keys().filter(|f| f.ends_with(".java")).filter_map(|f| source_package(f)).collect();
-            v.sort_unstable();
-            v.dedup();
-            v
-        });
-        let i = v.partition_point(|p| p.as_str() < pkg);
-        v.get(i).is_some_and(|p| p == pkg || p.strip_prefix(pkg).is_some_and(|r| r.starts_with('/')))
+    /// 言語が索引から作る表 `key`（無ければ `make` で作って覚える。ファイルが変われば作り直す）
+    pub fn derived(&self, key: &'static str, make: impl FnOnce(&Index) -> Vec<String>) -> Arc<Vec<String>> {
+        if let Some(v) = self.derived.lock().ok().and_then(|m| m.get(key).cloned()) {
+            return v;
+        }
+        let v = Arc::new(make(self));
+        if let Ok(mut m) = self.derived.lock() {
+            m.insert(key, v.clone());
+        }
+        v
     }
 
     /// 識別子の名前の一覧（補完用）
@@ -158,7 +158,7 @@ impl Index {
             v.sort_by(loc_order);
         }
         self.files.insert(key, FileDefs { stamp, defs });
-        self.packages = Default::default();
+        self.derived = Default::default();
     }
 
     /// 試験用の写し（名前の表も作り直す）
@@ -170,7 +170,7 @@ impl Index {
 
     /// 保存用の写し（名前の表は持たない）
     pub fn snapshot(&self) -> Index {
-        Index { root: self.root.clone(), files: self.files.clone(), by_name: HashMap::new(), packages: Default::default(), build_sig: self.build_sig }
+        Index { root: self.root.clone(), files: self.files.clone(), by_name: HashMap::new(), derived: Default::default(), build_sig: self.build_sig }
     }
 
     /// 索引を保存する（裏のスレッドから呼ぶ）
@@ -322,7 +322,7 @@ pub fn build(root: &Path, waker: Waker) -> nagi_core::task::Task<Progress> {
         for (rel, f) in Arc::try_unwrap(done).map(|m| m.into_inner().unwrap_or_default()).unwrap_or_default() {
             files.insert(rel, f);
         }
-        let mut idx = Index { root, files, by_name: HashMap::new(), packages: Default::default(), build_sig };
+        let mut idx = Index { root, files, by_name: HashMap::new(), derived: Default::default(), build_sig };
         idx.rebuild();
         if changed {
             idx.save();
@@ -387,13 +387,6 @@ pub fn rescan(root: &Path, known: HashMap<Arc<str>, (u64, u64)>, waker: Waker) -
         }
         ctx.send(Rescan { changed, build_sig });
     })
-}
-
-/// Java のソースのパッケージ（`m/src/main/java/com/x/Foo.java` → `com/x`。`java/` の下でなければ None）
-pub fn source_package(rel: &str) -> Option<String> {
-    let dir = format!("/{}/", rel.rsplit_once('/')?.0);
-    let at = dir.find("/java/")? + 6;
-    Some(dir[at.min(dir.len())..].trim_end_matches('/').to_string())
 }
 
 #[cfg(test)]

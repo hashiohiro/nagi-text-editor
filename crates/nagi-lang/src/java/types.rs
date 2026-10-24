@@ -707,7 +707,7 @@ impl<'a> LibTypes<'a> {
     }
 }
 
-pub use nagi_workers::index::source_package;
+pub use super::rules::source_package;
 
 /// Java の `.` の前の式（行の中の `before`。`line_start` は行の始まり、`at` は `.` の後の語の位置）を、前の行からの連なりと
 /// 型を書かない変数（var・for の var・ラムダの引数）を展開し、頭のパッケージの名前を外した形に（`java.awt.Color` → `Color` と
