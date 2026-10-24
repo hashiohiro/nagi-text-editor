@@ -782,23 +782,50 @@ fn mvn_classpath(root: &Path) -> Result<Vec<PathBuf>, String> {
 /// Maven のプロジェクトの型の索引（依存の jar と JDK）を裏で用意する。終わったら 1 度だけ送る（Err は訳）
 pub fn load_maven(root: PathBuf, waker: nagi_workers::Waker) -> nagi_core::task::Task<Result<JarIndex, String>> {
     nagi_core::task::spawn("jar-index", waker, move |ctx| {
-        let r = (|| {
-            let jars = maven_classpath(&root)?;
-            let cfg = nagi_workers::config::for_path(&root);
-            let ct = jdk_home(&cfg).map(|j| j.join("lib").join("ct.sym"));
-            let rel = ct.as_deref().and_then(ct_sym_latest);
-            let all = |_: &str| true;
-            let jdk = |n: &str| rel.is_some_and(|r| n.split('/').next().is_some_and(|d| d.contains(r)));
-            let tag = rel.map(String::from).unwrap_or_default();
-            let mut sources: Vec<JarSource> = jars.iter().map(|p| JarSource { path: p, keep: &all, tag: "" }).collect();
-            if let Some(ct) = &ct {
-                sources.push(JarSource { path: ct, keep: &jdk, tag: &tag });
-            }
-            let dir = jars_dir().ok_or("LOCALAPPDATA がありません")?;
-            Ok(JarIndex::load(&sources, &dir))
-        })();
-        ctx.send(r);
+        ctx.send(load_maven_now(&root));
     })
+}
+
+/// `load_maven` をこのスレッドで
+pub fn load_maven_now(root: &Path) -> Result<JarIndex, String> {
+    let jars = maven_classpath(root)?;
+    let cfg = nagi_workers::config::for_path(root);
+    let ct = jdk_home(&cfg).map(|j| j.join("lib").join("ct.sym"));
+    let rel = ct.as_deref().and_then(ct_sym_latest);
+    let all = |_: &str| true;
+    let jdk = |n: &str| rel.is_some_and(|r| n.split('/').next().is_some_and(|d| d.contains(r)));
+    let tag = rel.map(String::from).unwrap_or_default();
+    let mut sources: Vec<JarSource> = jars.iter().map(|p| JarSource { path: p, keep: &all, tag: "" }).collect();
+    if let Some(ct) = &ct {
+        sources.push(JarSource { path: ct, keep: &jdk, tag: &tag });
+    }
+    let dir = jars_dir().ok_or("LOCALAPPDATA がありません")?;
+    Ok(JarIndex::load(&sources, &dir))
+}
+
+/// 生態系 JVM（Maven のプロジェクトの依存の jar と JDK。Java と Kotlin が使う）
+pub struct Jvm;
+
+pub static ECO: Jvm = Jvm;
+
+impl super::Ecosystem for Jvm {
+    fn name(&self) -> &'static str {
+        super::JVM
+    }
+
+    fn root(&self, root: &Path) -> Option<PathBuf> {
+        nagi_workers::maven::find_root(root).filter(|m| m.join("pom.xml").is_file())
+    }
+
+    fn load(&self, root: &Path) -> Result<super::Loaded, String> {
+        let ix = load_maven_now(root)?;
+        let log = format!("ライブラリの型の索引: {} クラス（作り直したかけら {}）", ix.classes(), ix.built);
+        Ok(super::Loaded { index: std::sync::Arc::new(ix), log })
+    }
+
+    fn rebuild_on(&self, path: &Path) -> bool {
+        path.file_name().is_some_and(|n| n.eq_ignore_ascii_case("pom.xml"))
+    }
 }
 
 /// `pred` が true の並びの長さ（0..n の前から true が続く）

@@ -1007,6 +1007,32 @@ pub fn load_task(root: PathBuf, waker: nagi_workers::Waker) -> nagi_core::task::
     })
 }
 
+/// 生態系 JS（組み込みの型と node_modules の .d.ts。TypeScript と JavaScript が使う）
+pub struct Js;
+
+pub static ECO: Js = Js;
+
+impl super::Ecosystem for Js {
+    fn name(&self) -> &'static str {
+        super::JS
+    }
+
+    /// node_modules に typescript があるプロジェクト
+    fn root(&self, root: &Path) -> Option<PathBuf> {
+        root.join("node_modules").join("typescript").join("lib").is_dir().then(|| root.to_path_buf())
+    }
+
+    fn load(&self, root: &Path) -> Result<super::Loaded, String> {
+        let ix = DtsIndex::load(root);
+        let log = format!("TypeScript の型の宣言: {} ファイル・{} 宣言", ix.files.len(), ix.decl_count());
+        Ok(super::Loaded { index: Arc::new(ix), log })
+    }
+
+    fn rebuild_on(&self, path: &Path) -> bool {
+        path.file_name().is_some_and(|n| n.eq_ignore_ascii_case("package.json") || n.eq_ignore_ascii_case("tsconfig.json"))
+    }
+}
+
 /// interface・class・型の本体のメンバー
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Member {

@@ -24,8 +24,6 @@ pub struct IndexState {
     pub progress: Option<(usize, usize)>,
     /// ライブラリの索引（生態系ごと。JVM の jar・JDK、JS の .d.ts）
     pub libs: nagi_lang::libs::Libraries,
-    jars_task: Option<nagi_core::task::Task<Result<nagi_lang::eco::jvm::JarIndex, String>>>,
-    dts_task: Option<nagi_core::task::Task<nagi_lang::eco::dts::DtsIndex>>,
     /// ライブラリのソース・骨組みを書く場所（試験で変える。None なら %LOCALAPPDATA%\nagi\index\sources）
     pub sources_dir: Option<PathBuf>,
     /// 外での変更（git pull など）を探す処理と、最後に始めた時刻
@@ -64,22 +62,17 @@ impl Editor {
         let waker = self.waker();
         self.nav.building = Some(nagi_workers::index::build(&root, waker.clone()));
         self.nav.progress = Some((0, 0));
-        self.start_jars(&root);
+        self.start_libraries(&root, None);
     }
 
-    /// Maven のプロジェクトなら、依存の jar と JDK の型の索引を用意する（pom.xml から依存を求め、jar ごとのかけらは
-    /// 変わったものだけ作り直す。ほかは写すだけ）。pom.xml を保存したときも
-    fn start_jars(&mut self, root: &Path) {
+    /// ライブラリの索引を用意する（要る生態系だけ。Maven なら依存の jar と JDK、node_modules に typescript があれば .d.ts）。
+    /// `only` があれば、そのファイル（pom.xml・package.json）で作り直すものだけ
+    fn start_libraries(&mut self, root: &Path, only: Option<&Path>) {
         if cfg!(test) {
             return;
         }
-        if let Some(m) = nagi_workers::maven::find_root(root).filter(|m| m.join("pom.xml").is_file()) {
-            self.nav.jars_task = Some(nagi_lang::eco::jvm::load_maven(m, self.waker()));
-        }
-        // TypeScript（node_modules に typescript があるプロジェクト）
-        if root.join("node_modules").join("typescript").join("lib").is_dir() {
-            self.nav.dts_task = Some(nagi_lang::eco::dts::load_task(root.to_path_buf(), self.waker()));
-        }
+        let waker = self.waker();
+        self.nav.libs.start(root, only, waker);
     }
 
     /// 索引の進み具合と、保存したファイルの索引し直しを受け取る。変わったら true
@@ -99,20 +92,11 @@ impl Editor {
                 }
             }
         }
-        if let Some(Ok(r)) = self.nav.jars_task.as_ref().map(|t| t.try_recv()) {
-            self.nav.jars_task = None;
+        for r in self.nav.libs.poll() {
             match r {
-                Ok(ix) => {
-                    nagi_core::log::info(&format!("ライブラリの型の索引: {} クラス（作り直したかけら {}）", ix.classes(), ix.built));
-                    self.nav.libs.set(nagi_lang::eco::JVM, std::sync::Arc::new(ix));
-                }
-                Err(e) => nagi_core::log::warn(&format!("ライブラリの型の索引を作れません: {e}")),
+                Ok(m) => nagi_core::log::info(&m),
+                Err(e) => nagi_core::log::warn(&format!("ライブラリの索引を作れません: {e}")),
             }
-        }
-        if let Some(Ok(ix)) = self.nav.dts_task.as_ref().map(|t| t.try_recv()) {
-            self.nav.dts_task = None;
-            nagi_core::log::info(&format!("TypeScript の型の宣言: {} ファイル・{} 宣言", ix.files.len(), ix.decl_count()));
-            self.nav.libs.set(nagi_lang::eco::JS, std::sync::Arc::new(ix));
         }
         let mut updated = false;
         if let (Some((_, rx)), Some(idx)) = (&self.nav.reindex, &mut self.nav.index) {
@@ -124,7 +108,7 @@ impl Editor {
         // 外での変更: 変わったファイルを差し替え、消えたものを外す。ビルドの設定が変わっていれば依存を求め直す
         if let Some(Ok(r)) = self.nav.rescan.as_ref().map(|t| t.try_recv()) {
             self.nav.rescan = None;
-            let mut jars_root = None;
+            let mut libs_root = None;
             if let Some(idx) = &mut self.nav.index {
                 for (rel, v) in r.changed {
                     match v {
@@ -135,13 +119,13 @@ impl Editor {
                 }
                 if r.build_sig != idx.build_sig {
                     idx.build_sig = r.build_sig;
-                    jars_root = Some(idx.root.clone());
+                    libs_root = Some(idx.root.clone());
                     updated = true;
                 }
             }
-            if let Some(root) = jars_root {
+            if let Some(root) = libs_root {
                 nagi_core::log::info("ビルドの設定（pom.xml）が外で変わったので、依存を求め直します");
-                self.start_jars(&root);
+                self.start_libraries(&root, None);
             }
             changed |= updated;
         }
@@ -167,9 +151,10 @@ impl Editor {
 
     /// 保存したファイルを索引し直す（裏で）
     pub(crate) fn reindex_saved(&mut self) {
-        if self.buf.path.as_deref().and_then(Path::file_name).is_some_and(|n| n.eq_ignore_ascii_case("pom.xml")) && self.settings.bool("project.index") {
+        // ビルドの設定（pom.xml・package.json）なら、それを使う生態系の索引を作り直す
+        if let Some(p) = self.buf.path.clone().filter(|p| self.nav.libs.rebuild_on(p) && self.settings.bool("project.index")) {
             let root = self.project_root();
-            self.start_jars(&root);
+            self.start_libraries(&root, Some(&p));
         }
         let (Some(path), Some(idx)) = (self.buf.path.clone(), &self.nav.index) else { return };
         let Ok(abs) = std::path::absolute(&path) else { return };
