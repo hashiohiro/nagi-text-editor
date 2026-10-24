@@ -253,6 +253,16 @@ pub trait Language: Sync {
         crate::project::c_param_type(p)
     }
 
+    /// 変数・引数・フィールドの宣言の書き方（変数の型を読む）。既定はどれも
+    fn var_styles(&self) -> crate::project::VarStyles {
+        crate::project::ANY_STYLE
+    }
+
+    /// import の書き方（定義の候補を import で選ぶ）。既定はどちらも
+    fn import_style(&self) -> crate::project::ImportStyle {
+        crate::project::ImportStyle::Both
+    }
+
     /// 同じファイルの同じ名前の定義が、引数で選ぶオーバーロードか（Java・Kotlin）
     fn overloads(&self) -> bool {
         false

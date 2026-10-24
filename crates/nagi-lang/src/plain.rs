@@ -36,9 +36,9 @@ impl Language for Plain {
 }
 
 /// Kotlin（`new` が無い）
-const KT: Lexis = Lexis { new_keyword: None, member: &[".", "?."], ..C_LIKE };
+const KT: Lexis = Lexis { new_keyword: None, ..C_LIKE };
 /// Rust（`'a` は引用符でない）
-const RS: Lexis = Lexis { quotes: &['"'], member: &[".", "::"], new_keyword: None, ..C_LIKE };
+const RS: Lexis = Lexis { quotes: &['"'], new_keyword: None, ..C_LIKE };
 /// Python（`#` のコメント、字下げの範囲）
 const PY: Lexis = Lexis { word_extra: &['_'], line_comment: Some("#"), block_comment: None, new_keyword: None, scope: Scope::Indent, ..C_LIKE };
 

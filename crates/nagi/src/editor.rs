@@ -396,8 +396,9 @@ pub struct Editor {
     pub rc_clipboard: bool,
     /// 入力補完を自動で出す時刻（設定の「打っている間に自動で出す」）
     pub auto_complete_at: Option<std::time::Instant>,
-    /// SQL の補完で、列・テーブルが届くのを待っている (接続先, 打っている語の始まり)。届いたら一覧を作り直す
-    pub(crate) sql_wait: Option<(usize, usize)>,
+    /// 補完で、まだ届いていない情報（SQL の列・テーブル、読み込み中のライブラリの索引）を待っている (何を, 打っている語の始まり)。
+    /// 届いたら一覧を作り直す
+    pub(crate) data_wait: Option<(crate::smart_complete::DataWait, usize)>,
     /// マウスで決めた操作の、App にしてほしいこと（押した後に App が取り出す。キーなら key の戻り値で返す）
     pub(crate) click_effect: Option<Effect>,
     /// 設定の外観（フォント・大きさ・行の高さ）が変わった（App がフォントを作り直す）
@@ -717,7 +718,7 @@ impl Editor {
             settings_dialog: None,
             rc_clipboard: false,
             auto_complete_at: None,
-            sql_wait: None,
+            data_wait: None,
             click_effect: None,
             appearance_changed: false,
             jdk_download: None,

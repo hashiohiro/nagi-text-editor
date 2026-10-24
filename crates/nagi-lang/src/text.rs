@@ -24,8 +24,6 @@ pub struct Lexis {
     pub block_comment: Option<(&'static str, &'static str)>,
     /// 文字列の引用符（中では `\` で逃がす）
     pub quotes: &'static [char],
-    /// メンバーを引く記号（`.`・`?.`・`::`）
-    pub member: &'static [&'static str],
     /// 作る式の予約語（`new X()`。無い言語は None）
     pub new_keyword: Option<&'static str>,
     /// 範囲の決まり方
@@ -38,11 +36,6 @@ impl Lexis {
     /// 語の文字か
     pub fn is_word(&self, c: char) -> bool {
         c.is_alphanumeric() || self.word_extra.contains(&c)
-    }
-
-    /// 名前が同じか（大文字小文字の規則で）
-    pub fn same_name(&self, a: &str, b: &str) -> bool {
-        if self.case_sensitive { a == b } else { a.eq_ignore_ascii_case(b) }
     }
 
     /// `s` の `i` にある引用符から始まる文字列の、閉じる引用符の次の位置（閉じなければ終わり）
@@ -67,14 +60,13 @@ pub const C_LIKE: Lexis = Lexis {
     line_comment: Some("//"),
     block_comment: Some(("/*", "*/")),
     quotes: &['"', '\''],
-    member: &["."],
     new_keyword: Some("new"),
     scope: Scope::Braces,
     case_sensitive: true,
 };
 
-/// TypeScript・JavaScript（テンプレートの文字列の ` も、`?.` も）
-pub const JS_LIKE: Lexis = Lexis { quotes: &['"', '\'', '`'], member: &[".", "?."], ..C_LIKE };
+/// TypeScript・JavaScript（テンプレートの文字列の ` も）
+pub const JS_LIKE: Lexis = Lexis { quotes: &['"', '\'', '`'], ..C_LIKE };
 
 /// 外側の括弧（`( [ {`、`angle` なら `< >` も。`=>` の > は数えない）と文字列の外で、`sep` ごとに分ける
 pub fn split_top<'a>(lx: &Lexis, s: &'a str, sep: u8, angle: bool) -> Vec<&'a str> {

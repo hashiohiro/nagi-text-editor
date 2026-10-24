@@ -97,7 +97,7 @@ impl Editor {
                 }
             }
         }
-        self.sql_wait = Some((i, start));
+        self.data_wait = Some((crate::smart_complete::DataWait::Console(i), start));
         out
     }
 
@@ -110,35 +110,9 @@ impl Editor {
         v.into_iter().map(|c| (c.insert.unwrap_or(c.name), c.mark, c.note)).collect()
     }
 
-    /// 列・テーブルが届いた: 出している SQL の補完の一覧を作り直す。一覧が出ていなければ（候補が無くて出せなかったなら）出す
+    /// 列・テーブルが届いた: 出している SQL の補完の一覧を作り直す（smart_complete::data_arrived）
     pub(crate) fn sql_metadata_arrived(&mut self, i: usize) {
-        let Some((src, start)) = self.sql_wait else { return };
-        if src != i || self.state() != crate::editor::State::Insert || self.console_source() != Some(i) {
-            return;
-        }
-        let abs = self.abs();
-        // カーソルが同じ語の中にいるときだけ
-        let same_line = self.buf.line_start(self.cursor.line) <= start && start <= abs;
-        if !same_line || self.buf.slice_string(start, abs).chars().any(|c| !(c.is_alphanumeric() || matches!(c, '_' | '$' | '#'))) {
-            self.sql_wait = None;
-            return;
-        }
-        let sel = self.completion.as_ref().and_then(|c| c.sel.and_then(|s| c.items.get(s).cloned()));
-        if self.completion.as_ref().is_some_and(|c| c.smart.is_some()) || self.completion.is_none() {
-            let msg = self.notify.text.clone();
-            self.completion = None;
-            self.start_smart_completion();
-            // 出せなければ「候補はありません」は出さない
-            if self.completion.is_none() {
-                self.notify.info(msg);
-            }
-            // 選んでいた候補を選び直す
-            if let (Some(c), Some(name)) = (&mut self.completion, sel) {
-                if let Some(k) = c.items.iter().position(|x| *x == name) {
-                    c.sel = Some(k);
-                }
-            }
-        }
+        self.data_arrived(crate::smart_complete::DataWait::Console(i));
     }
 }
 

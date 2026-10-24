@@ -18,6 +18,11 @@ pub fn for_file(lang: Option<Lang>) -> &'static dyn Language {
     }
 }
 
+/// 言語を選ぶ: SQL のコンソールなら SQL（パスで決まらない）、ほかはファイルの言語
+pub fn pick(file: Option<Lang>, console: bool) -> &'static dyn Language {
+    if console { &crate::sql::SQL } else { for_file(file) }
+}
+
 /// パス（根からの相対パスでもよい）の言語の差し込み口
 pub fn for_path(path: &str) -> &'static dyn Language {
     for_file(Lang::detect(std::path::Path::new(path)))

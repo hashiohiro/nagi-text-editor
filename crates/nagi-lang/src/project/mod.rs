@@ -4,10 +4,43 @@ mod rank;
 
 pub use rank::*;
 
-/// `text` の中の `name` の変数・引数・フィールドの宣言の型（`at` より前の最後の宣言、無ければ後ろの最初）
+/// 変数・引数・フィールドの宣言の書き方（言語が決める）
+#[derive(Clone, Copy, Debug)]
+pub struct VarStyles {
+    /// `Type name`（Java・C#）
+    pub type_first: bool,
+    /// `name: Type`（TypeScript・Kotlin）
+    pub colon: bool,
+    /// `var・val・let・const name = new Type(` / `Type(`
+    pub init: bool,
+}
+
+/// どの書き方も読む（言語が決めていないとき）
+pub const ANY_STYLE: VarStyles = VarStyles { type_first: true, colon: true, init: true };
+
+/// import の書き方（言語が決める）
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImportStyle {
+    /// 完全な名前（`import a.b.C;`。Java・Kotlin）
+    Dotted,
+    /// モジュールの指定（`import { A } from './x'`。TypeScript・JavaScript）
+    Path,
+    /// どちらも
+    Both,
+}
+
+/// `text` の中の `name` の変数・引数・フィールドの宣言の型（`at` より前の最後の宣言、無ければ後ろの最初。どの書き方も読む）
 pub fn var_type(text: &str, name: &str, at: usize) -> Option<String> {
+    var_type_with(ANY_STYLE, text, name, at)
+}
+
+/// `var_type` を、書き方 `st` だけで
+pub fn var_type_with(st: VarStyles, text: &str, name: &str, at: usize) -> Option<String> {
     // Java・C#: Type name / Type<..> name / Type[] name（宣言・引数・フィールド）。型引数と配列は外す
-    let mut all: Vec<(usize, String)> = crate::java::types::typed_decls(text, name).into_iter().map(|(p, t)| (p, t.split(['<', '[']).next().unwrap_or("").rsplit('.').next().unwrap_or("").to_string())).collect();
+    let mut all: Vec<(usize, String)> = Vec::new();
+    if st.type_first {
+        all.extend(crate::java::types::typed_decls(text, name).into_iter().map(|(p, t)| (p, t.split(['<', '[']).next().unwrap_or("").rsplit('.').next().unwrap_or("").to_string())));
+    }
     // 名前を入れずに一度だけ作り、合ったものの名前を比べる（呼ぶたびに作ると遅い）
     static PATS: std::sync::OnceLock<[regex::Regex; 2]> = std::sync::OnceLock::new();
     let pats = PATS.get_or_init(|| {
@@ -19,7 +52,8 @@ pub fn var_type(text: &str, name: &str, at: usize) -> Option<String> {
         ]
     });
     if text.contains(name) {
-        for re in pats {
+        let on = [st.colon, st.init];
+        for (re, _) in pats.iter().zip(on).filter(|x| x.1) {
             all.extend(re.captures_iter(text).filter(|c| &c[1] == name).map(|c| (c.get(0).map_or(0, |m| m.start()), c[2].to_string())));
         }
     }

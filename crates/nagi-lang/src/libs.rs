@@ -26,8 +26,9 @@ impl Libraries {
         self.slots.insert(eco, v);
     }
 
-    pub fn has(&self, eco: &str) -> bool {
-        self.slots.contains_key(eco)
+    /// 生態系 `eco` の索引を読み込んでいる途中か
+    pub fn is_loading(&self, eco: &str) -> bool {
+        self.loading.iter().any(|(n, _)| *n == eco)
     }
 
     /// プロジェクトの根 `root` で要る生態系の索引を、裏で読み込み始める（`only` があればそれを作り直すきっかけにする生態系だけ）
@@ -52,8 +53,8 @@ impl Libraries {
         ALL.iter().any(|e| e.rebuild_on(path))
     }
 
-    /// 読み込み終わったものを受け取る。(読み込んだか, 記録に残すこと) の並び
-    pub fn poll(&mut self) -> Vec<Result<String, String>> {
+    /// 読み込み終わったものを受け取る。(生態系, 読み込んだか・記録に残すこと) の並び
+    pub fn poll(&mut self) -> Vec<(&'static str, Result<String, String>)> {
         let mut out = Vec::new();
         let mut k = 0;
         while k < self.loading.len() {
@@ -63,15 +64,15 @@ impl Libraries {
                     match r {
                         Ok(l) => {
                             self.slots.insert(name, l.index);
-                            out.push(Ok(l.log));
+                            out.push((name, Ok(l.log)));
                         }
-                        Err(e) => out.push(Err(format!("{name}: {e}"))),
+                        Err(e) => out.push((name, Err(format!("{name}: {e}")))),
                     }
                 }
                 // 読み込む処理が落ちた
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     let (name, _) = self.loading.remove(k);
-                    out.push(Err(format!("{name}: 読み込みが途中で終わりました")));
+                    out.push((name, Err(format!("{name}: 読み込みが途中で終わりました"))));
                 }
                 Err(_) => k += 1,
             }
@@ -104,7 +105,9 @@ mod tests {
             Vec::new()
         };
         l.start(&dir, None, nagi_core::task::no_waker());
-        assert!(matches!(wait(&mut l).as_slice(), [Ok(m)] if m.contains("TypeScript")));
+        assert!(l.is_loading(crate::eco::JS));
+        assert!(matches!(wait(&mut l).as_slice(), [("js", Ok(m))] if m.contains("TypeScript")));
+        assert!(!l.is_loading(crate::eco::JS));
         assert!(crate::eco::dts(&l).is_some() && crate::eco::jars(&l).is_none(), "Maven でないので JVM は読まない");
         assert!(l.rebuild_on(Path::new("x/package.json")) && l.rebuild_on(Path::new("pom.xml")) && !l.rebuild_on(Path::new("a.ts")));
         l.start(&dir, Some(Path::new("pom.xml")), nagi_core::task::no_waker());

@@ -76,6 +76,15 @@ impl Language for Ts {
         Some(eco::JS)
     }
 
+    /// `name: Type` と `let・const name = new Type(`
+    fn var_styles(&self) -> crate::project::VarStyles {
+        crate::project::VarStyles { type_first: false, colon: true, init: true }
+    }
+
+    fn import_style(&self) -> crate::project::ImportStyle {
+        crate::project::ImportStyle::Path
+    }
+
     fn decl_type(&self, line: &str, col: usize) -> Option<String> {
         super::rules::ts_decl_type(&line[col..])
     }

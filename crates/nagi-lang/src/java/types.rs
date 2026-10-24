@@ -718,7 +718,7 @@ pub fn receiver_text(src: &str, before: &str, line_start: usize, at: usize, know
     let Some(chain) = text::dotted_chain(LX, &expanded) else { return Ok((expanded, None)) };
     let off = expanded.len() - chain.len();
     let segs: Vec<String> = chain.split('.').map(String::from).collect();
-    if !(segs[0].starts_with(char::is_lowercase) && known(&segs[0]) && crate::project::var_type(src, &segs[0], at).is_none()) {
+    if !(segs[0].starts_with(char::is_lowercase) && known(&segs[0]) && crate::project::var_type_with(super::lang::STYLES, src, &segs[0], at).is_none()) {
         return Ok((expanded, None));
     }
     // パッケージとして知っている長さ（大文字で始まるパッケージもある）

@@ -713,7 +713,7 @@ impl<'a> Ranker<'a> {
         }
         // 言語のまとまり（同じ生態系。Java と Kotlin、TS と JS は同じ）
         let family = |p: &str| for_path(p).ecosystem();
-        let hit = import_hits(from_rel, src, name, &cands);
+        let hit = import_hits(for_path(from_rel).import_style(), from_rel, src, name, &cands);
         // 別のファイルの、使えない関数・定数（TS / JS は export していないもの。言語が決める）
         let hidden: Files = cands
             .iter()
@@ -906,14 +906,18 @@ pub fn supertypes(src: &str, of: Option<&str>) -> Vec<String> {
     out
 }
 
-/// import している完全な名前・相対パスに当たる候補のファイル
-fn import_hits(from_rel: &str, src: &str, name: &str, cands: &[Loc]) -> std::collections::HashSet<String> {
+/// import している完全な名前・相対パスに当たる候補のファイル（`style` は今のファイルの言語の import の書き方）
+fn import_hits(style: super::ImportStyle, from_rel: &str, src: &str, name: &str, cands: &[Loc]) -> std::collections::HashSet<String> {
+    use super::ImportStyle::{Both, Dotted, Path};
     let from_dir: Vec<&str> = from_rel.split('/').collect::<Vec<_>>().split_last().map_or(Vec::new(), |x| x.1.to_vec());
     let stem = |p: &str| p.rsplit_once('.').map_or(p.to_string(), |(a, _)| a.to_string());
     let mut hit = std::collections::HashSet::new();
     for (names, spec) in imports_of(src) {
         // TS / JS（相対パス・パッケージ名）と Java（a.b.C）を分ける
         if spec.contains('/') || spec.starts_with('.') || !spec.contains('.') {
+            if !matches!(style, Path | Both) {
+                continue;
+            }
             // TS / JS: その名前を取り込んでいるモジュールのファイル
             if !names.iter().any(|n| n == name) {
                 continue;
@@ -938,7 +942,7 @@ fn import_hits(from_rel: &str, src: &str, name: &str, cands: &[Loc]) -> std::col
             }
             let target = parts.join("/");
             hit.extend(cands.iter().filter(|c| stem(&c.path) == target || stem(&c.path) == format!("{target}/index")).map(|c| c.path.to_string()));
-        } else if spec.ends_with(".*") || names.iter().any(|n| n == name) {
+        } else if matches!(style, Dotted | Both) && (spec.ends_with(".*") || names.iter().any(|n| n == name)) {
             // Java: a.b.C → a/b/C.java、a.b.* → a/b/
             let path = spec.trim_end_matches(".*").replace('.', "/");
             let want = if spec.ends_with(".*") { format!("{path}/{name}") } else { path };

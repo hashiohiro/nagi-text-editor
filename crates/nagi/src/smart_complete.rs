@@ -16,6 +16,15 @@ use crate::editor::Editor;
 /// 候補 1 つ（nagi_lang の Item）
 pub use nagi_lang::lang::Item as Cand;
 
+/// 補完が待っている、まだ届いていない情報
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DataWait {
+    /// SQL のコンソール（接続先の番号）の列・テーブル
+    Console(usize),
+    /// 生態系のライブラリの索引（読み込み中）
+    Library(&'static str),
+}
+
 /// 補完の一覧の中身（絞り込む前の全部と、出している候補の番号）
 pub struct SmartState {
     pub all: Vec<Cand>,
@@ -78,9 +87,9 @@ impl Editor {
         self.syntax.as_ref().map(|s| s.lang).or_else(|| self.buf.path.as_deref().and_then(nagi_syntax::Lang::detect))
     }
 
-    /// 今のファイルの言語の差し込み口
+    /// 今のファイルの言語の差し込み口（SQL のコンソールは SQL）
     pub(crate) fn language(&self) -> &'static dyn nagi_lang::lang::Language {
-        nagi_lang::registry::for_file(self.file_lang())
+        nagi_lang::registry::pick(self.file_lang(), self.console_source().is_some())
     }
 
     /// 候補を集める（`ws` は打っている語の始まり（行の中の byte）、`start` はその絶対位置）。手順は nagi_lang の template
@@ -92,14 +101,56 @@ impl Editor {
         let mut cx = nagi_lang::lang::Cx::new(self.language(), &src, here.as_deref(), line, ws, start, prefix, self.nav.index.as_ref(), &self.nav.libs);
         cx.words = self.settings.bool("completion.words");
         cx.keywords = self.settings.bool("completion.keywords");
-        nagi_lang::template::complete::complete(&cx)
+        let out = nagi_lang::template::complete::complete(&cx);
+        // ライブラリの索引がまだ読み込み中なら、届いたら作り直す
+        if let Some(e) = cx.lang.ecosystem().filter(|e| self.nav.libs.is_loading(e)) {
+            self.data_wait = Some((DataWait::Library(e), start));
+        }
+        out
+    }
+
+    /// 待っていた情報が届いた: 出している補完の一覧を作り直す。一覧が出ていなければ（候補が無くて出せなかったなら）出す
+    pub(crate) fn data_arrived(&mut self, what: DataWait) {
+        let Some((w, start)) = self.data_wait else { return };
+        let here = match w {
+            DataWait::Console(i) => self.console_source() == Some(i),
+            DataWait::Library(_) => true,
+        };
+        if w != what || self.state() != crate::editor::State::Insert || !here {
+            return;
+        }
+        let abs = self.abs();
+        // カーソルが同じ語の中にいるときだけ
+        let lx = self.language().lexis();
+        let same_line = self.buf.line_start(self.cursor.line) <= start && start <= abs;
+        if !same_line || self.buf.slice_string(start, abs).chars().any(|c| !lx.is_word(c)) {
+            self.data_wait = None;
+            return;
+        }
+        let sel = self.completion.as_ref().and_then(|c| c.sel.and_then(|s| c.items.get(s).cloned()));
+        if self.completion.as_ref().is_some_and(|c| c.smart.is_some()) || self.completion.is_none() {
+            let msg = self.notify.text.clone();
+            self.completion = None;
+            self.data_wait = None;
+            self.start_smart_completion();
+            // 出せなければ「候補はありません」は出さない
+            if self.completion.is_none() {
+                self.notify.info(msg);
+            }
+            // 選んでいた候補を選び直す
+            if let (Some(c), Some(name)) = (&mut self.completion, sel) {
+                if let Some(k) = c.items.iter().position(|x| *x == name) {
+                    c.sel = Some(k);
+                }
+            }
+        }
     }
 
     /// 打った語で絞り込み直す（合うものが無ければ閉じる）
     pub(crate) fn refilter_smart(&mut self) {
         let abs = self.abs();
         // SQL は大文字小文字を区別しない（Oracle の名前は大文字、打つのは小文字が多い）
-        let case = if self.console_source().is_some() { "none".to_string() } else { self.settings.get("completion.case") };
+        let case = if !self.language().lexis().case_sensitive { "none".to_string() } else { self.settings.get("completion.case") };
         let Some(c) = &mut self.completion else { return };
         let Some(st) = &mut c.smart else { return };
         if abs < c.start {
@@ -473,6 +524,44 @@ mod tests {
     }
 
     /// TypeScript: 組み込み（lib の .d.ts）と node_modules のパッケージの型の、. の後のメンバー
+    /// ライブラリの索引が読み込み中に補完を出したら、届いたところで一覧を作り直す（出せていなければ出す）
+    #[test]
+    fn library_arrives_while_completing() {
+        let dir = std::env::temp_dir().join(format!("nagi-libwait-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let lib = dir.join("node_modules/typescript/lib");
+        std::fs::create_dir_all(&lib).unwrap();
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::write(dir.join("tsconfig.json"), "{ \"compilerOptions\": { \"target\": \"ES2022\" } }").unwrap();
+        std::fs::write(lib.join("lib.es2022.full.d.ts"), "/// <reference lib=\"es5\" />\n").unwrap();
+        std::fs::write(lib.join("lib.es5.d.ts"), "interface String {\n  trimEnd(): string;\n}\n").unwrap();
+        std::fs::write(dir.join("a.ts"), "export function f(s: string) {\n}\n").unwrap();
+        let mut e = Editor::new(Buffer::open(&dir.join("a.ts")).unwrap(), None);
+        e.buf.path = Some(dir.join("a.ts"));
+        e.set_screen(120, 40);
+        e.start_index();
+        for _ in 0..500 {
+            e.poll_index();
+            if e.nav.index.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        // 読み込みを始めてすぐ補完（まだ届いていない）
+        e.nav.libs.start(&dir, None, nagi_core::task::no_waker());
+        keys(&mut e, "1GA<CR>s.<C-Space>");
+        assert!(e.data_wait.is_some(), "読み込み中なので待つ");
+        for _ in 0..1000 {
+            e.poll_index();
+            if e.completion.as_ref().is_some_and(|c| c.items.iter().any(|x| x == "trimEnd")) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(e.completion.as_ref().is_some_and(|c| c.items.iter().any(|x| x == "trimEnd")), "{:?} {}", e.completion.as_ref().map(|c| c.items.clone()), e.notify.text);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn typescript_members_after_dot() {
         let dir = std::env::temp_dir().join(format!("nagi-tsmembers-{}", std::process::id()));

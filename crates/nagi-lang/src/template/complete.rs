@@ -81,7 +81,7 @@ fn after_dot(lang: &dyn Language, cx: &Cx, ranker: &mut Ranker, out: &mut Out) {
     };
     let var = |n: &str| match n.strip_prefix("new ") {
         Some(t) => Some(t.split('<').next().unwrap_or(t).to_string()),
-        None => crate::project::var_type(src, n, cx.start),
+        None => crate::project::var_type_with(lang.var_styles(), src, n, cx.start),
     };
     let marked = |n: &str| match n.strip_prefix("new ") {
         Some(t) => Some(format!("={t}")),

@@ -11,6 +11,9 @@ pub struct Java;
 
 pub static JAVA: Java = Java;
 
+/// Java の変数の宣言（`Type name` と `var name = new Type(`）
+pub const STYLES: crate::project::VarStyles = crate::project::VarStyles { type_first: true, colon: false, init: true };
+
 const KEYWORDS: &[&str] = &[
     "abstract", "boolean", "break", "case", "catch", "char", "class", "continue", "default", "double", "else", "enum", "extends", "final", "finally", "float", "for", "if",
     "implements", "import", "instanceof", "int", "interface", "long", "new", "null", "package", "private", "protected", "public", "return", "static", "super", "switch",
@@ -127,6 +130,14 @@ impl Language for Java {
 
     fn ecosystem(&self) -> Option<&'static str> {
         Some(eco::JVM)
+    }
+
+    fn var_styles(&self) -> crate::project::VarStyles {
+        STYLES
+    }
+
+    fn import_style(&self) -> crate::project::ImportStyle {
+        crate::project::ImportStyle::Dotted
     }
 
     fn overloads(&self) -> bool {

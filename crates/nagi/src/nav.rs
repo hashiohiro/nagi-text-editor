@@ -92,9 +92,13 @@ impl Editor {
                 }
             }
         }
-        for r in self.nav.libs.poll() {
+        for (eco, r) in self.nav.libs.poll() {
             match r {
-                Ok(m) => nagi_core::log::info(&m),
+                Ok(m) => {
+                    nagi_core::log::info(&m);
+                    self.data_arrived(crate::smart_complete::DataWait::Library(eco));
+                    changed = true;
+                }
                 Err(e) => nagi_core::log::warn(&format!("ライブラリの索引を作れません: {e}")),
             }
         }
