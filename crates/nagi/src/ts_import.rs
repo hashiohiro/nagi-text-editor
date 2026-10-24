@@ -180,6 +180,8 @@ mod tests {
         // [1 番目, 候補にある, 無い]
         let mut n = [0usize; 3];
         let mut miss: std::collections::HashMap<String, usize> = Default::default();
+        let mut dump = std::env::var_os("NAGI_RATE_DUMP").map(|f| std::io::BufWriter::new(std::fs::File::create(f).unwrap()));
+        files.sort();
         let t0 = std::time::Instant::now();
         for p in &files {
             let Ok(src) = std::fs::read_to_string(p) else { continue };
@@ -191,6 +193,10 @@ mod tests {
                 }
                 let others: Vec<String> = imports.iter().enumerate().filter(|(j, _)| *j != k).map(|(_, i)| i.from.clone()).collect();
                 let cands = candidates_with(&ix, Some(&idx), p, &others, &imp.local, Some((&imp.imported, &imp.from)));
+                if let Some(d) = &mut dump {
+                    let rel = p.strip_prefix(&root).unwrap_or(p).to_string_lossy().replace('\\', "/");
+                    std::io::Write::write_fmt(d, format_args!("{rel}\t{}\t{cands:?}\n", imp.local)).unwrap();
+                }
                 let same = |c: &String| *c == imp.from || (c.starts_with('.') && imp.from.starts_with('.') && ix.resolve_import(&root, &dir, c) == ix.resolve_import(&root, &dir, &imp.from));
                 let k = match cands.iter().position(same) {
                     Some(0) => 0,

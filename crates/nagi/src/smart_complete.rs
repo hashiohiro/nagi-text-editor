@@ -981,6 +981,8 @@ mod tests {
         let mut slow: Vec<(u128, String)> = Vec::new();
         // NAGI_RATE_ONLY があれば、パスにその文字を含むファイルだけ
         let only = std::env::var("NAGI_RATE_ONLY").ok();
+        // NAGI_RATE_DUMP があれば、1 か所ごとの候補（名前・印・説明・順・import を集めた順に）の要約を書く（作り替えの前後で比べる）
+        let mut dump = std::env::var_os("NAGI_RATE_DUMP").map(|f| std::io::BufWriter::new(std::fs::File::create(f).unwrap()));
         for p in files.iter().step_by(step).filter(|p| only.as_ref().is_none_or(|o| p.to_string_lossy().contains(o.as_str()))) {
             let p = p.as_path();
             let Ok(buf) = Buffer::open(p) else { continue };
@@ -1003,6 +1005,15 @@ mod tests {
                     let t1 = std::time::Instant::now();
                     let c = e.smart_candidates(&line, ws, start);
                     let us = t1.elapsed().as_micros();
+                    if let Some(d) = &mut dump {
+                        use std::hash::{Hash, Hasher};
+                        let mut h = std::collections::hash_map::DefaultHasher::new();
+                        for x in &c {
+                            (&x.name, x.mark, &x.note, x.call, x.rank, &x.insert, &x.import).hash(&mut h);
+                        }
+                        let rel = p.strip_prefix(&root).unwrap_or(p).to_string_lossy().replace('\\', "/");
+                        std::io::Write::write_fmt(d, format_args!("{rel}:{}:{ws}\t{}\t{:016x}\n", li + 1, c.len(), h.finish())).unwrap();
+                    }
                     if std::env::var("NAGI_RATE_SHOW").is_ok_and(|x| line.contains(&x)) {
                         println!("{}:{} {} -> {:?}", p.display(), li + 1, line.trim(), c.iter().take(8).map(|x| (&x.name, x.rank)).collect::<Vec<_>>());
                     }

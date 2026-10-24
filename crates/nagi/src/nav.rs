@@ -836,6 +836,14 @@ mod tests {
         }
         files.sort();
         let step = std::env::var("NAGI_RATE_FILES").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(1).max(1);
+        // NAGI_RATE_DUMP があれば、1 か所ごとの跳び先を書く（作り替えの前後で比べる）
+        let mut dump = std::env::var_os("NAGI_RATE_DUMP").map(|f| std::io::BufWriter::new(std::fs::File::create(f).unwrap()));
+        let mut put = |p: &Path, li: usize, col: usize, what: String| {
+            if let Some(d) = &mut dump {
+                let rel = p.strip_prefix(&root).unwrap_or(p).to_string_lossy().replace('\\', "/");
+                std::io::Write::write_fmt(d, format_args!("{rel}:{}:{col}\t{what}\n", li + 1)).unwrap();
+            }
+        };
         let t0 = std::time::Instant::now();
         for p in files.iter().step_by(step) {
             let Ok(buf) = Buffer::open(p) else { continue };
@@ -863,8 +871,11 @@ mod tests {
                         continue;
                     }
                     let at = e.buf.line_start(li) + g.start();
-                    let k = match e.library_target(g.as_str(), at) {
-                        Some((owner, member)) => match crate::java_source::open(&jars, &owner, member.as_deref(), &dir) {
+                    let target = e.library_target(g.as_str(), at);
+                    let opened = target.as_ref().and_then(|(owner, member)| crate::java_source::open(&jars, owner, member.as_deref(), &dir));
+                    put(p, li, g.start(), format!("{target:?} {:?}", opened.as_ref().map(|o| (o.path.file_name().map(|x| x.to_string_lossy().into_owned()), o.line, o.col, o.source))));
+                    let k = match target {
+                        Some(_) => match opened {
                             Some(o) => {
                                 let text = std::fs::read_to_string(&o.path).unwrap_or_default();
                                 if o.source { source += 1 } else { stub += 1 }
@@ -909,7 +920,10 @@ mod tests {
                     }
                     ty_all += 1;
                     let at = e.buf.line_start(li) + m.start();
-                    let ok = e.library_target(m.as_str(), at).and_then(|(owner, member)| crate::java_source::open(&jars, &owner, member.as_deref(), &dir)).is_some_and(|o| {
+                    let target = e.library_target(m.as_str(), at);
+                    let opened = target.as_ref().and_then(|(owner, member)| crate::java_source::open(&jars, owner, member.as_deref(), &dir));
+                    put(p, li, m.start(), format!("T {target:?} {:?}", opened.as_ref().map(|o| (o.line, o.col, o.source))));
+                    let ok = opened.is_some_and(|o| {
                         std::fs::read_to_string(&o.path).unwrap_or_default().lines().nth(o.line).is_some_and(|l| l.contains(m.as_str()))
                     });
                     if ok {
@@ -966,6 +980,7 @@ mod tests {
             }
         }
         files.sort();
+        let mut dump = std::env::var_os("NAGI_RATE_DUMP").map(|f| std::io::BufWriter::new(std::fs::File::create(f).unwrap()));
         let t0 = std::time::Instant::now();
         for p in &files {
             let Ok(buf) = Buffer::open(p) else { continue };
@@ -984,7 +999,12 @@ mod tests {
                     }
                     all += 1;
                     let at = e.buf.line_start(li) + g.start();
-                    let hit = e.ts_declaration(g.as_str(), at).is_some_and(|(f, l, _)| std::fs::read_to_string(&f).unwrap_or_default().lines().nth(l).is_some_and(|x| x.contains(g.as_str())));
+                    let decl = e.ts_declaration(g.as_str(), at);
+                    if let Some(d) = &mut dump {
+                        let rel = p.strip_prefix(&root).unwrap_or(p).to_string_lossy().replace('\\', "/");
+                        std::io::Write::write_fmt(d, format_args!("{rel}:{}:{}\t{decl:?}\n", li + 1, g.start())).unwrap();
+                    }
+                    let hit = decl.is_some_and(|(f, l, _)| std::fs::read_to_string(&f).unwrap_or_default().lines().nth(l).is_some_and(|x| x.contains(g.as_str())));
                     if hit {
                         ok += 1;
                     } else {
@@ -1068,6 +1088,12 @@ mod tests {
             }
             println!("{name}（定義 {n_defs}）: {:?} {} / 名前の一致 {before}+", t0.elapsed(), e.notify.text);
             println!("  定義: {}:{}", l.path, l.line + 1);
+            if let Some(f) = std::env::var_os("NAGI_RATE_DUMP") {
+                let mut f = std::path::PathBuf::from(f);
+                f.set_extension(format!("{name}.txt"));
+                let all: String = e.grep.as_ref().unwrap().hits.iter().map(|h| format!("{}:{}:{:?}\n", h.path, h.line, h.range)).collect();
+                std::fs::write(f, all).unwrap();
+            }
             for h in e.grep.as_ref().unwrap().hits.iter().take(12) {
                 println!("  {}:{} {}", h.path, h.line, h.text.chars().take(80).collect::<String>());
             }
