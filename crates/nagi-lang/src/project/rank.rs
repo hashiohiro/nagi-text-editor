@@ -182,36 +182,11 @@ impl<'a> Ranker<'a> {
     /// 引数の型と引数の宣言の型がどれだけ合うか（2: 同じ、1: 子の型・数の広げ、0: 分からない、負: 合わない）
     fn compat(&mut self, lang: &dyn Language, a: &ArgTy, param: &str) -> i32 {
         let p = param;
-        let loose = matches!(p, "Object" | "any" | "unknown") || p.chars().count() == 1;
-        let numeric = ["int", "long", "short", "byte", "double", "float", "Integer", "Long", "Short", "Byte", "Double", "Float", "Number", "number", "BigDecimal", "BigInteger"];
         match a {
             ArgTy::Unknown => 0,
-            _ if loose => 0,
-            ArgTy::Lit("String") => if matches!(p, "String" | "CharSequence" | "string") { 2 } else { -3 },
-            ArgTy::Lit("int") => match p {
-                "int" | "Integer" | "number" => 2,
-                _ if numeric.contains(&p) => 1,
-                _ => -3,
-            },
-            ArgTy::Lit("long") => match p {
-                "long" | "Long" => 2,
-                "float" | "double" | "Float" | "Double" | "Number" => 1,
-                _ => -3,
-            },
-            ArgTy::Lit("double") => match p {
-                "double" | "Double" | "number" => 2,
-                "float" | "Float" | "Number" | "BigDecimal" => 1,
-                _ => -3,
-            },
-            ArgTy::Lit("number") => if numeric.contains(&p) { 2 } else { -3 },
-            ArgTy::Lit("boolean") => if matches!(p, "boolean" | "Boolean") { 2 } else { -3 },
-            ArgTy::Lit("char") => match p {
-                "char" | "Character" => 2,
-                "int" | "long" => 1,
-                _ => -3,
-            },
-            ArgTy::Lit("null") => if ["int", "long", "short", "byte", "double", "float", "boolean", "char"].contains(&p) { -3 } else { 0 },
-            ArgTy::Lit(_) => 0,
+            // 何でも受ける引数（Object・any・型変数）
+            _ if lang.loose_param(p) => 0,
+            ArgTy::Lit(l) => lang.literal_fit(l, p),
             ArgTy::Named(t) => {
                 if t == p {
                     return 2;
@@ -458,7 +433,7 @@ impl<'a> Ranker<'a> {
                 if has(&here) {
                     return Hier::Files(here);
                 }
-                supertypes(src, None).into_iter().map(|t| (t, Some(from_rel.to_string()))).collect()
+                for_path(from_rel).supertypes(src, None).into_iter().map(|t| (t, Some(from_rel.to_string()))).collect()
             }
             Ty::Named(t, hint) => vec![(t, hint)],
             Ty::Outside(t) => return Hier::Outside(t),
@@ -690,7 +665,7 @@ impl<'a> Ranker<'a> {
             return v.clone();
         }
         let out = match self.lines(path) {
-            Some(lines) => supertypes(&lines.join("\n"), Some(t)),
+            Some(lines) => for_path(path).supertypes(&lines.join("\n"), Some(t)),
             None => Vec::new(),
         };
         self.supers.insert(key, out.clone());
@@ -1152,5 +1127,25 @@ mod tests {
         k.line = 9;
         let r = narrow_candidates("m/Use.java", "", "E", vec![k.clone(), loc("m/E.java"), k]);
         assert_eq!((r.len(), r[0].line), (1, 0));
+    }
+
+    /// Kotlin: `class Repo : Base()` の親のメンバーも（親の型の読み方は言語が決める）
+    #[test]
+    fn kotlin_members_from_parent() {
+        let dir = std::env::temp_dir().join(format!("nagi-kt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/Base.kt"), "open class Base {\n    fun save() {}\n}\n").unwrap();
+        std::fs::write(dir.join("src/Repo.kt"), "class Repo(val n: Int) : Base() {\n    fun find() {}\n}\n").unwrap();
+        unsafe { std::env::set_var("NAGI_INDEX_DIR", dir.join("cache")) };
+        let rx = build(&dir, Arc::new(|| {}));
+        let idx = loop {
+            if let Ok(Progress::Done(i)) = rx.recv() {
+                break i;
+            }
+        };
+        let names: Vec<String> = Ranker::new(Some(&idx)).members("Repo").into_iter().map(|m| m.0).collect();
+        assert!(names.contains(&"find".to_string()) && names.contains(&"save".to_string()), "{names:?}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

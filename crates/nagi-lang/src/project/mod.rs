@@ -60,6 +60,44 @@ pub fn var_type_with(st: VarStyles, text: &str, name: &str, at: usize) -> Option
     crate::java::types::pick(all, at)
 }
 
+/// 何でも受ける引数の型か（言語が決めていないとき: Object・any・unknown・1 文字の型変数）
+pub fn loose_param_any(p: &str) -> bool {
+    matches!(p, "Object" | "any" | "unknown") || p.chars().count() == 1
+}
+
+/// 値（字句で分かる種類 `lit`: String・int・long・double・number・boolean・char・null）と、引数の宣言の型 `p` の合い方
+/// （2: 同じ、1: 広げれば合う、0: 分からない、負: 合わない）。言語が決めていないとき（Java と TypeScript の名前を両方）
+pub fn literal_fit_any(lit: &str, p: &str) -> i32 {
+    let numeric = ["int", "long", "short", "byte", "double", "float", "Integer", "Long", "Short", "Byte", "Double", "Float", "Number", "number", "BigDecimal", "BigInteger"];
+    match lit {
+        "String" => if matches!(p, "String" | "CharSequence" | "string") { 2 } else { -3 },
+        "int" => match p {
+            "int" | "Integer" | "number" => 2,
+            _ if numeric.contains(&p) => 1,
+            _ => -3,
+        },
+        "long" => match p {
+            "long" | "Long" => 2,
+            "float" | "double" | "Float" | "Double" | "Number" => 1,
+            _ => -3,
+        },
+        "double" => match p {
+            "double" | "Double" | "number" => 2,
+            "float" | "Float" | "Number" | "BigDecimal" => 1,
+            _ => -3,
+        },
+        "number" => if numeric.contains(&p) { 2 } else { -3 },
+        "boolean" => if matches!(p, "boolean" | "Boolean") { 2 } else { -3 },
+        "char" => match p {
+            "char" | "Character" => 2,
+            "int" | "long" => 1,
+            _ => -3,
+        },
+        "null" => if ["int", "long", "short", "byte", "double", "float", "boolean", "char"].contains(&p) { -3 } else { 0 },
+        _ => 0,
+    }
+}
+
 /// C 系の言語（型を名前の前に書く）: 名前の前の型（`public Criteria createCriteria(` / `private Foo bar;` → Criteria / Foo）。総称型は外側
 pub fn c_decl_type(before: &str) -> Option<String> {
     let mut b = before.trim_end();

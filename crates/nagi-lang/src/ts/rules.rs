@@ -48,3 +48,19 @@ pub fn ts_param_type(p: &str) -> Option<String> {
     let w: String = t.trim().chars().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$').collect();
     (!w.is_empty()).then_some(w)
 }
+
+/// 何でも受ける引数の型（any・unknown と型変数）
+pub fn loose_param(p: &str) -> bool {
+    matches!(p, "any" | "unknown") || p.chars().count() == 1
+}
+
+/// 値（字句で分かる種類: String・number・boolean・null）と引数の宣言の型の合い方
+pub fn literal_fit(lit: &str, p: &str) -> i32 {
+    match lit {
+        "String" => if matches!(p, "string" | "String") { 2 } else { -3 },
+        "number" => if matches!(p, "number" | "Number") { 2 } else { -3 },
+        "boolean" => if matches!(p, "boolean" | "Boolean") { 2 } else { -3 },
+        "null" => if p == "boolean" { -3 } else { 0 },
+        _ => 0,
+    }
+}

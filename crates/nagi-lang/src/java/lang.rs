@@ -160,6 +160,14 @@ impl Language for Java {
         super::rules::jdk_known(t)
     }
 
+    fn loose_param(&self, p: &str) -> bool {
+        super::rules::loose_param(p)
+    }
+
+    fn literal_fit(&self, lit: &str, p: &str) -> i32 {
+        super::rules::literal_fit(lit, p)
+    }
+
     fn import_plan(&self, src: &str, _name: &str, key: &str) -> Import {
         match super::import::plan(src, key) {
             super::import::Plan::None => Import::None,

@@ -288,6 +288,21 @@ pub trait Language: Sync {
         None
     }
 
+    /// 何でも受ける引数の型か（Java の Object、TS の any・unknown、型変数）
+    fn loose_param(&self, p: &str) -> bool {
+        crate::project::loose_param_any(p)
+    }
+
+    /// 値（字句で分かる種類）と引数の宣言の型の合い方（2 同じ・1 広げれば合う・0 分からない・負 合わない）。呼んだ側のファイルの言語で
+    fn literal_fit(&self, lit: &str, p: &str) -> i32 {
+        crate::project::literal_fit_any(lit, p)
+    }
+
+    /// 型 `of`（None ならファイルの中のすべての型）の親の型の名前。既定は C 系（extends・implements）
+    fn supertypes(&self, src: &str, of: Option<&str>) -> Vec<String> {
+        crate::project::supertypes(src, of)
+    }
+
     /// 親が分かっている組み込みの型か
     fn builtin_known(&self, _t: &str) -> bool {
         false

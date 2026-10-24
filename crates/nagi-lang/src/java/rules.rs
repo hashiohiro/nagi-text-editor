@@ -177,3 +177,39 @@ pub fn is_project_package(idx: &nagi_workers::index::Index, pkg: &str) -> bool {
     let i = v.partition_point(|p| p.as_str() < pkg);
     v.get(i).is_some_and(|p| p == pkg || p.strip_prefix(pkg).is_some_and(|r| r.starts_with('/')))
 }
+
+/// 何でも受ける引数の型（Object と型変数）
+pub fn loose_param(p: &str) -> bool {
+    p == "Object" || p.chars().count() == 1
+}
+
+/// 値（字句で分かる種類）と引数の宣言の型の合い方（2 同じ・1 広げれば合う・0 分からない・負 合わない）
+pub fn literal_fit(lit: &str, p: &str) -> i32 {
+    let numeric = ["int", "long", "short", "byte", "double", "float", "Integer", "Long", "Short", "Byte", "Double", "Float", "Number", "BigDecimal", "BigInteger"];
+    match lit {
+        "String" => if matches!(p, "String" | "CharSequence") { 2 } else { -3 },
+        "int" => match p {
+            "int" | "Integer" => 2,
+            _ if numeric.contains(&p) => 1,
+            _ => -3,
+        },
+        "long" => match p {
+            "long" | "Long" => 2,
+            "float" | "double" | "Float" | "Double" | "Number" => 1,
+            _ => -3,
+        },
+        "double" => match p {
+            "double" | "Double" => 2,
+            "float" | "Float" | "Number" | "BigDecimal" => 1,
+            _ => -3,
+        },
+        "boolean" => if matches!(p, "boolean" | "Boolean") { 2 } else { -3 },
+        "char" => match p {
+            "char" | "Character" => 2,
+            "int" | "long" => 1,
+            _ => -3,
+        },
+        "null" => if ["int", "long", "short", "byte", "double", "float", "boolean", "char"].contains(&p) { -3 } else { 0 },
+        _ => 0,
+    }
+}

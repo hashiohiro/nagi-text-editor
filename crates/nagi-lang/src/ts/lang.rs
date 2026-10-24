@@ -85,6 +85,14 @@ impl Language for Ts {
         crate::project::ImportStyle::Path
     }
 
+    fn loose_param(&self, p: &str) -> bool {
+        super::rules::loose_param(p)
+    }
+
+    fn literal_fit(&self, lit: &str, p: &str) -> i32 {
+        super::rules::literal_fit(lit, p)
+    }
+
     fn decl_type(&self, line: &str, col: usize) -> Option<String> {
         super::rules::ts_decl_type(&line[col..])
     }
