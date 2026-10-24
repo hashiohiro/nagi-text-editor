@@ -94,6 +94,8 @@ pub struct Cx<'a> {
     pub keywords: bool,
     /// 言語が作るファイル（ライブラリのソース・骨組み）を置く場所（None なら言語の既定）
     pub out_dir: Option<&'a Path>,
+    /// SQL のコンソール（言語がパスでなく接続で決まり、ライブラリが接続に付く）
+    pub console: Option<crate::sql::Console<'a>>,
 }
 
 impl<'a> Cx<'a> {
@@ -104,7 +106,7 @@ impl<'a> Cx<'a> {
             _ => String::new(),
         };
         let inside = crate::project::enclosing_type(lang.lexis(), src, start);
-        Cx { lang, src, here, line, ws, start, prefix, index, rel, inside, libs, words: true, keywords: true, out_dir: None }
+        Cx { lang, src, here, line, ws, start, prefix, index, rel, inside, libs, words: true, keywords: true, out_dir: None, console: None }
     }
 
     /// `at`（名前の始まりの絶対 byte）の場所（定義へ・参照の絞り込み）
@@ -170,6 +172,11 @@ pub trait Language: Sync {
     /// 補完を始める文字（打ったら一覧を出す）
     fn triggers(&self) -> &'static [char] {
         &['.']
+    }
+
+    /// 言語の手順が丸ごと違うときの候補（SQL）。None なら共通の手順で
+    fn complete_all(&self, _cx: &Cx) -> Option<Vec<Item>> {
+        None
     }
 
     /// `.` の前の式（行の中の `before`）を広げる（前の行からの連なり・型を書かない変数・パッケージの名前）

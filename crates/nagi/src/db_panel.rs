@@ -375,17 +375,7 @@ pub fn statement_at(text: &str, line: usize) -> String {
     lines[s..e].iter().filter(|l| !l.trim_start().starts_with("--")).copied().collect::<Vec<_>>().join("\n").trim().to_string()
 }
 
-/// 識別子（必要なら "" で囲む）
-pub fn ident(s: &str) -> String {
-    let plain = s.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_') && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$' || c == '#');
-    let same_case = s.chars().all(|c| !c.is_ascii_lowercase()) || s.chars().all(|c| !c.is_ascii_uppercase());
-    if plain && same_case { s.to_string() } else { format!("\"{}\"", s.replace('"', "\"\"")) }
-}
-
-/// いつも "" で囲んだ名前
-pub fn quoted(s: &str) -> String {
-    format!("\"{}\"", s.replace('"', "\"\""))
-}
+pub use nagi_lang::sql::ident;
 
 /// 値の書き方（NULL か '...'）
 pub fn literal(v: &Option<String>) -> String {
