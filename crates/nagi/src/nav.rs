@@ -29,6 +29,9 @@ pub struct IndexState {
     /// 外での変更（git pull など）を探す処理と、最後に始めた時刻
     rescan: Option<nagi_core::task::Task<nagi_workers::index::Rescan>>,
     last_rescan: Option<std::time::Instant>,
+    /// 試験でもライブラリの索引を読む（既定は読まない。Maven の依存を求めに行かないように）
+    #[cfg(test)]
+    pub libs_in_tests: bool,
     /// 保存したファイルの索引し直し
     reindex: Option<(Sender<Option<(String, (u64, u64), Vec<Entry>)>>, nagi_core::task::Task<Option<(String, (u64, u64), Vec<Entry>)>>)>,
 }
@@ -68,7 +71,8 @@ impl Editor {
     /// ライブラリの索引を用意する（要る生態系だけ。Maven なら依存の jar と JDK、node_modules に typescript があれば .d.ts）。
     /// `only` があれば、そのファイル（pom.xml・package.json）で作り直すものだけ
     fn start_libraries(&mut self, root: &Path, only: Option<&Path>) {
-        if cfg!(test) {
+        #[cfg(test)]
+        if !self.nav.libs_in_tests {
             return;
         }
         let waker = self.waker();
@@ -1192,5 +1196,47 @@ mod tests {
         // goBack() → 親クラスのメソッド
         keys(&mut e, "<C-o>3G0/goBack<CR>gd");
         assert_eq!(at(&e), ("page-base.ts".into(), 1), "{}", e.notify.text);
+    }
+
+    /// 外で package.json が変わったら（git pull など）、前に出たときの見直しで .d.ts の索引を作り直す（索引を読むところまで）
+    #[test]
+    fn external_package_json_rebuilds_dts() {
+        let dir = std::env::temp_dir().join(format!("nagi-extpkg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::create_dir_all(dir.join("node_modules/typescript/lib")).unwrap();
+        std::fs::write(dir.join("node_modules/typescript/lib/lib.es5.d.ts"), "interface String {\n  trimEnd(): string;\n}\n").unwrap();
+        std::fs::write(dir.join("package.json"), "{}").unwrap();
+        std::fs::write(dir.join("a.ts"), "export const s = 1;\n").unwrap();
+        unsafe { std::env::set_var("NAGI_INDEX_DIR", dir.join("cache")) };
+        let mut e = open(&dir.join("a.ts"));
+        e.nav.libs_in_tests = true;
+        let dts = |e: &mut Editor| {
+            for _ in 0..2000 {
+                e.poll_index();
+                if e.nav.index.is_some() && !e.nav.libs.is_loading(nagi_lang::eco::JS) {
+                    if let Some(d) = nagi_lang::eco::dts(&e.nav.libs) {
+                        return d;
+                    }
+                }
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            panic!("索引が届かない");
+        };
+        e.start_index();
+        let first = dts(&mut e);
+        // 外で書き換え（大きさも変わる）→ 前に出たときの見直し
+        std::fs::write(dir.join("package.json"), "{ \"name\": \"x\" }").unwrap();
+        e.rescan_index();
+        for _ in 0..1000 {
+            e.poll_index();
+            if e.nav.rescan.is_none() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let second = dts(&mut e);
+        assert!(!std::sync::Arc::ptr_eq(&first, &second), ".d.ts の索引を作り直していない");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

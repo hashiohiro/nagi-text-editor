@@ -303,6 +303,11 @@ pub trait Language: Sync {
         crate::project::supertypes(src, of)
     }
 
+    /// 型 `of` の親の型を、型引数ごとの文字で（`ServiceContextBase<Req, Res>`。ライブラリの親のメンバーを型引数つきで引く）。既定は C 系
+    fn supertype_texts(&self, src: &str, of: &str) -> Vec<String> {
+        crate::project::supertype_texts(src, of)
+    }
+
     /// 親が分かっている組み込みの型か
     fn builtin_known(&self, _t: &str) -> bool {
         false

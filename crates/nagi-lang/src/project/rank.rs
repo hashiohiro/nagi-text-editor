@@ -604,7 +604,7 @@ impl<'a> Ranker<'a> {
                     } else if let Some(lines) = self.lines(&tl.path) {
                         // 型引数ごと（extends ControllerBase<Req, Res>）
                         let simple = |x: &str| x.split('<').next().unwrap_or(x).rsplit('.').next().unwrap_or(x).trim().to_string();
-                        let text = supertype_texts(&lines.join("\n"), &t).into_iter().find(|x| simple(x) == s).unwrap_or_else(|| s.clone());
+                        let text = for_path(&tl.path).supertype_texts(&lines.join("\n"), &t).into_iter().find(|x| simple(x) == s).unwrap_or_else(|| s.clone());
                         if !out.iter().any(|(n, _): &(String, Arc<Vec<String>>)| simple(n) == s) {
                             out.push((text, lines));
                         }
