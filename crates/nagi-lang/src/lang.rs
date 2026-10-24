@@ -132,6 +132,17 @@ pub struct Target {
     pub note: Option<String>,
 }
 
+/// 言語が丸ごと決めた定義
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Found {
+    Jump(Target),
+    /// 見つからない（伝えて止める）
+    Warn(String),
+    Info(String),
+    /// 何もせず止める
+    Stop,
+}
+
 /// `.` の前の式を広げたもの
 pub enum Head {
     /// 広げた式と、頭のパッケージの名前を外したときの (単純名, 完全な名前)
@@ -208,6 +219,11 @@ pub trait Language: Sync {
     /// `.` の後でないときの、言語の名前
     fn scope_names(&self, _cx: &Cx) -> ScopeNames {
         ScopeNames::default()
+    }
+
+    /// 言語が丸ごと決める定義（Angular のテンプレート: 部品の .ts から）。None ならいつもの手順（ファイルの中の束縛 → 索引 → ライブラリ）
+    fn definition(&self, _cx: &Cx, _name: &str) -> Option<Found> {
+        None
     }
 
     /// プロジェクトの外（ライブラリ・.d.ts）の、`cx.start` の名前 `name` の定義

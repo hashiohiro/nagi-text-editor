@@ -208,12 +208,19 @@ impl Editor {
             self.notify.error("E348: カーソルの下に識別子がありません");
             return;
         };
-        // Angular のテンプレート: 式の名前は部品の .ts（と親クラス）、タグは部品、属性は部品の @Input / @Output
-        if self.buf.path.as_deref().is_some_and(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("html"))) {
-            self.ensure_syntax();
-            if self.angular_goto(&name, word_at) {
-                return;
-            }
+        // 言語が丸ごと決める定義（Angular のテンプレート: 式の名前は部品の .ts（と親クラス）、タグは部品、属性は部品の @Input / @Output）
+        let found = {
+            let src = self.buf.text();
+            let here = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
+            let cx = nagi_lang::lang::Cx::at(self.language(), &src, here.as_deref(), word_at, self.nav.index.as_ref(), &self.nav.libs);
+            cx.lang.definition(&cx, &name)
+        };
+        match found {
+            Some(nagi_lang::lang::Found::Jump(t)) => return self.jump_to(&t.path, t.line, t.col),
+            Some(nagi_lang::lang::Found::Warn(m)) => return self.notify.warn(m),
+            Some(nagi_lang::lang::Found::Info(m)) => return self.notify.info(m),
+            Some(nagi_lang::lang::Found::Stop) => return,
+            None => {}
         }
         // メソッド・型の定義そのものの上なら、それを実装・継承しているもの（インタフェースの宣言から実装へ）
         if self.on_definition(&name, word_at) {
@@ -1112,5 +1119,57 @@ mod tests {
         keys(&mut e, &format!(":e {}<CR>1G0wgI", dir.join("src/UserService.java").display()));
         assert!(e.buf.path.as_ref().unwrap().ends_with("UserServiceImpl.java"), "{:?} {}", e.buf.path, e.notify.text);
         assert_eq!(e.cursor.line, 0);
+    }
+
+    /// Angular のテンプレート（.html）から部品の .ts へ
+    #[test]
+    fn angular_template_to_component() {
+        let dir = std::env::temp_dir().join(format!("nagi-ng-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::create_dir_all(dir.join("src/page")).unwrap();
+        std::fs::create_dir_all(dir.join("src/button")).unwrap();
+        std::fs::create_dir_all(dir.join("src/base")).unwrap();
+        unsafe { std::env::set_var("NAGI_INDEX_DIR", dir.join("cache")) };
+        std::fs::write(dir.join("src/base/page-base.ts"), "export abstract class PageBase {\n  goBack(): void {}\n}\n").unwrap();
+        std::fs::write(
+            dir.join("src/page/page.component.ts"),
+            "@Component({ selector: 'app-page', templateUrl: './page.component.html' })\nexport class PageComponent extends PageBase {\n  title = 'x';\n  onGo(n: number) {}\n}\n",
+        )
+        .unwrap();
+        std::fs::write(dir.join("src/button/button.component.ts"), "@Component({ selector: 'app-button', template: '' })\nexport class ButtonComponent {\n  @Input() width = 0;\n}\n").unwrap();
+        // 別の部品の同じ名前（こちらへは跳ばない）
+        std::fs::write(dir.join("src/other.ts"), "export class Other {\n  onGo() {}\n  title = 'y';\n}\n").unwrap();
+        std::fs::write(dir.join("src/page/page.component.html"), "<p>{{ title }}</p>\n<app-button [width]=\"300\" (click)=\"onGo(1)\"></app-button>\n<a (click)=\"goBack()\">戻る</a>\n").unwrap();
+        let path = dir.join("src/page/page.component.html");
+        let mut buf = Buffer::open(&path).unwrap();
+        buf.path = Some(path);
+        let mut e = Editor::new(buf, None);
+        e.set_screen(120, 40);
+        e.start_index();
+        for _ in 0..1000 {
+            e.poll_index();
+            if e.nav.index.is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        e.ensure_syntax();
+        let at = |e: &Editor| (e.buf.path.as_ref().unwrap().file_name().unwrap().to_string_lossy().into_owned(), e.cursor.line);
+        // {{ title }} → 部品のプロパティ
+        keys(&mut e, "gg/title<CR>gd");
+        assert_eq!(at(&e), ("page.component.ts".into(), 2), "{}", e.notify.text);
+        // (click)="onGo(1)" → 部品のメソッド
+        keys(&mut e, "<C-o>2G0/onGo<CR>gd");
+        assert_eq!(at(&e), ("page.component.ts".into(), 3), "{}", e.notify.text);
+        // <app-button> → 部品のクラス
+        keys(&mut e, "<C-o>2G0wgd");
+        assert_eq!(at(&e), ("button.component.ts".into(), 1), "{}", e.notify.text);
+        // [width] → 部品の @Input
+        keys(&mut e, "<C-o>2G0/width<CR>gd");
+        assert_eq!(at(&e), ("button.component.ts".into(), 2), "{}", e.notify.text);
+        // goBack() → 親クラスのメソッド
+        keys(&mut e, "<C-o>3G0/goBack<CR>gd");
+        assert_eq!(at(&e), ("page-base.ts".into(), 1), "{}", e.notify.text);
     }
 }

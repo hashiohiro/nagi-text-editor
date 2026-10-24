@@ -16,7 +16,6 @@
 // 試験の実行ファイルは結果を書き出すので、コンソールのアプリのまま
 #![cfg_attr(not(test), windows_subsystem = "windows")]
 
-mod angular;
 mod dialogs;
 mod jumplist;
 mod read_view;

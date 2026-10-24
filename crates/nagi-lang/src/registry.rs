@@ -13,6 +13,7 @@ pub fn for_file(lang: Option<Lang>) -> &'static dyn Language {
         Some(Lang::Kotlin) => &crate::plain::KOTLIN,
         Some(Lang::Rust) => &crate::plain::RUST,
         Some(Lang::Python) => &crate::plain::PYTHON,
+        Some(Lang::Html) => &crate::angular::TEMPLATE,
         _ => &crate::plain::OTHER,
     }
 }
