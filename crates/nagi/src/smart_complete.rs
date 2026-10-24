@@ -4,37 +4,17 @@
 //! ↑↓・Ctrl-n/p・Ctrl-j/k で選び、Enter・Tab で決める（メソッドは `()` も入れ、引数があれば括弧の中へ）。Esc は一覧だけ閉じる。
 //! 語の文字でないキー（空白・記号）を打つと閉じてそのまま入る。
 //!
-//! 候補:
-//! - `.` の後: 受け手の型を求め（変数は宣言から、続く呼び出し・フィールドは定義へ移動と同じ型の推定で）、その型と親の型の
-//!   メソッド・フィールド（index::Ranker::members）。型がプロジェクトの外なら、ファイルの中で `.` の後に出てくる語
-//! - それ以外: 今の型のメンバー、ファイルの中の語（変数など）、プロジェクトの型、言語の予約語
-
-use std::collections::HashSet;
+//! 候補を集める手順は nagi_lang::template::complete（言語ごとに違うところは nagi_lang::lang::Language）。
+//! ここは一覧の窓・絞り込み・決めたときの入力（import も）だけ。SQL のコンソールは sql_complete
 
 use nagi_core::fuzzy::Query;
-use nagi_syntax::defs::{DefKind, Receiver};
 use nagi_vim::Key;
 
 use crate::complete::Completion;
 use crate::editor::Editor;
 
-/// 候補 1 つ
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Cand {
-    pub name: String,
-    /// 一覧の印（m メソッド・f フィールド・c クラス・I インターフェース・e 列挙・K 予約語・v 語）
-    pub mark: char,
-    /// 右に出す説明（持っている型など）
-    pub note: String,
-    /// メソッドなら Some(引数があるか)。決めたときに () を入れる
-    pub call: Option<bool>,
-    /// 同じ一致の度合いの中での順（小さいほど先）
-    pub rank: u8,
-    /// 決めたときに入れる文字（名前と違うとき。SQL の "名前" など）
-    pub insert: Option<String>,
-    /// 決めたときに足す import（Java の完全な名前 `java.util.List`）
-    pub import: Option<String>,
-}
+/// 候補 1 つ（nagi_lang の Item）
+pub use nagi_lang::lang::Item as Cand;
 
 /// 補完の一覧の中身（絞り込む前の全部と、出している候補の番号）
 pub struct SmartState {
@@ -44,48 +24,6 @@ pub struct SmartState {
 
 fn word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_' || c == '$'
-}
-
-fn mark_of(kind: DefKind) -> char {
-    match kind {
-        DefKind::Method | DefKind::Function => 'm',
-        DefKind::Field | DefKind::Constant | DefKind::Variable => 'f',
-        DefKind::Interface => 'I',
-        DefKind::Enum => 'e',
-        DefKind::Class | DefKind::Type => 'c',
-        DefKind::Module => 'v',
-    }
-}
-
-/// 言語の予約語（よく使うもの）
-fn keywords(lang: Option<nagi_syntax::Lang>) -> &'static [&'static str] {
-    use nagi_syntax::Lang::*;
-    match lang {
-        Some(Java) => &[
-            "abstract", "boolean", "break", "case", "catch", "char", "class", "continue", "default", "double", "else", "enum", "extends", "final", "finally", "float", "for", "if",
-            "implements", "import", "instanceof", "int", "interface", "long", "new", "null", "package", "private", "protected", "public", "return", "static", "super", "switch",
-            "synchronized", "this", "throw", "throws", "try", "var", "void", "while", "true", "false", "record", "yield",
-        ],
-        Some(Kotlin) => &[
-            "as", "break", "class", "companion", "const", "continue", "data", "do", "else", "enum", "false", "for", "fun", "if", "import", "in", "interface", "is", "lateinit",
-            "null", "object", "open", "override", "package", "private", "protected", "public", "return", "sealed", "super", "this", "throw", "true", "try", "val", "var", "when",
-            "while",
-        ],
-        Some(TypeScript | Tsx | JavaScript) => &[
-            "async", "await", "break", "case", "catch", "class", "const", "constructor", "continue", "default", "delete", "else", "enum", "export", "extends", "false", "finally",
-            "for", "from", "function", "if", "implements", "import", "in", "instanceof", "interface", "let", "new", "null", "private", "protected", "public", "readonly", "return",
-            "static", "super", "switch", "this", "throw", "true", "try", "type", "typeof", "undefined", "var", "void", "while", "yield",
-        ],
-        Some(Rust) => &[
-            "as", "async", "await", "break", "const", "continue", "crate", "else", "enum", "false", "fn", "for", "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut",
-            "pub", "ref", "return", "Self", "self", "static", "struct", "super", "trait", "true", "type", "unsafe", "use", "where", "while", "Some", "None", "Ok", "Err",
-        ],
-        Some(Python) => &[
-            "and", "as", "assert", "async", "await", "break", "class", "continue", "def", "del", "elif", "else", "except", "False", "finally", "for", "from", "global", "if",
-            "import", "in", "is", "lambda", "None", "nonlocal", "not", "or", "pass", "raise", "return", "self", "True", "try", "while", "with", "yield",
-        ],
-        _ => &[],
-    }
 }
 
 /// 打った語に合うか。(一致の度合い: 0 前方一致（大文字小文字も同じ）・1 前方一致・2 飛ばし打ち, あいまいさの点)
@@ -135,252 +73,31 @@ impl Editor {
         self.refilter_smart();
     }
 
-    /// 今のファイルの字句の規則
-    pub(crate) fn lexis(&self) -> &'static nagi_lang::text::Lexis {
-        let lang = self.syntax.as_ref().map(|s| s.lang).or_else(|| self.buf.path.as_deref().and_then(nagi_syntax::Lang::detect));
-        match lang {
-            Some(nagi_syntax::Lang::TypeScript | nagi_syntax::Lang::Tsx | nagi_syntax::Lang::JavaScript) => nagi_lang::ts::types::LX,
-            _ => nagi_lang::java::types::LX,
-        }
+    /// 今のファイルの言語（色付けがまだでもパスから）
+    pub(crate) fn file_lang(&self) -> Option<nagi_syntax::Lang> {
+        self.syntax.as_ref().map(|s| s.lang).or_else(|| self.buf.path.as_deref().and_then(nagi_syntax::Lang::detect))
+    }
+
+    /// 今のファイルの言語の差し込み口
+    pub(crate) fn language(&self) -> &'static dyn nagi_lang::lang::Language {
+        nagi_lang::registry::for_file(self.file_lang())
     }
 
     /// Java のファイルか（色付けがまだでもパスから）
     pub(crate) fn is_java(&self) -> bool {
-        self.syntax.as_ref().map(|s| s.lang).or_else(|| self.buf.path.as_deref().and_then(nagi_syntax::Lang::detect)) == Some(nagi_syntax::Lang::Java)
+        self.file_lang() == Some(nagi_syntax::Lang::Java)
     }
 
-    /// 候補を集める（`ws` は打っている語の始まり（行の中の byte）、`start` はその絶対位置）
+    /// 候補を集める（`ws` は打っている語の始まり（行の中の byte）、`start` はその絶対位置）。手順は nagi_lang の template
     fn smart_candidates(&mut self, line: &str, ws: usize, start: usize) -> Vec<Cand> {
         let src = self.buf.text();
         let here = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
-        let lang = self.syntax.as_ref().map(|s| s.lang).or_else(|| self.buf.path.as_deref().and_then(nagi_syntax::Lang::detect));
-        let mut out: Vec<Cand> = Vec::new();
-        let mut seen: HashSet<String> = HashSet::new();
-        let mut push = |out: &mut Vec<Cand>, c: Cand| {
-            if seen.insert(c.name.clone()) {
-                out.push(c);
-            }
-        };
-        let member = ws > 0 && line[..ws].ends_with('.');
-        let idx = self.nav.index.as_ref();
-        let rel = match (idx, &here) {
-            (Some(i), Some(h)) => h.strip_prefix(&i.root).ok().map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default(),
-            _ => String::new(),
-        };
-        let mut ranker = nagi_workers::index::Ranker::new(idx);
-        // 今いる型（その中からは private も出す）
-        let inside = nagi_workers::index::enclosing_type(&src, start);
-        // `types`: 入れ子の型も出す（受け手がクラスの名前のとき）
-        let member_cands = |ranker: &mut nagi_workers::index::Ranker, ty: &str, out: &mut Vec<Cand>, push: &mut dyn FnMut(&mut Vec<Cand>, Cand), rank: u8, types: bool| {
-            for (name, kind, owner, params, private) in ranker.members(ty) {
-                // private は、その型が今のファイルにあれば（入れ子のクラスどうしも）見える
-                let here = || inside.as_deref() == Some(owner.as_str()) || idx.is_some_and(|i| i.lookup(&owner).iter().any(|l| l.kind.is_type() && *l.path == *rel));
-                if (private && !here()) || (kind.is_type() && !types) {
-                    continue;
-                }
-                let call = matches!(kind, DefKind::Method | DefKind::Function).then(|| params != Some(0));
-                push(out, Cand { name, mark: mark_of(kind), note: owner, call, rank, insert: None, import: None });
-            }
-        };
-        // プロジェクトの型の、ライブラリの親（extends ControllerBase<..> など）のメンバー（protected も）
-        let jars = if self.is_java() { self.nav.jars.clone() } else { None };
-        let lib_super_cands = |ranker: &mut nagi_workers::index::Ranker, ty: &str, out: &mut Vec<Cand>, push: &mut dyn FnMut(&mut Vec<Cand>, Cand), rank: u8| {
-            let Some(jars) = &jars else { return };
-            for (sup, lines) in ranker.outside_supers(ty) {
-                let lib = nagi_lang::java::types::LibTypes::new(jars, &lines.join("\n"));
-                let Some(t @ nagi_lang::java::types::JType::Class(..)) = lib.parse(&sup) else { continue };
-                for m in lib.members(&t, false, true) {
-                    push(out, Cand { name: m.name, mark: if m.method { 'm' } else { 'f' }, note: m.owner, call: m.method.then_some(m.params), rank, insert: None, import: None });
-                }
-            }
-        };
-        if member {
-            // 頭を展開し（前の行からの連なり・型を書かない変数）、パッケージの名前の頭を外す。パッケージだけなら下のパッケージとクラス
-            let known = |pkg: &str| idx.is_some_and(|i| i.is_java_package(pkg)) || jars.as_ref().is_some_and(|j| j.is_package(pkg));
-            let head = if self.is_java() {
-                nagi_lang::java::types::receiver_text(&src, &line[..ws - 1], start - ws, start, &known)
-            } else {
-                Ok((nagi_lang::text::with_previous_lines(nagi_lang::ts::types::LX, &src, start - ws, &line[..ws - 1]), None))
-            };
-            let (expanded, fqn) = match head {
-                Ok(x) => x,
-                Err(pkg) => {
-                    let dotted = pkg.replace('/', ".");
-                    let under = format!("{pkg}/");
-                    let proj: Vec<(String, &str)> = idx.map(|i| i.files().filter(|f| f.ends_with(".java")).filter_map(|f| Some((nagi_lang::java::types::source_package(f)?, f))).collect()).unwrap_or_default();
-                    for (p, f) in &proj {
-                        if *p == pkg {
-                            let name = f.rsplit('/').next().unwrap_or(f).trim_end_matches(".java");
-                            let mark = idx.and_then(|i| i.file_type_kind(f)).map_or('c', mark_of);
-                            push(&mut out, Cand { name: name.to_string(), mark, note: dotted.clone(), call: None, rank: 0, insert: None, import: None });
-                        }
-                    }
-                    if let Some(j) = &jars {
-                        for c in j.classes_in(&pkg) {
-                            let name = c.rsplit('/').next().unwrap_or(c);
-                            push(&mut out, Cand { name: name.to_string(), mark: 'c', note: dotted.clone(), call: None, rank: 0, insert: None, import: None });
-                        }
-                    }
-                    let mut subs: std::collections::BTreeSet<&str> = proj.iter().filter_map(|(p, _)| p.strip_prefix(&under)?.split('/').next()).collect();
-                    if let Some(j) = &jars {
-                        subs.extend(j.subpackages(&pkg));
-                    }
-                    for s in subs {
-                        push(&mut out, Cand { name: s.to_string(), mark: 'p', note: String::new(), call: None, rank: 0, insert: None, import: None });
-                    }
-                    return out;
-                }
-            };
-            let var = |n: &str| match n.strip_prefix("new ") {
-                Some(t) => Some(t.split('<').next().unwrap_or(t).to_string()),
-                None => nagi_lang::project::var_type(&src, n, start),
-            };
-            // 受け手がクラスの名前（Outer・Map.Entry）か。変数は宣言の型に印 `=` を付けて分ける
-            fn class_name(r: &Receiver) -> bool {
-                match r {
-                    Receiver::Type(t) => !t.starts_with('='),
-                    Receiver::Member(i, n) => n.starts_with(char::is_uppercase) && class_name(i),
-                    _ => false,
-                }
-            }
-            let marked = |n: &str| match n.strip_prefix("new ") {
-                Some(t) => Some(format!("={t}")),
-                None => nagi_lang::java::types::var_decl_text(&src, n, start).map(|d| format!("={d}")),
-            };
-            let class_recv = nagi_lang::text::receiver_before(self.lexis(), &expanded, expanded.len(), &marked).as_ref().is_some_and(class_name);
-            let recv = nagi_lang::text::receiver_before(self.lexis(), &expanded, expanded.len(), &var);
-            let ty = recv.as_ref().and_then(|r| ranker.receiver_type_name(&rel, &src, start, r));
-            if let Some(t) = &ty {
-                member_cands(&mut ranker, t, &mut out, &mut push, 0, class_recv);
-                lib_super_cands(&mut ranker, t, &mut out, &mut push, 0);
-            }
-            // ライブラリの型（Java。jar・JDK の索引から、型引数もたどって）
-            if out.is_empty() && self.is_java() {
-                if let Some(jars) = &self.nav.jars {
-                    let statics = class_recv;
-                    let (lib, t) = nagi_lang::java::types::lib_receiver(jars, &mut ranker, &src, &rel, start, inside.as_deref(), &expanded, fqn.as_ref());
-                    match t {
-                        Some(nagi_lang::java::types::JType::Class(name, _)) if name.starts_with('?') => {
-                            let simple = nagi_lang::java::types::project_name(&name).map_or("", |x| x.0);
-                            member_cands(&mut ranker, simple, &mut out, &mut push, 0, class_recv);
-                            lib_super_cands(&mut ranker, simple, &mut out, &mut push, 0);
-                        }
-                        Some(t) => {
-                            for m in lib.members(&t, statics, false) {
-                                push(&mut out, Cand { name: m.name, mark: if m.method { 'm' } else { 'f' }, note: m.owner, call: m.method.then_some(m.params), rank: 0, insert: None, import: None });
-                            }
-                            // クラスの名前の後は入れ子のクラスも
-                            if let (true, nagi_lang::java::types::JType::Class(n, _)) = (statics, &t) {
-                                for c in jars.nested(n) {
-                                    let simple = c.rsplit('$').next().unwrap_or(c);
-                                    push(&mut out, Cand { name: simple.to_string(), mark: 'c', note: String::new(), call: None, rank: 0, insert: None, import: None });
-                                }
-                            }
-                        }
-                        None => {}
-                    }
-                }
-            }
-            // TypeScript: 組み込み・node_modules の .d.ts とプロジェクトの .ts から型を求める（プロジェクトの索引の候補に足す。
-            // コンストラクタの引数のフィールドなどは索引に無い）
-            if matches!(lang, Some(nagi_syntax::Lang::TypeScript | nagi_syntax::Lang::Tsx | nagi_syntax::Lang::JavaScript)) {
-                if let (Some(ix), Some(h), Some(i)) = (self.nav.dts.clone(), &here, idx) {
-                    for m in nagi_lang::ts::types::complete(&ix, &i.root, h, &src, &expanded, start) {
-                        push(&mut out, Cand { name: m.name, mark: if m.method { 'm' } else { 'f' }, note: m.owner, call: m.method.then_some(m.params), rank: 0, insert: None, import: None });
-                    }
-                }
-            }
-            // クラス名の後は Type.class も
-            if self.is_java() && class_recv && !out.is_empty() {
-                push(&mut out, Cand { name: "class".into(), mark: 'K', note: String::new(), call: None, rank: 0, insert: None, import: None });
-            }
-            if out.is_empty() {
-                // 型が分からない・プロジェクトの外: ファイルの中で `.` の後に出てくる語
-                let re = regex::Regex::new(r"\.([A-Za-z_$][\w$]*)").unwrap();
-                for c in re.captures_iter(&src) {
-                    let w = c[1].to_string();
-                    let call = src[c.get(0).unwrap().end()..].starts_with('(');
-                    push(&mut out, Cand { name: w, mark: if call { 'm' } else { 'f' }, note: ty.clone().unwrap_or_default(), call: call.then_some(true), rank: 1, insert: None, import: None });
-                }
-            }
-            return out;
-        }
-        // 今の型のメンバー
-        if let Some(t) = inside.clone() {
-            member_cands(&mut ranker, &t, &mut out, &mut push, 1, false);
-            lib_super_cands(&mut ranker, &t, &mut out, &mut push, 1);
-        }
-        // ファイルの中の語（変数・引数など）。カーソルに近い順
-        let words = regex::Regex::new(r"[A-Za-z_$][\w$]*").unwrap();
-        let mut ws_list: Vec<(usize, &str)> = words.find_iter(&src).filter(|m| m.start() != start).map(|m| (m.start().abs_diff(start), m.as_str())).collect();
-        ws_list.sort_by_key(|x| x.0);
-        let kws: &[&str] = if self.settings.bool("completion.keywords") { keywords(lang) } else { &[] };
-        let all_kws = keywords(lang);
-        let words_on = self.settings.bool("completion.words");
-        for (_, w) in ws_list.into_iter().filter(|_| words_on) {
-            if w.len() > 1 && !all_kws.contains(&w) {
-                let call = src.contains(&format!("{w}("));
-                push(&mut out, Cand { name: w.to_string(), mark: 'v', note: String::new(), call: None, rank: 0 + u8::from(call) * 2, insert: None, import: None });
-            }
-        }
-        let ts = matches!(lang, Some(nagi_syntax::Lang::TypeScript | nagi_syntax::Lang::Tsx));
-        // TypeScript: 依存のパッケージとプロジェクトのほかのファイルの名前（打った語で始まるもの。決めたら import を足す）
-        if ts {
-            if let (Some(ix), Some(h)) = (self.nav.dts.clone(), &here) {
-                let b = self.cursor.byte.min(line.len());
-                let prefix = &line[ws..b];
-                let mut names: Vec<&str> = ix.exports_with_prefix(prefix, 300).into_iter().map(|x| x.0).collect();
-                if let Some(idx) = idx.filter(|_| !prefix.is_empty()) {
-                    names.extend(idx.names().filter(|n| n.starts_with(prefix)).take(300));
-                }
-                names.sort_unstable();
-                names.dedup();
-                let imported: Vec<String> = nagi_lang::eco::dts::scan_source(&src).imports.into_iter().map(|i| i.from).collect();
-                for n in names {
-                    let Some(spec) = nagi_lang::ts::import::candidates_with(&ix, idx, h, &imported, n, None).into_iter().next() else { continue };
-                    let kind = idx.and_then(|i| i.lookup(n).first().map(|l| l.kind)).map_or('c', mark_of);
-                    push(&mut out, Cand { name: n.to_string(), mark: kind, note: spec.clone(), call: None, rank: 3, insert: None, import: Some(format!("ts:{spec}")) });
-                }
-            }
-        }
-        // プロジェクトの型
-        if let Some(idx) = idx {
-            let mut types: Vec<(&str, DefKind)> = idx.all().filter(|(_, l)| l.kind.is_type()).map(|(n, l)| (n, l.kind)).collect();
-            types.sort_unstable_by(|a, b| a.0.cmp(b.0));
-            for (n, k) in types {
-                push(&mut out, Cand { name: n.to_string(), mark: mark_of(k), note: String::new(), call: None, rank: 3, insert: None, import: None });
-            }
-        }
-        // ライブラリの型（Java。依存の jar・JDK の索引から、打った語で始まるもの。決めたら import を足す）
-        if self.is_java() {
-            if let Some(jars) = &self.nav.jars {
-                let b = self.cursor.byte.min(line.len());
-                let prefix = &line[ws..b];
-                let imported = |fqn: &str| src.contains(&format!("import {fqn};"));
-                let mut up = prefix.to_string();
-                if let Some(f) = up.get(0..1) {
-                    up.replace_range(0..1, &f.to_ascii_uppercase());
-                }
-                let mut names = jars.by_prefix(prefix, 200);
-                if up != prefix {
-                    names.extend(jars.by_prefix(&up, 200));
-                }
-                for internal in names {
-                    let fqn = nagi_lang::java::import::java_name(internal);
-                    let Some((pkg, simple)) = fqn.rsplit_once('.') else { continue };
-                    if out.iter().any(|c| c.name == simple && c.note == pkg) {
-                        continue;
-                    }
-                    let rank = if pkg == "java.lang" || imported(&fqn) { 2 } else { 3 };
-                    out.push(Cand { name: simple.to_string(), mark: 'c', note: pkg.to_string(), call: None, rank, insert: None, import: Some(fqn.clone()) });
-                }
-            }
-        }
-        // 予約語
-        for k in kws {
-            push(&mut out, Cand { name: k.to_string(), mark: 'K', note: String::new(), call: None, rank: 4, insert: None, import: None });
-        }
-        out
+        let b = self.cursor.byte.min(line.len());
+        let prefix = line.get(ws..b).unwrap_or("");
+        let mut cx = nagi_lang::lang::Cx::new(&src, here.as_deref(), line, ws, start, prefix, self.nav.index.as_ref(), &self.nav.libs);
+        cx.words = self.settings.bool("completion.words");
+        cx.keywords = self.settings.bool("completion.keywords");
+        nagi_lang::template::complete::complete(self.language(), &cx)
     }
 
     /// 打った語で絞り込み直す（合うものが無ければ閉じる）
@@ -484,7 +201,7 @@ impl Editor {
         let sql_table = c == ' '
             && self.console_source().is_some()
             && line[..b.saturating_sub(1)].rsplit(|ch: char| !word_char(ch)).next().is_some_and(|w| ["from", "join", "update", "into"].contains(&w.to_ascii_lowercase().as_str()));
-        if c == '.' || sql_table || (word_char(c) && n >= self.settings.int("completion.min_chars") as usize) {
+        if self.language().triggers().contains(&c) || sql_table || (word_char(c) && n >= self.settings.int("completion.min_chars") as usize) {
             self.auto_complete_at = Some(std::time::Instant::now() + std::time::Duration::from_millis(self.settings.int("completion.delay_ms") as u64));
         }
     }
@@ -517,13 +234,10 @@ impl Editor {
         // すでに後ろに ( があれば括弧は足さない
         let after = self.buf.slice_string(abs, (abs + 1).min(self.buf.len_bytes()));
         let name = cand.insert.clone().unwrap_or_else(|| cand.name.clone());
-        // Java のライブラリの型: import を足す（同じ単純名の別の型を import していれば完全な名前で書く）。TypeScript は `ts:モジュール`
-        let plan = cand.import.as_deref().map(|fqn| match fqn.strip_prefix("ts:") {
-            Some(spec) => (name.clone(), nagi_lang::ts::import::plan(&self.buf.text(), &name, spec)),
-            None => (fqn.to_string(), nagi_lang::java::import::plan(&self.buf.text(), fqn)),
-        });
+        // import を足す（足せなければ言語が決めた別の書き方で。Java は完全な名前）
+        let plan = cand.import.as_deref().map(|key| self.language().import_plan(&self.buf.text(), &name, key));
         let name = match &plan {
-            Some((fqn, nagi_lang::java::import::Plan::Conflict)) => fqn.clone(),
+            Some(nagi_lang::lang::Import::Qualified(q)) => q.clone(),
             _ => name,
         };
         let (text, back) = match cand.call {
@@ -533,7 +247,7 @@ impl Editor {
         // 打っている間の 1 つの取り消しの単位に入れる（import も一緒に戻る）
         self.edit(c.start, abs, &text);
         let mut cursor = c.start + text.len() - back;
-        if let Some((_, nagi_lang::java::import::Plan::Insert(at, line))) = plan {
+        if let Some(nagi_lang::lang::Import::Insert(at, line)) = plan {
             if at <= c.start {
                 self.edit(at, at, &line);
                 cursor += line.len();
@@ -643,7 +357,7 @@ mod tests {
         let mut e = Editor::new(Buffer::open(&dir.join("App.java")).unwrap(), None);
         e.buf.path = Some(dir.join("App.java"));
         e.set_screen(120, 40);
-        e.nav.jars = Some(std::sync::Arc::new(ix));
+        e.nav.libs.set(nagi_lang::eco::JVM, std::sync::Arc::new(ix));
         // 小文字で打っても型を出す。決めると import を足す
         keys(&mut e, "5G$aarrayLi<C-Space>");
         let c = e.completion.as_ref().unwrap_or_else(|| panic!("{} / {:?}", e.notify.text, e.buf.line(4)));
@@ -678,7 +392,7 @@ mod tests {
         let mut e = Editor::new(Buffer::open(&dir.join("App.java")).unwrap(), None);
         e.buf.path = Some(dir.join("App.java"));
         e.set_screen(120, 40);
-        e.nav.jars = Some(std::sync::Arc::new(ix));
+        e.nav.libs.set(nagi_lang::eco::JVM, std::sync::Arc::new(ix));
         // プロジェクトの型のメソッドが返す型引数つきの型（List<String>）
         std::fs::create_dir_all(dir.join(".git")).unwrap();
         std::fs::write(dir.join("Repo.java"), "package app;\n\nimport java.util.List;\n\npublic class Repo {\n  public List<String> names() { return null; }\n}\n").unwrap();
@@ -785,7 +499,7 @@ mod tests {
         e.buf.path = Some(dir.join("app.ts"));
         e.set_screen(120, 40);
         e.start_index();
-        e.nav.dts = Some(std::sync::Arc::new(nagi_lang::eco::dts::DtsIndex::load(&dir)));
+        e.nav.libs.set(nagi_lang::eco::JS, std::sync::Arc::new(nagi_lang::eco::dts::DtsIndex::load(&dir)));
         for _ in 0..500 {
             e.poll_index();
             if e.nav.index.is_some() {
@@ -847,12 +561,12 @@ mod tests {
                 }
                 std::thread::sleep(std::time::Duration::from_millis(50));
             };
-            e.nav.jars = Some(std::sync::Arc::new(jars));
+            e.nav.libs.set(nagi_lang::eco::JVM, std::sync::Arc::new(jars));
         }
         // x.m と、行の頭の .m（前の行からの連なり）
         // TypeScript の型の宣言（node_modules があれば）
         if root.join("node_modules").join("typescript").is_dir() {
-            e.nav.dts = Some(std::sync::Arc::new(nagi_lang::eco::dts::DtsIndex::load(&root)));
+            e.nav.libs.set(nagi_lang::eco::JS, std::sync::Arc::new(nagi_lang::eco::dts::DtsIndex::load(&root)));
         }
         let site = regex::Regex::new(r"(?:[\w)]|^\s*)\.([A-Za-z_]\w*)").unwrap();
         // [型が分かって当たった, 型が分かったが無い, ファイルの語で代わり, 何も無い]
@@ -917,6 +631,11 @@ mod tests {
                     }
                     if std::env::var("NAGI_RATE_SHOW").is_ok_and(|x| line.contains(&x)) {
                         println!("{}:{} {} -> {:?}", p.display(), li + 1, line.trim(), c.iter().take(8).map(|x| (&x.name, x.rank)).collect::<Vec<_>>());
+                        if std::env::var_os("NAGI_RATE_FULL").is_some() {
+                            for x in &c {
+                                println!("  {} {} {} {:?} {} {:?}", x.name, x.mark, x.note, x.call, x.rank, x.import);
+                            }
+                        }
                     }
                     slow.push((us, format!("{}:{} {}", p.file_name().unwrap().to_string_lossy(), li + 1, line.trim())));
                     // 受け手の式（呼び出しの引数は省く）

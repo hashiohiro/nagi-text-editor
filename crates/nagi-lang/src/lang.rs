@@ -1,0 +1,187 @@
+//! 言語の差し込み口（`Language`）と、手順の間で受け渡すもの。
+//!
+//! 共通の手順（template）が順に呼び、言語は違うところだけを返す。分からなければ空・None を返し、手順は次の段へ進む。
+
+use std::path::Path;
+
+use nagi_syntax::defs::DefKind;
+use nagi_workers::index::{Index, Ranker};
+
+use crate::libs::Libraries;
+use crate::text::Lexis;
+
+/// 補完の候補 1 つ
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Item {
+    pub name: String,
+    /// 一覧の印（m メソッド・f フィールド・c クラス・I インターフェース・e 列挙・K 予約語・v 語・p パッケージ）
+    pub mark: char,
+    /// 右に出す説明（持っている型など）
+    pub note: String,
+    /// メソッドなら Some(引数があるか)。決めたときに () を入れる
+    pub call: Option<bool>,
+    /// 同じ一致の度合いの中での順（小さいほど先）
+    pub rank: u8,
+    /// 決めたときに入れる文字（名前と違うとき。SQL の "名前" など）
+    pub insert: Option<String>,
+    /// 決めたときに足す import の鍵（中身は言語だけが知る。Java は完全な名前、TypeScript はモジュール）
+    pub import: Option<String>,
+}
+
+impl Item {
+    /// 印・説明・順だけの候補
+    pub fn new(name: impl Into<String>, mark: char, note: impl Into<String>, rank: u8) -> Item {
+        Item { name: name.into(), mark, note: note.into(), call: None, rank, insert: None, import: None }
+    }
+
+    /// メソッド・フィールド（`call` は Some(引数があるか)）
+    pub fn member(name: impl Into<String>, method: bool, params: bool, owner: impl Into<String>, rank: u8) -> Item {
+        Item { name: name.into(), mark: if method { 'm' } else { 'f' }, note: owner.into(), call: method.then_some(params), rank, insert: None, import: None }
+    }
+}
+
+/// 定義の種類の印
+pub fn mark_of(kind: DefKind) -> char {
+    match kind {
+        DefKind::Method | DefKind::Function => 'm',
+        DefKind::Field | DefKind::Constant | DefKind::Variable => 'f',
+        DefKind::Interface => 'I',
+        DefKind::Enum => 'e',
+        DefKind::Class | DefKind::Type => 'c',
+        DefKind::Module => 'v',
+    }
+}
+
+/// import の足し方
+#[derive(Debug, PartialEq, Eq)]
+pub enum Import {
+    /// 足さなくてよい
+    None,
+    /// (byte の位置, 入れる文字)
+    Insert(usize, String),
+    /// 足せない（同じ名前の別のものを import している）。名前の代わりにこれを書く
+    Qualified(String),
+}
+
+/// 補完する場所
+pub struct Cx<'a> {
+    /// ファイルの中身
+    pub src: &'a str,
+    /// ファイルの絶対パス
+    pub here: Option<&'a Path>,
+    /// 今の行
+    pub line: &'a str,
+    /// 打っている語の始まり（行の中の byte）
+    pub ws: usize,
+    /// 打っている語の始まり（絶対 byte）
+    pub start: usize,
+    /// 打った語
+    pub prefix: &'a str,
+    /// プロジェクトの索引
+    pub index: Option<&'a Index>,
+    /// 索引の根からの相対パス（/ 区切り。索引の外なら空）
+    pub rel: String,
+    /// 今いる型
+    pub inside: Option<String>,
+    /// ライブラリの索引
+    pub libs: &'a Libraries,
+    /// 設定: ファイルの中の語を出す・予約語を出す
+    pub words: bool,
+    pub keywords: bool,
+}
+
+impl<'a> Cx<'a> {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(src: &'a str, here: Option<&'a Path>, line: &'a str, ws: usize, start: usize, prefix: &'a str, index: Option<&'a Index>, libs: &'a Libraries) -> Self {
+        let rel = match (index, here) {
+            (Some(i), Some(h)) => h.strip_prefix(&i.root).ok().map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default(),
+            _ => String::new(),
+        };
+        let inside = nagi_workers::index::enclosing_type(src, start);
+        Cx { src, here, line, ws, start, prefix, index, rel, inside, libs, words: true, keywords: true }
+    }
+
+    /// `.` の後か
+    pub fn after_dot(&self) -> bool {
+        self.ws > 0 && self.line[..self.ws].ends_with('.')
+    }
+}
+
+/// `.` の前の式を広げたもの
+pub enum Head {
+    /// 広げた式と、頭のパッケージの名前を外したときの (単純名, 完全な名前)
+    Expr(String, Option<(String, String)>),
+    /// パッケージの名前だけだった: その中身
+    Items(Vec<Item>),
+}
+
+/// ライブラリのメンバー
+pub enum LibMember {
+    Item(Item),
+    /// プロジェクトの型（そのメンバーは手順がプロジェクトの索引から出す）
+    Project(String),
+}
+
+/// `.` の後でないときの、言語の名前（ライブラリの型・ほかのファイルの名前）
+#[derive(Default)]
+pub struct ScopeNames {
+    /// プロジェクトの型の前に出す（同じ名前の後の候補を隠す。import を伴う TypeScript の名前）
+    pub first: Vec<Item>,
+    /// プロジェクトの型の後に出す（同じ名前でも別のものとして並べる。Java のライブラリの型）
+    pub last: Vec<Item>,
+}
+
+/// 言語
+pub trait Language: Sync {
+    /// 名前（記録・試験用）
+    fn name(&self) -> &'static str;
+
+    /// 字句の規則
+    fn lexis(&self) -> &'static Lexis;
+
+    /// よく使う予約語（補完に出す）
+    fn keywords(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    /// 補完を始める文字（打ったら一覧を出す）
+    fn triggers(&self) -> &'static [char] {
+        &['.']
+    }
+
+    /// `.` の前の式（行の中の `before`）を広げる（前の行からの連なり・型を書かない変数・パッケージの名前）
+    fn head(&self, cx: &Cx, before: &str) -> Head {
+        Head::Expr(crate::text::with_previous_lines(self.lexis(), cx.src, cx.start - cx.ws, before), None)
+    }
+
+    /// 変数 `name` の宣言の型の文字（型引数つき）。受け手がクラスの名前か変数かを分ける
+    fn decl_text(&self, _src: &str, _name: &str, _at: usize) -> Option<String> {
+        None
+    }
+
+    /// プロジェクトの型 `ty` が、ライブラリの親から継ぐメンバー（`rank` の順で）
+    fn inherited(&self, _cx: &Cx, _ranker: &mut Ranker, _ty: &str, _rank: u8) -> Vec<Item> {
+        Vec::new()
+    }
+
+    /// `.` の前の式 `expanded` のライブラリのメンバー。`statics` は受け手がクラスの名前か、
+    /// `found` はプロジェクトの索引で候補が見つかったか
+    fn library_members(&self, _cx: &Cx, _ranker: &mut Ranker, _expanded: &str, _fqn: Option<&(String, String)>, _statics: bool, _found: bool) -> Vec<LibMember> {
+        Vec::new()
+    }
+
+    /// クラスの名前の後に出す予約語（Java の `class`）
+    fn class_keywords(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    /// `.` の後でないときの、言語の名前
+    fn scope_names(&self, _cx: &Cx) -> ScopeNames {
+        ScopeNames::default()
+    }
+
+    /// 候補の import の鍵 `key` を、ファイル `src` で名前 `name` に使うための足し方
+    fn import_plan(&self, _src: &str, _name: &str, _key: &str) -> Import {
+        Import::None
+    }
+}
