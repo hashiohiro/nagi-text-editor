@@ -83,11 +83,6 @@ impl Editor {
         nagi_lang::registry::for_file(self.file_lang())
     }
 
-    /// Java のファイルか（色付けがまだでもパスから）
-    pub(crate) fn is_java(&self) -> bool {
-        self.file_lang() == Some(nagi_syntax::Lang::Java)
-    }
-
     /// 候補を集める（`ws` は打っている語の始まり（行の中の byte）、`start` はその絶対位置）。手順は nagi_lang の template
     fn smart_candidates(&mut self, line: &str, ws: usize, start: usize) -> Vec<Cand> {
         let src = self.buf.text();

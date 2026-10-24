@@ -271,7 +271,7 @@ impl Editor {
                     }
                     nagi_workers::index::Ranked::Outside(t) => {
                         // 受け手の型（またはその親）がライブラリ。同じ名前のプロジェクトのメソッドへは跳ばない
-                        if !self.goto_library(&name, word_at) && !self.goto_ts_declaration(&name, word_at) {
+                        if !self.goto_outside(&name, word_at) {
                             self.notify.info(format!("定義はプロジェクトの外です: {name}（{t} から先はライブラリ）"));
                         }
                         return;
@@ -301,7 +301,7 @@ impl Editor {
             });
         }
         // プロジェクトに無ければライブラリ（Java の jar・JDK、TypeScript の .d.ts）
-        if cands.is_empty() && (self.goto_library(&name, word_at) || self.goto_ts_declaration(&name, word_at)) {
+        if cands.is_empty() && self.goto_outside(&name, word_at) {
             return;
         }
         match cands.len() {
@@ -336,116 +336,23 @@ impl Editor {
         }
     }
 
-    /// Java: ライブラリ（依存の jar・JDK）の型・メンバーの定義へ（ソースか、無ければ class ファイルから作った骨組みを開く）。跳べたら true
-    fn goto_library(&mut self, name: &str, word_at: usize) -> bool {
-        let Some(jars) = nagi_lang::eco::jars(&self.nav.libs).filter(|_| self.is_java()) else { return false };
-        let Some((owner, member)) = self.library_target(name, word_at) else { return false };
-        let Some(dir) = self.nav.sources_dir.clone().or_else(nagi_lang::java::source::sources_dir) else { return false };
-        let Some(o) = nagi_lang::java::source::open(&jars, &owner, member.as_deref(), &dir) else { return false };
-        self.jump_to(&o.path, o.line, o.col);
-        let fqn = owner.replace(['/', '$'], ".");
-        self.notify.info(if o.source { format!("ライブラリ: {fqn}（ソース。読むだけ）") } else { format!("ライブラリ: {fqn}（ソースが無いので class ファイルの宣言から作った骨組み）") });
+    /// プロジェクトの外（ライブラリ・.d.ts）の定義へ（言語が求める。Java は jar のソースか骨組みを開く）。跳べたら true
+    fn goto_outside(&mut self, name: &str, word_at: usize) -> bool {
+        let Some(t) = self.outside_definition(name, word_at) else { return false };
+        self.jump_to(&t.path, t.line, t.col);
+        if let Some(n) = t.note {
+            self.notify.info(n);
+        }
         true
     }
 
-    /// TypeScript: 型の宣言（.d.ts・import したプロジェクトの .ts）へ。跳べたら true
-    fn goto_ts_declaration(&mut self, name: &str, word_at: usize) -> bool {
-        match self.ts_declaration(name, word_at) {
-            Some((p, l, c)) => {
-                self.jump_to(&p, l, c);
-                true
-            }
-            None => false,
-        }
-    }
-
-    /// TypeScript: `word_at` の名前 `name` の宣言の (ファイル, 行, 列)
-    pub(crate) fn ts_declaration(&self, name: &str, word_at: usize) -> Option<(PathBuf, usize, usize)> {
-        let lang = self.syntax.as_ref().map(|s| s.lang).or_else(|| self.buf.path.as_deref().and_then(nagi_syntax::Lang::detect));
-        if !matches!(lang, Some(nagi_syntax::Lang::TypeScript | nagi_syntax::Lang::Tsx | nagi_syntax::Lang::JavaScript)) {
-            return None;
-        }
-        let ix = nagi_lang::eco::dts(&self.nav.libs)?;
-        let root = self.nav.index.as_ref().map(|i| i.root.clone())?;
-        let path = std::path::absolute(self.buf.path.as_deref()?).ok()?;
-        let src = self.buf.text();
-        let ls = src[..word_at].rfind('\n').map_or(0, |i| i + 1);
-        let before = src[ls..word_at].ends_with('.').then(|| nagi_lang::text::with_previous_lines(nagi_lang::ts::types::LX, &src, ls, &src[ls..word_at - 1]));
-        nagi_lang::ts::types::definition(&ix, &root, &path, &src, before.as_deref(), name, word_at)
-    }
-
-    /// Java: `word_at` の名前 `name` のライブラリの (型の内部名, メンバー)
-    pub(crate) fn library_target(&mut self, name: &str, word_at: usize) -> Option<(String, Option<String>)> {
+    /// `word_at` の名前 `name` の、プロジェクトの外の定義
+    pub(crate) fn outside_definition(&self, name: &str, word_at: usize) -> Option<nagi_lang::lang::Target> {
         let src = self.buf.text();
         let here = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
-        let rel = match (&self.nav.index, &here) {
-            (Some(i), Some(h)) => h.strip_prefix(&i.root).ok().map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default(),
-            _ => String::new(),
-        };
-        self.library_target_in(&src, &rel, name, word_at)
-    }
-
-    /// `library_target` を、ほかのファイル（中身 `src`、根からの相対パス `rel`）で
-    pub(crate) fn library_target_in(&self, src: &str, rel: &str, name: &str, word_at: usize) -> Option<(String, Option<String>)> {
-        use nagi_lang::java::types::{JType, LibTypes};
-        let jars = nagi_lang::eco::jars(&self.nav.libs)?;
-        let ls = src[..word_at].rfind('\n').map_or(0, |i| i + 1);
-        let line = src[ls..].split('\n').next().unwrap_or("").trim_end_matches('\r').to_string();
-        let ws = word_at - ls;
-        let (src, rel) = (src.to_string(), rel.to_string());
-        let idx = self.nav.index.as_ref();
-        let mut ranker = nagi_workers::index::Ranker::new(idx);
-        let inside = nagi_workers::index::enclosing_type(&src, word_at);
-        let target = if ws > 0 && line[..ws].ends_with('.') {
-            let known = |pkg: &str| idx.is_some_and(|i| i.is_java_package(pkg)) || jars.is_package(pkg);
-            match nagi_lang::java::types::receiver_text(&src, &line[..ws - 1], ls, word_at, &known) {
-                // パッケージの中のクラス
-                Err(pkg) => Some(format!("{pkg}/{name}")).filter(|c| jars.class(c).is_some()).map(|c| (c, None)),
-                Ok((expanded, fqn)) => {
-                    let (lib, t) = nagi_lang::java::types::lib_receiver(&jars, &mut ranker, &src, &rel, word_at, inside.as_deref(), &expanded, fqn.as_ref());
-                    match t {
-                        Some(t @ JType::Class(..)) if !matches!(&t, JType::Class(n, _) if n.starts_with('?')) => {
-                            let JType::Class(n, _) = &t else { unreachable!() };
-                            let nested = format!("{n}${name}");
-                            if jars.class(&nested).is_some() {
-                                Some((nested, None))
-                            } else {
-                                lib.declaring(&t, name).map(|c| (c, Some(name.to_string())))
-                            }
-                        }
-                        // プロジェクトの型のライブラリの親のメンバー
-                        Some(JType::Class(n, _)) => {
-                            let simple = nagi_lang::java::types::project_name(&n).map_or("", |x| x.0).to_string();
-                            self.lib_super_member(&mut ranker, &simple, name)
-                        }
-                        // this.・super. は今の型のライブラリの親
-                        None if nagi_lang::text::chain_start(nagi_lang::java::types::LX, &expanded).is_some_and(|i| matches!(&expanded[i..], "this" | "super")) => inside.as_deref().and_then(|t| self.lib_super_member(&mut ranker, t, name)),
-                        _ => None,
-                    }
-                }
-            }
-        } else {
-            let lib = LibTypes::new(&jars, &src);
-            if name.starts_with(char::is_uppercase) && let Some(c) = lib.resolve(name) {
-                Some((c, None))
-            } else if let Some(c) = lib.static_owner(name) {
-                Some((c, Some(name.to_string())))
-            } else {
-                // 今の型のライブラリの親のメソッド・フィールド
-                inside.as_deref().and_then(|t| self.lib_super_member(&mut ranker, t, name))
-            }
-        };
-        target
-    }
-
-    /// プロジェクトの型 `ty` のライブラリの親（型引数つき）で、メンバー `name` を宣言している型
-    fn lib_super_member(&self, ranker: &mut nagi_workers::index::Ranker, ty: &str, name: &str) -> Option<(String, Option<String>)> {
-        let jars = nagi_lang::eco::jars(&self.nav.libs)?;
-        ranker.outside_supers(ty).into_iter().find_map(|(sup, lines)| {
-            let l = nagi_lang::java::types::LibTypes::from_lines(&jars, lines.iter().map(String::as_str));
-            let t = l.parse(&sup).filter(|x| matches!(x, nagi_lang::java::types::JType::Class(n, _) if !n.starts_with('?')))?;
-            l.declaring(&t, name).map(|c| (c, Some(name.to_string())))
-        })
+        let mut cx = nagi_lang::lang::Cx::at(&src, here.as_deref(), word_at, self.nav.index.as_ref(), &self.nav.libs);
+        cx.out_dir = self.nav.sources_dir.as_deref();
+        self.language().library_definition(&cx, name)
     }
 
     /// `gI`: 実装へ。型の上なら継承・実装している型、メソッドの上なら受け手の型（宣言の上なら囲む型）の子の中のそのメソッド
@@ -577,6 +484,10 @@ impl Editor {
                 continue;
             }
             let (Ok(src), Some(lang)) = (std::fs::read_to_string(&abs), nagi_syntax::Lang::detect(&abs)) else { continue };
+            let language = nagi_lang::registry::for_file(Some(lang));
+            let abs_here = std::path::absolute(&abs).ok();
+            // その名前がライブラリのものか（受け手の型がライブラリ。言語が決める）
+            let library = |at: usize| language.library_site(&nagi_lang::lang::Cx::at(&src, abs_here.as_deref(), at, Some(idx), &self.nav.libs), name);
             let Some(rel) = std::path::absolute(&abs).ok().and_then(|a| a.strip_prefix(&idx.root).ok().map(|r| r.to_string_lossy().replace('\\', "/"))) else { continue };
             let starts: Vec<usize> = std::iter::once(0).chain(src.match_indices('\n').map(|(i, _)| i + 1)).collect();
             // 一致の位置（ヒットの本文は行頭の空白を除いたもの）
@@ -621,17 +532,17 @@ impl Editor {
                 if kind.is_none() {
                     continue;
                 }
-                // Java で受け手があれば、先にライブラリの型か（プロジェクトに同じ名前が 1 つだけだと、索引はそれに決めてしまう）
+                // 受け手があれば、先にライブラリのものか（プロジェクトに同じ名前が 1 つだけだと、索引はそれに決めてしまう）
                 let dotted = src[..at[k]].trim_end().ends_with('.') && !src[..at[k]].trim_end().ends_with("this.");
-                if lang == nagi_syntax::Lang::Java && dotted && self.library_target_in(&src, &rel, name, at[k]).is_some() {
+                if dotted && library(at[k]) {
                     keep[i] = false;
                     continue;
                 }
                 keep[i] = match ranker.resolve(&rel, &src, name, recv.as_ref(), args.as_deref(), defs.clone()) {
                     nagi_workers::index::Ranked::Outside(_) => false,
                     nagi_workers::index::Ranked::Locs(v, best) if best >= 1 => v[..best.min(v.len())].iter().any(|l| (&*l.path, l.line as usize, l.col as usize) == (f.target.0.as_str(), f.target.1, f.target.2)),
-                    // プロジェクトの索引で決まらない: Java なら、受け手がライブラリの型か（補完と同じ求め方で）
-                    _ => !(lang == nagi_syntax::Lang::Java && self.library_target_in(&src, &rel, name, at[k]).is_some()),
+                    // プロジェクトの索引で決まらない: 受け手がライブラリの型か（補完と同じ求め方で）
+                    _ => !library(at[k]),
                 };
             }
         }
@@ -767,6 +678,13 @@ mod tests {
         }
     }
 
+    /// Java: `at` の名前 `name` のライブラリの (型の内部名, メンバー)
+    fn library_target(e: &Editor, name: &str, at: usize) -> Option<(String, Option<String>)> {
+        let src = e.buf.text();
+        let here = e.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
+        nagi_lang::java::lang::library_target(&nagi_lang::lang::Cx::at(&src, here.as_deref(), at, e.nav.index.as_ref(), &e.nav.libs), name)
+    }
+
     fn open(path: &Path) -> Editor {
         let mut buf = Buffer::open(path).unwrap();
         buf.path = Some(path.to_path_buf());
@@ -869,7 +787,7 @@ mod tests {
                         continue;
                     }
                     let at = e.buf.line_start(li) + g.start();
-                    let target = e.library_target(g.as_str(), at);
+                    let target = library_target(&e, g.as_str(), at);
                     let opened = target.as_ref().and_then(|(owner, member)| nagi_lang::java::source::open(&jars, owner, member.as_deref(), &dir));
                     put(p, li, g.start(), format!("{target:?} {:?}", opened.as_ref().map(|o| (o.path.file_name().map(|x| x.to_string_lossy().into_owned()), o.line, o.col, o.source))));
                     let k = match target {
@@ -918,7 +836,7 @@ mod tests {
                     }
                     ty_all += 1;
                     let at = e.buf.line_start(li) + m.start();
-                    let target = e.library_target(m.as_str(), at);
+                    let target = library_target(&e, m.as_str(), at);
                     let opened = target.as_ref().and_then(|(owner, member)| nagi_lang::java::source::open(&jars, owner, member.as_deref(), &dir));
                     put(p, li, m.start(), format!("T {target:?} {:?}", opened.as_ref().map(|o| (o.line, o.col, o.source))));
                     let ok = opened.is_some_and(|o| {
@@ -997,7 +915,7 @@ mod tests {
                     }
                     all += 1;
                     let at = e.buf.line_start(li) + g.start();
-                    let decl = e.ts_declaration(g.as_str(), at);
+                    let decl = e.outside_definition(g.as_str(), at).map(|t| (t.path, t.line, t.col));
                     if let Some(d) = &mut dump {
                         let rel = p.strip_prefix(&root).unwrap_or(p).to_string_lossy().replace('\\', "/");
                         std::io::Write::write_fmt(d, format_args!("{rel}:{}:{}\t{decl:?}\n", li + 1, g.start())).unwrap();

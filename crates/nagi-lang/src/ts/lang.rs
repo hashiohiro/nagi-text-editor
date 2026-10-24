@@ -3,7 +3,7 @@
 use nagi_workers::index::Ranker;
 
 use crate::eco;
-use crate::lang::{Cx, Import, Item, Language, LibMember, ScopeNames, mark_of};
+use crate::lang::{Cx, Import, Item, Language, LibMember, ScopeNames, Target, mark_of};
 use crate::text::Lexis;
 
 /// `js` なら JavaScript（ほかのファイル・パッケージの名前を import で出さない）
@@ -59,6 +59,17 @@ impl Language for Ts {
             first.push(Item { name: n.to_string(), mark: kind, note: spec.clone(), call: None, rank: 3, insert: None, import: Some(spec) });
         }
         ScopeNames { first, last: Vec::new() }
+    }
+
+    /// 型の宣言（.d.ts・import したプロジェクトの .ts）。`.` の後はメンバーを宣言している型の本体の中、頭の名前は import・大域の宣言
+    fn library_definition(&self, cx: &Cx, name: &str) -> Option<Target> {
+        let ix = eco::dts(cx.libs)?;
+        let root = &cx.index?.root;
+        let (src, at) = (cx.src, cx.start);
+        let ls = at - cx.ws;
+        let before = src[ls..at].ends_with('.').then(|| crate::text::with_previous_lines(super::types::LX, src, ls, &src[ls..at - 1]));
+        let (path, line, col) = super::types::definition(&ix, root, cx.here?, src, before.as_deref(), name, at)?;
+        Some(Target { path, line, col, note: None })
     }
 
     fn import_plan(&self, src: &str, name: &str, key: &str) -> Import {

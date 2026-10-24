@@ -4,7 +4,7 @@ use nagi_workers::index::Ranker;
 
 use super::types::{JType, LibTypes};
 use crate::eco;
-use crate::lang::{Cx, Head, Import, Item, Language, LibMember, ScopeNames, mark_of};
+use crate::lang::{Cx, Head, Import, Item, Language, LibMember, ScopeNames, Target, mark_of};
 use crate::text::Lexis;
 
 pub struct Java;
@@ -110,6 +110,21 @@ impl Language for Java {
         ScopeNames { first: Vec::new(), last }
     }
 
+    /// 依存の jar・JDK の型・メンバーの定義（ソースか、無ければ class ファイルから作った骨組みを書いて開く）
+    fn library_definition(&self, cx: &Cx, name: &str) -> Option<Target> {
+        let jars = eco::jars(cx.libs)?;
+        let (owner, member) = library_target(cx, name)?;
+        let dir = cx.out_dir.map(std::path::Path::to_path_buf).or_else(super::source::sources_dir)?;
+        let o = super::source::open(&jars, &owner, member.as_deref(), &dir)?;
+        let fqn = owner.replace(['/', '$'], ".");
+        let note = if o.source { format!("ライブラリ: {fqn}（ソース。読むだけ）") } else { format!("ライブラリ: {fqn}（ソースが無いので class ファイルの宣言から作った骨組み）") };
+        Some(Target { path: o.path, line: o.line, col: o.col, note: Some(note) })
+    }
+
+    fn library_site(&self, cx: &Cx, name: &str) -> bool {
+        library_target(cx, name).is_some()
+    }
+
     fn import_plan(&self, src: &str, _name: &str, key: &str) -> Import {
         match super::import::plan(src, key) {
             super::import::Plan::None => Import::None,
@@ -146,4 +161,62 @@ fn package_items(cx: &Cx, pkg: &str) -> Vec<Item> {
         out.push(Item::new(s, 'p', "", 0));
     }
     out
+}
+
+/// `cx.start` の名前 `name` のライブラリの (型の内部名, メンバー)
+pub fn library_target(cx: &Cx, name: &str) -> Option<(String, Option<String>)> {
+    let jars = eco::jars(cx.libs)?;
+    let (src, line, ws, word_at) = (cx.src, cx.line, cx.ws, cx.start);
+    let ls = word_at - ws;
+    let idx = cx.index;
+    let mut ranker = Ranker::new(idx);
+    let inside = cx.inside.as_deref();
+    if ws > 0 && line[..ws].ends_with('.') {
+        let known = |pkg: &str| idx.is_some_and(|i| i.is_java_package(pkg)) || jars.is_package(pkg);
+        match super::types::receiver_text(src, &line[..ws - 1], ls, word_at, &known) {
+            // パッケージの中のクラス
+            Err(pkg) => Some(format!("{pkg}/{name}")).filter(|c| jars.class(c).is_some()).map(|c| (c, None)),
+            Ok((expanded, fqn)) => {
+                let (lib, t) = super::types::lib_receiver(&jars, &mut ranker, src, &cx.rel, word_at, inside, &expanded, fqn.as_ref());
+                match t {
+                    Some(t @ JType::Class(..)) if !matches!(&t, JType::Class(n, _) if n.starts_with('?')) => {
+                        let JType::Class(n, _) = &t else { unreachable!() };
+                        let nested = format!("{n}${name}");
+                        if jars.class(&nested).is_some() {
+                            Some((nested, None))
+                        } else {
+                            lib.declaring(&t, name).map(|c| (c, Some(name.to_string())))
+                        }
+                    }
+                    // プロジェクトの型のライブラリの親のメンバー
+                    Some(JType::Class(n, _)) => {
+                        let simple = super::types::project_name(&n).map_or("", |x| x.0).to_string();
+                        lib_super_member(&jars, &mut ranker, &simple, name)
+                    }
+                    // this.・super. は今の型のライブラリの親
+                    None if crate::text::chain_start(super::types::LX, &expanded).is_some_and(|i| matches!(&expanded[i..], "this" | "super")) => inside.and_then(|t| lib_super_member(&jars, &mut ranker, t, name)),
+                    _ => None,
+                }
+            }
+        }
+    } else {
+        let lib = LibTypes::new(&jars, src);
+        if name.starts_with(char::is_uppercase) && let Some(c) = lib.resolve(name) {
+            Some((c, None))
+        } else if let Some(c) = lib.static_owner(name) {
+            Some((c, Some(name.to_string())))
+        } else {
+            // 今の型のライブラリの親のメソッド・フィールド
+            inside.and_then(|t| lib_super_member(&jars, &mut ranker, t, name))
+        }
+    }
+}
+
+/// プロジェクトの型 `ty` のライブラリの親（型引数つき）で、メンバー `name` を宣言している型
+fn lib_super_member(jars: &crate::eco::jvm::JarIndex, ranker: &mut Ranker, ty: &str, name: &str) -> Option<(String, Option<String>)> {
+    ranker.outside_supers(ty).into_iter().find_map(|(sup, lines)| {
+        let l = LibTypes::from_lines(jars, lines.iter().map(String::as_str));
+        let t = l.parse(&sup).filter(|x| matches!(x, JType::Class(n, _) if !n.starts_with('?')))?;
+        l.declaring(&t, name).map(|c| (c, Some(name.to_string())))
+    })
 }

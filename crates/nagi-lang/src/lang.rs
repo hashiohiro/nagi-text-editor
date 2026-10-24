@@ -2,7 +2,7 @@
 //!
 //! 共通の手順（template）が順に呼び、言語は違うところだけを返す。分からなければ空・None を返し、手順は次の段へ進む。
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use nagi_syntax::defs::DefKind;
 use nagi_workers::index::{Index, Ranker};
@@ -88,6 +88,8 @@ pub struct Cx<'a> {
     /// 設定: ファイルの中の語を出す・予約語を出す
     pub words: bool,
     pub keywords: bool,
+    /// 言語が作るファイル（ライブラリのソース・骨組み）を置く場所（None なら言語の既定）
+    pub out_dir: Option<&'a Path>,
 }
 
 impl<'a> Cx<'a> {
@@ -98,13 +100,30 @@ impl<'a> Cx<'a> {
             _ => String::new(),
         };
         let inside = nagi_workers::index::enclosing_type(src, start);
-        Cx { src, here, line, ws, start, prefix, index, rel, inside, libs, words: true, keywords: true }
+        Cx { src, here, line, ws, start, prefix, index, rel, inside, libs, words: true, keywords: true, out_dir: None }
+    }
+
+    /// `at`（名前の始まりの絶対 byte）の場所（定義へ・参照の絞り込み）
+    pub fn at(src: &'a str, here: Option<&'a Path>, at: usize, index: Option<&'a Index>, libs: &'a Libraries) -> Self {
+        let ls = src[..at].rfind('\n').map_or(0, |i| i + 1);
+        let line = src[ls..].split('\n').next().unwrap_or("").trim_end_matches('\r');
+        Cx::new(src, here, line, at - ls, at, "", index, libs)
     }
 
     /// `.` の後か
     pub fn after_dot(&self) -> bool {
         self.ws > 0 && self.line[..self.ws].ends_with('.')
     }
+}
+
+/// 定義の場所
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Target {
+    pub path: PathBuf,
+    pub line: usize,
+    pub col: usize,
+    /// 跳んだときに伝えること（ライブラリのソースか骨組みかなど）
+    pub note: Option<String>,
 }
 
 /// `.` の前の式を広げたもの
@@ -178,6 +197,16 @@ pub trait Language: Sync {
     /// `.` の後でないときの、言語の名前
     fn scope_names(&self, _cx: &Cx) -> ScopeNames {
         ScopeNames::default()
+    }
+
+    /// プロジェクトの外（ライブラリ・.d.ts）の、`cx.start` の名前 `name` の定義
+    fn library_definition(&self, _cx: &Cx, _name: &str) -> Option<Target> {
+        None
+    }
+
+    /// 参照の絞り込み: `cx.start` の名前 `name` が、ライブラリのもの（受け手の型がライブラリ）か
+    fn library_site(&self, _cx: &Cx, _name: &str) -> bool {
+        false
     }
 
     /// 候補の import の鍵 `key` を、ファイル `src` で名前 `name` に使うための足し方
