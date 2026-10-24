@@ -79,6 +79,16 @@ impl Editor {
         self.nav.libs.start(root, only, waker);
     }
 
+    /// ライブラリの索引をすべて読み直す（ビルドの設定が外で変わったとき）
+    fn restart_libraries(&mut self, root: &Path) {
+        #[cfg(test)]
+        if !self.nav.libs_in_tests {
+            return;
+        }
+        let waker = self.waker();
+        self.nav.libs.restart(root, waker);
+    }
+
     /// 索引の進み具合と、保存したファイルの索引し直しを受け取る。変わったら true
     pub fn poll_index(&mut self) -> bool {
         let mut changed = false;
@@ -136,7 +146,7 @@ impl Editor {
             }
             if let Some(root) = libs_root {
                 nagi_core::log::info("ビルドの設定（pom.xml・package.json など）が外で変わったので、ライブラリの索引を作り直します");
-                self.start_libraries(&root, None);
+                self.restart_libraries(&root);
             }
             changed |= updated;
         }

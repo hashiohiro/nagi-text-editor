@@ -14,6 +14,8 @@ use crate::eco::{ALL, Ecosystem, Loaded};
 pub struct Libraries {
     slots: HashMap<&'static str, Arc<dyn Any + Send + Sync>>,
     loading: Vec<(&'static str, Task<Result<Loaded, String>>)>,
+    /// 生態系ごとに、読み込んだ（読み込んでいる）根
+    roots: HashMap<&'static str, std::path::PathBuf>,
 }
 
 impl Libraries {
@@ -31,9 +33,22 @@ impl Libraries {
         self.loading.iter().any(|(n, _)| *n == eco)
     }
 
-    /// プロジェクトの根 `root` で要る生態系の索引を、裏で読み込み始める（`only` があればそれを作り直すきっかけにする生態系だけ）
+    /// プロジェクトの根 `root` で要る生態系の索引を、裏で読み込み始める。同じ根で読み込んだ（読み込んでいる）ものはそのまま。
+    /// `only` があれば、それを作り直すきっかけにする生態系だけを読み直す
     pub fn start(&mut self, root: &Path, only: Option<&Path>, waker: Waker) {
         for eco in ALL.iter().filter(|e| only.is_none_or(|p| e.rebuild_on(p))) {
+            if let Some(r) = eco.root(root) {
+                if only.is_none() && self.roots.get(eco.name()) == Some(&r) {
+                    continue;
+                }
+                self.spawn(*eco, r, waker.clone());
+            }
+        }
+    }
+
+    /// 要る生態系の索引をすべて読み直す（ビルドの設定が外で変わったとき）
+    pub fn restart(&mut self, root: &Path, waker: Waker) {
+        for eco in ALL.iter() {
             if let Some(r) = eco.root(root) {
                 self.spawn(*eco, r, waker.clone());
             }
@@ -42,6 +57,7 @@ impl Libraries {
 
     fn spawn(&mut self, eco: &'static dyn Ecosystem, root: std::path::PathBuf, waker: Waker) {
         let name = eco.name();
+        self.roots.insert(name, root.clone());
         self.loading.retain(|(n, _)| *n != name);
         self.loading.push((name, nagi_core::task::spawn(name, waker, move |ctx| {
             ctx.send(eco.load(&root));
@@ -106,14 +122,22 @@ mod tests {
         };
         l.start(&dir, None, nagi_core::task::no_waker());
         assert!(l.is_loading(crate::eco::JS));
+        let n = l.loading.len();
+        l.start(&dir, None, nagi_core::task::no_waker());
+        assert_eq!(l.loading.len(), n, "同じ根で読み込み中なら読み直さない");
         assert!(matches!(wait(&mut l).as_slice(), [("js", Ok(m))] if m.contains("TypeScript")));
         assert!(!l.is_loading(crate::eco::JS));
         assert!(crate::eco::dts(&l).is_some() && crate::eco::jars(&l).is_none(), "Maven でないので JVM は読まない");
         assert!(l.rebuild_on(Path::new("x/package.json")) && l.rebuild_on(Path::new("pom.xml")) && !l.rebuild_on(Path::new("a.ts")));
         l.start(&dir, Some(Path::new("pom.xml")), nagi_core::task::no_waker());
         assert!(l.loading.is_empty(), "pom.xml では JS を作り直さない");
+        l.start(&dir, None, nagi_core::task::no_waker());
+        assert!(l.loading.is_empty(), "同じ根で読み込んだものは読み直さない");
         l.start(&dir, Some(&dir.join("package.json")), nagi_core::task::no_waker());
         assert_eq!(l.loading.len(), 1);
+        wait(&mut l);
+        l.restart(&dir, nagi_core::task::no_waker());
+        assert_eq!(l.loading.len(), 1, "ビルドの設定が外で変わったら読み直す");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
