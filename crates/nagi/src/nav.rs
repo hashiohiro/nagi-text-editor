@@ -113,6 +113,9 @@ impl Editor {
         if let Some(Ok(r)) = self.nav.rescan.as_ref().map(|t| t.try_recv()) {
             self.nav.rescan = None;
             let mut libs_root = None;
+            if !r.changed.is_empty() {
+                nagi_core::log::info(&format!("外での変更: {} ファイル", r.changed.len()));
+            }
             if let Some(idx) = &mut self.nav.index {
                 for (rel, v) in r.changed {
                     match v {
