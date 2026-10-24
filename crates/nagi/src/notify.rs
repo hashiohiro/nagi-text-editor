@@ -18,6 +18,8 @@ pub struct Notify {
     pub text: String,
     /// その重さ（描くときの色）
     pub level: Option<Level>,
+    /// 今の文は入力欄のモードの表示か（`-- VISUAL --` など。欄を離れたら消す）
+    mode: bool,
     /// (時刻, 重さ, 文)。古いものから
     history: VecDeque<(String, Level, String)>,
 }
@@ -37,6 +39,7 @@ impl Notify {
         }
         self.level = Some(level);
         self.text = text;
+        self.mode = false;
     }
 
     /// 知らせる（ふつう）
@@ -58,12 +61,27 @@ impl Notify {
     pub fn clear(&mut self) {
         self.text.clear();
         self.level = None;
+        self.mode = false;
     }
 
     /// 履歴に残さずに出す（途中の進み具合など、すぐ書き換わるもの）
     pub fn progress(&mut self, text: impl Into<String>) {
         self.text = text.into();
         self.level = Some(Level::Info);
+        self.mode = false;
+    }
+
+    /// 入力欄のモードを出す（履歴に残さない。押して別の所へ移ったら clear_mode で消す）
+    pub fn mode(&mut self, text: impl Into<String>) {
+        self.progress(text);
+        self.mode = true;
+    }
+
+    /// 出しているのが入力欄のモードなら消す
+    pub fn clear_mode(&mut self) {
+        if self.mode {
+            self.clear();
+        }
     }
 
     pub fn history(&self) -> impl Iterator<Item = &(String, Level, String)> {

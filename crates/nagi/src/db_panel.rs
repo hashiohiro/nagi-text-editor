@@ -1972,6 +1972,26 @@ pub(crate) mod tests {
         }
     }
 
+    /// 欄の入力欄を Insert・Visual のまま本文を押しても、すぐ本文へ移る（前は Insert の間は押しても何もしなかった）
+    #[test]
+    fn click_text_from_field_in_any_mode() {
+        let mut e = Editor::new(nagi_core::Buffer::from_str("abc\ndef\n"), None);
+        e.set_screen(160, 50);
+        e.open_db_panel();
+        for k in ["/or", "/or<Esc>v"] {
+            e.db.as_mut().unwrap().filter = None;
+            e.db.as_mut().unwrap().filter_text.clear();
+            e.focus_right(RightTab::Database);
+            keys(&mut e, k);
+            assert!(e.right_focused() && e.db.as_ref().unwrap().filter.is_some(), "{k}");
+            e.click(1, 7);
+            assert_eq!((e.state(), e.cursor.line), (State::Normal, 1), "{k}");
+            keys(&mut e, "x");
+            assert_eq!(e.db.as_ref().unwrap().filter_text, "or", "{k}: 打ったキーは本文へ");
+        }
+        assert_eq!(e.buf.line(1).trim_end().len(), 1, "x を 2 回");
+    }
+
     pub(crate) fn wait(e: &mut Editor, what: &dyn Fn(&Editor) -> bool) {
         for _ in 0..2000 {
             e.poll_db();

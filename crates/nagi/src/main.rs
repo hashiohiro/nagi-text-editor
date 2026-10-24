@@ -1026,6 +1026,10 @@ impl Frame {
     }
 
     fn on_press(&mut self) {
+        // 入力欄のモードの表示（`-- VISUAL --` など）は、押して別の所へ移ったら残さない
+        if let Some(ed) = &mut self.ed {
+            ed.notify.clear_mode();
+        }
         // 今向いている部品（ダイアログ・ランチャー・コマンドの候補）が受け取るなら、そこへ（component.rs）
         if let (Some(ed), Some(f)) = (&mut self.ed, &self.fonts) {
             if let Some(c) = component::focused(ed) {
@@ -1574,7 +1578,7 @@ impl Frame {
             } else if layout::context(ed, layout::Screen { rows: ed.screen.1, cols: ed.screen.0 }, row, col) {
                 self.sync_ime();
                 self.draw();
-            } else if ed.window_at(row, col).is_some_and(|(_, r)| row < r.y + ed.text_rows(r)) && !ed.has_prompt() {
+            } else if ed.window_at(row, col).is_some_and(|(_, r)| row < r.y + ed.text_rows(r)) && !ed.text_click_blocked() {
                 // 本文: 切り取り・コピー・貼り付け・定義へ など
                 if let Some((w, _)) = ed.window_at(row, col).filter(|(w, _)| *w != ed.cur_win) {
                     ed.focus_window(w);

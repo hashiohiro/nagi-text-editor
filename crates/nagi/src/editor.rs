@@ -1825,9 +1825,15 @@ impl Editor {
         }
     }
 
+    /// 本文を押しても移らないか。最下行の入力欄（`:`・検索など）と画面を覆う部品の間は移らない。
+    /// 欄の入力欄（コミットメッセージ・絞り込み・セルの値など）は、Insert・Visual のままでもすぐ本文へ移れる（Normal と同じ）
+    pub(crate) fn text_click_blocked(&self) -> bool {
+        self.has_prompt() && !matches!(self.state(), State::CommitMsg | State::Log | State::DbTable | State::List)
+    }
+
     /// マウスのクリック: 画面上の (行, セル列) へカーソルを移す
     pub fn click(&mut self, row: usize, col: usize) {
-        if self.has_prompt() {
+        if self.text_click_blocked() {
             return;
         }
         self.leave_panel();
@@ -1843,7 +1849,7 @@ impl Editor {
 
     /// ドラッグ: 押した位置（絶対 byte）を起点に Visual で選ぶ。Insert 中なら先に抜ける
     pub fn drag(&mut self, anchor: usize, row: usize, col: usize) {
-        if self.has_prompt() {
+        if self.text_click_blocked() {
             return;
         }
         self.leave_panel();
@@ -1860,7 +1866,7 @@ impl Editor {
 
     /// ダブルクリックで単語、トリプルクリックで行を選ぶ（viw / V と同じ）
     pub fn select_at(&mut self, row: usize, col: usize, clicks: u32) {
-        if self.has_prompt() {
+        if self.text_click_blocked() {
             return;
         }
         self.leave_panel();

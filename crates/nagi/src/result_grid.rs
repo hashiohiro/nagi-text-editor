@@ -233,6 +233,11 @@ pub enum Field {
     Order,
 }
 
+/// 絞り込みの行の、押した列の欄（`col` は行の左端から。view.rs の draw_filter_row と同じ割り付け: WHERE の箱は 43 列まで）
+pub(crate) fn filter_field_at(col: usize) -> Field {
+    if col < 44 { Field::Where } else { Field::Order }
+}
+
 #[derive(Default)]
 pub struct DbResults {
     pub tabs: Vec<ResultTab>,
@@ -672,6 +677,31 @@ impl Editor {
             }
             return crate::editor::Effect::None;
         }
+        // 絞り込みの欄の入力中（Vim 風。Enter で決める、ノーマルの Esc でやめる）。値を直すキー（i・c・x・u・Enter）より先に受ける
+        if self.db_results.editing.is_some() {
+            let out = self.feed_field(key, |e| e.db_results.editing.as_mut().map(|x| &mut x.1));
+            let r = &mut self.db_results;
+            match out {
+                FieldOut::Cancel => r.editing = None,
+                FieldOut::Submit => {
+                    let (field, f) = r.editing.take().unwrap();
+                    let text = f.text();
+                    if let Some(t) = r.active_tab_mut() {
+                        match field {
+                            Field::Where => t.where_ = text,
+                            Field::Order => t.order = text,
+                        }
+                        t.offset = 0;
+                        t.total = None;
+                        t.running = true;
+                        let id = t.id;
+                        self.db_requery(id);
+                    }
+                }
+                _ => {}
+            }
+            return crate::editor::Effect::None;
+        }
         // 値を直す操作（結果のタブで）
         let dirty = self.db_results.active_tab().is_some_and(|t| !t.edits.is_empty());
         if self.db_results.active > 0 {
@@ -713,31 +743,6 @@ impl Editor {
                 }
                 _ => {}
             }
-        }
-        // 絞り込みの欄の入力中（Vim 風。Enter で決める、ノーマルの Esc でやめる）
-        if self.db_results.editing.is_some() {
-            let out = self.feed_field(key, |e| e.db_results.editing.as_mut().map(|x| &mut x.1));
-            let r = &mut self.db_results;
-            match out {
-                FieldOut::Cancel => r.editing = None,
-                FieldOut::Submit => {
-                    let (field, f) = r.editing.take().unwrap();
-                    let text = f.text();
-                    if let Some(t) = r.active_tab_mut() {
-                        match field {
-                            Field::Where => t.where_ = text,
-                            Field::Order => t.order = text,
-                        }
-                        t.offset = 0;
-                        t.total = None;
-                        t.running = true;
-                        let id = t.id;
-                        self.db_requery(id);
-                    }
-                }
-                _ => {}
-            }
-            return crate::editor::Effect::None;
         }
         let r = &mut self.db_results;
         let pending = std::mem::take(&mut r.pending_g);
@@ -858,6 +863,30 @@ impl Editor {
             }
             self.result_commit_edit();
         }
+        // 絞り込みの欄を打っている間（Insert・Visual でも）: 押した所へすぐ移る。打った条件は残し、
+        // もう一方の欄ならそのまま移る。表を押したら Enter と同じく決めて読み直す
+        let at_filter = (row == 1).then(|| filter_field_at(col + 1));
+        if let Some((field, f)) = self.db_results.editing.take() {
+            if at_filter == Some(field) {
+                self.db_results.editing = Some((field, f));
+                return;
+            }
+            let text = f.text();
+            if let Some(t) = self.db_results.active_tab_mut() {
+                match field {
+                    Field::Where => t.where_ = text,
+                    Field::Order => t.order = text,
+                }
+                if at_filter.is_none() && row > 1 {
+                    t.offset = 0;
+                    t.total = None;
+                    t.running = true;
+                    let id = t.id;
+                    self.db_requery(id);
+                    return;
+                }
+            }
+        }
         let r = &mut self.db_results;
         // 1 行目: タブ
         if row == 0 {
@@ -880,7 +909,7 @@ impl Editor {
                 self.notify.info("未送信の変更があります（Ctrl+Enter で送るか、u・Ctrl+Z で戻す）");
                 return;
             }
-            let field = if col < 40 { Field::Where } else { Field::Order };
+            let field = filter_field_at(col + 1);
             let f = VimField::new(if field == Field::Where { &t.where_ } else { &t.order }, false);
             r.editing = Some((field, f));
             return;
@@ -1074,6 +1103,47 @@ mod tests {
         assert_eq!(cells_of("a"), [["a"]]);
         assert_eq!(cells_of("a\tb\r\nc\td\r\n"), [["a", "b"], ["c", "d"]]);
         assert_eq!(cells_of("a\n\nb"), [vec!["a"], vec![""], vec!["b"]]);
+    }
+
+    /// 結果の表の絞り込み: 打っている欄が Insert・Visual のままでも、もう一方の欄・表をすぐ押せる（打った条件は残す）
+    #[test]
+    fn click_filter_fields_in_any_mode() {
+        use crate::db_panel::tests::wait;
+        let mut e = Editor::new(nagi_core::Buffer::from_str("x\n"), None);
+        e.set_screen(160, 50);
+        e.open_db_panel();
+        e.db_add("mem jdbc:sqlite::memory:");
+        let i = e.db.as_ref().unwrap().sources.len() - 1;
+        e.db.as_mut().unwrap().selected = e.db.as_ref().unwrap().rows.iter().position(|r| *r == crate::db_panel::DbRow::Source(i)).unwrap();
+        let keys = |e: &mut Editor, k: &str| {
+            for key in nagi_vim::parse_keys(k, " ") {
+                e.key(key);
+            }
+        };
+        keys(&mut e, "<CR>");
+        wait(&mut e, &|e| e.db.as_ref().unwrap().conns[i].connected);
+        e.db.as_mut().unwrap().conns[i].manual = true;
+        e.db_execute(i, "create table item(id integer primary key, name text)".into());
+        e.db_execute(i, "insert into item values (1, 'a'), (2, 'b')".into());
+        e.db_execute(i, "select * from item".into());
+        wait(&mut e, &|e| e.db_results.active_tab().is_some_and(|t| t.rows.len() == 2 && t.filterable && !t.running));
+        // 列が分かれば値を直せる表になる（絞り込みの欄の i・Enter を、値を直すキーに取られない）
+        wait(&mut e, &|e| e.db.as_ref().unwrap().conns[i].columns.contains_key(&("main".into(), "item".into())));
+        let field = |e: &Editor| e.db_results.editing.as_ref().map(|f| (f.0, f.1.mode_label(), f.1.text()));
+        e.result_click(1, 10, 1);
+        keys(&mut e, "id > 1");
+        assert!(e.db_results.value_edit.is_none());
+        e.result_click(1, 50, 1);
+        assert_eq!(field(&e), Some((Field::Order, "INSERT", String::new())));
+        keys(&mut e, "id<Esc>v");
+        e.result_click(1, 10, 1);
+        assert_eq!(field(&e), Some((Field::Where, "INSERT", "id > 1".into())));
+        assert_eq!(e.db_results.active_tab().unwrap().order, "id");
+        // 表を押す: 決めて読み直す（行き来の間に打った ORDER BY も効く）
+        e.result_click(4, 8, 1);
+        assert_eq!(field(&e), None);
+        wait(&mut e, &|e| e.db_results.active_tab().is_some_and(|t| !t.running));
+        assert_eq!(e.db_results.active_tab().unwrap().rows.len(), 1);
     }
 
     /// 結果の表: 打っている間に別の行・列をダブルクリックすると、打った値を決めてそのセルを直す。Ctrl+C・Ctrl+V でセルをコピー・貼り付け

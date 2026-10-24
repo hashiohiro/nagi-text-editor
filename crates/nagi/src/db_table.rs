@@ -628,7 +628,40 @@ impl crate::layout::View for DbTableView {
         if te.preview.is_some() {
             return crate::layout::Click::Done;
         }
-        // 描き方（draw_db_table）と同じ割り付け: 見出し 2 行の下に表（表の見出し 2 行）
+        // 描き方（draw_db_table）と同じ割り付け: 見出し 2 行（名前・絞り込み）の下に表（表の見出し 2 行）
+        let at_filter = (row - r.y == 1).then(|| crate::result_grid::filter_field_at(col - r.x));
+        // 絞り込みの欄を打っている間（Insert・Visual でも）: 押した所へすぐ移る。打った条件は残し、
+        // もう一方の欄ならそのまま移る。表を押したら Enter と同じく決めて読み直す
+        if let Some((field, f)) = te.filter_edit.take() {
+            if at_filter == Some(field) {
+                te.filter_edit = Some((field, f));
+                return crate::layout::Click::Done;
+            }
+            let text = f.text();
+            match field {
+                Field::Where => te.where_ = text,
+                Field::Order => te.order = text,
+            }
+            if at_filter.is_none() && row - r.y > 1 {
+                te.offset = 0;
+                te.total = None;
+                ed.db_table_reload();
+                return crate::layout::Click::Done;
+            }
+        }
+        // 絞り込みの欄を押した: 打っている値を決めてから、その欄へ（未送信の変更がある間は f / F と同じく開かない）
+        if let Some(field) = at_filter {
+            if te.editing.is_some() {
+                ed.db_table_commit_edit();
+            }
+            let Some(te) = &mut ed.db_table else { return crate::layout::Click::Done };
+            if te.changes() > 0 {
+                ed.notify.info("未送信の変更があります（Ctrl+Enter で送るか、u で戻す）");
+            } else {
+                te.filter_edit = Some((field, VimField::new(if field == Field::Where { &te.where_ } else { &te.order }, false)));
+            }
+            return crate::layout::Click::Done;
+        }
         let len = te.len();
         // 値を打っている間: 別のセルを押したら、打った値を決めてからそのセルへ（ダブルクリックならそのまま直し始める）。ほかは選び直さない
         if te.editing.is_some() {
@@ -852,6 +885,55 @@ mod tests {
         assert_eq!((0..2).map(|d| (te.value(d, 0), te.value(d, 1))).collect::<Vec<_>>(), [(Some("10".into()), Some("p".into())), (Some("20".into()), Some("q".into()))]);
         keys(&mut e, "u");
         assert_eq!(e.db_table.as_ref().unwrap().value(1, 1).as_deref(), Some("z"), "u は 1 つのセルずつ戻す");
+    }
+
+    /// マウスで欄を移る: WHERE・ORDER BY の欄やセルを、打っている欄が Insert・Visual のままでもすぐ押せる
+    #[test]
+    fn click_fields_in_any_mode() {
+        let mut e = Editor::new(nagi_core::Buffer::from_str("x\n"), None);
+        e.set_screen(160, 50);
+        e.open_db_panel();
+        e.db_add("mem jdbc:sqlite::memory:");
+        let i = e.db.as_ref().unwrap().sources.len() - 1;
+        e.db.as_mut().unwrap().selected = e.db.as_ref().unwrap().rows.iter().position(|r| *r == crate::db_panel::DbRow::Source(i)).unwrap();
+        keys(&mut e, "<CR>");
+        wait(&mut e, &|e| e.db.as_ref().unwrap().conns[i].connected);
+        for sql in ["create table item(id integer primary key, name text)", "insert into item values (1, 'a'), (2, 'b')"] {
+            e.db.as_mut().unwrap().conns[i].manual = true;
+            e.db_execute(i, sql.into());
+            wait(&mut e, &|e| e.db_results.active_tab().is_some_and(|t| !t.running));
+        }
+        e.db.as_mut().unwrap().conns[i].manual = false;
+        e.db_open_table(i, "main", "item");
+        wait(&mut e, &|e| e.db_table.as_ref().is_some_and(|t| !t.running && !t.rows.is_empty()));
+        let s = crate::layout::Screen { rows: 50, cols: 160 };
+        let (x, _) = e.windows_x();
+        let field = |e: &Editor| e.db_table.as_ref().unwrap().filter_edit.as_ref().map(|f| (f.0, f.1.mode_label(), f.1.text()));
+        // WHERE を打っている間（Insert）に ORDER BY を押す: 打った条件は残して ORDER BY へ
+        keys(&mut e, "fid > 0");
+        crate::layout::press(&mut e, s, 1, x + 50, |_| 1);
+        assert_eq!(field(&e), Some((Field::Order, "INSERT", String::new())));
+        assert_eq!(e.db_table.as_ref().unwrap().where_, "id > 0");
+        // Visual のまま WHERE を押す
+        keys(&mut e, "id<Esc>v");
+        crate::layout::press(&mut e, s, 1, x + 10, |_| 1);
+        assert_eq!(field(&e), Some((Field::Where, "INSERT", "id > 0".into())));
+        assert_eq!(e.db_table.as_ref().unwrap().order, "id");
+        // Insert のまま表を押す: 決めて読み直す
+        keys(&mut e, " and id < 2");
+        crate::layout::press(&mut e, s, 4, x + 8, |_| 1);
+        assert_eq!(field(&e), None);
+        wait(&mut e, &|e| e.db_table.as_ref().is_some_and(|t| !t.running));
+        let te = e.db_table.as_ref().unwrap();
+        assert_eq!((te.where_.as_str(), te.len()), ("id > 0 and id < 2", 1));
+        // 値を打っている間（Insert）に WHERE を押す: 値を決めてから（未送信の変更があるので欄は開かない）
+        crate::layout::press(&mut e, s, 4, x + 8, |_| 2);
+        assert!(e.db_table.as_ref().unwrap().editing.is_some());
+        keys(&mut e, "<Esc>cc5");
+        crate::layout::press(&mut e, s, 1, x + 10, |_| 1);
+        let te = e.db_table.as_ref().unwrap();
+        assert!(te.editing.is_none() && te.filter_edit.is_none());
+        assert_eq!(te.value(0, 0).as_deref(), Some("5"));
     }
 
     #[test]
