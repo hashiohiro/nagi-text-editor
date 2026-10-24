@@ -89,10 +89,10 @@ impl Editor {
         let here = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
         let b = self.cursor.byte.min(line.len());
         let prefix = line.get(ws..b).unwrap_or("");
-        let mut cx = nagi_lang::lang::Cx::new(&src, here.as_deref(), line, ws, start, prefix, self.nav.index.as_ref(), &self.nav.libs);
+        let mut cx = nagi_lang::lang::Cx::new(self.language(), &src, here.as_deref(), line, ws, start, prefix, self.nav.index.as_ref(), &self.nav.libs);
         cx.words = self.settings.bool("completion.words");
         cx.keywords = self.settings.bool("completion.keywords");
-        nagi_lang::template::complete::complete(self.language(), &cx)
+        nagi_lang::template::complete::complete(&cx)
     }
 
     /// 打った語で絞り込み直す（合うものが無ければ閉じる）

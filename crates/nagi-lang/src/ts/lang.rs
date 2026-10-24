@@ -72,6 +72,23 @@ impl Language for Ts {
         Some(Target { path, line, col, note: None })
     }
 
+    fn ecosystem(&self) -> Option<&'static str> {
+        Some(eco::JS)
+    }
+
+    fn decl_type(&self, line: &str, col: usize) -> Option<String> {
+        super::rules::ts_decl_type(&line[col..])
+    }
+
+    fn param_type(&self, p: &str) -> Option<String> {
+        super::rules::ts_param_type(p)
+    }
+
+    /// 別のファイルからは export したものだけ
+    fn exported(&self, decl_line: &str) -> bool {
+        decl_line.trim_start().starts_with("export")
+    }
+
     fn import_plan(&self, src: &str, name: &str, key: &str) -> Import {
         match super::import::plan(src, name, key) {
             super::import::Plan::Insert(at, line) => Import::Insert(at, line),

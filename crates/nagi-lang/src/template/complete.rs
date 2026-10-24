@@ -27,7 +27,8 @@ impl Out {
 }
 
 /// 候補を集める
-pub fn complete(lang: &dyn Language, cx: &Cx) -> Vec<Item> {
+pub fn complete(cx: &Cx) -> Vec<Item> {
+    let lang = cx.lang;
     let mut out = Out { items: Vec::new(), seen: HashSet::new() };
     let mut ranker = Ranker::new(cx.index);
     if cx.after_dot() {

@@ -335,9 +335,9 @@ impl Editor {
     pub(crate) fn outside_definition(&self, name: &str, word_at: usize) -> Option<nagi_lang::lang::Target> {
         let src = self.buf.text();
         let here = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
-        let mut cx = nagi_lang::lang::Cx::at(&src, here.as_deref(), word_at, self.nav.index.as_ref(), &self.nav.libs);
+        let mut cx = nagi_lang::lang::Cx::at(self.language(), &src, here.as_deref(), word_at, self.nav.index.as_ref(), &self.nav.libs);
         cx.out_dir = self.nav.sources_dir.as_deref();
-        self.language().library_definition(&cx, name)
+        cx.lang.library_definition(&cx, name)
     }
 
     /// `gI`: 実装へ。型の上なら継承・実装している型、メソッドの上なら受け手の型（宣言の上なら囲む型）の子の中のそのメソッド
@@ -371,7 +371,7 @@ impl Editor {
             let recv = self.syntax.as_ref().and_then(|s| s.receiver(&self.buf, word_at));
             let ty = match recv {
                 Some(rc) => r.receiver_type_name(&rel, &src, word_at, &rc),
-                None => nagi_lang::project::enclosing_type(&src, word_at),
+                None => nagi_lang::project::enclosing_type(self.language().lexis(), &src, word_at),
             };
             (ty, Some(name.as_str()))
         };
@@ -472,7 +472,7 @@ impl Editor {
             let language = nagi_lang::registry::for_file(Some(lang));
             let abs_here = std::path::absolute(&abs).ok();
             // その名前がライブラリのものか（受け手の型がライブラリ。言語が決める）
-            let library = |at: usize| language.library_site(&nagi_lang::lang::Cx::at(&src, abs_here.as_deref(), at, Some(idx), &self.nav.libs), name);
+            let library = |at: usize| language.library_site(&nagi_lang::lang::Cx::at(language, &src, abs_here.as_deref(), at, Some(idx), &self.nav.libs), name);
             let Some(rel) = std::path::absolute(&abs).ok().and_then(|a| a.strip_prefix(&idx.root).ok().map(|r| r.to_string_lossy().replace('\\', "/"))) else { continue };
             let starts: Vec<usize> = std::iter::once(0).chain(src.match_indices('\n').map(|(i, _)| i + 1)).collect();
             // 一致の位置（ヒットの本文は行頭の空白を除いたもの）
@@ -667,7 +667,7 @@ mod tests {
     fn library_target(e: &Editor, name: &str, at: usize) -> Option<(String, Option<String>)> {
         let src = e.buf.text();
         let here = e.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
-        nagi_lang::java::lang::library_target(&nagi_lang::lang::Cx::at(&src, here.as_deref(), at, e.nav.index.as_ref(), &e.nav.libs), name)
+        nagi_lang::java::lang::library_target(&nagi_lang::lang::Cx::at(&nagi_lang::java::lang::JAVA, &src, here.as_deref(), at, e.nav.index.as_ref(), &e.nav.libs), name)
     }
 
     fn open(path: &Path) -> Editor {

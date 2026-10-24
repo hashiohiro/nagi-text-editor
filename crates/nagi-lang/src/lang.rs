@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use nagi_syntax::defs::DefKind;
-use nagi_workers::index::Index;
+use nagi_workers::index::{Entry, Index};
 
 use crate::project::Ranker;
 
@@ -67,6 +67,8 @@ pub enum Import {
 
 /// 補完する場所
 pub struct Cx<'a> {
+    /// 言語
+    pub lang: &'a dyn Language,
     /// ファイルの中身
     pub src: &'a str,
     /// ファイルの絶対パス
@@ -96,20 +98,20 @@ pub struct Cx<'a> {
 
 impl<'a> Cx<'a> {
     #[allow(clippy::too_many_arguments)]
-    pub fn new(src: &'a str, here: Option<&'a Path>, line: &'a str, ws: usize, start: usize, prefix: &'a str, index: Option<&'a Index>, libs: &'a Libraries) -> Self {
+    pub fn new(lang: &'a dyn Language, src: &'a str, here: Option<&'a Path>, line: &'a str, ws: usize, start: usize, prefix: &'a str, index: Option<&'a Index>, libs: &'a Libraries) -> Self {
         let rel = match (index, here) {
             (Some(i), Some(h)) => h.strip_prefix(&i.root).ok().map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default(),
             _ => String::new(),
         };
-        let inside = crate::project::enclosing_type(src, start);
-        Cx { src, here, line, ws, start, prefix, index, rel, inside, libs, words: true, keywords: true, out_dir: None }
+        let inside = crate::project::enclosing_type(lang.lexis(), src, start);
+        Cx { lang, src, here, line, ws, start, prefix, index, rel, inside, libs, words: true, keywords: true, out_dir: None }
     }
 
     /// `at`（名前の始まりの絶対 byte）の場所（定義へ・参照の絞り込み）
-    pub fn at(src: &'a str, here: Option<&'a Path>, at: usize, index: Option<&'a Index>, libs: &'a Libraries) -> Self {
+    pub fn at(lang: &'a dyn Language, src: &'a str, here: Option<&'a Path>, at: usize, index: Option<&'a Index>, libs: &'a Libraries) -> Self {
         let ls = src[..at].rfind('\n').map_or(0, |i| i + 1);
         let line = src[ls..].split('\n').next().unwrap_or("").trim_end_matches('\r');
-        Cx::new(src, here, line, at - ls, at, "", index, libs)
+        Cx::new(lang, src, here, line, at - ls, at, "", index, libs)
     }
 
     /// `.` の後か
@@ -208,6 +210,53 @@ pub trait Language: Sync {
 
     /// 参照の絞り込み: `cx.start` の名前 `name` が、ライブラリのもの（受け手の型がライブラリ）か
     fn library_site(&self, _cx: &Cx, _name: &str) -> bool {
+        false
+    }
+
+    // ---- プロジェクトの索引で型を求める（Ranker）。定義のあるファイルの言語で呼ぶ
+
+    /// 使う生態系（同じ生態系の言語どうしは、定義の候補で同じまとまり。Java と Kotlin、TypeScript と JavaScript）
+    fn ecosystem(&self) -> Option<&'static str> {
+        None
+    }
+
+    /// 定義の行 `line` の `col` にある名前の宣言の型（フィールドの型・メソッドの戻り値の型。総称型は外側）。既定は C 系（型を名前の前に書く）
+    fn decl_type(&self, line: &str, col: usize) -> Option<String> {
+        crate::project::c_decl_type(&line[..col])
+    }
+
+    /// 引数 1 つの宣言の型。既定は C 系
+    fn param_type(&self, p: &str) -> Option<String> {
+        crate::project::c_param_type(p)
+    }
+
+    /// 同じファイルの同じ名前の定義が、引数で選ぶオーバーロードか（Java・Kotlin）
+    fn overloads(&self) -> bool {
+        false
+    }
+
+    /// 別のファイルから使える定義か（定義の行。TypeScript は export したものだけ）
+    fn exported(&self, _decl_line: &str) -> bool {
+        true
+    }
+
+    /// 書いていないメンバー（名前, 引数の数）。型 `ty` の定義の行 `line`、型の中の定義 `defs`（Java の Lombok・record）
+    fn implicit_members(&self, _lines: &[String], _line: usize, _ty: &str, _defs: &[Entry]) -> Vec<(String, usize)> {
+        Vec::new()
+    }
+
+    /// 書いていないメソッド `name` の元のフィールド（Lombok の getFoo → foo）。呼んだ側のファイルの言語で
+    fn accessor_field(&self, _name: &str) -> Option<String> {
+        None
+    }
+
+    /// 組み込みの型の親（JDK のよくある型。オーバーロードを引数の型で選ぶ）。呼んだ側のファイルの言語で
+    fn builtin_supers(&self, _t: &str) -> Option<&'static [&'static str]> {
+        None
+    }
+
+    /// 親が分かっている組み込みの型か
+    fn builtin_known(&self, _t: &str) -> bool {
         false
     }
 

@@ -125,6 +125,30 @@ impl Language for Java {
         library_target(cx, name).is_some()
     }
 
+    fn ecosystem(&self) -> Option<&'static str> {
+        Some(eco::JVM)
+    }
+
+    fn overloads(&self) -> bool {
+        true
+    }
+
+    fn implicit_members(&self, lines: &[String], line: usize, ty: &str, defs: &[nagi_workers::index::Entry]) -> Vec<(String, usize)> {
+        super::rules::implicit_members(lines, line, ty, defs)
+    }
+
+    fn accessor_field(&self, name: &str) -> Option<String> {
+        super::rules::accessor_field(name)
+    }
+
+    fn builtin_supers(&self, t: &str) -> Option<&'static [&'static str]> {
+        super::rules::jdk_supers(t)
+    }
+
+    fn builtin_known(&self, t: &str) -> bool {
+        super::rules::jdk_known(t)
+    }
+
     fn import_plan(&self, src: &str, _name: &str, key: &str) -> Import {
         match super::import::plan(src, key) {
             super::import::Plan::None => Import::None,

@@ -1,0 +1,160 @@
+//! Java のプロジェクトの規則（Ranker が言語の差し込み口から呼ぶ）: JDK のよくある型の親、Lombok・record の書いていないメンバー、
+//! 宣言の型を型引数ごと読む
+
+use nagi_syntax::defs::DefKind;
+use nagi_workers::index::Entry;
+
+/// JDK のよくある型の親（オーバーロードを引数の型で選ぶため）
+pub fn jdk_supers(t: &str) -> Option<&'static [&'static str]> {
+    Some(match t {
+        "LocalDate" | "LocalDateTime" | "LocalTime" | "ZonedDateTime" | "OffsetDateTime" | "OffsetTime" | "Instant" | "Year" | "YearMonth" => &["Temporal", "TemporalAccessor", "Comparable", "Serializable"],
+        "Temporal" => &["TemporalAccessor"],
+        "Timestamp" => &["Date"],
+        "Date" | "Calendar" => &["Serializable", "Comparable"],
+        "Integer" | "Long" | "Short" | "Byte" | "Double" | "Float" | "BigDecimal" | "BigInteger" => &["Number", "Comparable", "Serializable"],
+        "String" => &["CharSequence", "Comparable", "Serializable"],
+        "StringBuilder" | "StringBuffer" => &["CharSequence"],
+        "ArrayList" | "LinkedList" => &["List"],
+        "List" | "Set" | "Queue" => &["Collection"],
+        "HashSet" | "LinkedHashSet" | "TreeSet" => &["Set"],
+        "Collection" => &["Iterable"],
+        "HashMap" | "LinkedHashMap" | "TreeMap" | "ConcurrentHashMap" => &["Map"],
+        _ => return None,
+    })
+}
+
+/// 表の親の側に出てくる型（親が分かっているものとして扱う）
+pub fn jdk_known(t: &str) -> bool {
+    matches!(t, "Temporal" | "TemporalAccessor" | "Number" | "CharSequence" | "Map" | "Iterable" | "Comparable" | "Serializable" | "int" | "long" | "short" | "byte" | "double" | "float" | "boolean" | "char")
+}
+
+/// getFoo / isFoo / setFoo → foo
+pub fn accessor_field(name: &str) -> Option<String> {
+    let rest = name.strip_prefix("get").or_else(|| name.strip_prefix("set")).or_else(|| name.strip_prefix("is"))?;
+    let mut c = rest.chars();
+    let first = c.next().filter(|c| c.is_uppercase())?;
+    Some(first.to_lowercase().chain(c).collect())
+}
+
+/// Java: 名前の前の型を型引数・配列ごと（`List<Foo>`・`String[]`）
+pub fn java_decl_text(before: &str) -> Option<String> {
+    let b = before.trim_end();
+    let mut i = b.len();
+    while b[..i].ends_with("[]") {
+        i -= 2;
+    }
+    if b[..i].ends_with('>') {
+        let mut depth = 0;
+        let mut cut = None;
+        for (k, c) in b[..i].char_indices().rev() {
+            match c {
+                '>' => depth += 1,
+                '<' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        cut = Some(k);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        i = cut?;
+    }
+    let head = b[..i].char_indices().rev().take_while(|(_, c)| c.is_alphanumeric() || *c == '_' || *c == '$' || *c == '.').last()?.0;
+    crate::project::c_decl_type(&b[..i])?;
+    Some(b[head..].to_string())
+}
+
+/// `record Name(部品, …)` の部品の名前（型の定義の行 `line` から、括弧が閉じるまで）
+fn record_components(lines: &[String], line: usize, name: &str) -> Vec<String> {
+    let Some(first) = lines.get(line) else { return Vec::new() };
+    let Some(at) = first.find(&format!("record {name}")) else { return Vec::new() };
+    let mut text = String::new();
+    for l in std::iter::once(&first[at..]).chain(lines.iter().skip(line + 1).take(20).map(String::as_str)) {
+        text.push_str(l);
+        text.push(' ');
+        if l.contains(')') {
+            break;
+        }
+    }
+    let Some(open) = text.find('(') else { return Vec::new() };
+    let mut depth = 0;
+    let mut body = String::new();
+    for c in text[open..].chars() {
+        match c {
+            '(' | '<' => depth += 1,
+            ')' | '>' => depth -= 1,
+            _ => {}
+        }
+        if depth == 0 {
+            break;
+        }
+        body.push(if c == ',' && depth == 1 { '\n' } else { c });
+    }
+    body.trim_start_matches('(')
+        .split('\n')
+        .filter_map(|p| p.split_whitespace().last().map(|w| w.trim_matches(|c: char| !(c.is_alphanumeric() || c == '_')).to_string()))
+        .filter(|n| !n.is_empty())
+        .collect()
+}
+
+/// `line` の宣言に付いた注釈の名前（前の行の `@Data`・`@Getter(AccessLevel.NONE)` と、同じ行の頭のもの。`lombok.Data` は Data）
+fn annotations_before(lines: &[String], line: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut take = |l: &str| {
+        for (i, _) in l.match_indices('@') {
+            let name: String = l[i + 1..].chars().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '.').collect();
+            out.push(name.rsplit('.').next().unwrap_or("").to_string());
+        }
+    };
+    if let Some(l) = lines.get(line) {
+        // 同じ行は宣言の名前より前（文字列の中の @ は気にしない）
+        take(l.split('=').next().unwrap_or(""));
+    }
+    for l in lines[..line.min(lines.len())].iter().rev().take(12) {
+        let t = l.trim();
+        if t.is_empty() || t.starts_with("//") || t.starts_with('*') || t.starts_with("/*") {
+            continue;
+        }
+        // 注釈の続き（`@Schema(` の次の行など）も見る。宣言・文の終わりで止める
+        if t.ends_with(';') || t.ends_with('{') || t.ends_with('}') {
+            break;
+        }
+        take(t);
+    }
+    out
+}
+
+/// 書いていないメンバー（名前, 引数の数）: record の部品の読み出し（`record P(String title, int n)` の title()・n()）、
+/// Lombok（@Data・@Getter・@Setter・@Value をクラスかフィールドに。@Builder の builder()）。`line` は型 `ty` の定義の行、`defs` は型の中の定義
+pub fn implicit_members(lines: &[String], line: usize, ty: &str, defs: &[Entry]) -> Vec<(String, usize)> {
+    let mut out: Vec<(String, usize)> = record_components(lines, line, ty).into_iter().map(|n| (n, 0)).collect();
+    let class_ann = annotations_before(lines, line);
+    let has = |ann: &[String], a: &str| ann.iter().any(|x| x == a);
+    if has(&class_ann, "Builder") {
+        out.push(("builder".into(), 0));
+    }
+    for d in defs {
+        if d.kind != DefKind::Field {
+            continue;
+        }
+        let Some(decl) = lines.get(d.line as usize).map(|l| &l[..(d.col as usize).min(l.len())]) else { continue };
+        let words: Vec<&str> = decl.split_whitespace().collect();
+        if words.contains(&"static") {
+            continue;
+        }
+        let field_ann = annotations_before(lines, d.line as usize);
+        let either = |a: &str| has(&class_ann, a) || has(&field_ann, a);
+        let getter = either("Data") || either("Getter") || has(&class_ann, "Value");
+        let setter = (either("Data") || either("Setter")) && !words.contains(&"final") && !has(&class_ann, "Value");
+        let cap = d.name.chars().next().map(|c| c.to_uppercase().collect::<String>() + &d.name[c.len_utf8()..]).unwrap_or_default();
+        if getter {
+            out.push((format!("{}{cap}", if words.last() == Some(&"boolean") { "is" } else { "get" }), 0));
+        }
+        if setter {
+            out.push((format!("set{cap}"), 1));
+        }
+    }
+    out
+}

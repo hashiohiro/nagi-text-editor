@@ -16,3 +16,8 @@ pub fn for_file(lang: Option<Lang>) -> &'static dyn Language {
         _ => &crate::plain::OTHER,
     }
 }
+
+/// パス（根からの相対パスでもよい）の言語の差し込み口
+pub fn for_path(path: &str) -> &'static dyn Language {
+    for_file(Lang::detect(std::path::Path::new(path)))
+}

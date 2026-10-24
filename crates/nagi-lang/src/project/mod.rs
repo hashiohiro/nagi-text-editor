@@ -26,6 +26,55 @@ pub fn var_type(text: &str, name: &str, at: usize) -> Option<String> {
     crate::java::types::pick(all, at)
 }
 
+/// C 系の言語（型を名前の前に書く）: 名前の前の型（`public Criteria createCriteria(` / `private Foo bar;` → Criteria / Foo）。総称型は外側
+pub fn c_decl_type(before: &str) -> Option<String> {
+    let mut b = before.trim_end();
+    // 配列は分からないものとする
+    if b.ends_with(']') {
+        return None;
+    }
+    if b.ends_with('>') {
+        let mut depth = 0;
+        let mut cut = None;
+        for (i, c) in b.char_indices().rev() {
+            match c {
+                '>' => depth += 1,
+                '<' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        cut = Some(i);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        b = b[..cut?].trim_end();
+    }
+    let word: String = b.chars().rev().take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$' || *c == '.').collect::<Vec<_>>().into_iter().rev().collect();
+    let last = word.rsplit('.').next().unwrap_or("").to_string();
+    let not_type = ["class", "interface", "enum", "record", "void", "public", "private", "protected", "static", "final", "abstract", "synchronized", "default", "native", "transient", "volatile", "int", "long", "short", "byte", "char", "boolean", "float", "double", "var", "return", "new"];
+    (!last.is_empty() && last.chars().next().is_some_and(|c| c.is_alphabetic()) && !not_type.contains(&last.as_str())).then_some(last)
+}
+
+/// C 系の言語: 引数 1 つの宣言 `p`（`final List<Foo> xs`）の型（注釈・final を除き、名前の前の型。総称型は外側、可変長の ... と配列は外す）
+pub fn c_param_type(p: &str) -> Option<String> {
+    let mut flat = String::new();
+    let mut d = 0;
+    for c in p.chars() {
+        match c {
+            '<' | '(' => d += 1,
+            '>' | ')' => d -= 1,
+            _ if d == 0 => flat.push(c),
+            _ => {}
+        }
+    }
+    let words: Vec<&str> = flat.split_whitespace().filter(|w| !w.starts_with('@') && *w != "final").collect();
+    let ty = words.len().checked_sub(2).map(|i| words[i])?;
+    let ty = ty.trim_end_matches("...").trim_end_matches("[]");
+    Some(ty.rsplit('.').next().unwrap_or(ty).to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
