@@ -147,6 +147,23 @@ pub fn strip_comments(lx: &Lexis, s: &str) -> String {
     out
 }
 
+/// import・package の行のパッケージの道（`org.springframework.` など、後に `.` が続く名前と `.`）を空白にする。最後の名前（クラス）は残す。長さ・位置は変えない
+pub fn blank_import_paths(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for line in s.split_inclusive('\n') {
+        let t = line.trim_start();
+        let Some(rest) = ["import ", "package "].iter().find_map(|k| t.strip_prefix(k)) else {
+            out.push_str(line);
+            continue;
+        };
+        out.push_str(&line[..line.len() - rest.len()]);
+        let last = rest.rfind('.').map_or(0, |i| i + 1);
+        out.extend(rest[..last].chars().flat_map(|c| std::iter::repeat_n(if c.is_whitespace() { c } else { ' ' }, c.len_utf8())));
+        out.push_str(&rest[last..]);
+    }
+    out
+}
+
 /// コメントと文字列の中を空白にする（引用符と改行は残し、長さ・位置は変えない）。ファイルの中の語を集める前に
 pub fn blank_literals(lx: &Lexis, s: &str) -> String {
     let b = s.as_bytes();
@@ -386,6 +403,14 @@ pub fn receiver_before(lx: &Lexis, line: &str, dot: usize, var: &dyn Fn(&str) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn blank_import_paths_keeps_positions() {
+        let s = "package a.b;\nimport org.é.web.Bind;\nimport static x.Y.z;\nweb.f();";
+        let t = blank_import_paths(s);
+        assert_eq!(t.len(), s.len());
+        assert_eq!(t.lines().collect::<Vec<_>>(), ["package   b;", "import            Bind;", "import            z;", "web.f();"]);
+    }
 
     #[test]
     fn blank_literals_keeps_positions() {

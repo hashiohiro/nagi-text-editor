@@ -109,12 +109,32 @@ fn after_dot(lang: &dyn Language, cx: &Cx, ranker: &mut Ranker, out: &mut Out) {
         // 型が分からない・プロジェクトの外: ファイルの中で `.` の後に出てくる語（コメント・文字列の中の `www.example.com` などは除く）
         static DOT_WORD: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
         let re = DOT_WORD.get_or_init(|| regex::Regex::new(r"\.([A-Za-z_$][\w$]*)").unwrap());
-        let src = &code_words(lang, src);
+        let src = &text::blank_import_paths(&code_words(lang, src));
+        // 受け手の頭（`web.springframework.` の web）がファイルのどこにも無い変数の名前なら、メンバーは無い
+        // （クラスの名前・正規表現の旗 `/x/i.` は除く。親を継ぐクラスがあれば、継いだフィールドかもしれないので除く）
+        let chain = cx.line[..cx.ws - 1].trim_end_matches(|c: char| c.is_alphanumeric() || c == '_' || c == '$' || c == '.');
+        let root = &cx.line[chain.len()..cx.ws - 1];
+        let root = root.split('.').next().unwrap_or("");
+        let root_at = cx.start - (cx.ws - chain.len());
+        let bare = !lang.keywords().contains(&root) && !chain.ends_with([')', ']', '>', '"', '\'', '`', '/']) && root.starts_with(|c: char| c.is_lowercase() || c == '_' || c == '$');
+        let bare = bare && words_at(src, "extends").next().is_none();
+        if bare && !words_at(src, root).any(|i| i != root_at) {
+            return;
+        }
         for c in re.captures_iter(src) {
+            if c.get(1).unwrap().start() == cx.start {
+                continue;
+            }
             let call = src[c.get(0).unwrap().end()..].starts_with('(');
             out.push(Item { name: c[1].to_string(), mark: if call { 'm' } else { 'f' }, note: ty.clone().unwrap_or_default(), call: call.then_some(true), rank: 1, insert: None, import: None });
         }
     }
+}
+
+/// `src` の中の語 `w` の位置（前後が語の文字でない所）
+fn words_at<'a>(src: &'a str, w: &'a str) -> impl Iterator<Item = usize> + 'a {
+    let is_word = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+    src.match_indices(w).map(|(i, _)| i).filter(move |&i| !src[..i].ends_with(is_word) && !src[i + w.len()..].starts_with(is_word))
 }
 
 /// 語を集める元の文字（言語が除くなら、コメントと文字列の中を空白にする。位置は変えない）
@@ -196,8 +216,18 @@ mod tests {
         let v = names(&crate::ts::lang::TS, "const t = `template words`; // note here\nlet value = 1;\nva@");
         assert!(v.contains(&"value".to_string()) && !v.contains(&"template".to_string()) && !v.contains(&"note".to_string()), "{v:?}");
         // `.` の後で型が分からないときの語も
-        let v = names(&crate::java::lang::JAVA, "// call www.example.com\nclass A {\n  void f(Object o) {\n    o.toString();\n    x.@\n  }\n}");
+        let v = names(&crate::java::lang::JAVA, "// call www.example.com\nclass A {\n  void f(Object o) {\n    o.toString();\n    o.@\n  }\n}");
         assert!(v.contains(&"toString".to_string()) && !v.contains(&"example".to_string()), "{v:?}");
+        // import のパッケージの名前は `.` の後の語にしない。どこにも無い名前の `.` の後は何も出さない
+        let src = "import org.springframework.web.bind.Annotation;\nclass A {\n  void f(Object o) {\n    o.toString();\n    @\n  }\n}";
+        for (typed, want) in [("o.@", Some("toString")), ("web.@", None), ("web.springframework.@", None), ("Annotation.@", Some("toString"))] {
+            let v = names(&crate::java::lang::JAVA, &src.replace('@', typed));
+            assert!(!v.contains(&"springframework".to_string()) && !v.contains(&"bind".to_string()), "{typed}: {v:?}");
+            assert_eq!(want.is_some(), !v.is_empty(), "{typed}: {v:?}");
+        }
+        // 親を継ぐクラスでは、無い名前も継いだフィールドかもしれないので語を出す
+        let v = names(&crate::java::lang::JAVA, &src.replace("class A", "class A extends B").replace('@', "props.@"));
+        assert!(v.contains(&"toString".to_string()), "{v:?}");
         // 文章のファイル（知らない種類）は ' の後も語として集める
         let v = names(&crate::plain::OTHER, "don't forget the meeting\nfo@");
         assert!(v.contains(&"forget".to_string()) && v.contains(&"meeting".to_string()), "{v:?}");
