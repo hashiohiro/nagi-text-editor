@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use crate::libs::Libraries;
 
+pub mod cargo;
 pub mod dts;
 pub mod jvm;
 
@@ -13,6 +14,8 @@ pub mod jvm;
 pub const JVM: &str = "jvm";
 /// JS（組み込みと node_modules の .d.ts）の索引の名前
 pub const JS: &str = "js";
+/// Cargo（Rust の標準ライブラリと依存のクレートのソース）の索引の名前
+pub const CARGO: &str = "cargo";
 
 pub fn jars(l: &Libraries) -> Option<Arc<jvm::JarIndex>> {
     l.get(JVM)
@@ -20,6 +23,10 @@ pub fn jars(l: &Libraries) -> Option<Arc<jvm::JarIndex>> {
 
 pub fn dts(l: &Libraries) -> Option<Arc<dts::DtsIndex>> {
     l.get(JS)
+}
+
+pub fn cargo(l: &Libraries) -> Option<Arc<cargo::CargoIndex>> {
+    l.get(CARGO)
 }
 
 /// 読み込んだ索引と、記録に残すこと
@@ -62,4 +69,4 @@ pub fn build_files() -> nagi_workers::index::BuildFiles {
 }
 
 /// すべての生態系
-pub static ALL: &[&dyn Ecosystem] = &[&jvm::ECO, &dts::ECO];
+pub static ALL: &[&dyn Ecosystem] = &[&jvm::ECO, &dts::ECO, &cargo::ECO];

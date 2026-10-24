@@ -622,7 +622,8 @@ mod tests {
             v
         };
         let has = |v: &[String], names: &[&str]| names.iter().all(|n| v.iter().any(|x| x == n));
-        let v = items(&mut e, 25, "c.");
+        // 関数の中（変数 c の範囲）で
+        let v = items(&mut e, 24, "c.");
         assert!(has(&v, &["bump", "n"]) && !v.iter().any(|x| x == "new"), "impl の self を取るメソッドとフィールド: {v:?}");
         let v = items(&mut e, 25, "Counter::");
         assert!(has(&v, &["new", "MAX"]), "関連関数・定数: {v:?}");
@@ -825,6 +826,10 @@ mod tests {
         if root.join("node_modules").join("typescript").is_dir() {
             e.nav.libs.set(nagi_lang::eco::JS, std::sync::Arc::new(nagi_lang::eco::dts::DtsIndex::load(&root)));
         }
+        // Rust の標準ライブラリと依存のクレート（Cargo.lock があれば。NAGI_NO_CARGO で無しに）
+        if let Some(ws) = root.ancestors().find(|d| d.join("Cargo.lock").is_file()).filter(|_| std::env::var_os("NAGI_NO_CARGO").is_none()) {
+            e.nav.libs.set(nagi_lang::eco::CARGO, std::sync::Arc::new(nagi_lang::eco::cargo::load(ws)));
+        }
         let site = regex::Regex::new(r"(?:[\w)]|^\s*)\.([A-Za-z_]\w*)").unwrap();
         // [型が分かって当たった, 型が分かったが無い, ファイルの語で代わり, 何も無い]
         let mut n = [0usize; 4];
@@ -935,7 +940,12 @@ mod tests {
                     };
                     n[k] += 1;
                     match k {
-                        1 => *miss.entry(format!("{recv}.{}", g.as_str())).or_default() += 1,
+                        1 => {
+                            let key = format!("{recv}.{}", g.as_str());
+                            // 候補の持ち主（どの型と読んだか）と行
+                            example.entry(key.clone()).or_insert_with(|| format!("[{}] {}", c[0].note, line.trim().chars().take(90).collect::<String>()));
+                            *miss.entry(key).or_default() += 1
+                        }
                         2 | 3 => {
                             example.entry(recv.clone()).or_insert_with(|| line.trim().chars().take(100).collect());
                             *untyped.entry(recv).or_default() += 1
