@@ -39,6 +39,11 @@ pub struct Loc {
     pub kind: DefKind,
 }
 
+/// 場所の順（パス・行・列）
+fn loc_order(a: &Loc, b: &Loc) -> std::cmp::Ordering {
+    (&*a.path, a.line, a.col).cmp(&(&*b.path, b.line, b.col))
+}
+
 #[derive(Default)]
 pub struct Index {
     pub root: PathBuf,
@@ -127,6 +132,10 @@ impl Index {
                 by.entry(d.name.clone()).or_default().push(Loc { path: path.clone(), line: d.line, col: d.col, kind: d.kind });
             }
         }
+        // ファイルの表は HashMap なので、名前ごとの場所はパス・行・列の順に（候補の順を毎回同じに）
+        for v in by.values_mut() {
+            v.sort_by(loc_order);
+        }
         self.by_name = by;
     }
 
@@ -144,7 +153,9 @@ impl Index {
             }
         }
         for d in &defs {
-            self.by_name.entry(d.name.clone()).or_default().push(Loc { path: key.clone(), line: d.line, col: d.col, kind: d.kind });
+            let v = self.by_name.entry(d.name.clone()).or_default();
+            v.push(Loc { path: key.clone(), line: d.line, col: d.col, kind: d.kind });
+            v.sort_by(loc_order);
         }
         self.files.insert(key, FileDefs { stamp, defs });
         self.packages = Default::default();
