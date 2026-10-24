@@ -60,7 +60,7 @@ impl Editor {
         }
         let root = self.project_root();
         let waker = self.waker();
-        self.nav.building = Some(nagi_workers::index::build(&root, waker.clone()));
+        self.nav.building = Some(nagi_workers::index::build_with(&root, nagi_lang::eco::build_files(), waker.clone()));
         self.nav.progress = Some((0, 0));
         self.start_libraries(&root, None);
     }
@@ -124,7 +124,7 @@ impl Editor {
                 }
             }
             if let Some(root) = libs_root {
-                nagi_core::log::info("ビルドの設定（pom.xml）が外で変わったので、依存を求め直します");
+                nagi_core::log::info("ビルドの設定（pom.xml・package.json など）が外で変わったので、ライブラリの索引を作り直します");
                 self.start_libraries(&root, None);
             }
             changed |= updated;
@@ -146,7 +146,7 @@ impl Editor {
         }
         let Some(idx) = &self.nav.index else { return };
         self.nav.last_rescan = Some(std::time::Instant::now());
-        self.nav.rescan = Some(nagi_workers::index::rescan(&idx.root, idx.stamps(), self.waker()));
+        self.nav.rescan = Some(nagi_workers::index::rescan(&idx.root, idx.stamps(), nagi_lang::eco::build_files(), self.waker()));
     }
 
     /// 保存したファイルを索引し直す（裏で）
@@ -1037,9 +1037,23 @@ mod tests {
         assert!(!idx.lookup("alpha2").is_empty() && idx.lookup("alpha").is_empty(), "変わったファイル");
         assert!(idx.lookup("B").is_empty(), "消えたファイル");
         assert_ne!(idx.build_sig, sig, "pom.xml の変更");
+        assert!(idx.lookup("project").is_empty(), "pom.xml は定義の索引に入れない");
         // すぐもう一度は見直さない（2 秒に 1 回まで）
         e.rescan_index();
         assert!(e.nav.rescan.is_none());
+        // package.json（JS の生態系の作り直すきっかけ）も外での変更に気付く
+        let sig = e.nav.index.as_ref().unwrap().build_sig;
+        std::fs::write(dir.join("package.json"), "{}").unwrap();
+        e.nav.last_rescan = None;
+        e.rescan_index();
+        for _ in 0..1000 {
+            e.poll_index();
+            if e.nav.rescan.is_none() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert_ne!(e.nav.index.as_ref().unwrap().build_sig, sig, "package.json の変更");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

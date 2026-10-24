@@ -51,7 +51,7 @@ pub struct Index {
     by_name: HashMap<String, Vec<Loc>>,
     /// 言語が索引から作る表（Java のソースのパッケージなど。引いたときに作り、ファイルが変われば作り直す）
     derived: Mutex<HashMap<&'static str, Arc<Vec<String>>>>,
-    /// ビルドの設定（pom.xml・.mvn/maven.config）の (パス, 更新時刻, 大きさ) のハッシュ。変われば依存を求め直す
+    /// ビルドの設定（pom.xml・package.json など。BuildFiles）の (パス, 更新時刻, 大きさ) のハッシュ。変われば依存を求め直す
     pub build_sig: u64,
 }
 
@@ -269,14 +269,34 @@ pub enum Progress {
     Done(Box<Index>),
 }
 
+/// ビルドの設定のファイル（変われば言語がライブラリの索引を作り直す。どれかは言語の側が決める）
+#[derive(Clone)]
+pub struct BuildFiles {
+    /// 索引を作るときに見るファイルのうち、ビルドの設定か（Some。中身を定義の索引にも入れるなら Some(true)。pom.xml は入れない）
+    pub is: fn(&Path) -> Option<bool>,
+    /// 隠しフォルダの中などで見ないファイルの、根からの相対パス（`.mvn/maven.config`）
+    pub extra: Vec<String>,
+}
+
+impl Default for BuildFiles {
+    fn default() -> Self {
+        BuildFiles { is: |_| None, extra: Vec::new() }
+    }
+}
+
 /// 索引を作る（保存したものがあれば、変わったファイルだけ解析し直す）
 pub fn build(root: &Path, waker: Waker) -> nagi_core::task::Task<Progress> {
+    build_with(root, BuildFiles::default(), waker)
+}
+
+/// `build` に、ビルドの設定のファイルを教えて（その変わり目を build_sig に）
+pub fn build_with(root: &Path, bf: BuildFiles, waker: Waker) -> nagi_core::task::Task<Progress> {
     let root = root.to_path_buf();
     nagi_core::task::spawn("index", waker, move |ctx| {
         let (tx, waker) = (ctx.sender(), ctx.waker());
         let cached = load_cache(&root);
         // 対応する言語のファイルを集める
-        let (paths, build_sig) = source_files(&root);
+        let (paths, build_sig) = source_files(&root, &bf);
         let mut files: HashMap<Arc<str>, FileDefs> = HashMap::new();
         let mut todo = Vec::new();
         for p in paths {
@@ -331,8 +351,8 @@ pub fn build(root: &Path, waker: Waker) -> nagi_core::task::Task<Progress> {
     })
 }
 
-/// 索引するファイルと、ビルドの設定（pom.xml・.mvn/maven.config）の (パス, 更新時刻, 大きさ) のハッシュ
-fn source_files(root: &Path) -> (Vec<PathBuf>, u64) {
+/// 索引するファイルと、ビルドの設定（pom.xml・package.json など、`bf` が決める）の (パス, 更新時刻, 大きさ) のハッシュ
+fn source_files(root: &Path, bf: &BuildFiles) -> (Vec<PathBuf>, u64) {
     use std::hash::{Hash, Hasher};
     let mut paths = Vec::new();
     let mut poms: Vec<(PathBuf, Option<(u64, u64)>)> = Vec::new();
@@ -340,14 +360,18 @@ fn source_files(root: &Path) -> (Vec<PathBuf>, u64) {
         if !e.file_type().is_some_and(|t| t.is_file()) {
             continue;
         }
-        if e.file_name() == "pom.xml" {
+        let build = (bf.is)(e.path());
+        if build.is_some() {
             poms.push((e.path().to_path_buf(), stamp(e.path())));
-        } else if Lang::detect(e.path()).is_some_and(|l| l.available()) {
+        }
+        if build != Some(false) && Lang::detect(e.path()).is_some_and(|l| l.available()) {
             paths.push(e.into_path());
         }
     }
-    let config = root.join(".mvn").join("maven.config");
-    poms.push((config.clone(), stamp(&config)));
+    for x in &bf.extra {
+        let p = root.join(x);
+        poms.push((p.clone(), stamp(&p)));
+    }
     poms.sort();
     let mut h = std::collections::hash_map::DefaultHasher::new();
     poms.hash(&mut h);
@@ -362,10 +386,10 @@ pub struct Rescan {
 }
 
 /// 外での変更を探す（裏で）: 今の索引のファイルの (更新時刻, 大きさ) `known` と比べ、変わった・増えたファイルを解析し直し、消えたものを知らせる
-pub fn rescan(root: &Path, known: HashMap<Arc<str>, (u64, u64)>, waker: Waker) -> nagi_core::task::Task<Rescan> {
+pub fn rescan(root: &Path, known: HashMap<Arc<str>, (u64, u64)>, bf: BuildFiles, waker: Waker) -> nagi_core::task::Task<Rescan> {
     let root = root.to_path_buf();
     nagi_core::task::spawn("index-rescan", waker, move |ctx| {
-        let (paths, build_sig) = source_files(&root);
+        let (paths, build_sig) = source_files(&root, &bf);
         let mut parser = DefParser::default();
         let mut changed = Vec::new();
         let mut seen = std::collections::HashSet::new();

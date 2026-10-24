@@ -824,7 +824,15 @@ impl super::Ecosystem for Jvm {
     }
 
     fn rebuild_on(&self, path: &Path) -> bool {
-        path.file_name().is_some_and(|n| n.eq_ignore_ascii_case("pom.xml"))
+        path.file_name().is_some_and(|n| n.eq_ignore_ascii_case("pom.xml")) || path.ends_with(".mvn/maven.config")
+    }
+
+    fn index_build_file(&self) -> bool {
+        false
+    }
+
+    fn hidden_build_files(&self) -> &'static [&'static str] {
+        &[".mvn/maven.config"]
     }
 }
 
