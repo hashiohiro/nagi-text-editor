@@ -1155,7 +1155,7 @@ mod tests {
             "@Component({ selector: 'app-page', templateUrl: './page.component.html' })\nexport class PageComponent extends PageBase {\n  title = 'x';\n  onGo(n: number) {}\n}\n",
         )
         .unwrap();
-        std::fs::write(dir.join("src/button/button.component.ts"), "@Component({ selector: 'app-button', template: '' })\nexport class ButtonComponent {\n  @Input() width = 0;\n}\n").unwrap();
+        std::fs::write(dir.join("src/button/button.component.ts"), "interface Opt {\n  a: number;\n}\n@Component({ selector: 'app-button', template: '' })\nexport class ButtonComponent {\n  @Input() width = 0;\n}\n").unwrap();
         // 別の部品の同じ名前（こちらへは跳ばない）
         std::fs::write(dir.join("src/other.ts"), "export class Other {\n  onGo() {}\n  title = 'y';\n}\n").unwrap();
         std::fs::write(dir.join("src/page/page.component.html"), "<p>{{ title }}</p>\n<app-button [width]=\"300\" (click)=\"onGo(1)\"></app-button>\n<a (click)=\"goBack()\">戻る</a>\n").unwrap();
@@ -1182,10 +1182,10 @@ mod tests {
         assert_eq!(at(&e), ("page.component.ts".into(), 3), "{}", e.notify.text);
         // <app-button> → 部品のクラス
         keys(&mut e, "<C-o>2G0wgd");
-        assert_eq!(at(&e), ("button.component.ts".into(), 1), "{}", e.notify.text);
+        assert_eq!(at(&e), ("button.component.ts".into(), 4), "{}（@Component の付いたクラス。前の interface でなく）", e.notify.text);
         // [width] → 部品の @Input
         keys(&mut e, "<C-o>2G0/width<CR>gd");
-        assert_eq!(at(&e), ("button.component.ts".into(), 2), "{}", e.notify.text);
+        assert_eq!(at(&e), ("button.component.ts".into(), 5), "{}", e.notify.text);
         // goBack() → 親クラスのメソッド
         keys(&mut e, "<C-o>3G0/goBack<CR>gd");
         assert_eq!(at(&e), ("page-base.ts".into(), 1), "{}", e.notify.text);

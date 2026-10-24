@@ -88,10 +88,12 @@ impl Language for Template {
         let ts_rel = rel(&ts);
         let src = std::fs::read_to_string(&ts).unwrap_or_default();
         let found = match &member {
-            // 部品のクラス（ファイルの中の最初のクラス）
+            // 部品のクラス（@Component の後の最初のクラス。無ければファイルの中の最初の型）
             None => {
                 let defs: Vec<Loc> = idx.all().filter(|(_, l)| &*l.path == ts_rel && l.kind.is_type()).map(|(_, l)| l.clone()).collect();
-                defs.into_iter().min_by_key(|l| l.line)
+                let comp = src.lines().position(|l| l.trim_start().starts_with("@Component")).map(|k| k as u32);
+                let class = comp.and_then(|c| defs.iter().filter(|l| l.line >= c && l.kind == nagi_syntax::defs::DefKind::Class).min_by_key(|l| l.line).cloned());
+                class.or_else(|| defs.into_iter().min_by_key(|l| l.line))
             }
             // 部品のメンバー（無ければ親クラスへ）
             Some(m) => match Ranker::new(Some(idx)).resolve(&ts_rel, &src, m, Some(&Receiver::This), None, idx.lookup(m).to_vec()) {
