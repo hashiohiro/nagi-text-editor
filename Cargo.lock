@@ -1132,6 +1132,7 @@ dependencies = [
 name = "nagi-lang"
 version = "0.6.0"
 dependencies = [
+ "ignore",
  "miniz_oxide",
  "nagi-core",
  "nagi-syntax",
