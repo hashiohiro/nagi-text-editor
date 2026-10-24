@@ -1,6 +1,6 @@
 //! Java の差し込み口
 
-use nagi_workers::index::Ranker;
+use crate::project::Ranker;
 
 use super::types::{JType, LibTypes};
 use crate::eco;
@@ -140,7 +140,9 @@ fn package_items(cx: &Cx, pkg: &str) -> Vec<Item> {
     let dotted = pkg.replace('/', ".");
     let under = format!("{pkg}/");
     let mut out = Vec::new();
-    let proj: Vec<(String, &str)> = cx.index.map(|i| i.files().filter(|f| f.ends_with(".java")).filter_map(|f| Some((super::types::source_package(f)?, f))).collect()).unwrap_or_default();
+    let mut proj: Vec<(String, &str)> = cx.index.map(|i| i.files().filter(|f| f.ends_with(".java")).filter_map(|f| Some((super::types::source_package(f)?, f))).collect()).unwrap_or_default();
+    // ファイルの表は HashMap なので、パスの順に（候補の順を毎回同じに）
+    proj.sort_by(|a, b| a.1.cmp(b.1));
     for (p, f) in &proj {
         if p == pkg {
             let name = f.rsplit('/').next().unwrap_or(f).trim_end_matches(".java");

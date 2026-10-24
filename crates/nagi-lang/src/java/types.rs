@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use nagi_syntax::defs::Receiver;
 
 use crate::text::{self, Lexis};
-use nagi_workers::index::Ranker;
+use crate::project::Ranker;
 use crate::eco::jvm::{ACC_PROTECTED, ACC_PUBLIC, ACC_STATIC, Class, JarIndex};
 
 const ACC_ABSTRACT: u16 = 0x0400;

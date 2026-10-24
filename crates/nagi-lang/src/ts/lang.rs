@@ -1,6 +1,6 @@
 //! TypeScript・JavaScript の差し込み口
 
-use nagi_workers::index::Ranker;
+use crate::project::Ranker;
 
 use crate::eco;
 use crate::lang::{Cx, Import, Item, Language, LibMember, ScopeNames, Target, mark_of};

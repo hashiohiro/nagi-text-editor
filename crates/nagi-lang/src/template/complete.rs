@@ -7,7 +7,7 @@
 use std::collections::HashSet;
 
 use nagi_syntax::defs::{DefKind, Receiver};
-use nagi_workers::index::Ranker;
+use crate::project::Ranker;
 
 use crate::lang::{Cx, Head, Item, Language, LibMember, mark_of};
 use crate::text;

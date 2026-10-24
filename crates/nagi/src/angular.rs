@@ -86,8 +86,8 @@ impl Editor {
                 defs.into_iter().min_by_key(|l| l.line)
             }
             // 部品のメンバー（無ければ親クラスへ）
-            Some(m) => match nagi_workers::index::Ranker::new(Some(idx)).resolve(&ts_rel, &src, m, Some(&Receiver::This), None, idx.lookup(m).to_vec()) {
-                nagi_workers::index::Ranked::Locs(v, best) if best >= 1 => v.into_iter().next().filter(|l| *l.path == *ts_rel || !idx.lookup(m).is_empty()),
+            Some(m) => match nagi_lang::project::Ranker::new(Some(idx)).resolve(&ts_rel, &src, m, Some(&Receiver::This), None, idx.lookup(m).to_vec()) {
+                nagi_lang::project::Ranked::Locs(v, best) if best >= 1 => v.into_iter().next().filter(|l| *l.path == *ts_rel || !idx.lookup(m).is_empty()),
                 _ => None,
             },
         };
@@ -113,7 +113,7 @@ impl Editor {
     /// `l` が部品のクラスか、その親クラスのファイルにあるか（同じ名前の別のファイルへ跳ばない）
     fn in_hierarchy(&self, ts_rel: &str, src: &str, l: &nagi_workers::index::Loc) -> bool {
         let Some(idx) = self.nav.index.as_ref() else { return false };
-        let mut types: Vec<String> = nagi_workers::index::supertypes(src, None);
+        let mut types: Vec<String> = nagi_lang::project::supertypes(src, None);
         let mut seen = std::collections::HashSet::new();
         while let Some(t) = types.pop() {
             if !seen.insert(t.clone()) || seen.len() > 16 {
@@ -124,7 +124,7 @@ impl Editor {
                     return true;
                 }
                 if let Ok(s) = std::fs::read_to_string(idx.root.join(&*d.path)) {
-                    types.extend(nagi_workers::index::supertypes(&s, Some(&t)));
+                    types.extend(nagi_lang::project::supertypes(&s, Some(&t)));
                 }
             }
         }

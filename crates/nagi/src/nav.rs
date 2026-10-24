@@ -249,12 +249,12 @@ impl Editor {
                 if all.len() > 1 {
                     all.retain(|l| !(l.path.as_ref() == rel && (l.line as usize, l.col as usize) == cur));
                 }
-                match nagi_workers::index::Ranker::new(Some(idx)).resolve(&rel, &src, &name, recv.as_ref(), args.as_deref(), all) {
-                    nagi_workers::index::Ranked::Locs(locs, b) => {
+                match nagi_lang::project::Ranker::new(Some(idx)).resolve(&rel, &src, &name, recv.as_ref(), args.as_deref(), all) {
+                    nagi_lang::project::Ranked::Locs(locs, b) => {
                         best = b;
                         locs.iter().map(|l| (idx.root.join(&*l.path), l.line as usize, l.col as usize, l.kind)).collect()
                     }
-                    nagi_workers::index::Ranked::Outside(t) => {
+                    nagi_lang::project::Ranked::Outside(t) => {
                         // 受け手の型（またはその親）がライブラリ。同じ名前のプロジェクトのメソッドへは跳ばない
                         if !self.goto_outside(&name, word_at) {
                             self.notify.info(format!("定義はプロジェクトの外です: {name}（{t} から先はライブラリ）"));
@@ -363,7 +363,7 @@ impl Editor {
         let here = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
         let rel = here.as_ref().and_then(|h| h.strip_prefix(&idx.root).ok()).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default();
         let src = self.buf.text();
-        let mut r = nagi_workers::index::Ranker::new(Some(idx));
+        let mut r = nagi_lang::project::Ranker::new(Some(idx));
         let is_type = idx.lookup(&name).iter().any(|l| l.kind.is_type()) && name.chars().next().is_some_and(char::is_uppercase);
         let (ty, member) = if is_type {
             (Some(name.clone()), None)
@@ -371,7 +371,7 @@ impl Editor {
             let recv = self.syntax.as_ref().and_then(|s| s.receiver(&self.buf, word_at));
             let ty = match recv {
                 Some(rc) => r.receiver_type_name(&rel, &src, word_at, &rc),
-                None => nagi_workers::index::enclosing_type(&src, word_at),
+                None => nagi_lang::project::enclosing_type(&src, word_at),
             };
             (ty, Some(name.as_str()))
         };
@@ -432,8 +432,8 @@ impl Editor {
         }
         let recv = self.syntax.as_ref().and_then(|s| s.receiver(&self.buf, word_at));
         let args = self.syntax.as_ref().and_then(|s| s.call_args(&self.buf, word_at));
-        match nagi_workers::index::Ranker::new(Some(idx)).resolve(&rel, &self.buf.text(), name, recv.as_ref(), args.as_deref(), idx.lookup(name).to_vec()) {
-            nagi_workers::index::Ranked::Locs(v, 1) => Some((v[0].path.to_string(), v[0].line as usize, v[0].col as usize)),
+        match nagi_lang::project::Ranker::new(Some(idx)).resolve(&rel, &self.buf.text(), name, recv.as_ref(), args.as_deref(), idx.lookup(name).to_vec()) {
+            nagi_lang::project::Ranked::Locs(v, 1) => Some((v[0].path.to_string(), v[0].line as usize, v[0].col as usize)),
             _ => None,
         }
     }
@@ -460,7 +460,7 @@ impl Editor {
         }
         let mut keep = vec![true; hits.len()];
         let mut parser = nagi_syntax::defs::DefParser::default();
-        let mut ranker = nagi_workers::index::Ranker::new(Some(idx));
+        let mut ranker = nagi_lang::project::Ranker::new(Some(idx));
         for (path, ix) in &by_file {
             let abs = root.join(path);
             // pom.xml・*.pom の <build> などは別のもの
@@ -524,8 +524,8 @@ impl Editor {
                     continue;
                 }
                 keep[i] = match ranker.resolve(&rel, &src, name, recv.as_ref(), args.as_deref(), defs.clone()) {
-                    nagi_workers::index::Ranked::Outside(_) => false,
-                    nagi_workers::index::Ranked::Locs(v, best) if best >= 1 => v[..best.min(v.len())].iter().any(|l| (&*l.path, l.line as usize, l.col as usize) == (f.target.0.as_str(), f.target.1, f.target.2)),
+                    nagi_lang::project::Ranked::Outside(_) => false,
+                    nagi_lang::project::Ranked::Locs(v, best) if best >= 1 => v[..best.min(v.len())].iter().any(|l| (&*l.path, l.line as usize, l.col as usize) == (f.target.0.as_str(), f.target.1, f.target.2)),
                     // プロジェクトの索引で決まらない: 受け手がライブラリの型か（補完と同じ求め方で）
                     _ => !library(at[k]),
                 };

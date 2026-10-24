@@ -5,7 +5,9 @@
 use std::path::{Path, PathBuf};
 
 use nagi_syntax::defs::DefKind;
-use nagi_workers::index::{Index, Ranker};
+use nagi_workers::index::Index;
+
+use crate::project::Ranker;
 
 use crate::libs::Libraries;
 use crate::text::Lexis;
@@ -99,7 +101,7 @@ impl<'a> Cx<'a> {
             (Some(i), Some(h)) => h.strip_prefix(&i.root).ok().map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default(),
             _ => String::new(),
         };
-        let inside = nagi_workers::index::enclosing_type(src, start);
+        let inside = crate::project::enclosing_type(src, start);
         Cx { src, here, line, ws, start, prefix, index, rel, inside, libs, words: true, keywords: true, out_dir: None }
     }
 

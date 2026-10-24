@@ -324,7 +324,7 @@ mod tests {
         let v = items(&mut e, "Outer.Kind.");
         assert!(v.contains(&"A".to_string()) || v.contains(&"label".to_string()), "{v:?}");
         // Lombok の @Data: getter・setter（boolean は is、final は setter なし、static は無し）
-        let mut ranker = nagi_workers::index::Ranker::new(e.nav.index.as_ref());
+        let mut ranker = nagi_lang::project::Ranker::new(e.nav.index.as_ref());
         let names: Vec<String> = ranker.members("Dto").into_iter().filter(|m| !m.4).map(|m| m.0).collect();
         for n in ["getName", "setName", "isActive", "setActive", "getId"] {
             assert!(names.contains(&n.to_string()), "{n}: {names:?}");

@@ -12,3 +12,6 @@ nagi-workers.workspace = true
 regex = "1.13.1"
 serde_json = { version = "1.0.154", features = ["preserve_order"] }
 miniz_oxide = "0.9.1"
+
+[dev-dependencies]
+ignore = "0.4.33"

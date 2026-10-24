@@ -48,7 +48,7 @@ fn defjump_rate() {
         if tf.elapsed().as_millis() > 200 {
             eprintln!("遅い: {} {:?}", e.path().display(), tf.elapsed());
         }
-        let mut ranker = nagi_workers::index::Ranker::new(Some(&idx));
+        let mut ranker = nagi_lang::project::Ranker::new(Some(&idx));
         for (name, kind, local, recv, args) in report {
             let c = counts.entry(kind).or_default();
             if local {
@@ -59,12 +59,12 @@ fn defjump_rate() {
             let many = all.len() > 1;
             let rel = e.path().strip_prefix(&root).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default();
             let mut locs = match ranker.resolve(&rel, &src, &name, recv.as_ref(), args.as_deref(), all) {
-                nagi_workers::index::Ranked::Locs(mut v, best) => {
+                nagi_lang::project::Ranked::Locs(mut v, best) => {
                     v.truncate(best);
                     v
                 }
                 // 受け手がライブラリの型: 定義はプロジェクトの外（見つからないに数える）
-                nagi_workers::index::Ranked::Outside(_) => {
+                nagi_lang::project::Ranked::Outside(_) => {
                     *outside.entry(kind).or_default() += 1;
                     Vec::new()
                 }

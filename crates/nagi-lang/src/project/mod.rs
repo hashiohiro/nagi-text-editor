@@ -1,5 +1,9 @@
 //! プロジェクトのソースの文字から型を求める部分（言語をまたぐ）
 
+mod rank;
+
+pub use rank::*;
+
 /// `text` の中の `name` の変数・引数・フィールドの宣言の型（`at` より前の最後の宣言、無ければ後ろの最初）
 pub fn var_type(text: &str, name: &str, at: usize) -> Option<String> {
     // Java・C#: Type name / Type<..> name / Type[] name（宣言・引数・フィールド）。型引数と配列は外す
