@@ -11,7 +11,7 @@ use std::collections::{BTreeSet, HashMap};
 use nagi_vim::Key;
 use nagi_workers::db::{Column, Reply};
 
-use crate::db_panel::{MAX_ROWS, ident, literal, qualified};
+use crate::db_panel::{MAX_ROWS, literal, qualified};
 use crate::editor::{Editor, State};
 use crate::vim_field::{FieldOut, VimField};
 use crate::result_grid::{Field, ResultTab, widths};
@@ -35,6 +35,8 @@ pub enum RowState {
 
 pub struct TableEditor {
     pub src: usize,
+    /// 接続先の方言（名前を囲む）
+    pub dialect: &'static nagi_lang::sql::Dialect,
     pub schema: String,
     pub table: String,
     pub cols: Vec<String>,
@@ -103,7 +105,7 @@ impl TableEditor {
     }
 
     fn name(&self) -> String {
-        qualified(&self.schema, &self.table)
+        qualified(self.dialect, &self.schema, &self.table)
     }
 
     pub fn select_sql(&self) -> String {
@@ -137,16 +139,16 @@ impl TableEditor {
             }
             out.push(format!(
                 "INSERT INTO {name} ({}) VALUES ({})",
-                set.iter().map(|&c| ident(&self.cols[c])).collect::<Vec<_>>().join(", "),
+                set.iter().map(|&c| self.dialect.ident(&self.cols[c])).collect::<Vec<_>>().join(", "),
                 set.iter().map(|&c| literal(&a[c])).collect::<Vec<_>>().join(", ")
             ));
         }
-        let where_pk = |r: usize| pk.iter().map(|&c| format!("{} = {}", ident(&self.cols[c]), literal(&self.rows[r][c]))).collect::<Vec<_>>().join(" AND ");
+        let where_pk = |r: usize| pk.iter().map(|&c| format!("{} = {}", self.dialect.ident(&self.cols[c]), literal(&self.rows[r][c]))).collect::<Vec<_>>().join(" AND ");
         let rows: BTreeSet<usize> = self.edits.keys().map(|k| k.0).filter(|r| !self.deleted.contains(r)).collect();
         for r in rows {
             let mut set: Vec<(usize, &Option<String>)> = self.edits.iter().filter(|(k, _)| k.0 == r).map(|(k, v)| (k.1, v)).collect();
             set.sort_by_key(|x| x.0);
-            out.push(format!("UPDATE {name} SET {} WHERE {}", set.iter().map(|(c, v)| format!("{} = {}", ident(&self.cols[*c]), literal(v))).collect::<Vec<_>>().join(", "), where_pk(r)));
+            out.push(format!("UPDATE {name} SET {} WHERE {}", set.iter().map(|(c, v)| format!("{} = {}", self.dialect.ident(&self.cols[*c]), literal(v))).collect::<Vec<_>>().join(", "), where_pk(r)));
         }
         for &r in &self.deleted {
             out.push(format!("DELETE FROM {name} WHERE {}", where_pk(r)));
@@ -184,6 +186,7 @@ impl TableEditor {
     /// 書き出し用に、今の値の表にする
     pub fn as_tab(&self) -> ResultTab {
         ResultTab {
+            dialect: self.dialect,
             id: 0,
             src: self.src,
             title: self.table.clone(),
@@ -274,6 +277,7 @@ impl Editor {
     pub(crate) fn db_open_table(&mut self, i: usize, schema: &str, table: &str) {
         let mut te = TableEditor {
             src: i,
+            dialect: self.db_dialect(i),
             schema: schema.into(),
             table: table.into(),
             cols: Vec::new(),
@@ -522,7 +526,7 @@ impl Editor {
                 te.filter_edit = Some((field, VimField::new(if field == Field::Where { &te.where_ } else { &te.order }, false)));
             }
             (_, Key::Char('s')) if !dirty && !te.cols.is_empty() => {
-                let c = ident(&te.cols[te.col]);
+                let c = te.dialect.ident(&te.cols[te.col]);
                 te.order = if te.order == format!("{c} ASC") {
                     format!("{c} DESC")
                 } else if te.order == format!("{c} DESC") {
@@ -714,7 +718,7 @@ pub(crate) mod draw {
         p.cols = r.x + r.w;
         // 1 行目: 名前と接続先、件数
         let src = ed.db.as_ref().map_or(String::new(), |d| d.sources[te.src].name.clone());
-        let c = p.text(&format!(" {}", crate::db_panel::qualified(&te.schema, &te.table)), r.x, y0, FG);
+        let c = p.text(&format!(" {}", crate::db_panel::qualified(te.dialect, &te.schema, &te.table)), r.x, y0, FG);
         let c = p.text(&format!("（{src}）"), c, y0, STATUS_FG);
         if te.pk().is_empty() && !te.colinfo.is_empty() {
             p.text("  主キーが無いので読むだけ", c, y0, DIAG_WARN);

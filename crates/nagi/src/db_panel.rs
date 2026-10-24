@@ -40,6 +40,7 @@ enum Expect {
     Schemas,
     Objects(String),
     Columns(String, String),
+    Relations(String, String),
     Indexes(String, String),
     /// (返す先, 出力に書く SQL, データを変えうる文か)
     Query(Target, String, bool),
@@ -62,6 +63,8 @@ pub struct Conn {
     pub schemas: Option<Vec<String>>,
     pub objects: HashMap<String, Objects>,
     pub columns: HashMap<(String, String), Vec<Column>>,
+    /// 子のリレーション（Salesforce）
+    pub relations: HashMap<(String, String), Vec<(String, String)>>,
     pub indexes: HashMap<(String, String), (Vec<Index>, Vec<DbKey>)>,
     pub error: Option<String>,
     expect: VecDeque<Expect>,
@@ -91,6 +94,13 @@ impl Conn {
         self.send(Req::Query { sql: sql.clone(), max: MAX_ROWS, offset }, Expect::Query(Target::Table, sql, false));
         if let Some(c) = count {
             self.send(Req::Count(c), Expect::Count(Target::Table));
+        }
+    }
+
+    /// 子のリレーションがまだ無ければ読みに行く
+    pub(crate) fn ensure_relations(&mut self, s: &str, t: &str) {
+        if self.connected && !self.relations.contains_key(&(s.to_string(), t.to_string())) && self.requested.insert(format!("r:{s}.{t}")) {
+            self.send(Req::Relations(s.into(), t.into()), Expect::Relations(s.into(), t.into()));
         }
     }
 
@@ -278,14 +288,14 @@ pub fn config_path() -> PathBuf {
 
 /// テーブル `q`（スキーマ付きの名前）の SELECT・INSERT・UPDATE・DELETE を、列から作る。
 /// 値は NULL を置き（列の名前を注釈に）、UPDATE・DELETE の条件は主キー（無ければ注釈だけ）
-pub fn generate_sql(what: &str, q: &str, cols: &[Column]) -> String {
-    let names: Vec<String> = cols.iter().map(|c| ident(&c.name)).collect();
-    let pk: Vec<String> = cols.iter().filter(|c| c.pk).map(|c| format!("{} = NULL", ident(&c.name))).collect();
+pub fn generate_sql(d: &nagi_lang::sql::Dialect, what: &str, q: &str, cols: &[Column]) -> String {
+    let names: Vec<String> = cols.iter().map(|c| d.ident(&c.name)).collect();
+    let pk: Vec<String> = cols.iter().filter(|c| c.pk).map(|c| format!("{} = NULL", d.ident(&c.name))).collect();
     let cond = if pk.is_empty() { "/* 条件 */".to_string() } else { pk.join("\n  AND ") };
     match what {
         "insert" => format!("INSERT INTO {q} ({})\nVALUES ({})", names.join(", "), names.iter().map(|n| format!("/* {n} */ NULL")).collect::<Vec<_>>().join(", ")),
         "update" => {
-            let set: Vec<String> = cols.iter().filter(|c| !c.pk).map(|c| format!("{} = NULL", ident(&c.name))).collect();
+            let set: Vec<String> = cols.iter().filter(|c| !c.pk).map(|c| format!("{} = NULL", d.ident(&c.name))).collect();
             format!("UPDATE {q}\nSET {}\nWHERE {cond}", set.join(",\n    "))
         }
         "delete" => format!("DELETE FROM {q}\nWHERE {cond}"),
@@ -385,9 +395,9 @@ pub fn literal(v: &Option<String>) -> String {
     }
 }
 
-/// スキーマ付きの名前
-pub fn qualified(schema: &str, name: &str) -> String {
-    if schema.is_empty() { ident(name) } else { format!("{}.{}", ident(schema), ident(name)) }
+/// スキーマ付きの名前（方言 `d` で引用符が要れば囲む）
+pub fn qualified(d: &nagi_lang::sql::Dialect, schema: &str, name: &str) -> String {
+    if schema.is_empty() { d.ident(name) } else { format!("{}.{}", d.ident(schema), d.ident(name)) }
 }
 
 impl DbPanel {
@@ -825,7 +835,7 @@ impl Editor {
 
     fn db_reply(&mut self, i: usize, r: Reply) {
         // テーブル・列が届いたら、出している SQL の補完の一覧を作り直す
-        let meta = matches!(r, Reply::Objects(_) | Reply::Columns(_));
+        let meta = matches!(r, Reply::Objects(_) | Reply::Columns(_) | Reply::Relations(_));
         self.db_reply_inner(i, r);
         if meta {
             self.sql_metadata_arrived(i);
@@ -901,6 +911,9 @@ impl Editor {
                     }
                 }
                 c.columns.insert((s, t), cols);
+            }
+            (Some(Expect::Relations(s, t)), Reply::Relations(r)) => {
+                c.relations.insert((s, t), r);
             }
             (Some(Expect::Indexes(s, t)), Reply::Indexes(idx, keys)) => {
                 c.indexes.insert((s, t), (idx, keys));
@@ -1068,6 +1081,10 @@ impl Editor {
         let title = format!("{} · {first}", p.sources[i].name);
         let sf = p.kind(i) == Some(Kind::Salesforce);
         let id = self.db_results.new_tab(i, &title, &sql, !changes && !sf);
+        let d = self.db_dialect(i);
+        if let Some(t) = self.db_results.tabs.iter_mut().find(|t| t.id == id) {
+            t.dialect = d;
+        }
         let c = &mut self.db.as_mut().unwrap().conns[i];
         c.send(Req::Query { sql: sql.clone(), max: MAX_ROWS, offset: 0 }, Expect::Query(Target::Result(id), sql, changes));
         self.show_results();
@@ -1100,6 +1117,11 @@ impl Editor {
     }
 
     /// 今のバッファが SQL コンソールなら、その接続先
+    /// 接続先 `i` の方言
+    pub(crate) fn db_dialect(&self, i: usize) -> &'static nagi_lang::sql::Dialect {
+        nagi_lang::sql::dialect(self.db.as_ref().and_then(|p| p.kind(i)))
+    }
+
     pub fn console_source(&self) -> Option<usize> {
         let path = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok())?;
         self.db.as_ref()?.consoles.get(&path).copied()
@@ -1521,7 +1543,7 @@ impl Editor {
                 m = m.item("新しいクエリ", move |e| e.db_new_query(i, None)).item("読み直す", move |e| e.db_reload(i));
             }
             DbRow::Object(_, s, t, g, _) => {
-                let q = qualified(&s, &t);
+                let q = qualified(self.db_dialect(i), &s, &t);
                 if matches!(g, Group::Tables | Group::Views) {
                     let (s2, t2) = (s.clone(), t.clone());
                     m = m.item("データを開く", move |e| {
@@ -1579,7 +1601,8 @@ impl Editor {
             self.notify.info("列を読んでいます。もう一度選んでください");
             return;
         };
-        self.db_new_query(i, Some(generate_sql(what, &qualified(s, t), &cols)));
+        let d = self.db_dialect(i);
+        self.db_new_query(i, Some(generate_sql(d, what, &qualified(d, s, t), &cols)));
     }
 
     /// 入力欄（絞り込み・フォーム）に IME の確定を入れる。入れたら true
@@ -1752,7 +1775,7 @@ impl Editor {
                     let sf = self.db.as_ref().and_then(|p| p.kind(r.source())) == Some(Kind::Salesforce);
                     let init = match &r {
                         DbRow::Object(_, _, t, Group::Tables | Group::Views, _) if sf => Some(format!("SELECT Id, Name FROM {t} LIMIT 100")),
-                        DbRow::Object(_, s, t, Group::Tables | Group::Views, _) => Some(format!("SELECT * FROM {}", qualified(s, t))),
+                        DbRow::Object(_, s, t, Group::Tables | Group::Views, _) => Some(format!("SELECT * FROM {}", qualified(self.db_dialect(r.source()), s, t))),
                         _ => None,
                     };
                     self.db_new_query(r.source(), init);
@@ -1764,7 +1787,7 @@ impl Editor {
                     let sf = self.db.as_ref().and_then(|p| p.kind(r.source())) == Some(Kind::Salesforce);
                     let init = match &r {
                         DbRow::Object(_, _, t, Group::Tables | Group::Views, _) if sf => Some(format!("SELECT Id, Name FROM {t} LIMIT 100")),
-                        DbRow::Object(_, s, t, Group::Tables | Group::Views, _) => Some(format!("SELECT * FROM {};", qualified(s, t))),
+                        DbRow::Object(_, s, t, Group::Tables | Group::Views, _) => Some(format!("SELECT * FROM {};", qualified(self.db_dialect(r.source()), s, t))),
                         _ => None,
                     };
                     self.open_console(r.source(), init);
@@ -2023,12 +2046,14 @@ pub(crate) mod tests {
 
     #[test]
     fn generated_sql() {
-        let col = |n: &str, pk: bool| Column { name: n.into(), ty: "INT".into(), nullable: !pk, pk, fk: String::new() };
+        let col = |n: &str, pk: bool| Column { name: n.into(), ty: "INT".into(), nullable: !pk, pk, fk: String::new(), rel: String::new() };
         let cols = vec![col("ID", true), col("NAME", false), col("orderNo", false)];
-        assert_eq!(generate_sql("select", "HR.EMP", &cols), "SELECT ID,\n       NAME,\n       \"orderNo\"\nFROM HR.EMP");
-        assert_eq!(generate_sql("insert", "T", &cols[..2]), "INSERT INTO T (ID, NAME)\nVALUES (/* ID */ NULL, /* NAME */ NULL)");
-        assert_eq!(generate_sql("update", "T", &cols[..2]), "UPDATE T\nSET NAME = NULL\nWHERE ID = NULL");
-        assert_eq!(generate_sql("delete", "T", &cols[1..2]), "DELETE FROM T\nWHERE /* 条件 */", "主キーが無ければ条件は注釈だけ");
+        assert_eq!(generate_sql(&nagi_lang::sql::ORACLE, "select", "HR.EMP", &cols), "SELECT ID,\n       NAME,\n       \"orderNo\"\nFROM HR.EMP");
+        assert_eq!(generate_sql(&nagi_lang::sql::ORACLE, "insert", "T", &cols[..2]), "INSERT INTO T (ID, NAME)\nVALUES (/* ID */ NULL, /* NAME */ NULL)");
+        assert_eq!(generate_sql(&nagi_lang::sql::ORACLE, "update", "T", &cols[..2]), "UPDATE T\nSET NAME = NULL\nWHERE ID = NULL");
+        assert_eq!(generate_sql(&nagi_lang::sql::ORACLE, "delete", "T", &cols[1..2]), "DELETE FROM T\nWHERE /* 条件 */", "主キーが無ければ条件は注釈だけ");
+        // PostgreSQL は小文字に寄るので、大文字の名前は囲む
+        assert_eq!(generate_sql(&nagi_lang::sql::POSTGRES, "insert", &qualified(&nagi_lang::sql::POSTGRES, "public", "EMP"), &cols[..2]), "INSERT INTO public.\"EMP\" (\"ID\", \"NAME\")\nVALUES (/* \"ID\" */ NULL, /* \"NAME\" */ NULL)");
     }
 
     /// Vim を使わないとき、木で文字を打つと絞り込みの欄が開き、そのまま打ち続けられる

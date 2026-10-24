@@ -52,6 +52,8 @@ pub struct ResultTab {
     pub id: u64,
     /// 接続先の番号
     pub src: usize,
+    /// 接続先の方言（名前を囲む）
+    pub dialect: &'static nagi_lang::sql::Dialect,
     pub title: String,
     /// 流した SQL（絞り込みはこれを包んで流す）
     pub base: String,
@@ -129,8 +131,8 @@ impl ResultTab {
             .map(|r| {
                 let mut set: Vec<(usize, &Option<String>)> = self.edits.iter().filter(|(k, _)| k.0 == r).map(|(k, v)| (k.1, v)).collect();
                 set.sort_by_key(|x| x.0);
-                let set = set.iter().map(|(c, v)| format!("{} = {}", crate::db_panel::ident(&colname[*c]), crate::db_panel::literal(v))).collect::<Vec<_>>().join(", ");
-                let wh = pk.iter().map(|&c| format!("{} = {}", crate::db_panel::ident(&colname[c]), crate::db_panel::literal(&self.rows[r][c]))).collect::<Vec<_>>().join(" AND ");
+                let set = set.iter().map(|(c, v)| format!("{} = {}", self.dialect.ident(&colname[*c]), crate::db_panel::literal(v))).collect::<Vec<_>>().join(", ");
+                let wh = pk.iter().map(|&c| format!("{} = {}", self.dialect.ident(&colname[c]), crate::db_panel::literal(&self.rows[r][c]))).collect::<Vec<_>>().join(" AND ");
                 format!("UPDATE {name} SET {set} WHERE {wh}")
             })
             .collect()
@@ -198,7 +200,7 @@ impl ResultTab {
     }
 
     pub fn to_inserts(&self, table: &str) -> String {
-        let cols = self.cols.iter().map(|c| crate::db_panel::ident(c)).collect::<Vec<_>>().join(", ");
+        let cols = self.cols.iter().map(|c| self.dialect.ident(c)).collect::<Vec<_>>().join(", ");
         self.rows.iter().map(|r| format!("INSERT INTO {table} ({cols}) VALUES ({});\n", r.iter().map(crate::db_panel::literal).collect::<Vec<_>>().join(", "))).collect()
     }
 }
@@ -288,6 +290,7 @@ impl DbResults {
         self.tabs.push(ResultTab {
             id,
             src,
+            dialect: &nagi_lang::sql::GENERIC,
             title: title.into(),
             base: sql.into(),
             filterable,
@@ -426,7 +429,7 @@ impl Editor {
         let fmt = fmt.trim().to_ascii_lowercase();
         let (text, name) = if let Some(te) = &self.db_table {
             let t = te.as_tab();
-            let table = crate::db_panel::qualified(&te.schema, &te.table);
+            let table = crate::db_panel::qualified(te.dialect, &te.schema, &te.table);
             (match fmt.as_str() {
                 "csv" => t.to_csv(),
                 "insert" | "sql" => t.to_inserts(&table),
@@ -485,7 +488,7 @@ impl Editor {
             return Err(format!("{n} は主キーが無いので直せません（読むだけ）"));
         }
         let names = t.cols.iter().map(|rc| cols.iter().find(|c| c.name.eq_ignore_ascii_case(rc)).map_or(rc.clone(), |c| c.name.clone())).collect();
-        Ok((crate::db_panel::qualified(s, n), pk, names))
+        Ok((crate::db_panel::qualified(t.dialect, s, n), pk, names))
     }
 
     /// 選んでいるセルの値を直し始める（F2・Enter・ダブルクリック。`empty` なら空から）
@@ -795,7 +798,7 @@ impl Editor {
                         r.editing = Some((field, f));
                     }
                     Key::Char('s') if t.filterable && !t.cols.is_empty() => {
-                        let c = crate::db_panel::ident(&t.cols[t.col]);
+                        let c = t.dialect.ident(&t.cols[t.col]);
                         t.order = if t.order == format!("{c} ASC") {
                             format!("{c} DESC")
                         } else if t.order == format!("{c} DESC") {

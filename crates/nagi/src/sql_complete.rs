@@ -36,6 +36,10 @@ impl nagi_lang::sql::Catalog for ConnCatalog<'_> {
         self.conn.columns.get(&(schema.to_string(), table.to_string())).map(Vec::as_slice)
     }
 
+    fn relations(&self, schema: &str, table: &str) -> Option<&[(String, String)]> {
+        self.conn.relations.get(&(schema.to_string(), table.to_string())).map(Vec::as_slice)
+    }
+
     fn is_schema(&self, n: &str) -> bool {
         self.conn.schemas.as_ref().is_some_and(|v| v.iter().any(|s| s.eq_ignore_ascii_case(n))) || self.conn.objects.keys().any(|s| s.eq_ignore_ascii_case(n))
     }
@@ -80,10 +84,10 @@ impl Editor {
         let (stmt, cur) = self.sql_statement_around(start);
         let Some(p) = self.db.as_ref() else { return Vec::new() };
         let cat = ConnCatalog { conn: &p.conns[i], wants: Default::default() };
-        let console = nagi_lang::sql::Console { kind: p.kind(i), catalog: &cat, stmt: &stmt, cur };
+        let console = nagi_lang::sql::Console { catalog: &cat, stmt: &stmt, cur };
         let src = self.buf.text();
         let line = self.buf.line(self.cursor.line);
-        let mut cx = nagi_lang::lang::Cx::new(&nagi_lang::sql::SQL, &src, None, &line, 0, start, prefix, None, &self.nav.libs);
+        let mut cx = nagi_lang::lang::Cx::new(self.language(), &src, None, &line, 0, start, prefix, None, &self.nav.libs);
         cx.console = Some(console);
         let out = nagi_lang::template::complete::complete(&cx);
         // 届いていない分は読み始め、届いたら作り直す
@@ -94,6 +98,7 @@ impl Editor {
                 match w {
                     nagi_lang::sql::Want::Objects(s) => c.ensure_objects(&s),
                     nagi_lang::sql::Want::Columns(s, t) => c.ensure_columns(&s, &t),
+                    nagi_lang::sql::Want::Relations(s, t) => c.ensure_relations(&s, &t),
                 }
             }
         }
@@ -200,5 +205,54 @@ mod tests {
         assert_eq!(e.completion.as_ref().unwrap().items[0], "SCOTT");
         keys(&mut e, "<CR>");
         assert!(e.buf.line(e.cursor.line).ends_with("from \"SCOTT\""), "{}", e.buf.line(e.cursor.line));
+    }
+
+    /// Salesforce のコンソールは SOQL: リレーションの先の項目・副問い合わせの子のリレーション（つながずに、読んだことにした名前で）。
+    /// まだ読んでいない子のリレーションは読みに行く
+    #[test]
+    fn soql_in_salesforce_console() {
+        use nagi_workers::db::{Column, Objects};
+        let mut e = Editor::new(nagi_core::Buffer::from_str("x\n"), None);
+        e.set_screen(160, 50);
+        e.open_db_panel();
+        e.db_add("sf salesforce:https://login.salesforce.com me@example.com");
+        let i = e.db.as_ref().unwrap().sources.len() - 1;
+        let c = &mut e.db.as_mut().unwrap().conns[i];
+        c.objects.insert(String::new(), Objects { tables: vec![("Account".into(), "TABLE".into()), ("Contact".into(), "TABLE".into())], ..Default::default() });
+        let col = |n: &str, fk: &str, rel: &str| Column { name: n.into(), ty: "string".into(), fk: fk.into(), rel: rel.into(), ..Default::default() };
+        c.columns.insert((String::new(), "Account".into()), vec![col("Id", "", ""), col("Name", "", ""), col("OwnerId", "User", "Owner")]);
+        c.columns.insert((String::new(), "User".into()), vec![col("Id", "", ""), col("Email", "", "")]);
+        c.columns.insert((String::new(), "Contact".into()), vec![col("Id", "", ""), col("LastName", "", "")]);
+        e.open_console(i, None);
+        assert_eq!(e.language().name(), "soql");
+        let keys = |e: &mut Editor, k: &str| {
+            for key in nagi_vim::parse_keys(k, " ") {
+                e.key(key);
+            }
+        };
+        // `|` の所にカーソルを置いて補完する
+        let items = |e: &mut Editor, line: &str| -> Vec<String> {
+            keys(e, &format!("<Esc>Go{line}<Esc>0f|x"));
+            if e.cursor.byte >= e.buf.line(e.cursor.line).len() {
+                keys(e, "a");
+            } else {
+                keys(e, "i");
+            }
+            e.start_smart_completion();
+            let v = e.completion.as_ref().map(|c| c.items.clone()).unwrap_or_default();
+            keys(e, "<Esc><Esc>");
+            v
+        };
+        let v = items(&mut e, "select Owner.| from Account");
+        assert!(v.contains(&"Email".to_string()), "リレーションの先の項目: {v:?}");
+        // 子のリレーションはまだ読んでいない: 読みに行くと頼む（つないでいないので届かない）
+        let v = items(&mut e, "select Id, (select Id from |) from Account");
+        assert!(v.is_empty(), "{v:?}");
+        let c = &mut e.db.as_mut().unwrap().conns[i];
+        c.relations.insert((String::new(), "Account".into()), vec![("Contacts".into(), "Contact".into())]);
+        let v = items(&mut e, "select Id, (select Id from |) from Account");
+        assert!(v.contains(&"Contacts".to_string()), "子のリレーション: {v:?}");
+        let v = items(&mut e, "select Id, (select | from Contacts) from Account");
+        assert!(v.contains(&"LastName".to_string()) && !v.contains(&"Name".to_string()), "副問い合わせは子のオブジェクトの項目: {v:?}");
     }
 }

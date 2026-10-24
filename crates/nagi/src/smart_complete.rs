@@ -89,7 +89,8 @@ impl Editor {
 
     /// 今のファイルの言語の差し込み口（SQL のコンソールは SQL）
     pub(crate) fn language(&self) -> &'static dyn nagi_lang::lang::Language {
-        nagi_lang::registry::pick(self.file_lang(), self.console_source().is_some())
+        let console = self.console_source().map(|i| self.db.as_ref().and_then(|p| p.kind(i)));
+        nagi_lang::registry::pick(self.file_lang(), console)
     }
 
     /// 候補を集める（`ws` は打っている語の始まり（行の中の byte）、`start` はその絶対位置）。手順は nagi_lang の template

@@ -6,7 +6,7 @@
 //! - `lang`: 言語の差し込み口（`Language`）と受け渡すもの、`registry`: 言語を選ぶ
 //! - `template`: 共通の手順（補完）
 //! - `libs`: ライブラリの索引の入れ物
-//! - `java`・`kotlin`・`ts`・`rust`・`sql`・`angular`（HTML のテンプレート）・`plain`: 言語
+//! - `java`・`kotlin`・`ts`・`rust`・`sql`・`soql`・`angular`（HTML のテンプレート）・`plain`: 言語
 
 pub mod angular;
 pub mod eco;
@@ -18,6 +18,7 @@ pub mod plain;
 pub mod project;
 pub mod registry;
 pub mod rust;
+pub mod soql;
 pub mod sql;
 pub mod template;
 pub mod text;

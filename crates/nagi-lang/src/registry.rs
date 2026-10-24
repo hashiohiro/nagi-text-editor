@@ -18,9 +18,24 @@ pub fn for_file(lang: Option<Lang>) -> &'static dyn Language {
     }
 }
 
-/// 言語を選ぶ: SQL のコンソールなら SQL（パスで決まらない）、ほかはファイルの言語
-pub fn pick(file: Option<Lang>, console: bool) -> &'static dyn Language {
-    if console { &crate::sql::SQL } else { for_file(file) }
+/// 言語を選ぶ: コンソール（`console` は接続先の種類）なら接続先の言語（パスで決まらない）、ほかはファイルの言語
+pub fn pick(file: Option<Lang>, console: Option<Option<nagi_workers::db::Kind>>) -> &'static dyn Language {
+    match console {
+        Some(kind) => for_console(kind),
+        None => for_file(file),
+    }
+}
+
+/// 接続先の種類の言語（Salesforce は SOQL、ほかは方言ごとの SQL）
+pub fn for_console(kind: Option<nagi_workers::db::Kind>) -> &'static dyn Language {
+    use nagi_workers::db::Kind;
+    match kind {
+        Some(Kind::Salesforce) => &crate::soql::SOQL,
+        Some(Kind::Oracle) => &crate::sql::SQL_ORACLE,
+        Some(Kind::Postgres) => &crate::sql::SQL_POSTGRES,
+        Some(Kind::Sqlite) => &crate::sql::SQL_SQLITE,
+        None => &crate::sql::SQL,
+    }
 }
 
 /// パス（根からの相対パスでもよい）の言語の差し込み口

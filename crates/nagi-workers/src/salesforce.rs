@@ -249,7 +249,7 @@ pub mod mock {
                     if path.ends_with("/sobjects") {
                         ("200 OK", String::new(), r#"{"sobjects":[{"name":"Account","custom":false,"queryable":true},{"name":"Invoice__c","custom":true,"queryable":true},{"name":"Secret","custom":false,"queryable":false}]}"#.into())
                     } else if path.contains("/sobjects/Account/describe") {
-                        ("200 OK", String::new(), r#"{"fields":[{"name":"Id","type":"id","label":"取引先 ID","length":18,"nillable":false,"referenceTo":[]},{"name":"Name","type":"string","label":"取引先名","length":255,"nillable":false,"referenceTo":[]},{"name":"OwnerId","type":"reference","label":"所有者","length":18,"nillable":false,"referenceTo":["User"]}]}"#.into())
+                        ("200 OK", String::new(), r#"{"fields":[{"name":"Id","type":"id","label":"取引先 ID","length":18,"nillable":false,"referenceTo":[]},{"name":"Name","type":"string","label":"取引先名","length":255,"nillable":false,"referenceTo":[]},{"name":"OwnerId","type":"reference","label":"所有者","length":18,"nillable":false,"referenceTo":["User"],"relationshipName":"Owner"}],"childRelationships":[{"relationshipName":"Contacts","childSObject":"Contact"},{"relationshipName":null,"childSObject":"AccountHistory"}]}"#.into())
                     } else if path.contains("/query/next1") {
                         ("200 OK", String::new(), r#"{"totalSize":3,"done":true,"records":[{"attributes":{"type":"Account"},"Id":"001C","Name":"丙","Owner":null}]}"#.into())
                     } else if path.contains("/query?q=") {
@@ -522,8 +522,19 @@ impl Backend for SalesforceDb {
                 let len = f.get("length").and_then(Value::as_i64).unwrap_or(0);
                 let ty = if len > 0 && matches!(ty.as_str(), "string" | "textarea" | "picklist" | "email" | "phone" | "url") { format!("{ty}({len})") } else { ty };
                 let refs: Vec<String> = f.get("referenceTo").and_then(Value::as_array).into_iter().flatten().filter_map(|x| x.as_str().map(String::from)).collect();
-                Column { name: s("name"), ty: format!("{ty} {}", s("label")), nullable: f.get("nillable").and_then(Value::as_bool).unwrap_or(true), pk: s("type") == "id", fk: refs.join("/") }
+                Column { name: s("name"), ty: format!("{ty} {}", s("label")), nullable: f.get("nillable").and_then(Value::as_bool).unwrap_or(true), pk: s("type") == "id", fk: refs.join("/"), rel: s("relationshipName") }
             })
+            .collect())
+    }
+
+    /// 子のリレーション（describe の childRelationships。名前の無いものは除く）
+    fn relations(&mut self, _schema: &str, table: &str) -> R<Vec<(String, String)>> {
+        let v = self.get(&format!("/services/data/{API}/sobjects/{}/describe", urlencode(table)))?;
+        Ok(v.get("childRelationships")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|r| Some((r.get("relationshipName")?.as_str()?.to_string(), r.get("childSObject")?.as_str()?.to_string())))
             .collect())
     }
 
@@ -648,9 +659,14 @@ mod tests {
         match next(&c) {
             Reply::Columns(cols) => {
                 assert!(cols[0].pk && cols[0].name == "Id");
-                assert_eq!((cols[2].name.as_str(), cols[2].fk.as_str()), ("OwnerId", "User"));
+                assert_eq!((cols[2].name.as_str(), cols[2].fk.as_str(), cols[2].rel.as_str()), ("OwnerId", "User", "Owner"), "参照項目のリレーションの名前");
                 assert_eq!(cols[1].ty, "string(255) 取引先名");
             }
+            r => panic!("{r:?}"),
+        }
+        c.send(Req::Relations(String::new(), "Account".into()));
+        match next(&c) {
+            Reply::Relations(r) => assert_eq!(r, vec![("Contacts".to_string(), "Contact".to_string())], "名前の無い子のリレーションは除く"),
             r => panic!("{r:?}"),
         }
         c.query("SELECT Id, Name, Owner.Name FROM Account", 500);

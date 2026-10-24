@@ -71,6 +71,8 @@ pub struct Column {
     pub pk: bool,
     /// 外部キーの参照先のテーブル（無ければ空）
     pub fk: String,
+    /// 参照のリレーションの名前（Salesforce の OwnerId の Owner。無ければ空）
+    pub rel: String,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -102,6 +104,8 @@ pub enum Reply {
     Schemas(Vec<String>),
     Objects(Objects),
     Columns(Vec<Column>),
+    /// 子のリレーション（名前, 子のオブジェクト）（Salesforce の Contacts → Contact）
+    Relations(Vec<(String, String)>),
     Indexes(Vec<Index>, Vec<Key>),
     Rows { cols: Vec<String>, types: Vec<String>, rows: Vec<Vec<Option<String>>>, more: bool, ms: u64 },
     Updated { count: i64, ms: u64 },
@@ -121,6 +125,7 @@ pub enum Req {
     SetSchema(String),
     Objects(String),
     Columns(String, String),
+    Relations(String, String),
     Indexes(String, String),
     Query { sql: String, max: usize, offset: usize },
     Count(String),
@@ -147,6 +152,10 @@ pub(crate) trait Backend {
     fn set_schema(&mut self, s: &str) -> R<()>;
     fn objects(&mut self, schema: &str) -> R<Objects>;
     fn columns(&mut self, schema: &str, table: &str) -> R<Vec<Column>>;
+    /// 子のリレーション（名前, 子のテーブル）。Salesforce のほかは無い
+    fn relations(&mut self, _schema: &str, _table: &str) -> R<Vec<(String, String)>> {
+        Ok(Vec::new())
+    }
     fn indexes(&mut self, schema: &str, table: &str) -> R<(Vec<Index>, Vec<Key>)>;
     /// (列名, 型, 行, 続きがあるか) か、変えた行の数
     fn query(&mut self, sql: &str, max: usize, offset: usize) -> R<Result<(Vec<String>, Vec<String>, Vec<Vec<Option<String>>>, bool), i64>>;
@@ -282,7 +291,7 @@ impl Backend for OracleDb {
                     dt
                 };
                 let fk = fk.iter().find(|f| col(f, 0) == name).map(|f| col(f, 1)).unwrap_or_default();
-                Column { pk: pk.contains(&name), fk, nullable: col(r, 5) == "Y", name, ty }
+                Column { pk: pk.contains(&name), fk, nullable: col(r, 5) == "Y", name, ty, rel: String::new() }
             })
             .collect())
     }
@@ -479,7 +488,7 @@ impl Backend for SqliteDb {
             .map(|r| {
                 let name = col(r, 1);
                 let fk = fk.iter().find(|f| col(f, 3) == name).map(|f| col(f, 2)).unwrap_or_default();
-                Column { ty: col(r, 2), nullable: col(r, 3) == "0", pk: col(r, 5) != "0", fk, name }
+                Column { ty: col(r, 2), nullable: col(r, 3) == "0", pk: col(r, 5) != "0", fk, name, rel: String::new() }
             })
             .collect())
     }
@@ -793,7 +802,7 @@ impl Backend for PgDb {
             ),
             &[&schema, &table],
         )?;
-        Ok(rows.iter().map(|r| Column { name: col(r, 0), ty: col(r, 1), nullable: col(r, 2) == "Y", pk: col(r, 3) == "Y", fk: col(r, 4) }).collect())
+        Ok(rows.iter().map(|r| Column { name: col(r, 0), ty: col(r, 1), nullable: col(r, 2) == "Y", pk: col(r, 3) == "Y", fk: col(r, 4), rel: String::new() }).collect())
     }
 
     fn indexes(&mut self, schema: &str, table: &str) -> R<(Vec<Index>, Vec<Key>)> {
@@ -993,6 +1002,7 @@ fn handle(db: &mut dyn Backend, req: &Req) -> R<Reply> {
         }
         Req::Objects(s) => Reply::Objects(db.objects(s)?),
         Req::Columns(s, t) => Reply::Columns(db.columns(s, t)?),
+        Req::Relations(s, t) => Reply::Relations(db.relations(s, t)?),
         Req::Indexes(s, t) => {
             let (i, k) = db.indexes(s, t)?;
             Reply::Indexes(i, k)
@@ -1024,7 +1034,7 @@ fn retryable(req: &Req) -> bool {
     match req {
         Req::Query { sql, .. } => matches!(first_word(sql).as_str(), "SELECT" | "SHOW" | "DESC" | "DESCRIBE" | "EXPLAIN" | "VALUES" | "PRAGMA"),
         Req::Batch(_) | Req::AutoCommit(_) | Req::Commit | Req::Rollback => false,
-        Req::Schemas | Req::SetSchema(_) | Req::Objects(_) | Req::Columns(..) | Req::Indexes(..) | Req::Count(_) | Req::Ddl(..) => true,
+        Req::Schemas | Req::SetSchema(_) | Req::Objects(_) | Req::Columns(..) | Req::Relations(..) | Req::Indexes(..) | Req::Count(_) | Req::Ddl(..) => true,
     }
 }
 

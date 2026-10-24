@@ -26,6 +26,10 @@ pub trait Catalog {
     fn objects(&self, schema: &str) -> Option<&Objects>;
     /// テーブルの列（読んでいれば）
     fn columns(&self, schema: &str, table: &str) -> Option<&[Column]>;
+    /// 子のリレーション（名前, 子のテーブル）（読んでいれば。Salesforce）
+    fn relations(&self, _schema: &str, _table: &str) -> Option<&[(String, String)]> {
+        None
+    }
     /// スキーマの名前か（大文字小文字は区別しない）
     fn is_schema(&self, name: &str) -> bool;
     /// 書かれた (スキーマ, 名前) を、読んだ (スキーマ, テーブル) に
@@ -41,25 +45,31 @@ pub enum Want {
     Objects(String),
     /// (スキーマ, テーブル) の列
     Columns(String, String),
+    /// (スキーマ, テーブル) の子のリレーション
+    Relations(String, String),
 }
 
 /// SQL のコンソールで補完する場所（Cx の console）
 pub struct Console<'a> {
-    pub kind: Option<Kind>,
     pub catalog: &'a dyn Catalog,
     /// カーソルのある文と、その中のカーソルの位置
     pub stmt: &'a str,
     pub cur: usize,
 }
 
-/// SQL の差し込み口（手順は丸ごと SQL のもの）
-pub struct Sql;
+/// SQL の差し込み口（手順は丸ごと SQL のもの。方言は接続先の種類ごとの設定）
+pub struct Sql {
+    pub dialect: &'static Dialect,
+}
 
-pub static SQL: Sql = Sql;
+pub static SQL: Sql = Sql { dialect: &GENERIC };
+pub static SQL_ORACLE: Sql = Sql { dialect: &ORACLE };
+pub static SQL_POSTGRES: Sql = Sql { dialect: &POSTGRES };
+pub static SQL_SQLITE: Sql = Sql { dialect: &SQLITE };
 
 impl Language for Sql {
     fn name(&self) -> &'static str {
-        "sql"
+        self.dialect.name
     }
 
     fn lexis(&self) -> &'static Lexis {
@@ -68,7 +78,7 @@ impl Language for Sql {
 
     fn complete_all(&self, cx: &Cx) -> Option<Vec<Item>> {
         let c = cx.console.as_ref()?;
-        Some(complete(c.kind, c.stmt, c.cur, cx.prefix, c.catalog))
+        Some(complete(self.dialect, c.stmt, c.cur, cx.prefix, c.catalog))
     }
 }
 
@@ -99,7 +109,7 @@ pub enum Tok {
 
 impl Tok {
     /// 名前として読めるなら、その名前
-    fn name(&self) -> Option<&str> {
+    pub fn name(&self) -> Option<&str> {
         match self {
             Tok::Word(w) | Tok::Quoted(w) => Some(w),
             _ => None,
@@ -107,7 +117,7 @@ impl Tok {
     }
 
     /// 語なら大文字にしたもの
-    fn upper(&self) -> Option<String> {
+    pub fn upper(&self) -> Option<String> {
         match self {
             Tok::Word(w) => Some(w.to_ascii_uppercase()),
             _ => None,
@@ -117,11 +127,50 @@ impl Tok {
 
 /// 字句に分ける。2 つ目は、文字列・"名前"・注釈の途中で終わったか（その中では補完しない）
 pub fn tokenize(s: &str) -> (Vec<Tok>, bool) {
+    tokenize_with(s, &GENERIC)
+}
+
+/// `tokenize` を方言で（$$…$$・q'[…]' の文字列）
+pub fn tokenize_with(s: &str, d: &Dialect) -> (Vec<Tok>, bool) {
     let mut out = Vec::new();
     let mut i = 0;
     while i < s.len() {
         let rest = &s[i..];
         let c = rest.chars().next().unwrap_or(' ');
+        // PostgreSQL: $$…$$・$tag$…$tag$
+        if d.dollar_quote && c == '$' {
+            let tag_end = rest[1..].find(|ch: char| !(ch.is_alphanumeric() || ch == '_')).map(|k| k + 1);
+            if let Some(te) = tag_end.filter(|&te| rest[te..].starts_with('$')) {
+                let tag = &rest[..=te];
+                match rest[tag.len()..].find(tag) {
+                    Some(n) => {
+                        out.push(Tok::Str);
+                        i += tag.len() + n + tag.len();
+                        continue;
+                    }
+                    None => return (out, true),
+                }
+            }
+        }
+        // Oracle: q'[…]'・q'{…}'・q'(…)'・q'<…>'・q'!…!'
+        if d.q_quote && (rest.starts_with("q'") || rest.starts_with("Q'")) && rest.len() > 2 {
+            let open = rest[2..].chars().next().unwrap_or(' ');
+            let close = match open {
+                '[' => ']',
+                '{' => '}',
+                '(' => ')',
+                '<' => '>',
+                c => c,
+            };
+            match rest[3..].find(&format!("{close}'")) {
+                Some(n) => {
+                    out.push(Tok::Str);
+                    i += 3 + n + 2;
+                    continue;
+                }
+                None => return (out, true),
+            }
+        }
         if c.is_whitespace() {
             i += c.len_utf8();
         } else if rest.starts_with("--") {
@@ -347,6 +396,10 @@ pub enum Ctx {
     AfterExpr,
     /// `a.`・`s.t.` の後（`.` の前の名前）
     Qualified(Vec<String>),
+    /// データ型を書くところ（CAST(x AS ・PostgreSQL の :: ・CREATE TABLE の列の名前の後）
+    Types,
+    /// PRAGMA の後（SQLite）
+    Pragma,
 }
 
 const TABLE_KW: &[&str] = &["FROM", "JOIN", "UPDATE", "INTO", "TABLE", "DESC", "DESCRIBE"];
@@ -354,6 +407,45 @@ const EXPR_KW: &[&str] = &[
     "SELECT", "WHERE", "ON", "AND", "OR", "BY", "HAVING", "SET", "WHEN", "THEN", "ELSE", "CASE", "NOT", "BETWEEN", "LIKE", "ILIKE", "IN", "IS", "RETURNING", "DISTINCT", "VALUES",
     "USING", "PRIOR",
 ];
+
+/// カーソルの前の字句から、場所を決める（方言の場所も）
+pub fn context_with(before: &[Tok], d: &Dialect) -> Ctx {
+    let n = before.len();
+    // PostgreSQL の x::型
+    if d.double_colon_cast && n >= 2 && before[n - 1] == Tok::Punct(':') && before[n - 2] == Tok::Punct(':') {
+        return Ctx::Types;
+    }
+    let up = |t: &Tok| t.upper().unwrap_or_default();
+    if !d.pragmas.is_empty() && before.last().is_some_and(|t| up(t) == "PRAGMA") {
+        return Ctx::Pragma;
+    }
+    // 閉じていない ( の位置
+    let mut depth = 0;
+    let mut open = None;
+    for (k, t) in before.iter().enumerate().rev() {
+        match t {
+            Tok::Punct(')') => depth += 1,
+            Tok::Punct('(') if depth == 0 => {
+                open = Some(k);
+                break;
+            }
+            Tok::Punct('(') => depth -= 1,
+            _ => {}
+        }
+    }
+    if let Some(o) = open {
+        // CAST(x AS ・TRY_CAST(x AS
+        if before.last().is_some_and(|t| up(t) == "AS") && o > 0 && matches!(up(&before[o - 1]).as_str(), "CAST" | "TRY_CAST") {
+            return Ctx::Types;
+        }
+        // CREATE TABLE t ( 列 ・, 列
+        let create = before.len() >= 2 && up(&before[0]) == "CREATE" && before[..o].iter().any(|t| up(t) == "TABLE");
+        if create && n >= 2 && before[n - 1].name().is_some() && matches!(before[n - 2], Tok::Punct('(' | ',')) && n - 2 >= o {
+            return Ctx::Types;
+        }
+    }
+    context(before)
+}
 
 /// カーソルの前の字句から、場所を決める
 pub fn context(before: &[Tok]) -> Ctx {
@@ -420,32 +512,142 @@ const FUNCS: &[&str] = &[
     "RANK", "DENSE_RANK", "LAG", "LEAD",
 ];
 
-/// 接続先の種類ごとのキーワード・関数・引数の無い値
-fn dialect(kind: Option<Kind>) -> (&'static [&'static str], &'static [&'static str], &'static [&'static str]) {
+/// 引用符を付けない名前の大文字小文字
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Fold {
+    /// 大文字に寄せる（Oracle）
+    Upper,
+    /// 小文字に寄せる（PostgreSQL）
+    Lower,
+    /// 区別しない（SQLite）
+    Any,
+}
+
+/// 方言（接続先の種類ごとの違い）
+pub struct Dialect {
+    pub name: &'static str,
+    /// 方言のキーワード（テーブルの後・式の中に足す）
+    pub keywords: &'static [&'static str],
+    pub functions: &'static [&'static str],
+    /// 引数の無い値（SYSDATE・CURRENT_DATE）
+    pub constants: &'static [&'static str],
+    /// データ型（CAST(x AS ・:: ・CREATE TABLE の列の後）
+    pub types: &'static [&'static str],
+    pub fold: Fold,
+    /// スキーマ・テーブル・列の名前をいつも "" で囲む（Oracle）
+    pub always_quote: bool,
+    /// $$…$$・$tag$…$tag$ の文字列（PostgreSQL）
+    pub dollar_quote: bool,
+    /// q'[…]' の文字列（Oracle）
+    pub q_quote: bool,
+    /// `::` で型を書く（PostgreSQL）
+    pub double_colon_cast: bool,
+    /// PRAGMA の名前（SQLite）
+    pub pragmas: &'static [&'static str],
+}
+
+pub static ORACLE: Dialect = Dialect {
+    name: "Oracle",
+    keywords: &["FETCH FIRST", "ROWS ONLY", "OFFSET", "CONNECT BY", "START WITH", "PRIOR", "MINUS", "NULLS FIRST", "NULLS LAST", "MERGE INTO", "DUAL", "ROWNUM", "ROWID", "LEVEL"],
+    functions: &["NVL", "NVL2", "DECODE", "TO_CHAR", "TO_DATE", "TO_NUMBER", "TO_TIMESTAMP", "TRUNC", "ADD_MONTHS", "MONTHS_BETWEEN", "LAST_DAY", "INSTR", "LISTAGG", "REGEXP_LIKE", "REGEXP_REPLACE", "REGEXP_SUBSTR", "SYS_GUID"],
+    constants: &["SYSDATE", "SYSTIMESTAMP", "CURRENT_DATE", "CURRENT_TIMESTAMP"],
+    types: &["VARCHAR2", "NVARCHAR2", "CHAR", "NCHAR", "NUMBER", "INTEGER", "FLOAT", "BINARY_FLOAT", "BINARY_DOUBLE", "DATE", "TIMESTAMP", "TIMESTAMP WITH TIME ZONE", "CLOB", "NCLOB", "BLOB", "RAW"],
+    fold: Fold::Upper,
+    always_quote: true,
+    dollar_quote: false,
+    q_quote: true,
+    double_colon_cast: false,
+    pragmas: &[],
+};
+
+pub static POSTGRES: Dialect = Dialect {
+    name: "PostgreSQL",
+    keywords: &["LIMIT", "OFFSET", "ILIKE", "RETURNING", "ON CONFLICT", "DO NOTHING", "DO UPDATE SET", "NULLS FIRST", "NULLS LAST", "TRUE", "FALSE", "LATERAL", "DISTINCT ON"],
+    functions: &["NOW", "DATE_TRUNC", "TO_CHAR", "TO_DATE", "TO_TIMESTAMP", "STRING_AGG", "ARRAY_AGG", "GENERATE_SERIES", "EXTRACT", "AGE", "JSONB_BUILD_OBJECT", "JSON_AGG", "SPLIT_PART", "GEN_RANDOM_UUID", "UNNEST"],
+    constants: &["CURRENT_DATE", "CURRENT_TIMESTAMP"],
+    types: &["integer", "bigint", "smallint", "serial", "bigserial", "numeric", "real", "double precision", "text", "varchar", "char", "boolean", "date", "time", "timestamp", "timestamptz", "interval", "uuid", "json", "jsonb", "bytea", "inet"],
+    fold: Fold::Lower,
+    always_quote: false,
+    dollar_quote: true,
+    q_quote: false,
+    double_colon_cast: true,
+    pragmas: &[],
+};
+
+pub static SQLITE: Dialect = Dialect {
+    name: "SQLite",
+    keywords: &["LIMIT", "OFFSET", "PRAGMA", "RETURNING", "ON CONFLICT", "AUTOINCREMENT", "WITHOUT ROWID"],
+    functions: &["IFNULL", "DATE", "DATETIME", "STRFTIME", "GROUP_CONCAT", "INSTR", "PRINTF", "TYPEOF", "JSON_EXTRACT", "JSON_OBJECT"],
+    constants: &["CURRENT_DATE", "CURRENT_TIMESTAMP"],
+    types: &["INTEGER", "TEXT", "REAL", "BLOB", "NUMERIC"],
+    fold: Fold::Any,
+    always_quote: false,
+    dollar_quote: false,
+    q_quote: false,
+    double_colon_cast: false,
+    pragmas: &["table_info", "table_xinfo", "index_list", "index_info", "foreign_key_list", "foreign_keys", "journal_mode", "user_version", "integrity_check", "database_list", "compile_options"],
+};
+
+/// 種類の分からない接続先
+pub static GENERIC: Dialect = Dialect {
+    name: "SQL",
+    keywords: &["LIMIT"],
+    functions: &[],
+    constants: &[],
+    types: &[],
+    fold: Fold::Any,
+    always_quote: false,
+    dollar_quote: false,
+    q_quote: false,
+    double_colon_cast: false,
+    pragmas: &[],
+};
+
+/// 接続先の種類の方言
+pub fn dialect(kind: Option<Kind>) -> &'static Dialect {
     match kind {
-        Some(Kind::Oracle) => (
-            &["FETCH FIRST", "ROWS ONLY", "OFFSET", "CONNECT BY", "START WITH", "PRIOR", "MINUS", "NULLS FIRST", "NULLS LAST", "MERGE INTO", "DUAL", "ROWNUM"],
-            &["NVL", "NVL2", "DECODE", "TO_CHAR", "TO_DATE", "TO_NUMBER", "TO_TIMESTAMP", "TRUNC", "ADD_MONTHS", "MONTHS_BETWEEN", "LAST_DAY", "INSTR", "LISTAGG", "REGEXP_LIKE", "REGEXP_REPLACE", "REGEXP_SUBSTR"],
-            &["SYSDATE", "SYSTIMESTAMP", "CURRENT_DATE", "CURRENT_TIMESTAMP"],
-        ),
-        Some(Kind::Postgres) => (
-            &["LIMIT", "OFFSET", "ILIKE", "RETURNING", "ON CONFLICT", "NULLS FIRST", "NULLS LAST", "TRUE", "FALSE"],
-            &["NOW", "DATE_TRUNC", "TO_CHAR", "TO_DATE", "TO_TIMESTAMP", "STRING_AGG", "ARRAY_AGG", "GENERATE_SERIES", "EXTRACT", "AGE", "JSONB_BUILD_OBJECT", "JSON_AGG", "SPLIT_PART"],
-            &["CURRENT_DATE", "CURRENT_TIMESTAMP"],
-        ),
-        Some(Kind::Sqlite) => (&["LIMIT", "OFFSET", "PRAGMA", "RETURNING", "ON CONFLICT"], &["IFNULL", "DATE", "DATETIME", "STRFTIME", "GROUP_CONCAT", "INSTR", "PRINTF"], &["CURRENT_DATE", "CURRENT_TIMESTAMP"]),
-        _ => (&["LIMIT"], &[], &[]),
+        Some(Kind::Oracle) => &ORACLE,
+        Some(Kind::Postgres) => &POSTGRES,
+        Some(Kind::Sqlite) => &SQLITE,
+        _ => &GENERIC,
     }
 }
 
+/// 名前にしたら引用符が要る予約語
+const RESERVED_NAMES: &[&str] = &[
+    "ALL", "AND", "AS", "ASC", "BETWEEN", "BY", "CASE", "CHECK", "COLUMN", "CONSTRAINT", "CREATE", "DEFAULT", "DELETE", "DESC", "DISTINCT", "DROP", "ELSE", "END", "EXISTS", "FOR",
+    "FOREIGN", "FROM", "GRANT", "GROUP", "HAVING", "IN", "INDEX", "INSERT", "INTO", "IS", "JOIN", "KEY", "LIKE", "LIMIT", "NOT", "NULL", "OF", "ON", "OR", "ORDER", "PRIMARY",
+    "REFERENCES", "SELECT", "SET", "TABLE", "THEN", "TO", "UNION", "UNIQUE", "UPDATE", "USER", "USING", "VALUES", "WHEN", "WHERE", "WITH",
+];
+
+impl Dialect {
+    /// 名前を、この方言で引用符が要れば囲む（大文字小文字の寄せ方に合わない・使えない文字・予約語）
+    pub fn ident(&self, s: &str) -> String {
+        let plain = s.chars().next().is_some_and(|c| c.is_ascii_alphabetic() || c == '_') && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$' || c == '#');
+        let fits = match self.fold {
+            Fold::Upper => !s.chars().any(|c| c.is_ascii_lowercase()),
+            Fold::Lower => !s.chars().any(|c| c.is_ascii_uppercase()),
+            Fold::Any => true,
+        };
+        let reserved = RESERVED_NAMES.contains(&s.to_ascii_uppercase().as_str());
+        if plain && fits && !reserved { s.to_string() } else { quoted(s) }
+    }
+}
+
+
+/// `a.b.` の頭のスキーマ（`seq.` なら今のスキーマ）
+fn schema_of(c: &dyn Catalog, q: &[String]) -> String {
+    if q.len() >= 2 { c.resolve(Some(&q[q.len() - 2]), "").0 } else { c.schema().to_string() }
+}
+
 /// 補完の候補（`stmt` はカーソルのある文、`cur` はその中のカーソルの位置、`prefix` は打った語）
-pub fn complete(kind: Option<Kind>, stmt: &str, cur: usize, prefix: &str, c: &dyn Catalog) -> Vec<Item> {
-    let (before, open) = tokenize(&stmt[..cur]);
+pub fn complete(d: &Dialect, stmt: &str, cur: usize, prefix: &str, c: &dyn Catalog) -> Vec<Item> {
+    let (before, open) = tokenize_with(&stmt[..cur], d);
     if open {
         return Vec::new();
     }
-    let ctx = context(&before);
-    let refs = table_refs(&tokenize(stmt).0);
+    let ctx = context_with(&before, d);
+    let refs = table_refs(&tokenize_with(stmt, d).0);
     // 別名・テーブル名で、文の表を引く
     let ref_of = |q: &str| refs.iter().find(|r| !r.cte && (r.alias.as_deref().is_some_and(|a| a.eq_ignore_ascii_case(q)) || (r.alias.is_none() && r.name.eq_ignore_ascii_case(q))));
     // 列を出す表（届いていなければ読みたいと伝える）
@@ -477,13 +679,13 @@ pub fn complete(kind: Option<Kind>, stmt: &str, cur: usize, prefix: &str, c: &dy
     let lower = if prefix.is_empty() { first.chars().any(|c| c.is_ascii_lowercase()) } else { prefix.chars().any(|c| c.is_ascii_lowercase()) && !prefix.chars().any(|c| c.is_ascii_uppercase()) };
     let kc = |k: &str| if lower { k.to_lowercase() } else { k.to_string() };
     let mut out: Vec<Item> = Vec::new();
-    let oracle = kind == Some(Kind::Oracle);
+
     let mut push = |out: &mut Vec<Item>, name: String, mark: char, note: String, call: Option<bool>, rank: u8, quote: bool| {
         if out.iter().any(|x| x.name == name && x.mark == mark) {
             return;
         }
         // Oracle はスキーマ・テーブル・列の名前をいつも "" で囲む（WITH の名前は書いたとおり）
-        let insert = if quote && oracle && matches!(mark, 'T' | 'V' | 'f' | 'c') && note != "WITH" { Some(quoted(&name)) } else { (quote && ident(&name) != name).then(|| ident(&name)) };
+        let insert = if quote && d.always_quote && matches!(mark, 'T' | 'V' | 'f' | 'c') && note != "WITH" { Some(quoted(&name)) } else { (quote && d.ident(&name) != name).then(|| d.ident(&name)) };
         out.push(Item { name, mark, note, call, rank, insert, import: None });
     };
     let tables = |out: &mut Vec<Item>, push: &mut dyn FnMut(&mut Vec<Item>, String, char, String, Option<bool>, u8, bool), s: &str, rank: u8, more: bool| {
@@ -510,7 +712,7 @@ pub fn complete(kind: Option<Kind>, stmt: &str, cur: usize, prefix: &str, c: &dy
             }
         }
     };
-    let (d_kw, d_funcs, d_consts) = dialect(kind);
+    let (d_kw, d_funcs, d_consts) = (d.keywords, d.functions, d.constants);
     let keywords = |out: &mut Vec<Item>, push: &mut dyn FnMut(&mut Vec<Item>, String, char, String, Option<bool>, u8, bool), list: &[&str], rank: u8| {
         for k in list {
             push(out, kc(k), 'K', String::new(), None, rank, false);
@@ -526,10 +728,25 @@ pub fn complete(kind: Option<Kind>, stmt: &str, cur: usize, prefix: &str, c: &dy
     };
     let schema = c.schema().to_string();
     match &ctx {
-        Ctx::Qualified(_) => {
+        Ctx::Qualified(q) => {
             columns(&mut out, &mut push, 0);
             if let Some(s) = &list_schema {
                 tables(&mut out, &mut push, s, 0, true);
+            }
+            // シーケンス（Oracle の seq.NEXTVAL・seq.CURRVAL）
+            let seq = q.last().is_some_and(|n| c.objects(&schema_of(c, q)).is_some_and(|o| o.sequences.iter().any(|x| x.eq_ignore_ascii_case(n))));
+            if seq && d.name == ORACLE.name {
+                keywords(&mut out, &mut push, &["NEXTVAL", "CURRVAL"], 0);
+            }
+        }
+        Ctx::Types => {
+            for t in d.types {
+                push(&mut out, t.to_string(), 'c', "データ型".into(), None, 0, false);
+            }
+        }
+        Ctx::Pragma => {
+            for p in d.pragmas {
+                push(&mut out, p.to_string(), 'K', "PRAGMA".into(), None, 0, false);
             }
         }
         Ctx::Start => {
@@ -633,5 +850,29 @@ mod tests {
         assert_eq!(t("select * from emp where id in (select id from x)"), None, "副問い合わせ");
         assert_eq!(t("with a as (select 1) select * from a"), None);
         assert_eq!(t("update emp set a = 1"), None);
+    }
+
+    #[test]
+    fn dialects() {
+        // 名前の囲み方: PostgreSQL は小文字に寄せる、Oracle は大文字、SQLite は区別しない。予約語は囲む
+        assert_eq!(POSTGRES.ident("order_item"), "order_item");
+        assert_eq!(POSTGRES.ident("EMP"), "\"EMP\"", "大文字は小文字に寄るので囲む");
+        assert_eq!(ORACLE.ident("EMP"), "EMP");
+        assert_eq!(ORACLE.ident("emp"), "\"emp\"");
+        assert_eq!(SQLITE.ident("Emp"), "Emp");
+        assert_eq!(SQLITE.ident("order"), "\"order\"", "予約語");
+        // 方言の文字列
+        assert!(!tokenize_with("select $$ it's ; $$ from t", &POSTGRES).1, "$$…$$ の中の ' は文字列の始まりでない");
+        assert!(tokenize_with("select $$ abc", &POSTGRES).1, "閉じていない $$");
+        assert!(!tokenize_with("select q'[it's]' from dual", &ORACLE).1);
+        assert!(tokenize_with("select q'[it's]' from dual", &GENERIC).1, "ほかの方言では q'…' でない");
+        // 方言の場所
+        let ctx = |s: &str, d: &Dialect| context_with(&tokenize_with(s, d).0, d);
+        assert_eq!(ctx("select x::", &POSTGRES), Ctx::Types);
+        assert_ne!(ctx("select x::", &ORACLE), Ctx::Types);
+        assert_eq!(ctx("select cast(x as ", &ORACLE), Ctx::Types);
+        assert_eq!(ctx("create table t (id ", &SQLITE), Ctx::Types);
+        assert_eq!(ctx("create table t (id integer, name ", &SQLITE), Ctx::Types);
+        assert_eq!(ctx("pragma ", &SQLITE), Ctx::Pragma);
     }
 }
