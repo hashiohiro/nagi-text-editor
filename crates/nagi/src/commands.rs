@@ -192,6 +192,14 @@ pub static COMMANDS: &[Cmd] = &[
     // 実行の構成・ターミナル
     cmd!(["Run"], "実行の構成を動かす（Shift+F10）。後に名前を書けばその構成（IntelliJ の構成と .nagi/run.conf）", Args::Text, |e, c| e.run_command(c.arg)),
     cmd!(["RunConfigs"], "実行の構成を選んで動かす（Alt+Shift+F10）", Args::None, |e, c| e.open_run_chooser()),
+    cmd!(["EasyWord"], "EasyMotion: 後ろの単語へ跳ぶ（印を打つ）", Args::None, |e, c| e.start_easy(crate::easy::EasyKind::WordForward)),
+    cmd!(["EasyLineDown"], "EasyMotion: 下の行へ跳ぶ", Args::None, |e, c| e.start_easy(crate::easy::EasyKind::LineForward)),
+    cmd!(["EasyLineUp"], "EasyMotion: 上の行へ跳ぶ", Args::None, |e, c| e.start_easy(crate::easy::EasyKind::LineBackward)),
+    cmd!(["EasyChar"], "EasyMotion: 打った 1 文字へ跳ぶ", Args::None, |e, c| e.start_easy(crate::easy::EasyKind::FindChar)),
+    cmd!(["EasySearch"], "EasyMotion: 打った文字列へ跳ぶ（Enter で印）", Args::None, |e, c| e.start_easy(crate::easy::EasyKind::Search)),
+    cmd!(["RunTest"], "カーソルの位置のテストを実行（メソッドの中ならそのメソッド、外ならクラス。Maven・Gradle・Cargo・pytest）", Args::None, |e, c| e.run_test_at_cursor()),
+    cmd!(["ReopenClosed"], "最後に閉じたファイルを開き直す", Args::None, |e, c| e.reopen_closed()),
+    cmd!(["RecentLocations", "Changes"], "最近の編集箇所", Args::None, |e, c| e.recent_locations()),
     cmd!(["RunStop"], "動いている構成を止める（Ctrl+F2）", Args::None, |e, c| e.run_stop()),
     cmd!(["RunEdit"], "実行の構成の画面（追加・編集・削除。後に名前を書けばその構成を選んで）。:RunEdit! はファイルを開く", Args::Text, |e, c| {
         if c.bang { e.run_edit() } else { e.open_run_dialog((!c.arg.is_empty()).then_some(c.arg)) }
@@ -312,6 +320,16 @@ pub const ACTIONS: &[(&str, &str)] = &[
     ("git.push", "Gpush"),
     ("git.hunk_popup", "GitHunk"),
     ("git.hunk_revert", "GitRevert"),
+    ("jump.word", "EasyWord"),
+    ("jump.line_down", "EasyLineDown"),
+    ("jump.line_up", "EasyLineUp"),
+    ("jump.char", "EasyChar"),
+    ("jump.search", "EasySearch"),
+    ("job.run", "Run"),
+    ("job.stop", "RunStop"),
+    ("job.test", "RunTest"),
+    ("buffer.reopen", "ReopenClosed"),
+    ("jump.recent", "RecentLocations"),
 ];
 
 /// パレットにだけ出す行（`!` 付きなど。説明, 打つ行）

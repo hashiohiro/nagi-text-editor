@@ -83,6 +83,7 @@ mod grammars;
 mod vim_field;
 mod vim_opts;
 mod vim_maps;
+mod easy;
 mod panes;
 mod instance;
 
@@ -802,7 +803,8 @@ impl Frame {
         let mode = self.ed.as_ref().map(|e| e.state());
         let leader = nagi_vim::parse_keys(&self.rc.leader, &self.rc.leader).first().copied();
         // パネルの入力欄にいる間は割り当てを通さない（Space などがそのまま文字になるように）
-        let in_field = self.ed.as_ref().is_some_and(|e| e.in_text_field());
+        // EasyMotion の印を打っている間も（印の j・k などを割り当てで置き換えない）
+        let in_field = self.ed.as_ref().is_some_and(|e| e.in_text_field() || e.easy_active());
         let list_leader = mode == Some(State::List) && !in_field && (!self.matcher.pending().is_empty() || Some(k) == leader);
         // Vim のキー操作を使わないときは .ideavimrc の割り当てを通さない
         let vim = self.ed.as_ref().is_some_and(|e| e.vim_on);

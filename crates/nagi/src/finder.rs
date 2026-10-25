@@ -31,6 +31,8 @@ pub enum Source {
     Projects,
     /// 実行の構成（選ぶと動かす）
     RunConfigs,
+    /// 最近の編集箇所（RecentLocations）
+    Locations,
 }
 
 /// コマンドパレットの項目（説明, Ex コマンド）
@@ -47,6 +49,7 @@ impl Source {
             Source::Outline => "構造",
             Source::Projects => "プロジェクト",
             Source::RunConfigs => "実行の構成",
+            Source::Locations => "最近の編集箇所",
         }
     }
 }
@@ -217,7 +220,7 @@ impl Editor {
                 }
             }
             // 場所の一覧は呼んだ側が set_locations で入れる
-            Source::Definitions | Source::Symbols | Source::Types | Source::Outline => {}
+            Source::Definitions | Source::Symbols | Source::Types | Source::Outline | Source::Locations => {}
             Source::Commands => {
                 // コマンドの表（commands.rs）から
                 for (cmd, help) in crate::commands::listed() {
@@ -410,7 +413,7 @@ impl Editor {
                     self.open_project(p);
                 }
             }
-            Source::Definitions | Source::Symbols | Source::Types | Source::Outline => {
+            Source::Definitions | Source::Symbols | Source::Types | Source::Outline | Source::Locations => {
                 let (p, l, c) = f.locs[i].clone();
                 self.jump_to(&p, l, c);
             }

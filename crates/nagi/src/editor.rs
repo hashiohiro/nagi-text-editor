@@ -287,6 +287,12 @@ pub struct Editor {
     pub clipboard: Option<Clipboard>,
     /// 最後に変更した位置（絶対 byte。g; 用）
     pub(crate) last_change: Option<usize>,
+    /// 最近の編集箇所（ファイル, 行。新しいものが後ろ。IntelliJ の RecentLocations）
+    pub(crate) recent_edits: Vec<(std::path::PathBuf, usize)>,
+    /// EasyMotion の印を出している・文字を待っている（easy.rs）
+    pub(crate) easy: Option<crate::easy::Easy>,
+    /// 閉じたファイル（ファイル, 行, byte。新しいものが後ろ。ReopenClosedTab）
+    pub(crate) closed_files: Vec<(std::path::PathBuf, usize, usize)>,
     /// マッピングの続きを待っているキー（showcmd。App が描画前に入れる）
     pub showcmd: String,
     /// 構文木（対応言語のときだけ）
@@ -634,6 +640,9 @@ impl Editor {
             registers: HashMap::new(),
             clipboard: None,
             last_change: None,
+            recent_edits: Vec::new(),
+            easy: None,
+            closed_files: Vec::new(),
             showcmd: String::new(),
             syntax,
             pending_syntax: None,
@@ -949,6 +958,22 @@ impl Editor {
         let c = self.buf.edit(start, end, text);
         self.hist.record(c);
         self.last_change = Some(start);
+        self.note_edit_place(start);
+    }
+
+    /// 最近の編集箇所に足す（同じファイルの近く（3 行以内）なら置き換える。50 件まで）
+    fn note_edit_place(&mut self, at: usize) {
+        let Some(p) = self.buf.path.clone() else { return };
+        let line = self.buf.pos_of(at).0;
+        if let Some(last) = self.recent_edits.last_mut().filter(|(lp, ll)| *lp == p && ll.abs_diff(line) <= 3) {
+            last.1 = line;
+            return;
+        }
+        self.recent_edits.retain(|(lp, ll)| !(*lp == p && ll.abs_diff(line) <= 3));
+        self.recent_edits.push((p, line));
+        if self.recent_edits.len() > 50 {
+            self.recent_edits.remove(0);
+        }
     }
 
     pub(crate) fn enter_insert(&mut self) {
@@ -1014,6 +1039,10 @@ impl Editor {
 
     pub fn key(&mut self, key: Key) -> Effect {
         self.sync_tab();
+        if self.easy.is_some() {
+            self.easy_key(key);
+            return Effect::None;
+        }
         let effect = self.key_inner(key);
         // 入力補完を打っている間に自動で出す（設定）
         if self.state() == State::Insert && self.settings.bool("completion.auto") {

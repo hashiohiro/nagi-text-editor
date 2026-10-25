@@ -681,6 +681,21 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
 
     p.wrap_w = 0;
     p.wrap_rows = 1;
+    // EasyMotion の印（跳び先の文字の上に重ねる）
+    if let Some(e) = ed.easy.as_ref().filter(|e| e.picking && pane.active) {
+        for (l, b, label) in &e.targets {
+            let Some(rest) = label.strip_prefix(e.typed.as_str()) else { continue };
+            if let Some((r, c)) = ed.screen_pos(*l, *b) {
+                if r < rect.h {
+                    let x = rect.x + gutter + c;
+                    let y = (rect.y + r) as f32 * cell.h;
+                    let w = p.width(rest);
+                    p.out.push(Instance::fill(x as f32 * cell.w, y, w as f32 * cell.w, cell.h, rgb(0xd75f5f)));
+                    p.text(rest, x, y, BG);
+                }
+            }
+        }
+    }
     let t_lines = t0.elapsed();
     if debug {
         eprintln!("build matches={:?} highlight={:?} lines={:?} n_matches={}", t_matches, t_hl - t_matches, t_lines - t_hl, all_matches.len());

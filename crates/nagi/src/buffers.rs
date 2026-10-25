@@ -279,6 +279,16 @@ impl Editor {
             self.notify.error(format!("E89: バッファ {} の変更が保存されていません（:bd! で破棄）", id + 1));
             return;
         }
+        // 閉じたファイルを覚える（ReopenClosedTab で開き直す）
+        let closed = match &self.docs[id] {
+            Slot::Active => self.buf.path.clone().map(|p| (p, self.cursor.line, self.cursor.byte)),
+            Slot::Parked(d) => d.buf.path.clone().map(|p| (p, 0, 0)),
+            Slot::Deleted => None,
+        };
+        if let Some(c) = closed {
+            self.closed_files.retain(|x| x.0 != c.0);
+            self.closed_files.push(c);
+        }
         // 消すバッファを出しているほかの窓は閉じる（Vim と同じ）
         self.close_windows_of(id);
         if id != self.cur_doc {
@@ -301,6 +311,41 @@ impl Editor {
             }
         }
         self.alt_doc = None;
+    }
+
+    /// 最後に閉じたファイルを開き直す（IntelliJ の ReopenClosedTab）
+    pub(crate) fn reopen_closed(&mut self) {
+        let open: Vec<std::path::PathBuf> = self.buffer_list().into_iter().filter_map(|(_, p, ..)| p).collect();
+        while let Some((p, line, byte)) = self.closed_files.pop() {
+            if !open.contains(&p) && p.exists() {
+                self.jump_to(&p, line, byte);
+                return;
+            }
+        }
+        self.notify.info("開き直すファイルがありません");
+    }
+
+    /// 最近の編集箇所の一覧（IntelliJ の RecentLocations。選ぶとそこへ）
+    pub(crate) fn recent_locations(&mut self) {
+        if self.recent_edits.is_empty() {
+            self.notify.info("まだ編集した箇所がありません");
+            return;
+        }
+        let root = self.nav_root();
+        let (mut items, mut locs) = (Vec::new(), Vec::new());
+        for (p, l) in self.recent_edits.iter().rev() {
+            let text = if self.buf.path.as_ref() == Some(p) { self.buf.line(*l) } else { std::fs::read_to_string(p).ok().and_then(|t| t.lines().nth(*l).map(String::from)).unwrap_or_default() };
+            let rel = p.strip_prefix(&root).map_or_else(|_| p.display().to_string(), |r| r.to_string_lossy().replace('\\', "/"));
+            items.push(format!("{rel}:{}  {}", l + 1, text.trim()));
+            locs.push((p.clone(), *l, 0));
+        }
+        self.open_finder(crate::finder::Source::Locations);
+        if let Some(f) = &mut self.finder {
+            f.set_locations(items, locs);
+        }
+        if self.state() != crate::editor::State::Finder {
+            self.set_state(crate::editor::State::Finder);
+        }
     }
 
     /// `:ls`。最下行に 1 行で出す（`%` 作業中、`#` 直前、`+` 変更あり）

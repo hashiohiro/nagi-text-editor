@@ -171,6 +171,61 @@ impl Editor {
         }
     }
 
+    /// カーソルの位置のテストを実行（IntelliJ の RunContextTest）。メソッドの中ならそのメソッド、外ならファイルのクラス・モジュール。
+    /// Java は近い pom.xml（Maven）か build.gradle（Gradle）、Rust は cargo test、Python は pytest
+    pub(crate) fn run_test_at_cursor(&mut self) {
+        let Some(file) = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()) else {
+            self.notify.info("ファイル名がありません");
+            return;
+        };
+        self.ensure_syntax();
+        let line = self.cursor.line;
+        // カーソルより上のいちばん近い関数・メソッド
+        let method = self.syntax.as_ref().and_then(|syn| {
+            syn.defs(&self.buf).into_iter().filter(|d| matches!(d.kind, nagi_syntax::defs::DefKind::Function | nagi_syntax::defs::DefKind::Method) && d.line <= line).max_by_key(|d| d.line).map(|d| d.name)
+        });
+        let stem = file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let ext = file.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+        let up = |names: &[&str]| file.ancestors().skip(1).find(|d| names.iter().any(|n| d.join(n).is_file())).map(std::path::Path::to_path_buf);
+        let (name, kind) = match ext.as_str() {
+            "java" | "kt" => {
+                let target = method.as_ref().map_or(stem.clone(), |m| format!("{stem}#{m}"));
+                if let Some(dir) = up(&["pom.xml"]) {
+                    let goals = vec!["test".to_string(), format!("-Dtest={target}"), "-Dsurefire.failIfNoSpecifiedTests=false".to_string()];
+                    (target, Kind::Maven { goals, profiles: Vec::new(), options: String::new(), workdir: Some(dir.display().to_string()), pom: None })
+                } else if let Some(dir) = up(&["build.gradle", "build.gradle.kts"]) {
+                    let gradlew = if dir.join("gradlew.bat").is_file() { "gradlew.bat" } else { "gradle" };
+                    let t = target.replace('#', ".");
+                    (target, Kind::Shell { command: format!("{gradlew} test --tests {t}"), workdir: Some(dir.display().to_string()) })
+                } else {
+                    self.notify.info("pom.xml も build.gradle も見つかりません");
+                    return;
+                }
+            }
+            "rs" => {
+                let Some(dir) = up(&["Cargo.toml"]) else {
+                    self.notify.info("Cargo.toml が見つかりません");
+                    return;
+                };
+                let t = method.clone().unwrap_or_default();
+                (if t.is_empty() { "cargo test".into() } else { t.clone() }, Kind::Shell { command: format!("cargo test {t}"), workdir: Some(dir.display().to_string()) })
+            }
+            "py" => {
+                let dir = file.parent().map(std::path::Path::to_path_buf).unwrap_or_default();
+                let t = match &method {
+                    Some(m) => format!("{}::{m}", file.display()),
+                    None => file.display().to_string(),
+                };
+                (method.clone().unwrap_or(stem.clone()), Kind::Shell { command: format!("python -m pytest \"{t}\""), workdir: Some(dir.display().to_string()) })
+            }
+            _ => {
+                self.notify.info("この種類のファイルのテストの動かし方を知りません（Java・Kotlin・Rust・Python）");
+                return;
+            }
+        };
+        self.run_config(RunConfig { name: format!("テスト: {name}"), kind, from: "nagi" });
+    }
+
     /// Ctrl+F5: 最後に動かした構成をもう一度
     pub(crate) fn run_again(&mut self) {
         let name = self.run_last.clone().or_else(|| self.run_selected.clone()).unwrap_or_default();
