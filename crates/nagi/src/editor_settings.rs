@@ -76,6 +76,16 @@ pub fn tidy(buf: &Buffer, trim: bool, final_newline: bool) -> Vec<(usize, usize,
 }
 
 impl Editor {
+    /// 今のファイルの .editorconfig の値（設定の「.editorconfig を使う」がオンのとき）
+    pub fn ec(&self, key: &str) -> Option<String> {
+        if !self.settings.bool("editor.editorconfig") {
+            return None;
+        }
+        let path = std::path::absolute(self.buf.path.as_deref()?).ok()?;
+        let props = self.ec_cache.borrow_mut().entry(path.clone()).or_insert_with(|| std::rc::Rc::new(crate::editorconfig::props_for(&path))).clone();
+        props.get(key).cloned()
+    }
+
     /// 今のファイルから見分けたインデント（設定の「ファイルのインデントを見分ける」がオンのとき）
     fn detected_indent(&self) -> Option<(bool, usize)> {
         self.settings.bool("editor.detect_indent").then(|| detect_indent(&self.buf)).flatten()
@@ -86,14 +96,22 @@ impl Editor {
         if let Some(v) = self.settings.session.get("editor.indent_style") {
             return v == "tabs";
         }
+        if let Some(v) = self.ec("indent_style") {
+            return v == "tab";
+        }
         if let Some((tabs, _)) = self.detected_indent() {
             return tabs;
         }
         self.settings.get("editor.indent_style") == "tabs"
     }
 
-    /// タブの表示幅（:set ts → 設定）
+    /// タブの表示幅（:set ts → .editorconfig → 設定）
     pub fn tab_width(&self) -> usize {
+        if !self.settings.session.contains_key("editor.tab_width") {
+            if let Some(w) = self.ec("tab_width").and_then(|v| v.parse::<usize>().ok()) {
+                return w.clamp(1, 16);
+            }
+        }
         self.settings.int("editor.tab_width") as usize
     }
 
@@ -105,6 +123,9 @@ impl Editor {
     /// 今のファイルのインデントの幅（:set sw → ファイルから見分けたもの → 言語ごとの設定 → 全体の設定）
     pub fn indent_width(&self) -> usize {
         if let Some(w) = self.settings.session.get("editor.indent_width").and_then(|v| v.parse::<usize>().ok()) {
+            return w.clamp(1, 16);
+        }
+        if let Some(w) = self.ec("indent_size").and_then(|v| v.parse::<usize>().ok()) {
             return w.clamp(1, 16);
         }
         if let Some((false, w)) = self.detected_indent() {
@@ -203,7 +224,10 @@ impl Editor {
 
     /// 保存の前に、設定の「保存時の処理」を今のバッファに当てる（取り消せる）
     pub(crate) fn tidy_before_save(&mut self) {
-        let (trim, nl) = (self.settings.bool("editor.trim_trailing"), self.settings.bool("editor.final_newline"));
+        // .editorconfig の trim_trailing_whitespace・insert_final_newline が先（.editorconfig を直したかもしれないので読み直す）
+        self.ec_cache.borrow_mut().clear();
+        let ec = |k: &str| self.ec(k).map(|v| v == "true");
+        let (trim, nl) = (ec("trim_trailing_whitespace").unwrap_or(self.settings.bool("editor.trim_trailing")), ec("insert_final_newline").unwrap_or(self.settings.bool("editor.final_newline")));
         if !trim && !nl {
             return;
         }
@@ -256,6 +280,25 @@ impl Editor {
         b.crlf = self.settings.get("editor.new_newline") == "crlf";
         b.encoding = nagi_core::encoding::by_name(&self.settings.get("editor.new_encoding")).unwrap_or(nagi_core::encoding::UTF_8);
         b.bom = self.settings.bool("editor.new_bom") && b.encoding == nagi_core::encoding::UTF_8;
+        // .editorconfig の end_of_line・charset（b はまだ作業中のバッファではないので、パスで引く）
+        if !self.settings.bool("editor.editorconfig") {
+            return;
+        }
+        let Some(p) = b.path.as_deref().and_then(|p| std::path::absolute(p).ok()) else { return };
+        let props = crate::editorconfig::props_for(&p);
+        match props.get("end_of_line").map(String::as_str) {
+            Some("crlf") => b.crlf = true,
+            Some("lf" | "cr") => b.crlf = false,
+            _ => {}
+        }
+        match props.get("charset").map(String::as_str) {
+            Some("utf-8") => (b.encoding, b.bom) = (nagi_core::encoding::UTF_8, false),
+            Some("utf-8-bom") => (b.encoding, b.bom) = (nagi_core::encoding::UTF_8, true),
+            Some("utf-16le") => (b.encoding, b.bom) = (nagi_core::encoding::UTF_16LE, true),
+            Some("utf-16be") => (b.encoding, b.bom) = (nagi_core::encoding::UTF_16BE, true),
+            Some("latin1") => (b.encoding, b.bom) = (nagi_core::encoding::by_name("latin1").unwrap_or(nagi_core::encoding::UTF_8), false),
+            _ => {}
+        }
     }
 
     /// 今のファイルの改行を変える（全体を書き換える。取り消せる。保存で変わる）
@@ -491,6 +534,29 @@ mod tests {
         assert_eq!(e.encoding_label(), "UTF-8 混在");
         e.set_fileformat(true);
         assert_eq!(e.buf.text(), "a\r\nb\r\nc\r\n");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// .editorconfig は設定より強く、:set より弱い
+    #[test]
+    fn editorconfig_wins_over_settings() {
+        let dir = std::env::temp_dir().join(format!("nagi-ec2-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(".editorconfig"), "root = true\n[*.ts]\nindent_style = tab\ntab_width = 8\ntrim_trailing_whitespace = true\nend_of_line = crlf\n").unwrap();
+        std::fs::write(dir.join("a.ts"), "let a = 1;  \n").unwrap();
+        let mut e = Editor::new(Buffer::open(&dir.join("a.ts")).unwrap(), None);
+        assert_eq!((e.indent_unit().as_str(), e.tab_width()), ("\t", 8));
+        e.ex_set("et sw=3");
+        assert_eq!(e.indent_unit(), "   ", ":set が勝つ");
+        e.tidy_before_save();
+        assert_eq!(e.buf.line(0), "let a = 1;");
+        let mut b = Buffer::from_str("");
+        b.path = Some(dir.join("new.ts"));
+        e.new_file_defaults(&mut b);
+        assert!(b.crlf);
+        e.settings.set("editor.editorconfig", "false", false);
+        e.settings.session.clear();
+        assert_eq!(e.tab_width(), 4);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

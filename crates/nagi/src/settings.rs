@@ -88,6 +88,7 @@ pub static SCHEMA: &[Item] = &[
     pitem("editor.detect_indent", "エディタ", "ファイルのインデントを見分けて使う", B, "true", "開いたファイルがタブか空白か・空白の幅を中身から見分け、上の設定より先に使う（IntelliJ の Detect and use existing file indents）"),
     pitem("editor.auto_indent", "エディタ", "自動インデント", B, "true", "改行した行を前の行のインデントに揃える（autoindent）"),
     pitem("editor.smart_indent", "エディタ", "括弧で字下げ", B, "true", "{ ( [ の後の改行で 1 段深く、閉じ括弧を打てば 1 段浅く（smartindent）"),
+    pitem("editor.editorconfig", "エディタ", ".editorconfig を使う", B, "true", "プロジェクトの .editorconfig のインデント・タブの幅・保存時の処理・新しいファイルの改行と文字コードを、ここの設定より先に使う"),
     pitem("editor.trim_trailing", "エディタ", "保存時に行末の空白を消す", B, "false", ""),
     pitem("editor.final_newline", "エディタ", "保存時に最後に改行を入れる", B, "false", ""),
     pitem("editor.new_newline", "エディタ", "新しいファイルの改行", SKind::Choice(&[("lf", "LF"), ("crlf", "CRLF")]), "lf", "今のファイルの改行は、状態の行の LF・CRLF を押すか :set ff=unix・ff=dos で変える"),
@@ -498,6 +499,7 @@ impl crate::editor::Editor {
             self.log_branch_w = self.log_branch_w.or(num("state.log_branch_width"));
             self.log_detail_w = self.log_detail_w.or(num("state.log_detail_width"));
         }
+        self.ec_cache.borrow_mut().clear();
         self.sync_clipboard();
         self.sync_tab();
         nagi_core::encoding::set_fallback(match self.settings.get("editor.encoding_fallback").as_str() {

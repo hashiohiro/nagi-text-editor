@@ -291,6 +291,8 @@ pub struct Editor {
     pub(crate) recent_edits: Vec<(std::path::PathBuf, usize)>,
     /// EasyMotion の印を出している・文字を待っている（easy.rs）
     pub(crate) easy: Option<crate::easy::Easy>,
+    /// .editorconfig の値（ファイルごと。設定を効かせ直すとき・保存したときに捨てる。editorconfig.rs）
+    pub(crate) ec_cache: std::cell::RefCell<std::collections::HashMap<std::path::PathBuf, std::rc::Rc<std::collections::HashMap<String, String>>>>,
     /// 閉じたファイル（ファイル, 行, byte。新しいものが後ろ。ReopenClosedTab）
     pub(crate) closed_files: Vec<(std::path::PathBuf, usize, usize)>,
     /// マッピングの続きを待っているキー（showcmd。App が描画前に入れる）
@@ -644,6 +646,7 @@ impl Editor {
             last_change: None,
             recent_edits: Vec::new(),
             easy: None,
+            ec_cache: Default::default(),
             closed_files: Vec::new(),
             showcmd: String::new(),
             syntax,

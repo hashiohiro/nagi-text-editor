@@ -84,6 +84,7 @@ mod vim_field;
 mod vim_opts;
 mod vim_maps;
 mod easy;
+mod editorconfig;
 mod panes;
 mod instance;
 
