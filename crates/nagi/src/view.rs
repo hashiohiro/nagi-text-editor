@@ -652,10 +652,10 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
             p.caret(cc, cy);
         } else {
             // ブロックカーソル（文字を反転）。空行や行末では 1 セルの塗り
-            // 選択の中では反転をもう一度反転して元の色に戻す（ターミナルの Vim と同じ見え方。行単位の Visual でも位置が分かる）
+            // 選択の中では灰色で塗る（選んでいると分かり、カーソルの位置も見分けられる。前は反転を戻していて、末端の文字が選ばれていないように見えた）
             match cursor_item {
                 Some(i) if (visual.is_some() || block.is_some()) && items[i].fg == BG && items[i].bg.is_some() => {
-                    items[i].fg = items[i].bg.take().unwrap_or(FG);
+                    items[i].bg = Some(CURSOR_IN_SELECTION);
                     p.draw(&items, rect.x + gutter, y);
                 }
                 Some(i) => {
@@ -1636,12 +1636,12 @@ pub(crate) fn draw_vim_line(p: &mut Painter, f: &crate::vim_field::VimField, l: 
         }
     }
     if active && l == cl {
-        // 四角のカーソル。選んだ中ではもう一度反転して元の色に
+        // 四角のカーソル。選んだ中では灰色（選んでいると分かるように）
         let x = col + p.width(&text[..cb]);
         let ch = text[cb..].graphemes(true).next().unwrap_or(" ");
         let w = p.width(ch).max(1);
         let in_sel = sel.is_some_and(|(s, e)| cb >= s && cb < e.max(s + 1));
-        let (bg, fg) = if in_sel { (BG, FG) } else { (CURSOR, BG) };
+        let (bg, fg) = if in_sel { (CURSOR_IN_SELECTION, BG) } else { (CURSOR, BG) };
         p.out.push(Instance::fill(x as f32 * cell.w, y, w as f32 * cell.w, cell.h, bg));
         p.text(ch, x, y, fg);
     }
