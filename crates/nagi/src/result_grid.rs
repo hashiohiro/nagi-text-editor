@@ -32,6 +32,8 @@ pub enum BottomKind {
     Output,
     /// シェル
     Terminal,
+    /// デバッグ（スタックと変数）
+    Debug,
 }
 
 /// 表に出す 1 つの値（改行とタブは記号に）

@@ -88,6 +88,7 @@ mod editorconfig;
 mod session;
 mod surround;
 mod format;
+mod debugger;
 mod panes;
 mod instance;
 

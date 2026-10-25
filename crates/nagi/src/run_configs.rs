@@ -174,9 +174,16 @@ impl Editor {
     /// カーソルの位置のテストを実行（IntelliJ の RunContextTest）。メソッドの中ならそのメソッド、外ならファイルのクラス・モジュール。
     /// Java は近い pom.xml（Maven）か build.gradle（Gradle）、Rust は cargo test、Python は pytest
     pub(crate) fn run_test_at_cursor(&mut self) {
+        if let Some(cfg) = self.test_config() {
+            self.run_config(cfg);
+        }
+    }
+
+    /// カーソルの位置のテストを動かす構成（:RunTest・:DebugTest）。分からなければ知らせて None
+    pub(crate) fn test_config(&mut self) -> Option<RunConfig> {
         let Some(file) = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()) else {
             self.notify.info("ファイル名がありません");
-            return;
+            return None;
         };
         self.ensure_syntax();
         let line = self.cursor.line;
@@ -199,13 +206,13 @@ impl Editor {
                     (target, Kind::Shell { command: format!("{gradlew} test --tests {t}"), workdir: Some(dir.display().to_string()) })
                 } else {
                     self.notify.info("pom.xml も build.gradle も見つかりません");
-                    return;
+                    return None;
                 }
             }
             "rs" => {
                 let Some(dir) = up(&["Cargo.toml"]) else {
                     self.notify.info("Cargo.toml が見つかりません");
-                    return;
+                    return None;
                 };
                 let t = method.clone().unwrap_or_default();
                 (if t.is_empty() { "cargo test".into() } else { t.clone() }, Kind::Shell { command: format!("cargo test {t}"), workdir: Some(dir.display().to_string()) })
@@ -220,10 +227,10 @@ impl Editor {
             }
             _ => {
                 self.notify.info("この種類のファイルのテストの動かし方を知りません（Java・Kotlin・Rust・Python）");
-                return;
+                return None;
             }
         };
-        self.run_config(RunConfig { name: format!("テスト: {name}"), kind, from: "nagi" });
+        Some(RunConfig { name: format!("テスト: {name}"), kind, from: "nagi" })
     }
 
     /// Ctrl+F5: 最後に動かした構成をもう一度
@@ -258,6 +265,10 @@ impl Editor {
     }
 
     pub(crate) fn run_stop(&mut self) {
+        // デバッグしていれば、それも止める
+        if self.debug.as_ref().is_some_and(|d| !d.ended) {
+            self.debug_stop();
+        }
         let active = self.terminals.list.get(self.terminals.active).filter(|t| t.name.starts_with(RUN_PREFIX) && !t.exited).map(|t| t.name.clone());
         let last = self.run_last.as_ref().map(|n| format!("{RUN_PREFIX}{n}"));
         let target = active.or(last.filter(|n| self.terminals.list.iter().any(|t| &t.name == n && !t.exited)));
@@ -285,7 +296,7 @@ impl Editor {
     }
 
     /// 名前の窓を閉じる（動いていれば止める）
-    fn close_terminal_named(&mut self, name: &str) {
+    pub(crate) fn close_terminal_named(&mut self, name: &str) {
         if let Some(i) = self.terminals.list.iter().position(|t| t.name == name) {
             let mut t = self.terminals.list.remove(i);
             t.term.kill();

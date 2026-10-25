@@ -19,12 +19,13 @@ use crate::panes::Rect;
 use crate::result_grid::BottomKind;
 
 /// タブ（名前, 種類）。左右の欄と同じくアイコンで並べ、出しているタブの名前を横に出す。クエリの結果は結果があるときだけ
-pub const BTABS: [(&str, BottomKind); 6] = [
+pub const BTABS: [(&str, BottomKind); 7] = [
     ("Git", BottomKind::Git),
     ("検索", BottomKind::Grep),
     ("問題", BottomKind::Problems),
     ("ログ", BottomKind::Output),
     ("ターミナル", BottomKind::Terminal),
+    ("デバッグ", BottomKind::Debug),
     ("クエリの結果", BottomKind::Result),
 ];
 
@@ -121,7 +122,7 @@ impl Editor {
                 self.open_terminal();
                 return;
             }
-            BottomKind::Problems | BottomKind::Result => {}
+            BottomKind::Problems | BottomKind::Result | BottomKind::Debug => {}
         }
         self.list_side = Side::Bottom;
         self.set_state(State::List);
@@ -247,6 +248,10 @@ impl Editor {
                 self.log_click(row, col, w, clicks);
             }
             BottomKind::Terminal => self.terminal_click(row, col),
+            BottomKind::Debug => {
+                let w = self.bottom_content_rect().map_or(0, |r| r.w);
+                self.debug_click(row + 1, col, w, clicks);
+            }
             BottomKind::Grep | BottomKind::Output => self.panel_click_at(row, col, clicks),
         }
     }
@@ -346,6 +351,12 @@ impl crate::layout::View for BottomView {
                 p.scroll = (p.scroll as isize + dy).clamp(0, n.saturating_sub(h.saturating_sub(1)) as isize) as usize;
             }
             BottomKind::Terminal => {}
+            BottomKind::Debug => {
+                if let Some(d) = &mut ed.debug {
+                    d.var_scroll = (d.var_scroll as isize + dy).clamp(0, d.vars.len().saturating_sub(1) as isize) as usize;
+                    d.sel_var = d.sel_var.max(d.var_scroll).min(d.vars.len().saturating_sub(1));
+                }
+            }
         }
         true
     }
@@ -405,6 +416,19 @@ impl crate::layout::View for BottomView {
                 };
                 m.sep().keys("書き出す（CSV・TSV・INSERT）…", &[Char('E')]).keys("閉じる", &[Char('q')])
             }
+            BottomKind::Debug => {
+                let w = ed.bottom_content_rect().map_or(0, |c| c.w);
+                ed.debug_click(prow + 1, pcol, w, 1);
+                m.keys("開く・閉じる", &[Enter])
+                    .sep()
+                    .keys("続ける（F9）", &[Char('c')])
+                    .keys("次へ（F8）", &[Char('n')])
+                    .keys("中へ（F7）", &[Char('s')])
+                    .keys("外へ（Shift+F8）", &[Char('o')])
+                    .keys("止める", &[Char('x')])
+                    .sep()
+                    .keys("欄を隠す", &[Char('q')])
+            }
             BottomKind::Terminal => {
                 if ed.terminals.list.is_empty() {
                     return false;
@@ -450,6 +474,7 @@ pub(crate) mod draw {
                     BottomKind::Problems => TabIcon::Problems,
                     BottomKind::Output => TabIcon::Output,
                     BottomKind::Terminal => TabIcon::Terminal,
+                    BottomKind::Debug => TabIcon::Debug,
                     BottomKind::Result => TabIcon::Result,
                 };
                 (icon, l, k == ed.bottom_kind)
@@ -476,6 +501,7 @@ pub(crate) mod draw {
                 _ => empty(p, "git のリポジトリではありません"),
             },
             BottomKind::Terminal => draw_terminal(p, ed, c, focused),
+            BottomKind::Debug => crate::debugger::draw::draw_debug(p, ed, c, focused),
         }
     }
 

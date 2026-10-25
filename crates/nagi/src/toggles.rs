@@ -74,7 +74,7 @@ impl Editor {
             Grep | Output => self.grep.is_some(),
             Result => !self.db_results.is_empty(),
             Git => self.log.as_ref().is_some_and(|l| l.docked),
-            Problems | Terminal => true,
+            Problems | Terminal | Debug => true,
         }
     }
 

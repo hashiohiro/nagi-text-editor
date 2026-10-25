@@ -76,7 +76,7 @@ pub enum Action {
 }
 
 /// 操作（設定のキー, 操作）
-pub const ACTIONS: [(&str, Action); 15] = [
+pub const ACTIONS: [(&str, Action); 22] = [
     ("keymap.settings", Action::Cmd("Settings")),
     ("keymap.complete", Action::Key(Key::Ctrl(' '))),
     ("keymap.run", Action::Cmd("Run")),
@@ -92,6 +92,13 @@ pub const ACTIONS: [(&str, Action); 15] = [
     ("keymap.find", Action::Cmd("ToolFind")),
     ("keymap.problems", Action::Cmd("ToolProblems")),
     ("keymap.log", Action::Cmd("ToolLog")),
+    ("keymap.debug", Action::Cmd("Debug")),
+    ("keymap.breakpoint", Action::Cmd("Breakpoint")),
+    ("keymap.debug_resume", Action::Cmd("DebugResume")),
+    ("keymap.step_over", Action::Cmd("StepOver")),
+    ("keymap.step_into", Action::Cmd("StepInto")),
+    ("keymap.step_out", Action::Cmd("StepOut")),
+    ("keymap.debug_panel", Action::Cmd("ToolDebug")),
 ];
 
 /// Vim のキー操作を使わないときだけ効く組み合わせ（Ctrl+C・V・Z など。Vim では Ctrl+V は矩形選択、Ctrl+R はやり直しなので）。

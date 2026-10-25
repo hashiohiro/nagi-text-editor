@@ -403,7 +403,10 @@ impl Session {
             Value::Object(b'[', id) => {
                 let n = self.conn.array_length(*id).unwrap_or(0);
                 let cls = self.conn.object_class(*id).ok().and_then(|c| self.sig(c).ok()).map(|s| type_name(&s)).unwrap_or_else(|| ty.to_string());
-                (format!("{}[{n}]", cls.trim_end_matches("[]")), Some((b'[', *id)))
+                // String[3]（要素の型は短い名前。多次元は最初の次元だけ数を）
+                let elem = cls.strip_suffix("[]").unwrap_or(&cls);
+                let (base, dims) = (elem.trim_end_matches("[]"), (elem.len() - elem.trim_end_matches("[]").len()) / 2);
+                (format!("{}[{n}]{}", short(base), "[]".repeat(dims)), Some((b'[', *id)))
             }
             Value::Object(t, id) => {
                 let cls = self.conn.object_class(*id).ok().and_then(|c| self.sig(c).ok()).map(|s| type_name(&s)).unwrap_or_else(|| ty.to_string());
@@ -471,6 +474,43 @@ mod tests {
             cands.extend(std::fs::read_dir(h).into_iter().flatten().flatten().map(|e| e.path()));
         }
         cands.into_iter().map(|d| d.join("bin")).find(|b| b.join("javac.exe").is_file() || b.join("javac").is_file())
+    }
+
+    /// Maven のテスト（surefire に JDWP の口を開けさせる）を、@Nested の内部クラスのブレークポイントで止める。
+    /// 手元の試験用のリポジトリを使うので普段は流さない（NAGI_DEBUG_REPO にリポジトリ、NAGI_DEBUG_CLASS にテストのクラスの完全な名前、
+    /// NAGI_DEBUG_LINE に @Nested の内部クラスの中の行、NAGI_DEBUG_METHOD にその行のメソッドの名前）
+    #[test]
+    #[ignore]
+    fn debugs_maven_surefire() {
+        let var = |k: &str| std::env::var(k).unwrap_or_else(|_| panic!("{k} がありません"));
+        let (repo, class, method) = (var("NAGI_DEBUG_REPO"), var("NAGI_DEBUG_CLASS"), var("NAGI_DEBUG_METHOD"));
+        let line: usize = var("NAGI_DEBUG_LINE").parse().unwrap();
+        let simple = class.rsplit('.').next().unwrap().to_string();
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let agent = format!("-agentlib:jdwp=transport=dt_socket,server=y,suspend=y,address=127.0.0.1:{port}");
+        let mut mvn = std::process::Command::new("cmd")
+            .args(["/C", "mvn", "-q", "test", &format!("-Dtest={simple}"), &format!("-Dmaven.surefire.debug={agent}")])
+            .current_dir(&repo)
+            .env("JAVA_HOME", javac().and_then(|b| b.parent().map(|p| p.to_path_buf())).unwrap())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let file = PathBuf::from(&repo).join("src/test/java").join(format!("{}.java", class.replace('.', "/")));
+        let bp = Bp { class: class.clone(), file, line };
+        let (tx, task) = start(format!("127.0.0.1:{port}"), vec![bp], false, std::sync::Arc::new(|| {}));
+        let frames = loop {
+            match task.recv_timeout(Duration::from_secs(240)) {
+                Some(Ev::Stopped { frames, .. }) => break frames,
+                Some(Ev::Ended(e)) => panic!("終わった: {e}"),
+                Some(_) => continue,
+                None => panic!("止まらない"),
+            }
+        };
+        assert_eq!((frames[0].method.as_str(), frames[0].line), (method.as_str(), Some(line)), "{frames:?}");
+        assert!(frames[0].class.contains(&format!("{simple}$")), "{}", frames[0].class);
+        tx.send(Cmd::Stop).unwrap();
+        let _ = mvn.wait();
     }
 
     /// 本物の JVM で: ブレークポイントで止まり、変数を読み、中へ・外へステップし、続けると終わる

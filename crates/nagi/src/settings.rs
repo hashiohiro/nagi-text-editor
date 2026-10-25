@@ -150,6 +150,13 @@ pub static SCHEMA: &[Item] = &[
     item("keymap.find", "キーマップ", "検索の欄", K, "Alt+3", ""),
     item("keymap.problems", "キーマップ", "問題", K, "Alt+6", ""),
     item("keymap.log", "キーマップ", "ログ", K, "Alt+4", ""),
+    item("keymap.debug", "キーマップ", "デバッグ", K, "Shift+F9", "選んでいる実行の構成をデバッグで動かす"),
+    item("keymap.breakpoint", "キーマップ", "ブレークポイント", K, "Ctrl+F8", ""),
+    item("keymap.debug_resume", "キーマップ", "デバッグ: 続ける", K, "F9", ""),
+    item("keymap.step_over", "キーマップ", "デバッグ: 次へ", K, "F8", ""),
+    item("keymap.step_into", "キーマップ", "デバッグ: 中へ", K, "F7", ""),
+    item("keymap.step_out", "キーマップ", "デバッグ: 外へ", K, "Shift+F8", ""),
+    item("keymap.debug_panel", "キーマップ", "デバッグの欄", K, "Alt+5", ""),
     // Vim のキー操作を使わないときだけ効く（keymap.rs の PLAIN_ACTIONS）
     item("keymap.undo", "キーマップ", "元に戻す", K, "Ctrl+Z", "Vim を使わないとき"),
     item("keymap.redo", "キーマップ", "やり直す", K, "Ctrl+Shift+Z", "Vim を使わないとき"),

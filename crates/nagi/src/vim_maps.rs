@@ -146,7 +146,7 @@ mod tests {
 
     #[test]
     fn rows_and_file() {
-        let rc = nagi_vim::parse_rc("let mapleader = \" \"\nnnoremap <leader>ff :<C-u>action Find<CR>\nnnoremap <leader>d :<C-u>action Debug<CR>\ninoremap jj <Esc>\nnnoremap ew :<C-u>w<CR>\n");
+        let rc = nagi_vim::parse_rc("let mapleader = \" \"\nnnoremap <leader>ff :<C-u>action Find<CR>\nnnoremap <leader>d :<C-u>action QuickJavaDoc<CR>\ninoremap jj <Esc>\nnnoremap ew :<C-u>w<CR>\n");
         let base = rows(&rc.keymap, " ");
         assert_eq!(line_of(&base[0]), "n <leader>ff :<C-u>action Find<CR>");
         assert_eq!(base[0].from, "<text>:2");
@@ -164,7 +164,7 @@ mod tests {
         let text = render(&base, &ed);
         assert_eq!(text.lines().skip(1).collect::<Vec<_>>(), ["nnoremap <leader>ff :<C-u>action FindInPath<CR>", "xnoremap <leader>c y", "nunmap <leader>d"]);
         // 読み直すと画面のとおり
-        let again = nagi_vim::parse_rc(&format!("let mapleader = \" \"\nnnoremap <leader>ff :<C-u>action Find<CR>\nnnoremap <leader>d :<C-u>action Debug<CR>\ninoremap jj <Esc>\nnnoremap ew :<C-u>w<CR>\n{text}"));
+        let again = nagi_vim::parse_rc(&format!("let mapleader = \" \"\nnnoremap <leader>ff :<C-u>action Find<CR>\nnnoremap <leader>d :<C-u>action QuickJavaDoc<CR>\ninoremap jj <Esc>\nnnoremap ew :<C-u>w<CR>\n{text}"));
         let got: Vec<String> = rows(&again.keymap, " ").iter().map(line_of).collect();
         let want: Vec<String> = ed.iter().map(line_of).collect();
         let (mut got, mut want) = (got, want);

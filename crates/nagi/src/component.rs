@@ -77,6 +77,7 @@ pub fn focused(ed: &Editor) -> Option<&'static dyn Component> {
             Side::Left => &crate::tree_panel::TreeComponent,
             Side::Bottom if ed.bottom_kind == BottomKind::Result => &crate::result_grid::ResultComponent,
             Side::Bottom if ed.bottom_kind == BottomKind::Problems => &crate::bottom_panel::ProblemsComponent,
+            Side::Bottom if ed.bottom_kind == BottomKind::Debug => &crate::debugger::DebugComponent,
             Side::Bottom => &crate::grep_panel::ListComponent,
             Side::Commit => &crate::commit_panel::CommitListComponent,
             Side::Run => &crate::run_panel::RunPanelComponent,

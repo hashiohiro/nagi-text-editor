@@ -350,6 +350,9 @@ pub(crate) struct Pane<'a> {
     pub(crate) left: usize,
     pub(crate) frac: f32,
     pub(crate) active: bool,
+    /// ブレークポイントの行と、デバッグで止まっている行（debugger.rs）
+    pub(crate) breaks: Vec<usize>,
+    pub(crate) exec: Option<usize>,
 }
 
 /// 行の頭から表示の `cols` 列ぶんの文字を落とす（横に送ったとき）。途中で切れる幅の広い文字は空白に。
@@ -503,6 +506,15 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
             _ => {
                 p.text(&format!("{:>5} ", ln + 1), rect.x + bw, y, num_color);
             }
+        }
+        // ブレークポイント（赤い ●）と、デバッグで止まっている行（行全体を青く・▶）
+        if pane.exec == Some(ln) {
+            p.out.push(Instance::fill(rect.x as f32 * cell.w, y, rect.w as f32 * cell.w, cell.h * line_rows as f32, rgb(0x1f3a5f)));
+        }
+        if pane.breaks.contains(&ln) {
+            p.text("●", rect.x + bw, y, GIT_DEL);
+        } else if pane.exec == Some(ln) {
+            p.text("▶", rect.x + bw, y, DIAG_WARN);
         }
         // SQL コンソール: カーソルのある文（Ctrl+Enter で流す範囲）に緑の線
         if stmt.is_some_and(|(s, e)| ln >= s && ln < e) {
@@ -828,7 +840,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         let last = buf.line_count().saturating_sub(1);
         let mut cursor = st.cursor;
         cursor.line = cursor.line.min(last);
-        let pane = Pane { buf, marks: ed.git_markers(buf.path.as_deref()), diags: ed.diag_lines(buf.path.as_deref()), squiggles: if ed.settings.bool("editor.squiggles") { ed.diag_spans(buf.path.as_deref()) } else { Vec::new() }, folds, syntax, cursor, top: st.top.min(last), left: if ed.settings.bool("editor.wrap") { 0 } else { st.left }, frac: if active { ed.frac } else { 0.0 }, active };
+        let pane = Pane { buf, marks: ed.git_markers(buf.path.as_deref()), diags: ed.diag_lines(buf.path.as_deref()), squiggles: if ed.settings.bool("editor.squiggles") { ed.diag_spans(buf.path.as_deref()) } else { Vec::new() }, folds, syntax, cursor, top: st.top.min(last), left: if ed.settings.bool("editor.wrap") { 0 } else { st.left }, frac: if active { ed.frac } else { 0.0 }, active, breaks: ed.breaks_for(buf.path.as_deref()), exec: ed.exec_line_for(buf.path.as_deref()) };
         draw_pane(&mut p, ed, &pane, Rect { h: ed.text_rows(rect), ..rect });
     }
     // 窓ごとの状態行（分割中だけ。Vim の laststatus=1 と同じ）と、左右の窓の間の 1px の区切り線
@@ -1229,6 +1241,7 @@ pub(crate) enum TabIcon {
     Output,
     Terminal,
     Result,
+    Debug,
 }
 
 /// 左右の欄の 1 行目: タブをアイコンで並べ（出しているタブは明るく下線）、その横に出しているタブの名前
@@ -1367,6 +1380,20 @@ pub(crate) fn draw_tab_icon(p: &mut Painter, icon: TabIcon, cx: f32, y: f32, c: 
                 k += px;
             }
             f(cx + h + px * 2.0, cy + h, (s * 0.25).round(), px);
+        }
+        TabIcon::Debug => {
+            // デバッグ: 虫（丸い胴と、左右の脚）
+            let bw = (s * 0.5).round();
+            let bx = x + ((s - bw) / 2.0).round();
+            frame(&mut f, bx, y + px * 3.0, bw, s - px * 4.0);
+            f(bx + (bw / 2.0).floor() - px / 2.0, y + px * 3.0, px, s - px * 4.0);
+            for k in 0..3 {
+                let ly = y + px * 5.0 + k as f32 * (s * 0.22).round();
+                f(x + px, ly, bx - x - px, px);
+                f(bx + bw, ly, x + s - bx - bw - px, px);
+            }
+            f(bx + px * 2.0, y, px, px * 3.0);
+            f(bx + bw - px * 3.0, y, px, px * 3.0);
         }
         TabIcon::Result => {
             // クエリの結果: 表（枠と、見出しの行と列の区切り）

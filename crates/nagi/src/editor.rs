@@ -295,6 +295,9 @@ pub struct Editor {
     pub yank_flash: Option<(usize, usize, std::time::Instant)>,
     /// 動いている整形（format.rs）
     pub(crate) format_job: Option<crate::format::FormatJob>,
+    /// デバッグ（debugger.rs）と、ブレークポイント（ファイル → 行。0 始まり）
+    pub(crate) debug: Option<crate::debugger::DebugUi>,
+    pub(crate) breakpoints: std::collections::BTreeMap<std::path::PathBuf, std::collections::BTreeSet<usize>>,
     /// 最後に編集した時刻（自動で保存するまでの時間を数える）
     pub last_edit_at: Option<std::time::Instant>,
     /// .editorconfig の値（ファイルごと。設定を効かせ直すとき・保存したときに捨てる。editorconfig.rs）
@@ -530,6 +533,7 @@ impl Editor {
             changed = true;
         }
         for poll in [
+            Self::poll_debug,
             Self::poll_format,
             Self::poll_search,
             Self::poll_finder,
@@ -655,6 +659,8 @@ impl Editor {
             easy: None,
             yank_flash: None,
             format_job: None,
+            debug: None,
+            breakpoints: Default::default(),
             last_edit_at: None,
             ec_cache: Default::default(),
             closed_files: Vec::new(),
@@ -971,7 +977,14 @@ impl Editor {
 
     pub(crate) fn edit(&mut self, start: usize, end: usize, text: &str) {
         self.shift_marks(start, end, text);
+        let (start_line, col) = self.buf.pos_of(start);
         let c = self.buf.edit(start, end, text);
+        // ブレークポイントを一緒に動かす（行の頭に行を足したら、その行のものも下へ）
+        let (removed, inserted) = (c.removed.matches('\n').count(), text.matches('\n').count());
+        if removed != inserted {
+            let base = if col == 0 && removed == 0 { start_line.checked_sub(1) } else { Some(start_line) };
+            self.shift_breakpoints(base, removed, inserted);
+        }
         self.hist.record(c);
         self.last_change = Some(start);
         self.last_edit_at = Some(std::time::Instant::now());
@@ -1922,6 +1935,14 @@ impl Editor {
     /// マウスのクリック: 画面上の (行, セル列) へカーソルを移す
     pub fn click(&mut self, row: usize, col: usize) {
         if self.text_click_blocked() {
+            return;
+        }
+        // Java・Kotlin のファイルの行番号の欄を押したら、その行のブレークポイントを付ける・外す（IntelliJ と同じ）
+        let r = self.active_rect();
+        let java = self.buf.path.as_deref().and_then(|p| p.extension()).is_some_and(|e| e == "java" || e == "kt");
+        if java && r.contains(row, col) && col < r.x + self.gutter() && col >= r.x + self.gutter() - GUTTER {
+            let line = self.pos_at(row, r.x + self.gutter()).line;
+            self.toggle_breakpoint(Some(line));
             return;
         }
         self.leave_panel();
