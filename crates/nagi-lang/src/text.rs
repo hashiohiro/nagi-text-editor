@@ -164,6 +164,56 @@ pub fn blank_import_paths(s: &str) -> String {
     out
 }
 
+/// `code`（コメント・文字列を空白にしたもの）が `}` で終わるなら、そのブロックの前の文字（`if (x)`・`try` など。末尾の空白は除く）
+pub fn block_head(code: &str) -> Option<&str> {
+    let b = code.trim_end().as_bytes();
+    if b.last() != Some(&b'}') {
+        return None;
+    }
+    let mut depth = 0usize;
+    for i in (0..b.len()).rev() {
+        match b[i] {
+            b'}' => depth += 1,
+            b'{' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(code[..i].trim_end());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// `head` が `)` で終わるなら、対の `(` の前の語（`if (x)` の if・`catch (E e)` の catch）
+pub fn paren_keyword(head: &str) -> Option<&str> {
+    let b = head.as_bytes();
+    if b.last() != Some(&b')') {
+        return None;
+    }
+    let mut depth = 0usize;
+    for i in (0..b.len()).rev() {
+        match b[i] {
+            b')' => depth += 1,
+            b'(' => {
+                depth -= 1;
+                if depth == 0 {
+                    let w = head[..i].trim_end();
+                    return Some(&w[w.rfind(|c: char| !(c.is_alphanumeric() || c == '_')).map_or(0, |k| k + 1)..]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// 語 `w` で終わるか（前が語の文字でない）
+pub fn ends_with_word(s: &str, w: &str) -> bool {
+    s.strip_suffix(w).is_some_and(|r| !r.ends_with(|c: char| c.is_alphanumeric() || c == '_' || c == '$'))
+}
+
 /// コメントと文字列の中を空白にする（引用符と改行は残し、長さ・位置は変えない）。ファイルの中の語を集める前に
 pub fn blank_literals(lx: &Lexis, s: &str) -> String {
     let b = s.as_bytes();

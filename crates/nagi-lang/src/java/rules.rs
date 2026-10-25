@@ -253,6 +253,122 @@ pub fn case_subject(src: &str, line: &str, ws: usize, at: usize) -> Option<Strin
     (kw.ends_with("switch") && !kw[..kw.len() - 6].ends_with(|c: char| c.is_alphanumeric() || c == '_')).then(|| src[start + 1..close].trim().to_string())
 }
 
+
+const PRIMITIVES: &[&str] = &["int", "long", "short", "byte", "char", "boolean", "double", "float"];
+
+/// 今の場所に書ける予約語（`kinds` は構文木の節の種類、内側から外へ）。決められなければ None
+pub fn keywords_here(kinds: &[&str], src: &str, line: &str, ws: usize, at: usize) -> Option<(Vec<&'static str>, bool)> {
+    use crate::text::{block_head, ends_with_word, paren_keyword};
+    let code = crate::text::blank_literals(super::types::LX, &src[..at]);
+    let prev = code.trim_end();
+    let last = prev.chars().last().unwrap_or('\n');
+    let line_head = line[..ws].trim_start();
+    // 今の文（最後の ; { } の後）
+    let stmt = &prev[prev.rfind([';', '{', '}']).map_or(0, |i| i + 1)..];
+    // 入れ物: 文を書くブロック・クラスの本体・ファイルの上
+    let method_edge = ["method_declaration", "constructor_declaration", "lambda_expression", "class_body", "interface_body", "enum_body", "program"];
+    let container = kinds.iter().find_map(|k| match *k {
+        "block" | "constructor_body" | "switch_block" | "switch_block_statement_group" | "switch_rule" => Some('s'),
+        "class_body" | "interface_body" | "enum_body" | "enum_body_declarations" | "annotation_type_body" => Some('c'),
+        "program" => Some('t'),
+        _ => None,
+    })?;
+    let within = |want: &[&str]| kinds.iter().take_while(|k| !method_edge.contains(k)).any(|k| want.contains(k));
+    let mut v: Vec<&'static str> = Vec::new();
+    let expr = ["new", "this", "super", "null", "true", "false", "switch"];
+    // 式の途中（= ( , の後・return の後など）
+    // case の後の : は文の頭（前の行の case でも）
+    let prev_line = prev[prev.rfind('\n').map_or(0, |i| i + 1)..].trim_start();
+    let case_label = last == ':' && (prev_line.starts_with("case ") || prev_line.starts_with("default") || line_head.starts_with("case "));
+    if !case_label && ("=(,?:!&|+-*/%<>[^~".contains(last) || ["return", "throw", "yield", "assert"].iter().any(|w| ends_with_word(prev, w))) {
+        v.extend(expr);
+        if last == '(' {
+            v.extend(PRIMITIVES);
+            if ["for", "try", "catch"].iter().any(|w| ends_with_word(prev[..prev.len() - 1].trim_end(), w)) {
+                v.extend(["final", "var"]);
+            }
+        }
+        return Some((v, false));
+    }
+    // 前の語が予約語なら、その後に続くもの（new・extends の後は型だけ。修飾子・else の後は文やメンバーの頭と同じ）
+    let prev_word = &prev[prev.rfind(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$')).map_or(0, |i| i + 1)..];
+    if ["new", "extends", "implements", "throws", "instanceof", "permits", "package"].contains(&prev_word) {
+        return Some((Vec::new(), false));
+    }
+    // 注釈（@Override・@Column(…)）の後は、メンバー・文の頭と同じ
+    let after_annotation = stmt.rfind('@').is_some_and(|i| {
+        let a = stmt[i + 1..].trim_end();
+        let name_end = a.find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '.')).unwrap_or(a.len());
+        name_end > 0 && (name_end == a.len() || a[name_end..].trim_start().starts_with('(') && a.ends_with(')') && crate::text::paren_keyword(a).is_some())
+    });
+    // キャスト（(Criteria) this）の後は値
+    if last == ')' && !after_annotation && paren_keyword(prev).is_some_and(|k| ["", "return", "throw", "yield", "case"].contains(&k)) {
+        let open = prev.rfind('(').unwrap_or(0);
+        let inner = prev[open + 1..prev.len() - 1].trim();
+        if !inner.is_empty() && (inner.starts_with(char::is_uppercase) || PRIMITIVES.contains(&inner)) && inner.chars().all(|c| c.is_alphanumeric() || "_.<>[], ?".contains(c)) {
+            return Some((expr.to_vec(), false));
+        }
+    }
+    // 値の後（x ins → instanceof）。行の頭は前の行の続きでなく、文・メンバーの頭として見る
+    let after_value = !after_annotation && !line[..ws].trim().is_empty() && (last.is_alphanumeric() || last == '_' || last == ')' || last == ']') && !super::lang::KEYWORDS.contains(&prev_word);
+    if after_value && line[..ws].ends_with(' ') {
+        let header = ["class ", "interface ", "enum ", "record "].iter().any(|k| stmt.contains(k)) && !stmt.contains('=') && !stmt.contains('(') || stmt.trim_start().starts_with("@") && stmt.contains("class ");
+        if header {
+            return Some((vec!["extends", "implements", "permits"], false));
+        }
+        if container == 'c' && last == ')' {
+            return Some((vec!["throws", "default"], false));
+        }
+        if ["=", "(", "return", "&&", "||", "?"].iter().any(|k| stmt.contains(k)) && paren_keyword(prev).is_none_or(|k| !["if", "for", "while", "switch", "catch", "synchronized"].contains(&k)) {
+            return Some((vec!["instanceof"], false));
+        }
+        if !matches!(last, ')') {
+            // 型の後の名前（String na）
+            return Some((Vec::new(), false));
+        }
+    }
+    match container {
+        's' => {
+            v.extend(["if", "for", "while", "do", "switch", "try", "return", "throw", "var", "final", "assert", "synchronized", "class", "record"]);
+            v.extend(expr.iter().filter(|k| !["null", "true", "false", "switch"].contains(k)));
+            v.extend(PRIMITIVES);
+            if within(&["for_statement", "enhanced_for_statement", "while_statement", "do_statement"]) {
+                v.extend(["break", "continue"]);
+            } else if within(&["switch_block"]) {
+                v.push("break");
+            }
+            if within(&["switch_expression"]) || within(&["switch_block"]) && kinds.iter().take_while(|k| !method_edge.contains(k)).any(|k| ["variable_declarator", "assignment_expression", "return_statement", "argument_list"].contains(k)) {
+                v.push("yield");
+            }
+            if kinds.iter().find(|k| ["block", "switch_block"].contains(k)) == Some(&"switch_block") {
+                v.extend(["case", "default"]);
+            }
+            // 閉じたブロックの後
+            if let Some(head) = block_head(prev) {
+                if ends_with_word(head, "try") || paren_keyword(head) == Some("catch") || paren_keyword(head) == Some("try") {
+                    v.splice(0..0, ["catch", "finally"]);
+                } else if paren_keyword(head) == Some("if") {
+                    v.insert(0, "else");
+                } else if ends_with_word(head, "do") {
+                    v.insert(0, "while");
+                }
+            }
+        }
+        'c' => {
+            v.extend(["public", "protected", "private", "static", "final", "abstract", "synchronized", "native", "transient", "volatile", "default", "void", "class", "interface", "enum", "record"]);
+            v.extend(PRIMITIVES);
+        }
+        _ => {
+            if ends_with_word(prev, "import") {
+                return Some((vec!["static"], false));
+            }
+            v.extend(["package", "import", "public", "final", "abstract", "class", "interface", "enum", "record"]);
+        }
+    }
+    // 文・メンバーの頭の予約語は、名前より先に
+    Some((v, true))
+}
+
 #[cfg(test)]
 mod case_tests {
     #[test]
@@ -271,5 +387,59 @@ mod case_tests {
         let ls = src[..at].rfind('\n').unwrap() + 1;
         let line = src[ls..].lines().next().unwrap();
         assert_eq!(super::case_subject(src, line, at - ls, at), None);
+    }
+}
+
+#[cfg(test)]
+mod keyword_tests {
+    /// `@` の所に書ける予約語
+    fn here(src: &str, kinds: &[&str]) -> Vec<&'static str> {
+        let at = src.find('@').unwrap();
+        let src = src.replace('@', "");
+        let ls = src[..at].rfind('\n').map_or(0, |i| i + 1);
+        let line = src[ls..].lines().next().unwrap_or("");
+        super::keywords_here(kinds, &src, line, at - ls, at).unwrap().0
+    }
+
+    #[test]
+    fn keywords_follow_the_place() {
+        let body = ["block", "method_declaration", "class_body", "class_declaration", "program"];
+        let in_for = ["block", "for_statement", "block", "method_declaration", "class_body", "class_declaration", "program"];
+        // メソッドの中: 文の頭。ループの外に break・continue は無い。クラスの修飾子も無い
+        let v = here("class A {\n  void f() {\n    int x = 1;\n    @\n  }\n}", &body);
+        assert!(v.contains(&"return") && v.contains(&"if") && v.contains(&"for") && !v.contains(&"break") && !v.contains(&"public") && !v.contains(&"else"), "{v:?}");
+        // ループの中は break・continue
+        let v = here("class A {\n  void f() {\n    for (int i = 0; i < 3; i++) {\n      @\n    }\n  }\n}", &in_for);
+        assert!(v.contains(&"break") && v.contains(&"continue"), "{v:?}");
+        // if のブロックの後は else、try の後は catch・finally
+        let v = here("class A {\n  void f() {\n    if (x) {\n      y();\n    }\n    @\n  }\n}", &body);
+        assert_eq!(v[0], "else", "{v:?}");
+        let v = here("class A {\n  void f() {\n    try {\n      y();\n    }\n    @\n  }\n}", &body);
+        assert_eq!(&v[..2], ["catch", "finally"], "{v:?}");
+        // 式の中（= の後）は new・null・this など。文の予約語は無い
+        let v = here("class A {\n  void f() {\n    Object o = @\n  }\n}", &body);
+        assert!(v.contains(&"new") && v.contains(&"null") && !v.contains(&"for") && !v.contains(&"return"), "{v:?}");
+        // クラスの本体はメンバーの修飾子と型。return は無い
+        let v = here("class A {\n  private @\n}", &["class_body", "class_declaration", "program"]);
+        assert!(v.contains(&"static") && v.contains(&"void") && v.contains(&"int") && !v.contains(&"return"), "{v:?}");
+        // クラスの頭は extends・implements
+        let v = here("public class A @", &["class_declaration", "program"]);
+        assert_eq!(v, ["extends", "implements", "permits"]);
+        // 値の後は instanceof
+        let v = here("class A {\n  void f() {\n    if (o @\n  }\n}", &body);
+        assert_eq!(v, ["instanceof"]);
+        // キャストの後は値、注釈の後の行の頭はメンバー
+        let v = here("class A {\n  Object f() {\n    return (Criteria) @\n  }\n}", &body);
+        assert!(v.contains(&"this") && !v.contains(&"instanceof"), "{v:?}");
+        let v = here("class A {\n  @Column(name = \"x\")\n  @\n}", &["class_body", "class_declaration", "program"]);
+        assert!(v.contains(&"private"), "{v:?}");
+        let v = here("class A {\n  @Override @\n}", &["class_body", "class_declaration", "program"]);
+        assert!(v.contains(&"public"), "{v:?}");
+        // new の後は型だけ
+        let v = here("class A {\n  void f() {\n    Object o = new @\n  }\n}", &body);
+        assert!(v.is_empty(), "{v:?}");
+        // ファイルの上
+        let v = here("package a;\n\n@", &["program"]);
+        assert!(v.contains(&"import") && v.contains(&"class") && !v.contains(&"return"), "{v:?}");
     }
 }

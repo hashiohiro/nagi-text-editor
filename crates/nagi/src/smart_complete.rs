@@ -98,6 +98,7 @@ impl Editor {
         // 構文木で見える名前（打っている語そのものは除く）
         self.ensure_syntax();
         let typed = self.cursor.byte.min(line.len()).saturating_sub(ws);
+        let kinds = self.syntax.as_ref().and_then(|s| s.kinds_at(start));
         let visible = self.syntax.as_ref().filter(|_| !line[..ws.min(line.len())].ends_with('.')).and_then(|s| s.visible_names(&self.buf, start, start..start + typed));
         let src = self.buf.text();
         let here = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
@@ -105,6 +106,7 @@ impl Editor {
         let prefix = line.get(ws..b).unwrap_or("");
         let mut cx = nagi_lang::lang::Cx::new(self.language(), &src, here.as_deref(), line, ws, start, prefix, self.nav.index.as_ref(), &self.nav.libs);
         cx.visible = visible;
+        cx.kinds = kinds;
         cx.words = self.settings.bool("completion.words");
         cx.keywords = self.settings.bool("completion.keywords");
         let out = nagi_lang::template::complete::complete(&cx);
@@ -418,6 +420,55 @@ mod tests {
         assert_eq!(&names[..2], ["total", "args"], "{names:?}");
     }
 
+    /// 予約語は場所に合うものだけ（打っている途中の構文木で）: ループの中の break、if の後の else、= の後の new、クラスの本体の修飾子
+    #[test]
+    fn keywords_follow_the_place() {
+        let lang = |e: &mut Editor, src: &str, at_line: usize, typed: &str| -> Vec<String> {
+            let mut buf = Buffer::from_str(src);
+            let mut syn = nagi_syntax::Syntax::new(if e.buf.path.as_ref().is_some_and(|p| p.extension().is_some_and(|x| x == "ts")) { nagi_syntax::Lang::TypeScript } else { nagi_syntax::Lang::Java });
+            if let Some(s) = &mut syn {
+                s.parse(&mut buf);
+            }
+            let path = e.buf.path.clone();
+            *e = Editor::new(buf, syn);
+            e.buf.path = path;
+            e.set_screen(120, 40);
+            keys(e, &format!("{at_line}GA{typed}<C-Space>"));
+            let v = e.completion.as_ref().map(|c| c.items.clone()).unwrap_or_default();
+            keys(e, "<Esc><Esc>");
+            v
+        };
+        let mut e = Editor::new(Buffer::from_str(""), None);
+        e.buf.path = Some(std::path::PathBuf::from("A.java"));
+        let java = "class A {\n  void f(boolean x) {\n    for (int i = 0; i < 3; i++) {\n      \n    }\n    if (x) {\n      f(x);\n    }\n    \n  }\n  \n}\n";
+        let has = |v: &[String], k: &str| v.iter().any(|x| x == k);
+        let v = lang(&mut e, java, 4, "br");
+        assert!(has(&v, "break"), "ループの中: {v:?}");
+        let v = lang(&mut e, java, 9, "br");
+        assert!(!has(&v, "break"), "ループの外: {v:?}");
+        let v = lang(&mut e, java, 9, "el");
+        assert_eq!(v.first().map(String::as_str), Some("else"), "{v:?}");
+        let v = lang(&mut e, java, 11, "pr");
+        assert!(has(&v, "private") && has(&v, "protected"), "クラスの本体: {v:?}");
+        let v = lang(&mut e, java, 9, "pr");
+        assert!(!has(&v, "private"), "メソッドの中に private は無い: {v:?}");
+        let v = lang(&mut e, java, 9, "Object o = n");
+        assert!(has(&v, "new") && has(&v, "null") && !has(&v, "native"), "{v:?}");
+        // TypeScript
+        e.buf.path = Some(std::path::PathBuf::from("a.ts"));
+        let ts = "class A {\n  \n  f(x: boolean) {\n    for (const i of [1]) {\n      \n    }\n    try {\n      g();\n    }\n    \n  }\n}\n";
+        let v = lang(&mut e, ts, 5, "co");
+        assert!(has(&v, "continue") && has(&v, "const"), "{v:?}");
+        let v = lang(&mut e, ts, 10, "co");
+        assert!(!has(&v, "continue") && has(&v, "const"), "{v:?}");
+        let v = lang(&mut e, ts, 10, "fi");
+        assert_eq!(v.first().map(String::as_str), Some("finally"), "{v:?}");
+        let v = lang(&mut e, ts, 2, "pr");
+        assert!(has(&v, "private") && has(&v, "protected"), "{v:?}");
+        let v = lang(&mut e, ts, 10, "let s: st");
+        assert_eq!(v.first().map(String::as_str), Some("string"), "{v:?}");
+    }
+
     /// TypeScript: import した名前・括弧の無いアロー関数の引数・for of・catch の変数も見える名前に
     #[test]
     fn ts_names_in_scope_from_tree() {
@@ -432,7 +483,7 @@ mod tests {
         e.set_screen(120, 40);
         keys(&mut e, "11GA<C-Space>");
         let names = e.completion.as_ref().map(|c| c.items.clone()).unwrap_or_default();
-        for n in ["err", "part", "entry", "items", "HttpClient", "rx", "load", "string"] {
+        for n in ["err", "part", "entry", "items", "HttpClient", "rx", "load"] {
             assert!(names.contains(&n.to_string()), "{n}: {names:?}");
         }
         for n in ["angular", "common", "http", "rxjs"] {
@@ -916,13 +967,13 @@ mod tests {
         let word = regex::Regex::new(r"[A-Za-z_$][\w$]*").unwrap();
         let lang_kws = |e: &Editor| e.language().keywords();
         // [.の後, そうでない所] × [1 番, 5 番まで, 10 番まで, どこか, 無い]
-        let mut n = [[0usize; 5]; 2];
+        let mut n = [[0usize; 5]; 3];
         // 外れた所で上に出ていたもの（そうでない所）
         let mut above: HashMap<String, usize> = HashMap::new();
         let mut miss: Vec<String> = Vec::new();
         let mut dump = std::env::var_os("NAGI_RATE_DUMP").map(|f| std::io::BufWriter::new(std::fs::File::create(f).unwrap()));
         let mut count = 0usize;
-        let mut took = [0u128; 2];
+        let mut took = [0u128; 3];
         let mut slowest: Vec<(u128, String)> = Vec::new();
         let t0 = std::time::Instant::now();
         for p in rate_files(&root).iter().filter(|p| only.as_ref().is_none_or(|o| p.to_string_lossy().contains(o.as_str()))) {
@@ -951,13 +1002,14 @@ mod tests {
                 for m in word.find_iter(code) {
                     let name = m.as_str();
                     let ws = m.start();
-                    if name.len() <= typed || code[..ws].ends_with(|c: char| c.is_ascii_digit()) || kws.contains(&name) || name.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+                    let kw = kws.contains(&name);
+                    if name.len() <= typed || code[..ws].ends_with(|c: char| c.is_ascii_digit()) || name.chars().next().is_some_and(|c| c.is_ascii_digit()) {
                         continue;
                     }
                     let before = code[..ws].trim_end();
                     // 宣言する名前（型の後の名前・メソッドの宣言）・注釈は除く
                     let prev = word.find_iter(before).last().filter(|w| w.end() == before.len()).map(|w| w.as_str());
-                    if before.ends_with('@') || before.ends_with(['>', ']']) && !before.ends_with("->") || prev.is_some_and(|w| ts && ["readonly", "static", "private", "public", "protected", "async", "get", "set", "abstract", "override"].contains(&w)) || prev.is_some_and(|w| !kws.contains(&w) || ["class", "interface", "enum", "record", "fun", "val", "var", "let", "const", "function", "fn", "struct", "type", "int", "long", "short", "byte", "char", "boolean", "double", "float", "void"].contains(&w)) {
+                    if !kw && (before.ends_with('@') || before.ends_with(['>', ']']) && !before.ends_with("->") || prev.is_some_and(|w| ts && ["readonly", "static", "private", "public", "protected", "async", "get", "set", "abstract", "override"].contains(&w)) || prev.is_some_and(|w| !kws.contains(&w) || ["class", "interface", "enum", "record", "fun", "val", "var", "let", "const", "function", "fn", "struct", "type", "int", "long", "short", "byte", "char", "boolean", "double", "float", "void"].contains(&w))) {
                         continue;
                     }
                     count += 1;
@@ -965,12 +1017,16 @@ mod tests {
                         continue;
                     }
                     let dot = before.ends_with('.');
+                    if dot && kw {
+                        continue;
+                    }
                     let start = ls + ws;
                     e.cursor.byte = ws + typed;
                     let t1 = std::time::Instant::now();
                     let c = e.smart_candidates(&line, ws, start);
                     let us = t1.elapsed().as_micros();
-                    took[usize::from(!before.ends_with('.'))] += us;
+                    let kind = if kw { 2 } else { usize::from(!dot) };
+                    took[kind] += us;
                     slowest.push((us, format!("{rel}:{} {name}", li + 1)));
                     let prefix = &name[..typed];
                     let q = Query::new(prefix);
@@ -985,11 +1041,11 @@ mod tests {
                         Some(_) => 3,
                         None => 4,
                     };
-                    n[usize::from(!dot)][k] += 1;
+                    n[kind][k] += 1;
                     if let Some(d) = &mut dump {
                         std::io::Write::write_fmt(d, format_args!("{rel}:{}:{ws}\t{name}\t{}\t{}\n", li + 1, pos.map_or(-1, |x| x as i64), shown.iter().take(5).copied().collect::<Vec<_>>().join(","))).unwrap();
                     }
-                    if !dot && k > 0 {
+                    if kind == 1 && k > 0 {
                         for x in shown.iter().take(pos.unwrap_or(5).min(5)) {
                             *above.entry((*x).to_string()).or_default() += 1;
                         }
@@ -1000,7 +1056,7 @@ mod tests {
                 }
             }
         }
-        for (title, v, us) in [(".の後", n[0], took[0]), ("そうでない所", n[1], took[1])] {
+        for (title, v, us) in [(".の後", n[0], took[0]), ("そうでない所", n[1], took[1]), ("予約語", n[2], took[2])] {
             let all: usize = v.iter().sum();
             let pc = |x: usize| x as f64 * 100.0 / all.max(1) as f64;
             println!("{title}: {all} 箇所（{typed} 文字）: 1 番 {:.1}% / 5 番まで {:.1}% / 10 番まで {:.1}% / どこか {:.1}% / 無い {:.1}%（1 回 {} µs）", pc(v[0]), pc(v[0] + v[1]), pc(v[0] + v[1] + v[2]), pc(v[3]), pc(v[4]), us / all.max(1) as u128);

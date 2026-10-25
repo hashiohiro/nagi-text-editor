@@ -14,7 +14,7 @@ pub struct Ts {
 pub static TS: Ts = Ts { js: false };
 pub static JS: Ts = Ts { js: true };
 
-const KEYWORDS: &[&str] = &[
+pub(super) const KEYWORDS: &[&str] = &[
     "async", "await", "break", "case", "catch", "class", "const", "constructor", "continue", "default", "delete", "else", "enum", "export", "extends", "false", "finally",
     "for", "from", "function", "if", "implements", "import", "in", "instanceof", "interface", "let", "new", "null", "private", "protected", "public", "readonly", "return",
     "static", "super", "switch", "this", "throw", "true", "try", "type", "typeof", "undefined", "var", "void", "while", "yield", "string", "number", "boolean", "any",
@@ -44,6 +44,11 @@ impl Language for Ts {
     /// 依存のパッケージとプロジェクトのほかのファイルの名前（打った語で始まるもの。決めたら import を足す）
     fn names_from_tree(&self) -> bool {
         true
+    }
+
+    fn keywords_here(&self, cx: &Cx) -> Option<(Vec<&'static str>, bool)> {
+        let kinds: Vec<&str> = cx.kinds.as_ref()?.iter().map(String::as_str).collect();
+        super::rules::keywords_here(&kinds, cx.src, cx.line, cx.ws, cx.start)
     }
 
     /// オブジェクトのキー（`{ code: … }`）は型が分からないと出せないので、ファイルの中の語も下に

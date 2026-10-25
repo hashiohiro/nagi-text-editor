@@ -923,6 +923,18 @@ impl Syntax {
         Some(defs::visible_bindings(tree, at, skip, &|r: Range<usize>| buf.slice_string(r.start, r.end)))
     }
 
+    /// `at` を含む節の種類（内側から外へ）。補完で、そこに書ける予約語を決めるのに
+    pub fn kinds_at(&self, at: usize) -> Option<Vec<String>> {
+        let tree = self.tree.as_ref()?;
+        let mut n = Some(tree.root_node().descendant_for_byte_range(at, at)?);
+        let mut out = Vec::new();
+        while let Some(x) = n {
+            out.push(x.kind().to_string());
+            n = x.parent();
+        }
+        Some(out)
+    }
+
     /// `at` の識別子の、このファイルの中の定義の位置（引数・ローカル変数を含む）
     pub fn local_definition(&self, buf: &Buffer, at: usize) -> Option<usize> {
         let tree = self.tree.as_ref()?;

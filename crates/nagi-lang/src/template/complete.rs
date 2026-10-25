@@ -255,8 +255,23 @@ fn in_scope(lang: &dyn Language, cx: &Cx, ranker: &mut Ranker, out: &mut Out) {
     // 予約語（構文木で名前を出す言語では、import した型と同じ順位に。int・return・string などは打つことが多い）
     if cx.keywords {
         let rank = if cx.visible.is_some() && lang.names_from_tree() { 2 } else { 4 };
-        for k in all_kws {
-            out.push(Item::new(*k, 'K', "", rank));
+        // 言語が今の場所に書けるものを決めれば、それだけ
+        match lang.keywords_here(cx) {
+            // 場所がはっきりしていれば、名前より先に（同じ順位なら集めた順なので、前に入れる）
+            Some((kws, true)) if !cx.prefix.is_empty() => {
+                let front: Vec<Item> = kws.iter().filter(|k| out.seen.insert(k.to_string())).map(|k| Item::new(*k, 'K', "", 0)).collect();
+                out.items.splice(0..0, front);
+            }
+            Some((kws, _)) => {
+                for k in kws {
+                    out.push(Item::new(k, 'K', "", rank));
+                }
+            }
+            None => {
+                for k in all_kws {
+                    out.push(Item::new(*k, 'K', "", rank));
+                }
+            }
         }
     }
 }

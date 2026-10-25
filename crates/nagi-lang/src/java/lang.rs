@@ -14,7 +14,7 @@ pub static JAVA: Java = Java;
 /// Java の変数の宣言（`Type name` と `var name = new Type(`）
 pub const STYLES: crate::project::VarStyles = crate::project::VarStyles { type_first: true, colon: false, init: true };
 
-const KEYWORDS: &[&str] = &[
+pub(super) const KEYWORDS: &[&str] = &[
     "abstract", "boolean", "break", "case", "catch", "char", "class", "continue", "default", "double", "else", "enum", "extends", "final", "finally", "float", "for", "if",
     "implements", "import", "instanceof", "int", "interface", "long", "new", "null", "package", "private", "protected", "public", "return", "static", "super", "switch",
     "synchronized", "this", "throw", "throws", "try", "var", "void", "while", "true", "false", "record", "yield", "byte", "short", "do", "assert",
@@ -92,6 +92,11 @@ impl Language for Java {
     }
 
     /// 依存の jar・JDK の型（打った語で始まるもの。決めたら import を足す）
+    fn keywords_here(&self, cx: &Cx) -> Option<(Vec<&'static str>, bool)> {
+        let kinds: Vec<&str> = cx.kinds.as_ref()?.iter().map(String::as_str).collect();
+        super::rules::keywords_here(&kinds, cx.src, cx.line, cx.ws, cx.start)
+    }
+
     fn case_subject(&self, cx: &Cx) -> Option<String> {
         super::rules::case_subject(cx.src, cx.line, cx.ws, cx.start)
     }

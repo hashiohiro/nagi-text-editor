@@ -91,6 +91,8 @@ pub struct Cx<'a> {
     pub libs: &'a Libraries,
     /// 構文木で分かった、今の場所で見える名前（(名前, 関数の中のものか)、近い順）。言語が names_from_tree なら、ファイルの中の語の代わりに
     pub visible: Option<Vec<(String, bool)>>,
+    /// 構文木で、今の場所を含む節の種類（内側から外へ）。言語が書ける予約語を決めるのに
+    pub kinds: Option<Vec<String>>,
     /// 設定: ファイルの中の語を出す・予約語を出す
     pub words: bool,
     pub keywords: bool,
@@ -108,7 +110,7 @@ impl<'a> Cx<'a> {
             _ => String::new(),
         };
         let inside = lang.enclosing_type(src, start);
-        Cx { lang, src, here, line, ws, start, prefix, index, rel, inside, libs, visible: None, words: true, keywords: true, out_dir: None, console: None }
+        Cx { lang, src, here, line, ws, start, prefix, index, rel, inside, libs, visible: None, kinds: None, words: true, keywords: true, out_dir: None, console: None }
     }
 
     /// `at`（名前の始まりの絶対 byte）の場所（定義へ・参照の絞り込み）
@@ -180,6 +182,11 @@ pub trait Language: Sync {
     /// よく使う予約語（補完に出す）
     fn keywords(&self) -> &'static [&'static str] {
         &[]
+    }
+
+    /// 今の場所に書ける予約語（None なら全部）と、名前より先に出すか。ループの中の break・try の後の catch・クラスの本体の修飾子など
+    fn keywords_here(&self, _cx: &Cx) -> Option<(Vec<&'static str>, bool)> {
+        None
     }
 
     /// switch の case の後なら、調べる式（`switch (x)` の x）。その型の定数を先に出す
