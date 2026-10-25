@@ -38,8 +38,9 @@ pub struct BlockInsert {
     pub back_to: Option<usize>,
 }
 
-fn width(g: &str) -> usize {
-    nagi_core::grapheme_width(g, false)
+/// 列 `col` から始まる書記素の幅（タブは次のタブの位置まで）
+fn width(g: &str, col: usize) -> usize {
+    nagi_core::width_at(g, col, false)
 }
 
 /// 行の中で、表示の列 `left..=right` に収まる書記素の byte 範囲
@@ -48,7 +49,7 @@ pub fn span_in_line(line: &str, left: usize, right: Option<usize>) -> (usize, us
     let mut s = None;
     let mut e = line.len();
     for (i, g) in line.grapheme_indices(true) {
-        let w = width(g);
+        let w = width(g, col);
         if s.is_none() && col >= left {
             s = Some(i);
         }
@@ -69,7 +70,7 @@ fn byte_at(line: &str, col: usize) -> Option<usize> {
         if c >= col {
             return Some(i);
         }
-        c += width(g);
+        c += width(g, c);
     }
     (c >= col).then_some(line.len())
 }
@@ -86,8 +87,9 @@ impl Editor {
         let cell = |l: usize, b: usize| {
             let line = self.buf.line(l);
             let b = b.min(line.len());
-            let w = line[b..].graphemes(true).next().map_or(1, width);
-            (display_col(&line, b, false), w)
+            let c = display_col(&line, b, false);
+            let w = line[b..].graphemes(true).next().map_or(1, |g| width(g, c));
+            (c, w)
         };
         let (ca, wa) = cell(al, ab);
         let (cc, wc) = cell(cl, cb);
@@ -111,7 +113,11 @@ impl Editor {
     fn block_width(&self, sel: &BlockSel, spans: &[(usize, usize, usize)]) -> usize {
         match sel.right {
             Some(r) => r + 1 - sel.left,
-            None => spans.iter().map(|&(_, s, e)| self.buf.slice_string(s, e).graphemes(true).map(width).sum::<usize>()).max().unwrap_or(0),
+            None => spans.iter().map(|&(l, s, e)| {
+                let line = self.buf.line(l);
+                let ls = self.buf.line_start(l);
+                nagi_core::display_col(&line, e - ls, false) - nagi_core::display_col(&line, s - ls, false)
+            }).max().unwrap_or(0),
         }
     }
 
@@ -282,7 +288,7 @@ impl Editor {
         let line0 = self.buf.line(self.cursor.line);
         let mut col = display_col(&line0, self.cursor.byte, false);
         if after && !line0.is_empty() {
-            col += line0[self.cursor.byte.min(line0.len())..].graphemes(true).next().map_or(0, width);
+            col += line0[self.cursor.byte.min(line0.len())..].graphemes(true).next().map_or(0, |g| width(g, col));
         }
         let nl = self.buf.newline().to_string();
         let top = self.cursor.line;
@@ -296,7 +302,7 @@ impl Editor {
             }
             let line = self.buf.line(l);
             let ls = self.buf.line_start(l);
-            let pw: usize = piece.graphemes(true).map(width).sum();
+            let pw: usize = piece.graphemes(true).fold(0, |c, g| c + width(g, col + c));
             match byte_at(&line, col) {
                 Some(b) => {
                     // 後ろに文字があるときは、矩形の幅まで空白で埋める

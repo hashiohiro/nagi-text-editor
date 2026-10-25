@@ -457,7 +457,16 @@ impl Buffer {
     }
 }
 
-/// 書記素の表示幅（1 か 2。タブは tab_width）
+/// 列 `col` から始まる書記素の表示幅（タブは次のタブの位置まで。vim の tabstop と同じ）
+pub fn width_at(g: &str, col: usize, ambiguous_wide: bool) -> usize {
+    if g == "\t" {
+        let t = tab_width();
+        return t - col % t;
+    }
+    grapheme_width(g, ambiguous_wide)
+}
+
+/// 書記素の表示幅（1 か 2。タブは tab_width。列の分からない所で使う。本文の列は width_at）
 pub fn grapheme_width(g: &str, ambiguous_wide: bool) -> usize {
     if g == "\t" {
         return tab_width();
@@ -471,7 +480,7 @@ pub fn display_col(line: &str, byte: usize, ambiguous_wide: bool) -> usize {
     while !line.is_char_boundary(b) {
         b -= 1;
     }
-    line[..b].graphemes(true).map(|g| grapheme_width(g, ambiguous_wide)).sum()
+    line[..b].graphemes(true).fold(0, |c, g| c + width_at(g, c, ambiguous_wide))
 }
 
 /// 表示列 `col` を含む書記素の開始 byte（行末を越えたら最後の書記素）
@@ -479,7 +488,7 @@ pub fn byte_at_col(line: &str, col: usize, ambiguous_wide: bool) -> usize {
     let mut c = 0;
     let mut last = 0;
     for (i, g) in line.grapheme_indices(true) {
-        let w = grapheme_width(g, ambiguous_wide);
+        let w = width_at(g, c, ambiguous_wide);
         if col < c + w {
             return i;
         }
@@ -737,6 +746,12 @@ mod tests {
     #[test]
     fn wide_columns() {
         assert_eq!(display_col("a漢b", 4, false), 3);
+        // タブは次のタブの位置まで（4 ごと）
+        assert_eq!(display_col("ab\tc", 3, false), 4);
+        assert_eq!(display_col("\tc", 1, false), 4);
+        assert_eq!(display_col("abcd\tx", 5, false), 8);
+        assert_eq!(byte_at_col("ab\tc", 3, false), 2);
+        assert_eq!(byte_at_col("ab\tc", 4, false), 3);
         assert_eq!(display_col("a漢b", 2, false), 1, "文字の途中（漢の 2 byte 目）は、その文字の頭まで");
         assert_eq!(byte_at_col("a漢b", 2, false), 1);
         assert_eq!(byte_at_col("a漢b", 3, false), 4);

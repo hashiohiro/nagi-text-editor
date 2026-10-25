@@ -576,6 +576,8 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
         let is_cursor_line = pane.active && ln == pane.cursor.line;
         let block_span = block.filter(|b| ln >= b.l1 && ln <= b.l2).map(|b| crate::block::span_in_line(line, b.left, b.right));
         let mut items: Vec<Item> = Vec::with_capacity(line.len());
+        // 並べた列（タブは次のタブの位置まで）
+        let mut col_at = 0usize;
         let mut cursor_item = None;
         let mut gs = line.grapheme_indices(true).peekable();
         while let Some((b, g)) = gs.next() {
@@ -589,6 +591,7 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
                     let rep = ed.replacement(ms, me);
                     let mut rep_items: Vec<Item> = p.items(&rep, FG).into_iter().map(|i| Item { g: Cow::Owned(i.g.into_owned()), ..i }).collect();
                     rep_items.iter_mut().for_each(|i| i.underline = true);
+                    col_at += rep_items.iter().map(|i| i.width).sum::<usize>();
                     items.extend(rep_items);
                     while gs.peek().is_some_and(|(nb, _)| abs + nb < me) {
                         gs.next();
@@ -597,7 +600,8 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
                     continue;
                 }
             }
-            let width = p.cell_width(g);
+            let width = if g == "\t" { nagi_core::width_at(g, col_at, false) } else { p.cell_width(g) };
+            col_at += width;
             let mut it = Item { g: Cow::Borrowed(g), width, fg: colors.get(b).copied().unwrap_or(FG), bg: None, underline: false };
             let trailing = b >= line.trim_end_matches([' ', '\t', '\u{3000}']).len();
             match g {
