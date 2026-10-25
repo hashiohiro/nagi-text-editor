@@ -115,6 +115,32 @@ pub static OPTS: &[VimOpt] = &[
     bool_opt!(["cindent", "cin"], "editor.smart_indent"),
     // 保存
     bool_opt!(["fixendofline", "fixeol"], "editor.final_newline"),
+    // 新しいファイルの改行・文字コード（vimrc の ff・fenc。:set では今のファイルに。editor_settings.rs の buffer_option）
+    VimOpt {
+        names: &["fileformat", "ff"],
+        kind: VKind::Str,
+        keys: &["editor.new_newline"],
+        get: |s| if s.get("editor.new_newline") == "crlf" { "dos".into() } else { "unix".into() },
+        put: |_, v| vec![("editor.new_newline", if v == "dos" { "crlf" } else { "lf" }.to_string())],
+    },
+    VimOpt {
+        names: &["fileencoding", "fenc"],
+        kind: VKind::Str,
+        keys: &["editor.new_encoding"],
+        get: |s| s.get("editor.new_encoding"),
+        put: |_, v| vec![("editor.new_encoding", enc_choice(v).unwrap_or("utf-8").to_string())],
+    },
+    // 読むときに試す文字コード（ucs-bom,utf-8,cp932,euc-jp なら、UTF-8 でないときは cp932 → Shift_JIS）
+    VimOpt {
+        names: &["fileencodings", "fencs"],
+        kind: VKind::Str,
+        keys: &["editor.encoding_fallback"],
+        get: |s| s.get("editor.encoding_fallback"),
+        put: |_, v| {
+            let first = v.split(',').filter_map(enc_choice).find(|c| *c != "utf-8");
+            vec![("editor.encoding_fallback", first.unwrap_or("utf-8").to_string())]
+        },
+    },
     // クリップボード（unnamed・unnamedplus のどちらかがあれば、ヤンク・削除をいつもクリップボードへ）
     VimOpt {
         names: &["clipboard", "cb"],
@@ -124,6 +150,20 @@ pub static OPTS: &[VimOpt] = &[
         put: |_, v| vec![("vim.clipboard", if v.split(',').any(|x| x.starts_with("unnamed")) { "unnamed" } else { "explicit" }.to_string())],
     },
 ];
+
+/// vim の文字コードの名前 → 設定の選択肢（shift_jis・euc-jp・utf-8）
+fn enc_choice(v: &str) -> Option<&'static str> {
+    let e = nagi_core::encoding::by_name(v)?;
+    Some(if e == nagi_core::encoding::SHIFT_JIS {
+        "shift_jis"
+    } else if e == nagi_core::encoding::EUC_JP {
+        "euc-jp"
+    } else if e == nagi_core::encoding::UTF_8 {
+        "utf-8"
+    } else {
+        return None;
+    })
+}
 
 pub fn find(name: &str) -> Option<&'static VimOpt> {
     OPTS.iter().find(|o| o.names.contains(&name))
@@ -282,10 +322,32 @@ pub fn ex_set(s: &mut Settings, arg: &str) -> Result<Option<String>, String> {
 }
 
 impl crate::editor::Editor {
-    /// `:set`（この窓だけ。設定のファイルには書かない）
+    /// `:set`（この窓だけ。設定のファイルには書かない）。fileencoding・fileformat・bomb は今のファイルに
     pub(crate) fn ex_set(&mut self, arg: &str) {
+        let mut shown = Vec::new();
+        let mut rest = Vec::new();
+        for tok in arg.split_whitespace() {
+            match self.buffer_option(tok) {
+                Some(Ok(Some(s))) => shown.push(s),
+                Some(Ok(None)) => {}
+                Some(Err(e)) => {
+                    self.notify.error(e);
+                    return;
+                }
+                None => rest.push(tok),
+            }
+        }
+        if rest.is_empty() && !arg.trim().is_empty() {
+            if !shown.is_empty() {
+                self.notify.info(shown.join("  "));
+            }
+            return;
+        }
         let old = self.settings.clone();
-        let r = ex_set(&mut self.settings, arg);
+        let r = ex_set(&mut self.settings, &rest.join(" ")).map(|m| match (m, shown.is_empty()) {
+            (m, true) => m,
+            (m, false) => Some(shown.into_iter().chain(m).collect::<Vec<_>>().join("  ")),
+        });
         if self.settings != old {
             self.apply_settings(Some(&old));
         }

@@ -1120,6 +1120,7 @@ name = "nagi-core"
 version = "0.6.0"
 dependencies = [
  "aho-corasick",
+ "encoding_rs",
  "memchr",
  "regex",
  "ropey",

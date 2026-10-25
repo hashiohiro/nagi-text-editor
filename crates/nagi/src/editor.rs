@@ -447,6 +447,8 @@ pub struct Editor {
     pub hover_tab: Option<(usize, usize, &'static str)>,
     /// 状態行の「▶ 構成の名前」の列（始め, 終わり）。押すと実行のメニュー
     pub run_hit: std::cell::Cell<Option<(usize, usize)>>,
+    /// 状態の行の文字コード・改行の列（押すとメニュー）
+    pub enc_hit: std::cell::Cell<Option<(usize, usize)>>,
     pub tab_hits: std::cell::RefCell<Vec<(usize, usize, usize, &'static str)>>,
     /// `--replay` の試験: 描いた文字を控える（行, 列, 文字）。replay.rs が押す所・待つ文字を探す
     pub record_texts: bool,
@@ -707,6 +709,7 @@ impl Editor {
             record_texts: false,
             drawn_texts: Default::default(),
             run_hit: Default::default(),
+            enc_hit: Default::default(),
             hover_bar: None,
             hover_buftab: None,
             prompt_caret: Default::default(),

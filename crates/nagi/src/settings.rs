@@ -75,6 +75,7 @@ pub static SCHEMA: &[Item] = &[
     item("appearance.status_branch", "外観", "状態の行: ブランチ", B, "true", ""),
     item("appearance.status_path", "外観", "状態の行: ファイルのパス", B, "true", ""),
     item("appearance.status_lang", "外観", "状態の行: 言語", B, "true", ""),
+    item("appearance.status_encoding", "外観", "状態の行: 文字コードと改行", B, "true", "押すと変えるメニュー"),
     // エディタ
     item("editor.line_numbers", "エディタ", "行番号", SKind::Choice(&[("absolute", "絶対"), ("relative", "相対（今の行は絶対）"), ("off", "出さない")]), "absolute", "Vim の number / relativenumber"),
     item("editor.tabs", "エディタ", "タブ", B, "true", "本文の上に開いているファイルのタブを出す（× で閉じる・右クリックでまとめて閉じる）"),
@@ -89,7 +90,9 @@ pub static SCHEMA: &[Item] = &[
     pitem("editor.smart_indent", "エディタ", "括弧で字下げ", B, "true", "{ ( [ の後の改行で 1 段深く、閉じ括弧を打てば 1 段浅く（smartindent）"),
     pitem("editor.trim_trailing", "エディタ", "保存時に行末の空白を消す", B, "false", ""),
     pitem("editor.final_newline", "エディタ", "保存時に最後に改行を入れる", B, "false", ""),
-    pitem("editor.new_newline", "エディタ", "新しいファイルの改行", SKind::Choice(&[("lf", "LF"), ("crlf", "CRLF")]), "lf", ""),
+    pitem("editor.new_newline", "エディタ", "新しいファイルの改行", SKind::Choice(&[("lf", "LF"), ("crlf", "CRLF")]), "lf", "今のファイルの改行は、状態の行の LF・CRLF を押すか :set ff=unix・ff=dos で変える"),
+    pitem("editor.encoding_fallback", "エディタ", "UTF-8 でないファイルの文字コード", SKind::Choice(&[("auto", "自動（Shift_JIS か EUC-JP）"), ("shift_jis", "Shift_JIS（CP932）"), ("euc-jp", "EUC-JP"), ("utf-8", "UTF-8 として読む（壊れた所は置き換え）")]), "auto", "BOM が無く UTF-8 として読めないファイルを何で読むか。読み直すなら状態の行の文字コードを押すか :e ++enc=sjis"),
+    pitem("editor.new_encoding", "エディタ", "新しいファイルの文字コード", SKind::Choice(&[("utf-8", "UTF-8"), ("shift_jis", "Shift_JIS（CP932）"), ("euc-jp", "EUC-JP")]), "utf-8", "今のファイルは状態の行の文字コードを押すか :set fenc=sjis で変える（保存で変わる）"),
     pitem("editor.new_bom", "エディタ", "新しいファイルに BOM を付ける", B, "false", ""),
     item("editor.grammar_download", "エディタ", "文法を自動でダウンロード", B, "true", "C・Go・C# など 21 言語の文法（色分け・定義へ移動）は、初めて開いたときに GitHub から取ってくる（1 言語 60〜510KB）。オフなら :GrammarInstall で"),
     item("editor.autoread", "エディタ", "外部での変更", SKind::Choice(&[("auto", "自動で読み直す（変えていなければ）"), ("ask", "知らせるだけ"), ("off", "何もしない")]), "auto", ""),
@@ -497,6 +500,10 @@ impl crate::editor::Editor {
         }
         self.sync_clipboard();
         self.sync_tab();
+        nagi_core::encoding::set_fallback(match self.settings.get("editor.encoding_fallback").as_str() {
+            "auto" => None,
+            n => nagi_core::encoding::by_name(n),
+        });
         self.set_vim(self.settings.bool("vim.enabled"));
         if !self.settings.bool("vim.hlsearch") {
             self.search.highlight = false;

@@ -251,10 +251,130 @@ impl Editor {
         }
     }
 
-    /// 新しいファイル（まだ無いパス）のバッファに、設定の改行と BOM を当てる
+    /// 新しいファイル（まだ無いパス）のバッファに、設定の改行・BOM・文字コードを当てる
     pub(crate) fn new_file_defaults(&self, b: &mut Buffer) {
         b.crlf = self.settings.get("editor.new_newline") == "crlf";
-        b.bom = self.settings.bool("editor.new_bom");
+        b.encoding = nagi_core::encoding::by_name(&self.settings.get("editor.new_encoding")).unwrap_or(nagi_core::encoding::UTF_8);
+        b.bom = self.settings.bool("editor.new_bom") && b.encoding == nagi_core::encoding::UTF_8;
+    }
+
+    /// 今のファイルの改行を変える（全体を書き換える。取り消せる。保存で変わる）
+    pub(crate) fn set_fileformat(&mut self, crlf: bool) {
+        let text = self.buf.text();
+        let lf = text.replace("\r\n", "\n");
+        let new = if crlf { lf.replace('\n', "\r\n") } else { lf };
+        let (line, byte) = (self.cursor.line, self.cursor.byte);
+        if new != text {
+            self.hist.begin();
+            self.edit(0, text.len(), &new);
+            self.hist.close();
+        }
+        self.buf.crlf = crlf;
+        self.buf.mixed_newlines = false;
+        self.cursor.line = line.min(self.buf.line_count().saturating_sub(1));
+        self.cursor.byte = byte.min(self.buf.line(self.cursor.line).len());
+        self.notify.info(format!("改行を {} にしました（保存で書く）", if crlf { "CRLF" } else { "LF" }));
+    }
+
+    /// 今のファイルの文字コードを変える（保存で変わる）
+    pub(crate) fn set_file_encoding(&mut self, enc: &'static nagi_core::encoding::Encoding, bom: bool) {
+        if self.buf.encoding != enc || self.buf.bom != bom {
+            self.buf.encoding = enc;
+            self.buf.bom = bom;
+            self.buf.dirty = true;
+        }
+        self.notify.info(format!("文字コードを {}{} にしました（保存で書く）", nagi_core::encoding::label(enc), if bom { "（BOM 付き）" } else { "" }));
+    }
+
+    /// 文字コードを決めて読み直す（:e ++enc=。変更があれば ! が要る）
+    pub(crate) fn reload_as(&mut self, enc: &'static nagi_core::encoding::Encoding, force: bool) {
+        if self.buf.dirty && !force {
+            self.notify.error("E37: 変更が保存されていません（:e! ++enc= で捨てて読み直す）");
+            return;
+        }
+        let Some(path) = self.buf.path.clone() else { return };
+        match Buffer::open_as(&path, Some(enc)) {
+            Ok(b) => {
+                self.reload_with(b);
+                self.notify.info(format!("{} で読み直しました", nagi_core::encoding::label(enc)));
+            }
+            Err(e) => self.notify.error(format!("{}: {e}", path.display())),
+        }
+    }
+
+    /// `:set` の、今のファイルだけのオプション（fileencoding・fileformat・bomb）。当たらなければ None
+    pub(crate) fn buffer_option(&mut self, tok: &str) -> Option<Result<Option<String>, String>> {
+        use nagi_core::encoding as enc;
+        let (name, val) = match tok.split_once('=') {
+            Some((n, v)) => (n, Some(v)),
+            None => (tok.trim_end_matches(['?', '!']), None),
+        };
+        let query = val.is_none() && (tok.ends_with('?') || matches!(name, "fileencoding" | "fenc" | "fileformat" | "ff"));
+        let r = match (name, val) {
+            ("fileencoding" | "fenc", _) if query => Ok(Some(format!("fileencoding={}", self.buf.encoding.name().to_ascii_lowercase()))),
+            ("fileencoding" | "fenc", Some(v)) => match enc::by_name(v) {
+                Some(e) => {
+                    self.set_file_encoding(e, self.buf.bom && e == enc::UTF_8);
+                    Ok(None)
+                }
+                None => Err(format!("E474: 知らない文字コード: {v}")),
+            },
+            ("fileformat" | "ff", _) if query => Ok(Some(format!("fileformat={}", if self.buf.crlf { "dos" } else { "unix" }))),
+            ("fileformat" | "ff", Some("dos")) => {
+                self.set_fileformat(true);
+                Ok(None)
+            }
+            ("fileformat" | "ff", Some("unix" | "mac")) => {
+                self.set_fileformat(false);
+                Ok(None)
+            }
+            ("fileformat" | "ff", Some(v)) => Err(format!("E474: ff は dos か unix: {v}")),
+            ("bomb" | "nobomb" | "invbomb", None) if tok.ends_with('?') => Ok(Some(if self.buf.bom { "bomb".into() } else { "nobomb".into() })),
+            ("bomb" | "nobomb" | "invbomb", None) => {
+                let on = match name {
+                    "bomb" if tok.ends_with('!') => !self.buf.bom,
+                    "bomb" => true,
+                    "invbomb" => !self.buf.bom,
+                    _ => false,
+                };
+                let e = self.buf.encoding;
+                self.set_file_encoding(e, on);
+                Ok(None)
+            }
+            _ => return None,
+        };
+        Some(r)
+    }
+
+    /// 状態の行の文字コード・改行を押した: 変えるメニュー
+    pub(crate) fn encoding_menu(&mut self, row: usize, col: usize) {
+        use nagi_core::encoding as enc;
+        let mut m = crate::menu::Menu::new(row, col);
+        let cur = (self.buf.encoding, self.buf.bom);
+        m = m.item(format!("{}改行を LF に", if self.buf.crlf { "  " } else { "● " }), |e| e.set_fileformat(false));
+        m = m.item(format!("{}改行を CRLF に", if self.buf.crlf { "● " } else { "  " }), |e| e.set_fileformat(true));
+        m = m.sep();
+        for (e, bom, name) in [(enc::UTF_8, false, "UTF-8"), (enc::UTF_8, true, "UTF-8（BOM 付き）"), (enc::SHIFT_JIS, false, "Shift_JIS（CP932）"), (enc::EUC_JP, false, "EUC-JP"), (enc::UTF_16LE, true, "UTF-16LE")] {
+            let mark = if cur == (e, bom) { "● " } else { "  " };
+            m = m.item(format!("{mark}{name} で保存する"), move |ed| ed.set_file_encoding(e, bom));
+        }
+        m = m.sep();
+        for (e, name) in [(enc::UTF_8, "UTF-8"), (enc::SHIFT_JIS, "Shift_JIS"), (enc::EUC_JP, "EUC-JP")] {
+            m = m.item(format!("  {name} で読み直す"), move |ed| ed.reload_as(e, false));
+        }
+        self.open_menu(m);
+    }
+
+    /// 状態の行の文字コード・改行の上か
+    pub fn on_encoding_label(&self, row: usize, col: usize) -> bool {
+        self.menu.is_none() && row == self.screen.1 && self.enc_hit.get().is_some_and(|(a, b)| col >= a && col < b)
+    }
+
+    /// 状態の行に出す文字コードと改行（"UTF-8 LF"）
+    pub fn encoding_label(&self) -> String {
+        let bom = if self.buf.bom && self.buf.encoding == nagi_core::encoding::UTF_8 { " BOM" } else { "" };
+        let nl = if self.buf.mixed_newlines { "混在" } else if self.buf.crlf { "CRLF" } else { "LF" };
+        format!("{}{bom} {nl}", nagi_core::encoding::label(self.buf.encoding))
     }
 }
 
@@ -334,6 +454,44 @@ mod tests {
         e.sync_tab();
         assert_eq!(nagi_core::display_col("\tx", 1, false), 8);
         nagi_core::set_tab_width(4);
+    }
+
+    /// Shift_JIS のファイルを読んで、Shift_JIS のまま保存する。:set fenc・ff・bomb、:e ++enc、表せない文字は断る
+    #[test]
+    fn encodings_and_newlines() {
+        use nagi_core::encoding::{SHIFT_JIS, UTF_8};
+        let dir = std::env::temp_dir().join(format!("nagi-enc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("a.txt");
+        std::fs::write(&f, SHIFT_JIS.encode("日本語\r\n二行目\r\n").0).unwrap();
+        let mut e = Editor::new(Buffer::open(&f).unwrap(), None);
+        assert_eq!(e.encoding_label(), "Shift_JIS CRLF");
+        e.ex_set("fenc? ff?");
+        assert_eq!(e.notify.text, "fileencoding=shift_jis  fileformat=dos");
+        e.insert_text("あ");
+        e.buf.save().unwrap();
+        assert_eq!(std::fs::read(&f).unwrap(), SHIFT_JIS.encode("あ日本語\r\n二行目\r\n").0.as_ref());
+        // 表せない文字があれば保存しない
+        e.insert_text("😀");
+        assert!(e.buf.save().unwrap_err().to_string().contains("「😀」（1 行目）"));
+        // UTF-8・LF にして保存
+        e.ex_set("fenc=utf-8 ff=unix");
+        assert_eq!(e.encoding_label(), "UTF-8 LF");
+        e.buf.save().unwrap();
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "あ😀日本語\n二行目\n");
+        // 決めた文字コードで読み直す（変更が無いので ! は要らない）
+        e.reload_as(SHIFT_JIS, false);
+        assert_eq!(e.buf.encoding, SHIFT_JIS);
+        e.reload_as(UTF_8, false);
+        assert_eq!(e.buf.line(1), "二行目");
+        // 混ざった改行
+        let g = dir.join("b.txt");
+        std::fs::write(&g, "a\r\nb\nc\r\n").unwrap();
+        let mut e = Editor::new(Buffer::open(&g).unwrap(), None);
+        assert_eq!(e.encoding_label(), "UTF-8 混在");
+        e.set_fileformat(true);
+        assert_eq!(e.buf.text(), "a\r\nb\r\nc\r\n");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 折り返し: 長い行は画面の行を何行も使い、表示位置とマウスの位置もそれに合わせる

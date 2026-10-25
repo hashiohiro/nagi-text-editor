@@ -437,6 +437,14 @@ fn write_quit(e: &mut Editor, c: &Call) -> Effect {
 
 /// `:e 名前`（フォルダならプロジェクトとして開く）・`:e!`（読み直す）
 fn edit(e: &mut Editor, c: &Call) {
+    // :e ++enc=sjis（今のファイルを文字コードを決めて読み直す）
+    if let Some(name) = c.arg.strip_prefix("++enc=").or_else(|| c.arg.strip_prefix("++encoding=")) {
+        match nagi_core::encoding::by_name(name) {
+            Some(enc) => e.reload_as(enc, c.bang),
+            None => e.notify.error(format!("E474: 知らない文字コード: {name}")),
+        }
+        return;
+    }
     if c.bang {
         e.reload();
     } else if c.arg.is_empty() {

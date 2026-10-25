@@ -858,6 +858,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         None => format!("{keys}   ▶"),
     };
     ed.run_hit.set(None);
+    ed.enc_hit.set(None);
     // git のブランチ（main ↑1）
     let keys = match ed.git_branch_label() {
         Some(b) if st.bool("appearance.status_branch") => format!("{keys}   {b}"),
@@ -880,7 +881,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
                     "sass" => Some("Sass"),
                     _ => None,
                 }
-            }).filter(|_| st.bool("appearance.status_lang")).map_or(String::new(), |n| format!("{n}   ")),
+            }).filter(|_| st.bool("appearance.status_lang")).map_or(String::new(), |n| format!("{n}   ")) + &if st.bool("appearance.status_encoding") && ed.buf.path.is_some() { format!("{}   ", ed.encoding_label()) } else { String::new() },
             ed.cursor.line + 1,
             ruler_col(ed)
         )
@@ -984,6 +985,12 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
                     let run = ed.run_selected.as_ref().filter(|_| st.bool("appearance.status_run")).map_or("▶".to_string(), |r| format!("▶ {r}"));
                     let c0 = pc + p.width(&ruler[..i]);
                     ed.run_hit.set(Some((c0, c0 + p.width(&run))));
+                }
+                // 文字コード・改行の列（押す所）
+                let enc = ed.encoding_label();
+                if let Some(i) = ruler.rfind(&format!("{enc}   ")).filter(|_| st.bool("appearance.status_encoding") && ed.buf.path.is_some()) {
+                    let c0 = pc + p.width(&ruler[..i]);
+                    ed.enc_hit.set(Some((c0, c0 + p.width(&enc))));
                 }
             }
         }

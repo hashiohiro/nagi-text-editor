@@ -198,6 +198,7 @@ impl Editor {
         crate::finder::remember_recent(&path);
         self.watch_file(&path);
         self.notify.info(message);
+        self.note_mixed_newlines();
     }
 
     /// `:new`。空のバッファを足して作業中にする
@@ -209,12 +210,25 @@ impl Editor {
     pub(crate) fn reload(&mut self) {
         let Some(path) = self.buf.path.clone() else { return };
         match Buffer::open(&path) {
-            Ok(b) => {
-                let d = Doc { buf: b, hist: History::default(), syntax: None, pending_syntax: None, last_change: None, marks: std::mem::take(&mut self.marks), folds: Default::default(), cursor: self.cursor, top: self.top };
-                self.swap_in(d);
-                self.start_syntax();
-            }
+            Ok(b) => self.reload_with(b),
             Err(e) => self.notify.error(format!("{}: {e}", path.display())),
+        }
+    }
+
+    /// 読み直したバッファに入れ替える（カーソル・マークは保つ）
+    pub(crate) fn reload_with(&mut self, b: Buffer) {
+        let d = Doc { buf: b, hist: History::default(), syntax: None, pending_syntax: None, last_change: None, marks: std::mem::take(&mut self.marks), folds: Default::default(), cursor: self.cursor, top: self.top };
+        self.swap_in(d);
+        self.start_syntax();
+        let line = self.cursor.line.min(self.buf.line_count().saturating_sub(1));
+        self.cursor.line = line;
+        self.cursor.byte = self.cursor.byte.min(self.buf.line(line).len());
+    }
+
+    /// 開いたファイルの改行が混ざっていれば知らせる
+    pub(crate) fn note_mixed_newlines(&mut self) {
+        if self.buf.mixed_newlines {
+            self.notify.info("このファイルは CRLF と LF が混ざっています。状態の行の「混在」を押すか :set ff=dos・ff=unix で揃える（保存で書く）");
         }
     }
 

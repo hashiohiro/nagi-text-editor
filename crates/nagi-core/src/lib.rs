@@ -33,6 +33,7 @@ pub mod task;
 pub mod fuzzy;
 pub mod linediff;
 pub mod textops;
+pub mod encoding;
 pub use history::{Change, History};
 
 /// 構文木の更新用に記録する編集（位置は (行, 行内 byte)）
@@ -65,8 +66,12 @@ pub struct Buffer {
     pub path: Option<PathBuf>,
     /// 読み込み時の改行が CRLF だった（保存時に維持する）
     pub crlf: bool,
-    /// 読み込み時に UTF-8 の BOM があった（保存時に維持する）
+    /// 読み込み時に BOM があった（保存時に維持する）
     pub bom: bool,
+    /// ファイルの文字コード（読み込み時に見分けたもの。保存はこれで。encoding.rs）
+    pub encoding: &'static encoding::Encoding,
+    /// 読み込み時に CRLF と LF が混ざっていた（多いほうを crlf にした）
+    pub mixed_newlines: bool,
     /// 最後に読み込んだ・保存したときのファイルの (更新時刻, 大きさ)。外部での変更を見分ける
     pub disk: Option<DiskStamp>,
 }
@@ -143,22 +148,35 @@ fn incomplete_tail(b: &[u8]) -> usize {
     0
 }
 
+/// 改行の種類（CRLF が多いか, CRLF と LF が混ざっているか）
+fn newline_kind(text: &str) -> (bool, bool) {
+    let crlf = memchr::memmem::find_iter(text.as_bytes(), b"\r\n").count();
+    if crlf == 0 {
+        return (false, false);
+    }
+    let lf = memchr::memchr_iter(b'\n', text.as_bytes()).count() - crlf;
+    (crlf >= lf, lf > 0)
+}
+
 impl Buffer {
     pub fn from_str(text: &str) -> Self {
-        Self { rope: Rope::from_str(text), version: 0, edits: Vec::new(), dirty: false, path: None, crlf: text.contains("\r\n"), bom: false, disk: None }
+        let (crlf, mixed) = newline_kind(text);
+        Self { rope: Rope::from_str(text), version: 0, edits: Vec::new(), dirty: false, path: None, crlf, bom: false, encoding: encoding::UTF_8, mixed_newlines: mixed, disk: None }
     }
 
     pub fn open(path: &Path) -> io::Result<Self> {
+        Self::open_as(path, None)
+    }
+
+    /// 文字コードを決めて読む（None なら見分ける。:e ++enc=）
+    pub fn open_as(path: &Path, enc: Option<&'static encoding::Encoding>) -> io::Result<Self> {
         let disk = disk_stamp(path);
         let bytes = std::fs::read(path)?;
-        let (bom, body) = match bytes.strip_prefix(b"\xEF\xBB\xBF") {
-            Some(rest) => (true, rest),
-            None => (false, &bytes[..]),
-        };
-        let text = String::from_utf8_lossy(body);
+        let (text, enc, bom) = encoding::decode(&bytes, enc);
         let mut b = Self::from_str(&text);
         b.path = Some(path.to_path_buf());
         b.bom = bom;
+        b.encoding = enc;
         b.disk = disk;
         Ok(b)
     }
@@ -174,6 +192,21 @@ impl Buffer {
         let mut file = std::fs::File::open(path)?;
         if file.metadata()?.len() < STREAM_LIMIT {
             return Self::open(path);
+        }
+        // UTF-8 でなさそうなら（頭の 64KB で見る）、まとめて読んで文字コードを見分ける
+        {
+            let mut head = vec![0u8; 64 << 10];
+            let n = (&mut file).read(&mut head)?;
+            head.truncate(n);
+            let ok = match std::str::from_utf8(&head) {
+                Ok(_) => true,
+                Err(e) => e.error_len().is_none(),
+            };
+            if !ok || head.starts_with(b"\xFF\xFE") || head.starts_with(b"\xFE\xFF") {
+                return Self::open(path);
+            }
+            use std::io::Seek;
+            file.seek(std::io::SeekFrom::Start(0))?;
         }
         // 読む → UTF-8 と改行コードを確かめる → rope に組み立てる、の 3 段を別々のスレッドで並べる
         let (btx, brx) = std::sync::mpsc::sync_channel::<Vec<u8>>(8);
@@ -300,7 +333,7 @@ impl Buffer {
 
     /// 同じ内容の別のバッファ（rope の複製は O(1)）。裏のスレッドで構文解析するときに渡す
     pub fn snapshot(&self) -> Buffer {
-        Buffer { rope: self.rope.clone(), version: self.version, edits: Vec::new(), dirty: false, path: self.path.clone(), crlf: self.crlf, bom: self.bom, disk: self.disk }
+        Buffer { rope: self.rope.clone(), version: self.version, edits: Vec::new(), dirty: false, path: self.path.clone(), crlf: self.crlf, bom: self.bom, encoding: self.encoding, mixed_newlines: self.mixed_newlines, disk: self.disk }
     }
 
     pub fn len_bytes(&self) -> usize {
@@ -393,11 +426,15 @@ impl Buffer {
     pub fn save(&mut self) -> io::Result<usize> {
         let path = self.path.clone().ok_or_else(|| io::Error::other("ファイル名がない"))?;
         let mut out = Vec::with_capacity(self.rope.len() + 3);
-        if self.bom {
-            out.extend_from_slice(b"\xEF\xBB\xBF");
-        }
-        for c in self.rope.chunks() {
-            out.extend_from_slice(c.as_bytes());
+        if self.encoding != encoding::UTF_8 {
+            out = encoding::encode(&self.text(), self.encoding, self.bom).map_err(io::Error::other)?;
+        } else {
+            if self.bom {
+                out.extend_from_slice(b"\xEF\xBB\xBF");
+            }
+            for c in self.rope.chunks() {
+                out.extend_from_slice(c.as_bytes());
+            }
         }
         // 途中で失敗しても元のファイルを壊さないよう、一時ファイルに書いてから置き換える
         let tmp = path.with_extension("nagi-tmp");

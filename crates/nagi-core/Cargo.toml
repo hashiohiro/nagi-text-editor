@@ -14,5 +14,7 @@ aho-corasick = "1.1.5"
 memchr = "2.8.3"
 unicode-width.workspace = true
 unicode-segmentation.workspace = true
+# ファイルの文字コード（Shift_JIS・EUC-JP・UTF-16。encoding.rs）。grep などが使っているものと同じ版
+encoding_rs = "0.8.35"
 # SHA-256（hash.rs）とログの時刻（log.rs）、ファイルをメモリに写す（mmap.rs）
 windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_Security_Cryptography", "Win32_System_SystemInformation", "Win32_Storage_FileSystem", "Win32_System_Memory"] }

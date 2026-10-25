@@ -365,6 +365,9 @@ impl Frame {
         self.title_path = (None, None);
         self.ed = Some(Editor::new(buf, None));
         if let Some(ed) = &mut self.ed {
+            ed.note_mixed_newlines();
+        }
+        if let Some(ed) = &mut self.ed {
             // ダイアログ（フォルダの選択）の持ち主にする
             ed.hwnd = hwnd.0 as isize;
             if let Some(d) = &self.opts.cwd {
@@ -1126,6 +1129,12 @@ impl Frame {
                 self.draw();
                 return;
             }
+            if ed.on_encoding_label(row, col) {
+                ed.encoding_menu(row, col);
+                self.sync_ime();
+                self.draw();
+                return;
+            }
         }
         // 欄・小窓の上なら、その部品へ（layout.rs。上の部品から当てる。連続して押した回数は部品ごとに数える）
         if let (Some(f), Some(ed)) = (&self.fonts, &mut self.ed) {
@@ -1607,6 +1616,10 @@ impl Frame {
             // 部品の右クリックのメニュー（layout.rs の View の context・menu.rs）
             if ed.on_run_label(row, col) {
                 ed.run_menu(row, col);
+                self.sync_ime();
+                self.draw();
+            } else if ed.on_encoding_label(row, col) {
+                ed.encoding_menu(row, col);
                 self.sync_ime();
                 self.draw();
             } else if layout::context(ed, layout::Screen { rows: ed.screen.1, cols: ed.screen.0 }, row, col) {
