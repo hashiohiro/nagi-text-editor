@@ -62,6 +62,8 @@ impl Editor {
         if id == self.cur_doc || !matches!(self.docs.get(id), Some(Slot::Parked(_))) {
             return;
         }
+        // 自動で保存（設定。別のファイルへ移ったとき）
+        self.autosave(crate::session::AutoSave::Switch);
         // 別のファイルへ移るのはジャンプ（Ctrl-o で戻れる）
         self.push_jump();
         self.finish_load();
@@ -325,6 +327,29 @@ impl Editor {
             }
         }
         self.alt_doc = None;
+    }
+
+    /// `root` の下の開いているファイルと、そのカーソル（行, 文字の数）。作業中のものに current
+    pub(crate) fn open_file_positions(&self, root: &Path) -> Vec<nagi_workers::project::OpenFile> {
+        let root = std::path::absolute(root).unwrap_or_else(|_| root.to_path_buf());
+        self.docs
+            .iter()
+            .filter_map(|s| {
+                let (b, c, current) = match s {
+                    Slot::Active => (&self.buf, self.cursor, true),
+                    Slot::Parked(d) => (&d.buf, d.cursor, false),
+                    Slot::Deleted => return None,
+                };
+                let path = std::path::absolute(b.path.as_ref()?).ok()?;
+                if !path.starts_with(&root) {
+                    return None;
+                }
+                let line = c.line.min(b.line_count().saturating_sub(1));
+                let text = b.line(line);
+                let col = text[..c.byte.min(text.len())].chars().count();
+                Some(nagi_workers::project::OpenFile { path, line, col, current })
+            })
+            .collect()
     }
 
     /// 最後に閉じたファイルを開き直す（IntelliJ の ReopenClosedTab）

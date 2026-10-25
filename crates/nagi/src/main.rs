@@ -85,6 +85,7 @@ mod vim_opts;
 mod vim_maps;
 mod easy;
 mod editorconfig;
+mod session;
 mod panes;
 mod instance;
 
@@ -1443,6 +1444,14 @@ impl Frame {
                 self.on_held(el);
             }
             // 入力補完を自動で出す（設定）
+            // 打つのを止めて決めた秒数たったら保存（設定）
+            if self.ed.as_ref().and_then(|e| e.autosave_deadline()).is_some_and(|d| now >= d) {
+                if let Some(e) = &mut self.ed {
+                    e.autosave(session::AutoSave::Idle);
+                    e.last_edit_at = None;
+                }
+                self.draw();
+            }
             // ヤンクした範囲の光を消す
             if self.ed.as_mut().is_some_and(|e| e.yank_flash.is_some_and(|f| now >= f.2) && e.yank_flash.take().is_some()) {
                 self.draw();
@@ -1479,7 +1488,8 @@ impl Frame {
         }
         let auto = self.ed.as_ref().and_then(|e| e.auto_complete_at);
         let flash = self.ed.as_ref().and_then(|e| e.yank_flash.map(|f| f.2));
-        let deadline = [self.map_deadline, self.snap_deadline, self.autoscroll_deadline, self.replay_deadline, self.held.as_ref().map(|h| h.3), auto, flash].into_iter().flatten().min();
+        let save_at = self.ed.as_ref().and_then(|e| e.autosave_deadline());
+        let deadline = [self.map_deadline, self.snap_deadline, self.autoscroll_deadline, self.replay_deadline, self.held.as_ref().map(|h| h.3), auto, flash, save_at].into_iter().flatten().min();
         let _ = el;
         self.flow = if self.scroll_anim.is_some() {
             ControlFlow::Poll
@@ -1515,7 +1525,14 @@ impl Frame {
             }
             WindowEvent::ModifiersChanged(m) => self.modifiers = m.state(),
             // 離したのが届かないことがあるので、ほかの窓へ移ったら繰り返しを止める
-            WindowEvent::Focused(false) => self.held = None,
+            WindowEvent::Focused(false) => {
+                self.held = None;
+                // 自動で保存（設定。窓を離れたとき）
+                if let Some(e) = &mut self.ed {
+                    e.autosave(session::AutoSave::FocusLost);
+                }
+                self.draw();
+            }
             // 前に出たら、ほかの窓が保存した設定を読み直す（窓ごとに設定を持っているので）。
             // git の状態も取り直す（.git を見張れない場所（WSL のフォルダなど）で、外から git を動かしたとき）
             WindowEvent::Focused(true) => {
@@ -1759,6 +1776,12 @@ struct App {
 impl App {
     /// 閉じた窓を外す。1 枚も無くなったら終わる
     fn sweep(&mut self, el: &ActiveEventLoop) {
+        // 閉じる窓の開いていたファイルを覚える（次にそのプロジェクトを開いたときに開き直す）
+        for f in self.frames.iter().filter(|f| f.closed) {
+            if let Some(ed) = &f.ed {
+                ed.save_session();
+            }
+        }
         self.frames.retain(|f| !f.closed);
         if self.frames.is_empty() {
             el.exit();

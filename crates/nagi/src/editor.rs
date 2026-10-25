@@ -293,6 +293,8 @@ pub struct Editor {
     pub(crate) easy: Option<crate::easy::Easy>,
     /// ヤンクした範囲を光らせる（始め, 終わり, 消す時刻。設定の highlightedyank）
     pub yank_flash: Option<(usize, usize, std::time::Instant)>,
+    /// 最後に編集した時刻（自動で保存するまでの時間を数える）
+    pub last_edit_at: Option<std::time::Instant>,
     /// .editorconfig の値（ファイルごと。設定を効かせ直すとき・保存したときに捨てる。editorconfig.rs）
     pub(crate) ec_cache: std::cell::RefCell<std::collections::HashMap<std::path::PathBuf, std::rc::Rc<std::collections::HashMap<String, String>>>>,
     /// 閉じたファイル（ファイル, 行, byte。新しいものが後ろ。ReopenClosedTab）
@@ -649,6 +651,7 @@ impl Editor {
             recent_edits: Vec::new(),
             easy: None,
             yank_flash: None,
+            last_edit_at: None,
             ec_cache: Default::default(),
             closed_files: Vec::new(),
             showcmd: String::new(),
@@ -967,6 +970,7 @@ impl Editor {
         let c = self.buf.edit(start, end, text);
         self.hist.record(c);
         self.last_change = Some(start);
+        self.last_edit_at = Some(std::time::Instant::now());
         self.note_edit_place(start);
     }
 

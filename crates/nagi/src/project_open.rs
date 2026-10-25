@@ -247,6 +247,10 @@ impl Editor {
             self.notify.error(format!("{}: {e}", p.root.display()));
             return;
         }
+        // 前のプロジェクトで開いていたファイルを覚える（戻ってきたときに開き直す）
+        if self.settings.root.as_deref().is_some_and(|r| r != p.root) {
+            self.save_session();
+        }
         self.cwd = std::path::absolute(&p.root).unwrap_or_else(|_| p.root.clone());
         remember_project(&p.root);
         // プロジェクトごとのパネルと索引を作り直す
@@ -266,8 +270,9 @@ impl Editor {
         // 実行の構成は、選んでいたものを忘れて読み直す（ステータスバーに出す）
         self.run_selected = None;
         self.run_last = None;
-        // 前に開いていたファイル（IntelliJ）。前面にあったものを最後に開く
-        let mut files = project::open_files(&p.root);
+        // 前に開いていたファイル（nagi で開いていたもの、無ければ IntelliJ）。前面にあったものを最後に開く
+        let mine = self.settings.bool("editor.restore_session").then(|| crate::session::load(&p.root)).flatten();
+        let mut files = mine.unwrap_or_else(|| project::open_files(&p.root));
         files.sort_by_key(|f| f.current);
         let restored = files.len();
         if files.is_empty() {
