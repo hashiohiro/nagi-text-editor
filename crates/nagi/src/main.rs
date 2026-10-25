@@ -81,6 +81,7 @@ mod notify;
 mod ui;
 mod grammars;
 mod vim_field;
+mod vim_opts;
 mod panes;
 mod instance;
 
@@ -601,8 +602,18 @@ impl Frame {
     /// 設定（vimrc）の内容をエディタに反映する
     fn apply_rc(&mut self) {
         let Some(ed) = &mut self.ed else { return };
-        ed.rc_clipboard = self.rc.has("clipboard=unnamedplus") || self.rc.has("clipboard=unnamed");
-        ed.sync_clipboard();
+        // set の値は設定の vimrc の層へ（全体の設定より弱い。vim_opts.rs）
+        let (rc, from, notes) = vim_opts::rc_layer(&self.rc.sets);
+        for n in notes {
+            if !self.rc.notes.contains(&n) {
+                self.rc.notes.push(n);
+            }
+        }
+        let old = ed.settings.clone();
+        (ed.settings.rc, ed.settings.rc_from) = (rc, from);
+        if ed.settings != old {
+            ed.apply_settings(Some(&old));
+        }
     }
 
     fn on_key(&mut self, ev: KeyEvent, el: &ActiveEventLoop) {

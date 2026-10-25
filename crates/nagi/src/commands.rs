@@ -132,6 +132,7 @@ pub static COMMANDS: &[Cmd] = &[
     cmd_effect!(["t", "copy", "co"], "行を写す", Args::Text, |e, c| ranged(e, c)),
     cmd_effect!(["j", "join"], "行をつなぐ", Args::Text, |e, c| ranged(e, c)),
     // 検索・マーク・取り消し（Vim）
+    cmd!(["set", "se", "setlocal", "setl"], "オプション（:set ts=4・:set ts?・:set だけで変えたものの一覧。この窓だけ）", Args::Text, |e, c| e.ex_set(c.arg)),
     cmd!(["noh", "nohlsearch"], "検索の強調を消す", Args::None, |e, c| e.search.highlight = false),
     cmd!(["marks"], "マークの一覧", Args::None, |e, c| e.list_marks()),
     cmd!(["delmarks", "delm"], "マークを消す", Args::Text, |e, c| e.delete_marks(c.arg, c.bang)),

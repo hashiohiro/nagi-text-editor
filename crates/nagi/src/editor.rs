@@ -392,8 +392,6 @@ pub struct Editor {
     /// この窓のハンドル（ダイアログの持ち主にする。0 なら無し: 試験）
     pub hwnd: isize,
     pub settings_dialog: Option<crate::settings_dialog::SettingsDialog>,
-    /// .ideavimrc に clipboard=unnamed があるか（設定の「クリップボード」と合わせて決める）
-    pub rc_clipboard: bool,
     /// 入力補完を自動で出す時刻（設定の「打っている間に自動で出す」）
     pub auto_complete_at: Option<std::time::Instant>,
     /// 補完で、まだ届いていない情報（SQL の列・テーブル、読み込み中のライブラリの索引）を待っている (何を, 打っている語の始まり)。
@@ -716,7 +714,6 @@ impl Editor {
             cwd: std::env::current_dir().unwrap_or_default(),
             hwnd: 0,
             settings_dialog: None,
-            rc_clipboard: false,
             auto_complete_at: None,
             data_wait: None,
             click_effect: None,

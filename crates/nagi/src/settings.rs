@@ -187,6 +187,12 @@ pub struct Settings {
     pub project: HashMap<String, String>,
     /// プロジェクトの根（上書きの読み書きの場所）
     pub root: Option<PathBuf>,
+    /// vimrc の set で決めた値（全体の設定より弱い。Vim のキー操作がオンのときだけ効く。ファイルには書かない）
+    pub rc: HashMap<String, String>,
+    /// vimrc のどこで決めたか（キー → "vimrc（.ideavimrc:12 set sw=2）"。設定の画面に出す）
+    pub rc_from: HashMap<String, String>,
+    /// `:set` で変えた値（いちばん強い。この窓が閉じるまで。ファイルには書かない）
+    pub session: HashMap<String, String>,
 }
 
 /// 全体の設定のファイル
@@ -256,7 +262,7 @@ impl Settings {
     pub fn load(root: Option<&Path>) -> Settings {
         // 試験は Vim の操作で書いてあり、本文は 1 行目から（Vim を使わないときの試験は set_vim(false) で、タブは settings.set で出す）
         let global = if cfg!(test) { HashMap::from([("vim.enabled".to_string(), "true".to_string()), ("editor.tabs".to_string(), "false".to_string())]) } else { global_path().and_then(|p| std::fs::read_to_string(p).ok()).map(|s| parse(&s)).unwrap_or_default() };
-        let mut s = Settings { global, project: HashMap::new(), root: None };
+        let mut s = Settings { global, ..Default::default() };
         s.set_root(root);
         s
     }
@@ -267,15 +273,41 @@ impl Settings {
         self.project = root.and_then(|r| std::fs::read_to_string(project_path(r)).ok()).map(|s| parse(&s)).unwrap_or_default();
     }
 
-    /// 値（プロジェクトの上書き → 全体 → 既定値）
+    /// 値（:set → プロジェクトの上書き → 全体 → vimrc → 既定値）
     pub fn get(&self, key: &str) -> String {
+        if let Some(v) = self.session.get(key) {
+            return v.clone();
+        }
         let it = schema(key);
         if it.is_some_and(|i| i.project) {
             if let Some(v) = self.project.get(key) {
                 return v.clone();
             }
         }
-        self.global.get(key).cloned().unwrap_or_else(|| it.map_or(String::new(), |i| i.default.to_string()))
+        if let Some(v) = self.global.get(key) {
+            return v.clone();
+        }
+        if let Some(v) = self.rc.get(key).filter(|_| self.rc_on()) {
+            return v.clone();
+        }
+        it.map_or(String::new(), |i| i.default.to_string())
+    }
+
+    /// vimrc の set を効かせるか（Vim のキー操作がオン。IdeaVim と同じく、Vim を使わないなら vimrc は読まない）
+    fn rc_on(&self) -> bool {
+        !self.rc.is_empty() && matches!(self.get("vim.enabled").as_str(), "true" | "on" | "yes" | "1")
+    }
+
+    /// 値がどこで決まったか（設定の画面に出す）。:set・vimrc で決めたときだけ
+    pub fn origin(&self, key: &str) -> Option<String> {
+        if self.session.contains_key(key) {
+            return Some(":set で（この窓だけ）".into());
+        }
+        let project = schema(key).is_some_and(|i| i.project) && self.project.contains_key(key);
+        if project || self.global.contains_key(key) || !self.rc.contains_key(key) || !self.rc_on() {
+            return None;
+        }
+        Some(self.rc_from.get(key).cloned().unwrap_or_else(|| "vimrc".into()))
     }
 
     pub fn bool(&self, key: &str) -> bool {
@@ -305,8 +337,10 @@ impl Settings {
 
     /// 値を変える（`project` ならプロジェクトの上書きに）。既定値に戻すときは消す
     pub fn set(&mut self, key: &str, value: &str, project: bool) {
+        // 既定値と同じでも、vimrc が別の値にしていれば書いておく（画面で決めた値が vimrc に勝つように）
+        let rc = self.rc.contains_key(key);
         let map = if project { &mut self.project } else { &mut self.global };
-        if schema(key).is_some_and(|i| i.default == value) && !project {
+        if schema(key).is_some_and(|i| i.default == value) && !project && !rc {
             map.remove(key);
         } else {
             map.insert(key.to_string(), value.to_string());
@@ -465,7 +499,10 @@ impl crate::editor::Editor {
         if cfg!(test) {
             return false;
         }
-        let new = Settings::load(self.settings.root.as_deref());
+        let mut new = Settings::load(self.settings.root.as_deref());
+        new.rc = self.settings.rc.clone();
+        new.rc_from = self.settings.rc_from.clone();
+        new.session = self.settings.session.clone();
         if new == self.settings {
             return false;
         }
@@ -512,7 +549,7 @@ impl crate::editor::Editor {
         if cfg!(test) {
             return;
         }
-        let on = self.rc_clipboard || self.settings.get("vim.clipboard") == "unnamed";
+        let on = self.settings.get("vim.clipboard") == "unnamed";
         self.clipboard = on.then_some(crate::editor::Clipboard { get: crate::clipboard::get, set: crate::clipboard::set });
     }
 

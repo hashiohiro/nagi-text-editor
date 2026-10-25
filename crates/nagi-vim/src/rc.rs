@@ -11,6 +11,8 @@ pub struct Rc {
     pub keymap: Keymap,
     /// `set` で有効にしたオプション（`clipboard+=unnamedplus` は "clipboard=unnamedplus" として持つ）
     pub options: BTreeSet<String>,
+    /// `set` の 1 つずつ（出所 "ファイル:行", 書いたまま "ts=4" "noet" など）。値はエディタが設定の表で読む
+    pub sets: Vec<(String, String)>,
     /// 読み込んだファイル
     pub sources: Vec<PathBuf>,
     /// 解釈しなかった行（行番号付き。起動時のメッセージや :NagiKeys で見られるようにする）
@@ -116,8 +118,11 @@ fn parse_into(rc: &mut Rc, text: &str, name: &str, depth: usize) {
                     note(rc, "未対応の let");
                 }
             }
-            "set" => {
+            "set" | "se" | "setlocal" | "setl" | "setglobal" | "setg" => {
+                // 後ろの `" 注釈` は外す
+                let rest = rest.split_once(" \"").map_or(rest, |(a, _)| a);
                 for opt in rest.split_whitespace() {
+                    rc.sets.push((format!("{name}:{}", no + 1), opt.to_string()));
                     if let Some((k, v)) = opt.split_once("+=") {
                         rc.options.insert(format!("{k}={v}"));
                     } else if let Some(k) = opt.strip_prefix("no") {

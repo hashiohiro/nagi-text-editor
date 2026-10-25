@@ -136,6 +136,8 @@ impl SettingsDialog {
     fn set(&mut self, it: &Item, value: &str) {
         let project = self.project_scope && it.project;
         self.work.set(it.key, value, project);
+        // 画面で決めたら、この窓の :set の値はやめる（画面の値を使う）
+        self.work.session.remove(it.key);
         self.dirty = true;
     }
 
@@ -233,6 +235,7 @@ impl SettingsDialog {
         } else {
             self.work.global.remove(it.key);
         }
+        self.work.session.remove(it.key);
         self.dirty = true;
     }
 }
@@ -957,7 +960,8 @@ pub(crate) mod draw {
             p.cols = saved2;
             // 値（直している項目は入力欄）
             let overridden = d.work.project.contains_key(it.key) && it.project;
-            let changed = d.work.global.contains_key(it.key) || overridden;
+            let origin = d.work.origin(it.key);
+            let changed = d.work.global.contains_key(it.key) || overridden || origin.is_some();
             if sel && d.focus == SFocus::Edit {
                 if let Some(f) = &d.field {
                     draw_vim_field(p, f, vx, y(r), &ed.preedit);
@@ -976,6 +980,8 @@ pub(crate) mod draw {
                 let end = p.text(&shown, vx, y(r), color);
                 if overridden {
                     p.text("  P", end, y(r), ACCENT_FG);
+                } else if let Some(o) = &origin {
+                    p.text(if o.starts_with(':') { "  :set" } else { "  vimrc" }, end, y(r), ACCENT_FG);
                 }
             }
             item_rows.push((y0 + r, k, vx));
@@ -988,6 +994,9 @@ pub(crate) mod draw {
             let mut desc = it.help.to_string();
             if it.project {
                 desc = format!("{desc}{}プロジェクトごとに変えられる（p）", if desc.is_empty() { "" } else { "。" });
+            }
+            if let Some(o) = d.work.origin(it.key) {
+                desc = format!("{desc}{}今の値は {o} で決めたもの。ここで変えれば、こちらが勝つ", if desc.is_empty() { "" } else { "。" });
             }
             let def = match it.kind {
                 SKind::Choice(c) => c.iter().find(|x| x.0 == it.default).map_or(it.default, |x| x.1),
