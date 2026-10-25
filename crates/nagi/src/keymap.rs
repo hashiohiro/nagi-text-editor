@@ -120,7 +120,11 @@ pub const PLAIN_ACTIONS: [(&str, Action); 17] = [
 /// `vim` が false（Vim のキー操作を使わない）なら PLAIN_ACTIONS も見る
 pub fn action_for(settings: &Settings, chord: &Chord) -> Option<Action> {
     let vim = settings.bool("vim.enabled");
-    ACTIONS.iter().chain(PLAIN_ACTIONS.iter().filter(|_| !vim)).find(|(k, _)| parse_chord(&settings.get(k)).as_ref() == Some(chord)).map(|a| a.1)
+    if let Some(a) = ACTIONS.iter().chain(PLAIN_ACTIONS.iter().filter(|_| !vim)).find(|(k, _)| parse_chord(&settings.get(k)).as_ref() == Some(chord)) {
+        return Some(a.1);
+    }
+    // コマンドごとの項目（設定の画面のキーマップの下の方。keymap.cmd.名前）
+    crate::settings::items().iter().filter_map(|i| Some((i, i.key.strip_prefix(crate::settings::CMD_KEY)?))).find(|(i, _)| parse_chord(&settings.get(i.key)).as_ref() == Some(chord)).map(|(_, name)| Action::Cmd(name))
 }
 
 /// エディタのキー（再生・マクロ・試験で届くもの）を組み合わせに（Alt+1・Ctrl+X・F12 など。文字そのものは None）
@@ -147,6 +151,19 @@ pub fn default_moved(settings: &Settings, chord: &Chord) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// どのコマンドにもキーを付けられ、重なりは分かる
+    #[test]
+    fn any_command_gets_a_key() {
+        let mut s = Settings::default();
+        assert!(crate::settings::schema("keymap.cmd.Outline").is_some(), "コマンドごとの項目がある");
+        assert!(crate::settings::schema("keymap.cmd.Run").is_none(), "決まった項目のあるものは作らない");
+        s.set("keymap.cmd.Outline", "Ctrl+Shift+O", false);
+        assert_eq!(action_for(&s, &parse_chord("ctrl+shift+o").unwrap()), Some(Action::Cmd("Outline")));
+        s.set("keymap.cmd.Symbols", "Shift+F10", false);
+        let other: Vec<&str> = crate::settings::key_conflicts(&s, "keymap.cmd.Symbols").iter().map(|i| i.key).collect();
+        assert_eq!(other, ["keymap.run"]);
+    }
 
     #[test]
     fn chords() {

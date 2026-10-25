@@ -182,8 +182,33 @@ pub static SCHEMA: &[Item] = &[
     item("other.jumplist_count", "その他", "ジャンプリストの件数", SKind::Int(0, 30), "10", "タスクバーの右クリックの最近のプロジェクト"),
 ];
 
+/// キーマップでコマンドに付けるキーの項目の頭（keymap.cmd.名前）
+pub const CMD_KEY: &str = "keymap.cmd.";
+
+/// すべての項目: SCHEMA と、キーマップのコマンドごとの項目（keymap.cmd.名前。決まった項目の無いコマンドすべて）
+pub fn items() -> &'static [Item] {
+    static ALL: std::sync::OnceLock<Vec<Item>> = std::sync::OnceLock::new();
+    ALL.get_or_init(|| {
+        let fixed: Vec<&str> = crate::keymap::ACTIONS.iter().chain(crate::keymap::PLAIN_ACTIONS.iter()).filter_map(|(_, a)| if let crate::keymap::Action::Cmd(c) = a { Some(*c) } else { None }).collect();
+        let mut all: Vec<Item> = SCHEMA.iter().map(|i| Item { ..*i }).collect();
+        for c in crate::commands::COMMANDS.iter().filter(|c| !c.help.is_empty() && !c.names.iter().any(|n| fixed.contains(n))) {
+            let name = c.names[0];
+            let short = c.help.split(['（', '。']).next().unwrap_or(c.help);
+            let leak = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
+            all.push(Item { key: leak(format!("{CMD_KEY}{name}")), cat: "キーマップ", label: leak(short.to_string()), kind: SKind::Key, default: "", help: leak(format!(":{name}  {}", c.help)), project: false });
+        }
+        all
+    })
+}
+
 pub fn schema(key: &str) -> Option<&'static Item> {
-    SCHEMA.iter().find(|i| i.key == key)
+    items().iter().find(|i| i.key == key)
+}
+
+/// `key`（キーの項目）と同じキーの組み合わせを付けたほかの項目
+pub fn key_conflicts(s: &Settings, key: &str) -> Vec<&'static Item> {
+    let Some(c) = crate::keymap::parse_chord(&s.get(key)) else { return Vec::new() };
+    items().iter().filter(|i| i.kind == SKind::Key && i.key != key && crate::keymap::parse_chord(&s.get(i.key)).as_ref() == Some(&c)).collect()
 }
 
 /// 設定の値（キー → 文字。既定値と違うものだけ）
@@ -255,7 +280,7 @@ fn merge(disk: &mut HashMap<String, String>, before: &HashMap<String, String>, a
 pub fn render(values: &HashMap<String, String>, header: &str) -> String {
     let mut s = format!("# {header}（nagi の設定の画面で直せる。キー = 値）\n");
     let mut cat = "";
-    for it in SCHEMA {
+    for it in items() {
         if let Some(v) = values.get(it.key).filter(|v| v.as_str() != it.default) {
             if it.cat != cat {
                 s.push_str(&format!("\n# {}\n", it.cat));
@@ -593,7 +618,7 @@ mod tests {
     #[test]
     fn schema_is_sound() {
         let mut keys = std::collections::HashSet::new();
-        for it in SCHEMA {
+        for it in items() {
             assert!(keys.insert(it.key), "キーが重なっている: {}", it.key);
             assert!(CATEGORIES.contains(&it.cat), "分類が無い: {}", it.cat);
             match it.kind {

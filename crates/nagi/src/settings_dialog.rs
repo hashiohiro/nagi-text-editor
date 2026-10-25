@@ -12,7 +12,7 @@ use std::cell::RefCell;
 use nagi_vim::Key;
 
 use crate::editor::{Editor, State};
-use crate::settings::{CATEGORIES, Item, MAPS_CAT, SCHEMA, SKind, Settings};
+use crate::settings::{CATEGORIES, Item, MAPS_CAT, SKind, Settings};
 use crate::vim_maps::{self, MapRow};
 use crate::vim_field::{FieldOut, VimField};
 
@@ -107,11 +107,14 @@ impl SettingsDialog {
     pub fn items(&self) -> Vec<&'static Item> {
         let q = self.filter.text().to_lowercase();
         let cat = CATEGORIES[self.cat];
-        SCHEMA
+        // キーの組み合わせ（ctrl+e など）でも探せる
+        let chord = crate::keymap::parse_chord(&q);
+        crate::settings::items()
             .iter()
             .filter(|i| {
                 if !q.is_empty() {
-                    return i.label.to_lowercase().contains(&q) || i.help.to_lowercase().contains(&q) || i.key.contains(&q) || i.cat.contains(&q);
+                    let key_hit = i.kind == SKind::Key && (chord.is_some() && crate::keymap::parse_chord(&self.work.get(i.key)) == chord);
+                    return key_hit || i.label.to_lowercase().contains(&q) || i.help.to_lowercase().contains(&q) || i.key.contains(&q) || i.cat.contains(&q);
                 }
                 cat == "（すべて）" || i.cat == cat
             })
@@ -1147,6 +1150,8 @@ pub(crate) mod draw {
                     _ => v,
                 };
                 let end = p.text(&shown, vx, y(r), color);
+                // ほかの操作にも同じキーを付けている
+                let end = if it.kind == SKind::Key && !crate::settings::key_conflicts(&d.work, it.key).is_empty() { p.text("  ⚠ 重なり", end, y(r), GIT_DEL) } else { end };
                 if overridden {
                     p.text("  P", end, y(r), ACCENT_FG);
                 } else if let Some(o) = &origin {
@@ -1165,6 +1170,12 @@ pub(crate) mod draw {
             let mut desc = it.help.to_string();
             if it.project {
                 desc = format!("{desc}{}プロジェクトごとに変えられる（p）", if desc.is_empty() { "" } else { "。" });
+            }
+            if it.kind == SKind::Key {
+                let other: Vec<&str> = crate::settings::key_conflicts(&d.work, it.key).iter().map(|i| i.label).collect();
+                if !other.is_empty() {
+                    desc = format!("{desc}{}同じキーを付けたもの: {}", if desc.is_empty() { "" } else { "。" }, other.join("・"));
+                }
             }
             if let Some(o) = d.work.origin(it.key) {
                 desc = format!("{desc}{}今の値は {o} で決めたもの。ここで変えれば、こちらが勝つ", if desc.is_empty() { "" } else { "。" });
