@@ -23,6 +23,17 @@ pub fn set_tab_width(w: usize) {
     TAB_WIDTH.with(|t| t.set(w.clamp(1, 16)));
 }
 
+/// 曖昧な幅の文字（○・→・① など）を 2 文字ぶんで数えるか（設定の「曖昧な幅の文字」。描く幅と合わせる）
+static AMBIGUOUS_WIDE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn ambiguous_wide() -> bool {
+    AMBIGUOUS_WIDE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn set_ambiguous_wide(on: bool) {
+    AMBIGUOUS_WIDE.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
 mod history;
 pub mod error;
 pub use error::{Context, Error, Result};
@@ -451,7 +462,7 @@ pub fn grapheme_width(g: &str, ambiguous_wide: bool) -> usize {
     if g == "\t" {
         return tab_width();
     }
-    if ambiguous_wide { g.width_cjk() } else { g.width() }.clamp(1, 2)
+    if ambiguous_wide || self::ambiguous_wide() { g.width_cjk() } else { g.width() }.clamp(1, 2)
 }
 
 /// 行内 byte オフセット `byte` の表示列（文字の途中なら、その文字の頭までの列。落ちない）

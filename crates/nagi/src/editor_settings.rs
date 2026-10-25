@@ -642,6 +642,17 @@ mod tests {
         assert!(e.yank_flash.is_some());
     }
 
+    /// 曖昧な幅の文字を全角で数える（カーソルの列も描く幅と同じに）
+    #[test]
+    fn ambiguous_width() {
+        let mut e = Editor::new(Buffer::from_str("○x"), None);
+        assert_eq!(nagi_core::display_col("○x", 3, false), 1);
+        e.settings.set("appearance.ambiguous_wide", "true", false);
+        e.apply_settings(None);
+        assert_eq!(nagi_core::display_col("○x", 3, false), 2);
+        nagi_core::set_ambiguous_wide(false);
+    }
+
     /// .editorconfig は設定より強く、:set より弱い
     #[test]
     fn editorconfig_wins_over_settings() {

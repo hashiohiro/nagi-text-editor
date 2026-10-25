@@ -192,7 +192,7 @@ impl Fonts {
 
     /// 書記素のセル幅（1 か 2）
     pub fn width(&self, grapheme: &str) -> usize {
-        if self.ambiguous_wide { grapheme.width_cjk() } else { grapheme.width() }.clamp(1, 2)
+        if self.ambiguous_wide || nagi_core::ambiguous_wide() { grapheme.width_cjk() } else { grapheme.width() }.clamp(1, 2)
     }
 
     /// 書記素を描くグリフ。空白や豆腐は None。シェーピングはしないので先頭のスカラーだけを描く。

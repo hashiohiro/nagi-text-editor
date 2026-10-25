@@ -67,6 +67,7 @@ pub static SCHEMA: &[Item] = &[
     item("appearance.font_ja", "外観", "フォント（日本語）", SKind::Font, "BIZ UDGothic", "英数字のフォントに無い字に使う。Enter で一覧から選ぶ"),
     item("appearance.font_size", "外観", "文字の大きさ（pt）", SKind::Int(0, 48), "0", "0 なら既定"),
     item("appearance.line_height", "外観", "行の高さ（%）", SKind::Int(80, 200), "100", "文字の高さに対する行の高さ"),
+    item("appearance.ambiguous_wide", "外観", "曖昧な幅の文字を全角で", B, "false", "○ → ① ※ など、幅の決まっていない文字を 2 文字ぶんで出す（日本語のフォントに合わせるならオン）"),
     item("appearance.theme", "外観", "配色", SKind::Choice(&[("dark", "ダーク（既定）"), ("black", "ブラック"), ("dim", "ダークグレー"), ("light", "ライト")]), "dark", ""),
     item("appearance.accent", "外観", "強調の色", T, "#87afd7", "選んでいるタブの下線・ボタンなど（#rrggbb）"),
     item("appearance.remember_panels", "外観", "欄の大きさを覚える", B, "true", "ドラッグで変えた左・右・下の欄の大きさを次の起動でも使う"),
@@ -108,6 +109,7 @@ pub static SCHEMA: &[Item] = &[
     pitem("editor.colorcolumn", "エディタ", "右端の線", T, "", "列の数をカンマで区切る（120 など。colorcolumn）。.editorconfig の max_line_length も出す"),
     item("editor.split_below", "エディタ", "上下の分割は下に開く", B, "false", "splitbelow"),
     item("editor.split_right", "エディタ", "左右の分割は右に開く", B, "false", "splitright"),
+    item("editor.wheel_lines", "エディタ", "ホイールで動く行の数", SKind::Int(1, 20), "3", "マウスのホイール 1 目盛りで送る行"),
     item("editor.scroll_ms", "エディタ", "スムーズスクロールの時間（ms）", SKind::Int(0, 1000), "110", "0 ならスクロールを滑らかにしない"),
     item("editor.repeat_delay", "エディタ", "押しっぱなし: 繰り返すまで（ms）", SKind::Int(50, 1000), "250", "hjkl などの移動のキー"),
     item("editor.repeat_interval", "エディタ", "押しっぱなし: 間隔（ms）", SKind::Int(5, 200), "25", ""),
@@ -517,6 +519,7 @@ impl crate::editor::Editor {
         self.ec_cache.borrow_mut().clear();
         self.sync_clipboard();
         self.sync_tab();
+        nagi_core::set_ambiguous_wide(self.settings.bool("appearance.ambiguous_wide"));
         nagi_core::encoding::set_fallback(match self.settings.get("editor.encoding_fallback").as_str() {
             "auto" => None,
             n => nagi_core::encoding::by_name(n),

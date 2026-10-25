@@ -183,9 +183,6 @@ struct Pending {
 
 /// マッピングの続きを待つ時間（Vim の timeoutlen の既定値）
 const TIMEOUT_LEN: Duration = Duration::from_millis(1000);
-/// ホイール 1 目盛りで動かす行数と、それを動かしきる時間
-const WHEEL_LINES: f64 = 3.0;
-
 /// タッチパッドで止まってから行境界へ寄せるまでの時間
 const SNAP_AFTER: Duration = Duration::from_millis(120);
 /// `--replay` で 1 打ずつ流す間隔（速く打つ人の打鍵間隔くらい。詰めすぎるとフレームの待ちが毎回乗る）
@@ -1281,11 +1278,13 @@ impl Frame {
         let rows = self.sync_screen();
         let (Some(ed), Some(f)) = (&mut self.ed, &self.fonts) else { return };
         ed.rows = rows;
+        // ホイール 1 目盛りで動く行（設定）
+        let wl = ed.settings.int("editor.wheel_lines") as f32;
         // ターミナルの上ならシェル・アプリへ（さかのぼる・アプリに送る）
         let (row, col) = ((self.mouse.1 as f32 / f.cell().h) as usize, (self.mouse.0.max(0.0) as f32 / f.cell().w) as usize);
         if ed.bottom_kind == result_grid::BottomKind::Terminal && ed.bottom_content_rect().is_some_and(|r| r.contains(row, col)) {
             let lines = match delta {
-                winit::event::MouseScrollDelta::LineDelta(_, y) => (y * WHEEL_LINES as f32).round() as isize,
+                winit::event::MouseScrollDelta::LineDelta(_, y) => (y * wl).round() as isize,
                 winit::event::MouseScrollDelta::PixelDelta(p) => (p.y / f.cell().h as f64).round() as isize,
             };
             ed.terminal_wheel(lines, row, col);
@@ -1294,7 +1293,7 @@ impl Frame {
         }
         // 行・列の数（下・右が正）。Shift を押していれば縦のホイールも横に
         let (mut dx, mut dy) = match delta {
-            winit::event::MouseScrollDelta::LineDelta(x, y) => ((x * WHEEL_LINES as f32).round() as isize, (-y * WHEEL_LINES as f32).round() as isize),
+            winit::event::MouseScrollDelta::LineDelta(x, y) => ((x * wl).round() as isize, (-y * wl).round() as isize),
             winit::event::MouseScrollDelta::PixelDelta(p) => {
                 // 1 行・1 列に満たない分は貯めておく（ゆっくり動かしても欄が送られるように）
                 let (cw, ch) = (f.cell().w as f64, f.cell().h as f64);
@@ -1337,11 +1336,11 @@ impl Frame {
         let Some(f) = &self.fonts else { return };
         let now = Instant::now();
         match delta {
-            // マウスのホイール: 目盛りごとに 3 行を、短い時間で滑らかに動かす
+            // マウスのホイール: 目盛りごとに設定の行数を、短い時間で滑らかに動かす
             winit::event::MouseScrollDelta::LineDelta(_, y) => {
                 let base = self.scroll_anim.as_ref().map_or(ed.scroll_pos(), |a| a.to);
                 let max = ed.buf.line_count().saturating_sub(1) as f64;
-                let to = (base - y as f64 * WHEEL_LINES).round().clamp(0.0, max);
+                let to = (base - y as f64 * ed.settings.int("editor.wheel_lines") as f64).round().clamp(0.0, max);
                 let dur = Duration::from_millis(ed.settings.int("editor.scroll_ms") as u64);
                 self.scroll_anim = Some(ScrollAnim { from: ed.scroll_pos(), to, start: now, dur });
                 self.snap_deadline = None;
