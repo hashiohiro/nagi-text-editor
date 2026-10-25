@@ -507,6 +507,8 @@ impl<'a> Ranker<'a> {
         let mut out: Vec<(String, DefKind, String, Option<usize>, bool)> = Vec::new();
         let mut todo = vec![(ty.to_string(), 0)];
         let mut seen = std::collections::HashSet::new();
+        // 入れた名前（メンバーの多い型で、毎回 out を探すと遅かった）
+        let mut names: std::collections::HashSet<String> = std::collections::HashSet::new();
         while let Some((t, depth)) = todo.pop() {
             if depth > 5 || !seen.insert(t.clone()) {
                 continue;
@@ -518,12 +520,13 @@ impl<'a> Ranker<'a> {
                 for d in &defs {
                     // 入れ子の型（Outer.Inner）
                     if d.kind.is_type() {
-                        if !out.iter().any(|o| o.0 == d.name) {
+                        if names.insert(d.name.clone()) {
                             out.push((d.name.clone(), d.kind, t.clone(), None, false));
                         }
                         continue;
                     }
-                    if matches!(d.kind, DefKind::Method | DefKind::Function | DefKind::Field | DefKind::Constant) && d.name != t && !out.iter().any(|o| o.0 == d.name) {
+                    if matches!(d.kind, DefKind::Method | DefKind::Function | DefKind::Field | DefKind::Constant) && d.name != t && !names.contains(&d.name) {
+                        names.insert(d.name.clone());
                         let params = matches!(d.kind, DefKind::Method | DefKind::Function)
                             .then(|| self.param_count(&Loc { path: tl.path.clone(), line: d.line, col: d.col, kind: d.kind }).map(|p| p.0))
                             .flatten();
@@ -535,7 +538,7 @@ impl<'a> Ranker<'a> {
                 // 書いていないメンバー（言語が決める。Java は record の部品・Lombok の getter・setter・builder()）
                 if let Some(lines) = self.lines(&tl.path) {
                     for (name, params) in for_path(&tl.path).implicit_members(&lines, tl.line as usize, &t, &defs) {
-                        if !out.iter().any(|o| o.0 == name) {
+                        if names.insert(name.clone()) {
                             out.push((name, DefKind::Method, t.clone(), Some(params), false));
                         }
                     }

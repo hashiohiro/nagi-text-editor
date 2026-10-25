@@ -213,3 +213,63 @@ pub fn literal_fit(lit: &str, p: &str) -> i32 {
         _ => 0,
     }
 }
+
+/// `case ` の後（`case A, ` も）なら、その switch の調べる式（`switch (cell.getType())` の `cell.getType()`）
+pub fn case_subject(src: &str, line: &str, ws: usize, at: usize) -> Option<String> {
+    let before = line[..ws].trim_end();
+    let label = before.ends_with("case") && !before[..before.len() - 4].ends_with(|c: char| c.is_alphanumeric() || c == '_')
+        || before.ends_with(',') && line.trim_start().starts_with("case ");
+    if !label {
+        return None;
+    }
+    // 一番内側の開いた { の前が switch (…)
+    let code = crate::text::blank_literals(super::types::LX, &src[..at]);
+    let b = code.as_bytes();
+    let mut depth = 0usize;
+    let mut i = b.len();
+    let open = loop {
+        i = i.checked_sub(1)?;
+        match b[i] {
+            b'}' => depth += 1,
+            b'{' if depth == 0 => break i,
+            b'{' => depth -= 1,
+            _ => {}
+        }
+    };
+    let head = code[..open].trim_end();
+    let close = head.strip_suffix(')')?.len();
+    let mut d = 0usize;
+    let mut k = close;
+    let start = loop {
+        k = k.checked_sub(1)?;
+        match b[k] {
+            b')' => d += 1,
+            b'(' if d == 0 => break k,
+            b'(' => d -= 1,
+            _ => {}
+        }
+    };
+    let kw = code[..start].trim_end();
+    (kw.ends_with("switch") && !kw[..kw.len() - 6].ends_with(|c: char| c.is_alphanumeric() || c == '_')).then(|| src[start + 1..close].trim().to_string())
+}
+
+#[cfg(test)]
+mod case_tests {
+    #[test]
+    fn case_subject_of_switch() {
+        let src = "class A {\n  void f(Kind k) {\n    switch (cell.getType()) {\n      case A:\n        if (x) { y(); }\n        break;\n      case B, \n    }\n  }\n}\n";
+        let at = src.find("case B, ").unwrap() + 8;
+        let ls = src[..at].rfind('\n').unwrap() + 1;
+        let line = src[ls..].lines().next().unwrap();
+        assert_eq!(super::case_subject(src, line, at - ls, at).as_deref(), Some("cell.getType()"));
+        let at = src.find("case A").unwrap() + 5;
+        let ls = src[..at].rfind('\n').unwrap() + 1;
+        let line = src[ls..].lines().next().unwrap();
+        assert_eq!(super::case_subject(src, line, at - ls, at).as_deref(), Some("cell.getType()"));
+        // case の後でなければ無し
+        let at = src.find("y()").unwrap();
+        let ls = src[..at].rfind('\n').unwrap() + 1;
+        let line = src[ls..].lines().next().unwrap();
+        assert_eq!(super::case_subject(src, line, at - ls, at), None);
+    }
+}

@@ -276,6 +276,10 @@ fn is_binding(id: Node) -> bool {
     if p.child_by_field_name("left") == Some(id) && matches!(p.kind(), "for_in_statement" | "for_statement" | "for_in_clause" | "assignment") {
         return true;
     }
+    // 括弧の無いアロー関数の引数（res => …）
+    if p.kind() == "arrow_function" && p.child_by_field_name("parameter") == Some(id) {
+        return true;
+    }
     BINDING_PARENTS.contains(&p.kind()) && p.child_by_field_name("type") != Some(id) && p.child_by_field_name("value") != Some(id) && p.child_by_field_name("body") != Some(id)
 }
 
@@ -324,6 +328,60 @@ pub fn local_bindings(tree: &Tree, text: &dyn Fn(Range<usize>) -> String) -> std
         }
     }
     out
+}
+
+/// `at` で見える束縛の名前（引数・ローカル変数は `at` より前のもの、型の中・ファイルの中の定義は後ろも）。
+/// (名前, 関数の中のものか)。関数の中のものを先に、それぞれ `at` に近い順。`skip` の範囲（打っている語）の束縛は除く
+pub fn visible_bindings(tree: &Tree, at: usize, skip: Range<usize>, text: &dyn Fn(Range<usize>) -> String) -> Vec<(String, bool)> {
+    let mut found: Vec<(bool, usize, String)> = Vec::new();
+    let mut c = tree.walk();
+    'walk: loop {
+        let n = c.node();
+        // `at` を含まないブロック・関数・import の中は見えないので入らない（関数の名前だけ見る）。大きなファイルで全部たどると遅かった
+        let k = n.kind();
+        let outside = !(n.start_byte() <= at && at <= n.end_byte());
+        if outside && n.child_count() > 0 && (SCOPE_KINDS.contains(&k) || FUNCTION_KINDS.contains(&k) || k.starts_with("import")) {
+            if let Some(name) = n.child_by_field_name("name").filter(|_| FUNCTION_KINDS.contains(&k)) {
+                let t = text(name.byte_range());
+                if t.chars().next().is_some_and(|ch| ch.is_alphabetic() || ch == '_' || ch == '$') && !inside_function(n) {
+                    found.push((true, name.start_byte().abs_diff(at), t));
+                }
+            }
+            loop {
+                if c.goto_next_sibling() {
+                    continue 'walk;
+                }
+                if !c.goto_parent() {
+                    break 'walk;
+                }
+            }
+        }
+        if n.child_count() == 0 && is_binding(n) && !(skip.start <= n.start_byte() && n.start_byte() <= skip.end) {
+            let scope = scope_of(n);
+            // 関数の名前そのものは外側の定義
+            let local = inside_function(n) && !n.parent().is_some_and(|p| FUNCTION_KINDS.contains(&p.kind()) && p.child_by_field_name("name") == Some(n));
+            if scope.start <= at && at <= scope.end && (!local || n.start_byte() < at) {
+                let name = text(n.byte_range());
+                if name.chars().next().is_some_and(|ch| ch.is_alphabetic() || ch == '_' || ch == '$') {
+                    found.push((!local, n.start_byte().abs_diff(at), name));
+                }
+            }
+        }
+        if c.goto_first_child() {
+            continue;
+        }
+        loop {
+            if c.goto_next_sibling() {
+                continue 'walk;
+            }
+            if !c.goto_parent() {
+                break 'walk;
+            }
+        }
+    }
+    found.sort();
+    let mut seen = std::collections::HashSet::new();
+    found.into_iter().filter(|x| seen.insert(x.2.clone())).map(|(outer, _, name)| (name, !outer)).collect()
 }
 
 /// 束縛の候補から、`at` で見えるもののうち一番内側、同じなら手前で一番近いもの（無ければ最初）

@@ -36,10 +36,24 @@ pub fn complete(cx: &Cx) -> Vec<Item> {
     let mut ranker = Ranker::new(cx.index);
     if cx.after_dot() {
         after_dot(lang, cx, &mut ranker, &mut out);
+        rank_used_members(lang, cx, &mut out.items);
     } else {
         in_scope(lang, cx, &mut ranker, &mut out);
     }
     out.items
+}
+
+/// `.` の後のメンバーの順: このファイルのカーソルより前で `.名前` と使ったものを先に、Object のメソッド（getClass など）を後に
+fn rank_used_members(lang: &dyn Language, cx: &Cx, items: &mut [Item]) {
+    let code = code_words(lang, &cx.src[..cx.start.min(cx.src.len())]);
+    let used: HashSet<&str> = code.split('.').skip(1).filter_map(|r| r.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$')).next()).filter(|w| !w.is_empty()).collect();
+    for c in items.iter_mut().filter(|c| c.rank == 0) {
+        if c.note == "Object" {
+            c.rank = 2;
+        } else if !used.contains(c.name.as_str()) {
+            c.rank = 1;
+        }
+    }
 }
 
 /// 型 `ty` のプロジェクトのメンバー（private はその型が今のファイルにあれば。`types` なら入れ子の型も）と、ライブラリの親から継ぐもの
@@ -68,43 +82,8 @@ fn class_name(r: &Receiver) -> bool {
 }
 
 fn after_dot(lang: &dyn Language, cx: &Cx, ranker: &mut Ranker, out: &mut Out) {
-    let lx = lang.lexis();
     let src = cx.src;
-    let (expanded, fqn) = match lang.head(cx, &cx.line[..cx.ws - 1]) {
-        Head::Expr(e, f) => (e, f),
-        Head::Items(items) => {
-            for c in items {
-                out.push(c);
-            }
-            return;
-        }
-    };
-    let var = |n: &str| match n.strip_prefix("new ") {
-        Some(t) => Some(t.split('<').next().unwrap_or(t).to_string()),
-        None => lang.var_type(src, n, cx.start),
-    };
-    let marked = |n: &str| match n.strip_prefix("new ") {
-        Some(t) => Some(format!("={t}")),
-        None => lang.decl_text(src, n, cx.start).map(|d| format!("={d}")),
-    };
-    let class_recv = text::receiver_before(lx, &expanded, expanded.len(), &marked).as_ref().is_some_and(class_name);
-    let recv = text::receiver_before(lx, &expanded, expanded.len(), &var);
-    let ty = recv.as_ref().and_then(|r| ranker.receiver_type_name(&cx.rel, src, cx.start, r));
-    if let Some(t) = &ty {
-        members_of(lang, cx, ranker, t, out, 0, class_recv);
-    }
-    let found = !out.items.is_empty();
-    for m in lang.library_members(cx, ranker, &expanded, fqn.as_ref(), class_recv, found) {
-        match m {
-            LibMember::Item(c) => out.push(c),
-            LibMember::Project(t) => members_of(lang, cx, ranker, &t, out, 0, class_recv),
-        }
-    }
-    if class_recv && !out.items.is_empty() {
-        for k in lang.class_keywords() {
-            out.push(Item::new(*k, 'K', "", 0));
-        }
-    }
+    let Some(ty) = typed_members(lang, cx, ranker, out, &cx.line[..cx.ws - 1], false) else { return };
     if out.items.is_empty() {
         // 型が分からない・プロジェクトの外: ファイルの中で `.` の後に出てくる語（コメント・文字列の中の `www.example.com` などは除く）
         static DOT_WORD: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
@@ -137,6 +116,54 @@ fn words_at<'a>(src: &'a str, w: &'a str) -> impl Iterator<Item = usize> + 'a {
     src.match_indices(w).map(|(i, _)| i).filter(move |&i| !src[..i].ends_with(is_word) && !src[i + w.len()..].starts_with(is_word))
 }
 
+/// `before`（`.` の前の式で終わる文字）の型のメンバー。パッケージなら中身を入れて None、ほかは受け手の型（分かれば）
+/// `statics` なら値でなく型として（static のメンバー・enum の値を）
+fn typed_members(lang: &dyn Language, cx: &Cx, ranker: &mut Ranker, out: &mut Out, before: &str, statics: bool) -> Option<Option<String>> {
+    let lx = lang.lexis();
+    let src = cx.src;
+    let (expanded, fqn) = match lang.head(cx, before) {
+        Head::Expr(e, f) => (e, f),
+        Head::Items(items) => {
+            for c in items {
+                out.push(c);
+            }
+            return None;
+        }
+    };
+    let var = |n: &str| match n.strip_prefix("new ") {
+        Some(t) => Some(t.split('<').next().unwrap_or(t).to_string()),
+        None => lang.var_type(src, n, cx.start),
+    };
+    let marked = |n: &str| match n.strip_prefix("new ") {
+        Some(t) => Some(format!("={t}")),
+        None => lang.decl_text(src, n, cx.start).map(|d| format!("={d}")),
+    };
+    let class_recv = statics || text::receiver_before(lx, &expanded, expanded.len(), &marked).as_ref().is_some_and(class_name);
+    let recv = text::receiver_before(lx, &expanded, expanded.len(), &var);
+    let ty = recv.as_ref().and_then(|r| ranker.receiver_type_name(&cx.rel, src, cx.start, r));
+    if let Some(t) = &ty {
+        members_of(lang, cx, ranker, t, out, 0, class_recv);
+    }
+    let found = !out.items.is_empty();
+    for m in lang.library_members(cx, ranker, &expanded, fqn.as_ref(), class_recv, found) {
+        match m {
+            LibMember::Item(c) => out.push(c),
+            LibMember::Project(t) => members_of(lang, cx, ranker, &t, out, 0, class_recv),
+        }
+    }
+    if class_recv && !out.items.is_empty() {
+        for k in lang.class_keywords() {
+            out.push(Item::new(*k, 'K', "", 0));
+        }
+    }
+    Some(ty)
+}
+
+/// 文字の中の語（名前）の集まり
+fn code_words_set(code: &str) -> HashSet<&str> {
+    code.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$')).filter(|w| !w.is_empty()).collect()
+}
+
 /// 語を集める元の文字（言語が除くなら、コメントと文字列の中を空白にする。位置は変えない）
 fn code_words<'a>(lang: &dyn Language, src: &'a str) -> std::borrow::Cow<'a, str> {
     if lang.words_skip_literals() { std::borrow::Cow::Owned(text::blank_literals(lang.lexis(), src)) } else { std::borrow::Cow::Borrowed(src) }
@@ -144,21 +171,40 @@ fn code_words<'a>(lang: &dyn Language, src: &'a str) -> std::borrow::Cow<'a, str
 
 fn in_scope(lang: &dyn Language, cx: &Cx, ranker: &mut Ranker, out: &mut Out) {
     let src = cx.src;
+    let code = code_words(lang, src);
+    // switch の case の後: 調べる式の型の定数（enum の値）を先に
+    if let Some(subject) = lang.case_subject(cx) {
+        let mut consts = Out { items: Vec::new(), seen: HashSet::new() };
+        typed_members(lang, cx, ranker, &mut consts, &subject, true);
+        for c in consts.items.into_iter().filter(|c| c.mark == 'f' && c.call.is_none()) {
+            out.push(Item { rank: 0, ..c });
+        }
+    }
     // 今の型のメンバー
     if let Some(t) = cx.inside.clone() {
         members_of(lang, cx, ranker, &t, out, 1, false);
     }
     // ファイルの中の語（変数・引数など）。カーソルに近い順
     let all_kws = lang.keywords();
-    if cx.words {
-        let src = &code_words(lang, src);
+    // 後ろに ( が付く語（呼び出し・関数の定義）。名前ごとにファイルを探すと、大きなファイルで遅かった
+    let calls: HashSet<&str> = code.split('(').filter_map(|b| b.trim_end().rsplit(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$')).next()).filter(|w| !w.is_empty()).collect();
+    if let (true, Some(visible)) = (lang.names_from_tree(), &cx.visible) {
+        // 構文木で見える名前（引数・ローカル変数を先に）。ファイルの中のほかの語（import のパッケージの名前など）は出さない
+        for (name, local) in visible {
+            if name.len() > 1 && !all_kws.contains(&name.as_str()) {
+                let call = calls.contains(name.as_str());
+                out.push(Item::new(name, if call { 'm' } else { 'v' }, "", if *local { 0 } else { 1 }));
+            }
+        }
+    } else if cx.words {
+        let src = &*code;
         static WORDS: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
         let words = WORDS.get_or_init(|| regex::Regex::new(r"[A-Za-z_$][\w$]*").unwrap());
         let mut list: Vec<(usize, &str)> = words.find_iter(src).filter(|m| m.start() != cx.start).map(|m| (m.start().abs_diff(cx.start), m.as_str())).collect();
         list.sort_by_key(|x| x.0);
         for (_, w) in list {
             if w.len() > 1 && !all_kws.contains(&w) {
-                let call = src.contains(&format!("{w}("));
+                let call = calls.contains(w);
                 out.push(Item::new(w, 'v', "", u8::from(call) * 2));
             }
         }
@@ -167,12 +213,18 @@ fn in_scope(lang: &dyn Language, cx: &Cx, ranker: &mut Ranker, out: &mut Out) {
     for c in names.first {
         out.push(c);
     }
-    // プロジェクトの型
+    // プロジェクトの型（このファイルで使っているもの・import したものを先に）
+    // 打っている語そのものは除く
+    let end = cx.start + src[cx.start.min(src.len())..].find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$')).unwrap_or(src.len() - cx.start.min(src.len()));
+    let used: HashSet<&str> = if cx.visible.is_some() && lang.names_from_tree() { code_words_set(&code[..cx.start.min(code.len())]).into_iter().chain(code_words_set(&code[end.min(code.len())..])).collect() } else { HashSet::new() };
     if let Some(idx) = cx.index {
-        let mut types: Vec<(&str, DefKind)> = idx.all().filter(|(_, l)| l.kind.is_type()).map(|(n, l)| (n, l.kind)).collect();
+        // 打った最初の文字を含む名前だけ（絞り込みは飛ばし打ちでも打った文字をすべて含む）
+        let first = cx.prefix.chars().next().map(|c| c.to_ascii_lowercase());
+        let has_first = |n: &str| first.is_none_or(|f| n.chars().any(|c| c.to_ascii_lowercase() == f));
+        let mut types: Vec<(&str, DefKind)> = idx.all().filter(|(n, l)| l.kind.is_type() && has_first(n)).map(|(n, l)| (n, l.kind)).collect();
         types.sort_unstable_by(|a, b| a.0.cmp(b.0));
         for (n, k) in types {
-            out.push(Item::new(n, mark_of(k), "", 3));
+            out.push(Item::new(n, mark_of(k), "", if used.contains(n) { 2 } else { 3 }));
         }
     }
     // ライブラリの型（同じ名前でも別のものとして並べる。同じ名前・説明のものだけ除く）
@@ -181,10 +233,30 @@ fn in_scope(lang: &dyn Language, cx: &Cx, ranker: &mut Ranker, out: &mut Out) {
             out.items.push(c);
         }
     }
-    // 予約語
+    // 構文木の名前の下に、ファイルの中の語（言語が残すなら。import・package の行の語は除く）
+    if lang.names_from_tree() && lang.words_below_tree() && cx.visible.is_some() && cx.words {
+        let code = text::blank_import_paths(&code);
+        let mut list: Vec<(usize, &str)> = Vec::new();
+        for (i, _) in code.match_indices(|c: char| c.is_alphabetic() || c == '_' || c == '$') {
+            if i > 0 && code[..i].ends_with(|c: char| c.is_alphanumeric() || c == '_' || c == '$') || i == cx.start {
+                continue;
+            }
+            let w = &code[i..];
+            let w = &w[..w.find(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$')).unwrap_or(w.len())];
+            if w.len() > 1 && !all_kws.contains(&w) && !code[..i].ends_with('.') {
+                list.push((i.abs_diff(cx.start), &src[i..i + w.len()]));
+            }
+        }
+        list.sort_by_key(|x| x.0);
+        for (_, w) in list {
+            out.push(Item::new(w, 'v', "", 5));
+        }
+    }
+    // 予約語（構文木で名前を出す言語では、import した型と同じ順位に。int・return・string などは打つことが多い）
     if cx.keywords {
+        let rank = if cx.visible.is_some() && lang.names_from_tree() { 2 } else { 4 };
         for k in all_kws {
-            out.push(Item::new(*k, 'K', "", 4));
+            out.push(Item::new(*k, 'K', "", rank));
         }
     }
 }

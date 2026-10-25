@@ -17,7 +17,8 @@ pub static JS: Ts = Ts { js: true };
 const KEYWORDS: &[&str] = &[
     "async", "await", "break", "case", "catch", "class", "const", "constructor", "continue", "default", "delete", "else", "enum", "export", "extends", "false", "finally",
     "for", "from", "function", "if", "implements", "import", "in", "instanceof", "interface", "let", "new", "null", "private", "protected", "public", "readonly", "return",
-    "static", "super", "switch", "this", "throw", "true", "try", "type", "typeof", "undefined", "var", "void", "while", "yield",
+    "static", "super", "switch", "this", "throw", "true", "try", "type", "typeof", "undefined", "var", "void", "while", "yield", "string", "number", "boolean", "any",
+    "unknown", "never", "object", "symbol", "bigint", "override", "get", "set", "declare", "abstract", "as", "of", "keyof", "is", "satisfies", "namespace",
 ];
 
 impl Language for Ts {
@@ -41,9 +42,35 @@ impl Language for Ts {
     }
 
     /// 依存のパッケージとプロジェクトのほかのファイルの名前（打った語で始まるもの。決めたら import を足す）
+    fn names_from_tree(&self) -> bool {
+        true
+    }
+
+    /// オブジェクトのキー（`{ code: … }`）は型が分からないと出せないので、ファイルの中の語も下に
+    fn words_below_tree(&self) -> bool {
+        true
+    }
+
     fn scope_names(&self, cx: &Cx) -> ScopeNames {
-        let (Some(ix), Some(h), false) = (eco::dts(cx.libs), cx.here, self.js) else { return ScopeNames::default() };
         let prefix = cx.prefix;
+        // import した名前（構文木の束縛には入れていない）
+        let scan = eco::dts::scan_source(cx.src);
+        let mut first: Vec<Item> = scan.imports.iter().filter(|i| i.local != "*").map(|i| Item::new(i.local.as_str(), if i.local.starts_with(char::is_uppercase) { 'c' } else { 'v' }, i.from.as_str(), 1)).collect();
+        let Some(ix) = eco::dts(cx.libs) else { return ScopeNames { first, last: Vec::new() } };
+        // 大域の名前（console・Array・document など。打ったのが小文字でも大文字で始まるものも）
+        let mut up = prefix.to_string();
+        if let Some(f) = up.get(0..1) {
+            up.replace_range(0..1, &f.to_ascii_uppercase());
+        }
+        if !prefix.is_empty() {
+            let mut globals: Vec<&str> = ix.with_prefix(prefix).into_iter().chain(if up != prefix { ix.with_prefix(&up) } else { Vec::new() }).filter(|d| d.global).map(|d| d.name.as_str()).collect();
+            globals.sort_unstable();
+            globals.dedup();
+            for g in globals {
+                first.push(Item::new(g, if g.starts_with(char::is_uppercase) { 'c' } else { 'v' }, "", 2));
+            }
+        }
+        let (Some(h), false) = (cx.here, self.js) else { return ScopeNames { first, last: Vec::new() } };
         let idx = cx.index;
         let mut names: Vec<&str> = ix.exports_with_prefix(prefix, 300).into_iter().map(|x| x.0).collect();
         if let Some(idx) = idx.filter(|_| !prefix.is_empty()) {
@@ -51,8 +78,7 @@ impl Language for Ts {
         }
         names.sort_unstable();
         names.dedup();
-        let imported: Vec<String> = eco::dts::scan_source(cx.src).imports.into_iter().map(|i| i.from).collect();
-        let mut first = Vec::new();
+        let imported: Vec<String> = scan.imports.into_iter().map(|i| i.from).collect();
         for n in names {
             let Some(spec) = super::import::candidates_with(&ix, idx, h, &imported, n, None).into_iter().next() else { continue };
             let kind = idx.and_then(|i| i.lookup(n).first().map(|l| l.kind)).map_or('c', mark_of);

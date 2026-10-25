@@ -95,11 +95,16 @@ impl Editor {
 
     /// 候補を集める（`ws` は打っている語の始まり（行の中の byte）、`start` はその絶対位置）。手順は nagi_lang の template
     fn smart_candidates(&mut self, line: &str, ws: usize, start: usize) -> Vec<Cand> {
+        // 構文木で見える名前（打っている語そのものは除く）
+        self.ensure_syntax();
+        let typed = self.cursor.byte.min(line.len()).saturating_sub(ws);
+        let visible = self.syntax.as_ref().filter(|_| !line[..ws.min(line.len())].ends_with('.')).and_then(|s| s.visible_names(&self.buf, start, start..start + typed));
         let src = self.buf.text();
         let here = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
         let b = self.cursor.byte.min(line.len());
         let prefix = line.get(ws..b).unwrap_or("");
         let mut cx = nagi_lang::lang::Cx::new(self.language(), &src, here.as_deref(), line, ws, start, prefix, self.nav.index.as_ref(), &self.nav.libs);
+        cx.visible = visible;
         cx.words = self.settings.bool("completion.words");
         cx.keywords = self.settings.bool("completion.keywords");
         let out = nagi_lang::template::complete::complete(&cx);
@@ -387,6 +392,55 @@ mod tests {
         for n in ["title", "counts", "size"] {
             assert!(names.contains(&n.to_string()), "{n}: {names:?}");
         }
+    }
+
+    /// 名前を打つ途中の候補は、構文木でその場所に見える名前だけ（import のパッケージの名前・ほかのメソッドの変数・後ろの変数は出さない）
+    #[test]
+    fn names_in_scope_from_tree() {
+        let src = "import org.springframework.web.bind.Annotation;\n\npublic class App {\n  private int counter;\n  void helper() {}\n  public static void main(String[] args) {\n    int total = 0;\n    for (String item : args) {\n    }\n    \n    int after = 1;\n  }\n  void other(int unrelated) { int inner = 1; }\n}\n";
+        let mut buf = Buffer::from_str(src);
+        let mut syn = nagi_syntax::Syntax::new(nagi_syntax::Lang::Java);
+        if let Some(s) = &mut syn {
+            s.parse(&mut buf);
+        }
+        let mut e = Editor::new(buf, syn);
+        e.buf.path = Some(std::path::PathBuf::from("App.java"));
+        e.set_screen(120, 40);
+        keys(&mut e, "10GA<C-Space>");
+        let names = e.completion.as_ref().map(|c| c.items.clone()).unwrap_or_default();
+        for n in ["args", "total", "counter", "helper", "other", "main"] {
+            assert!(names.contains(&n.to_string()), "{n}: {names:?}");
+        }
+        for n in ["web", "springframework", "bind", "item", "unrelated", "inner", "after"] {
+            assert!(!names.contains(&n.to_string()), "{n}: {names:?}");
+        }
+        // 引数・ローカル変数が先
+        assert_eq!(&names[..2], ["total", "args"], "{names:?}");
+    }
+
+    /// TypeScript: import した名前・括弧の無いアロー関数の引数・for of・catch の変数も見える名前に
+    #[test]
+    fn ts_names_in_scope_from_tree() {
+        let src = "import { HttpClient } from '@angular/common/http';\nimport * as rx from 'rxjs';\n\nexport class Svc {\n  private count = 0;\n  load(items: string[]) {\n    items.forEach(entry => {\n      for (const part of items) {\n        try {\n        } catch (err) {\n          \n        }\n      }\n    });\n  }\n  other(unrelated: number) {}\n}\n";
+        let mut buf = Buffer::from_str(src);
+        let mut syn = nagi_syntax::Syntax::new(nagi_syntax::Lang::TypeScript);
+        if let Some(s) = &mut syn {
+            s.parse(&mut buf);
+        }
+        let mut e = Editor::new(buf, syn);
+        e.buf.path = Some(std::path::PathBuf::from("svc.ts"));
+        e.set_screen(120, 40);
+        keys(&mut e, "11GA<C-Space>");
+        let names = e.completion.as_ref().map(|c| c.items.clone()).unwrap_or_default();
+        for n in ["err", "part", "entry", "items", "HttpClient", "rx", "load", "string"] {
+            assert!(names.contains(&n.to_string()), "{n}: {names:?}");
+        }
+        for n in ["angular", "common", "http", "rxjs"] {
+            assert!(!names.contains(&n.to_string()), "{n}: {names:?}");
+        }
+        // ほかのメソッドの引数は、ファイルの中の語として一番下に（オブジェクトのキーのため）
+        let pos = |n: &str| names.iter().position(|x| x == n);
+        assert!(pos("unrelated") > pos("HttpClient"), "{names:?}");
     }
 
     /// Java のライブラリの型: 打った語で始まる型を出し、決めると import を足す（JDK の ct.sym から作った索引で）
@@ -796,12 +850,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// 実際の Java のプロジェクトで、`x.m` の m（コンパイルが通るコードなので正しい答え）が `.` の後の候補に入る割合
-    /// （NAGI_JAVA_ROOT=… LOCALAPPDATA=… cargo test -p nagi member_rate -- --ignored --nocapture。読むだけ）
-    #[test]
-    #[ignore]
-    fn member_rate() {
-        let Some(root) = std::env::var_os("NAGI_JAVA_ROOT").map(std::path::PathBuf::from) else { return };
+    /// 測る試験の編集の窓（NAGI_JAVA_ROOT の索引と、ライブラリの索引を入れたもの）
+    fn rate_editor() -> Option<(std::path::PathBuf, Editor)> {
+        let root = std::env::var_os("NAGI_JAVA_ROOT").map(std::path::PathBuf::from)?;
         let rx = nagi_workers::index::build(&root, std::sync::Arc::new(|| {}));
         let idx = loop {
             if let Ok(nagi_workers::index::Progress::Done(i)) = rx.recv() {
@@ -821,7 +872,6 @@ mod tests {
             };
             e.nav.libs.set(nagi_lang::eco::JVM, std::sync::Arc::new(jars));
         }
-        // x.m と、行の頭の .m（前の行からの連なり）
         // TypeScript の型の宣言（node_modules があれば）
         if root.join("node_modules").join("typescript").is_dir() {
             e.nav.libs.set(nagi_lang::eco::JS, std::sync::Arc::new(nagi_lang::eco::dts::DtsIndex::load(&root)));
@@ -830,17 +880,14 @@ mod tests {
         if let Some(ws) = root.ancestors().find(|d| d.join("Cargo.lock").is_file()).filter(|_| std::env::var_os("NAGI_NO_CARGO").is_none()) {
             e.nav.libs.set(nagi_lang::eco::CARGO, std::sync::Arc::new(nagi_lang::eco::cargo::load(ws)));
         }
-        let site = regex::Regex::new(r"(?:[\w)]|^\s*)\.([A-Za-z_]\w*)").unwrap();
-        // [型が分かって当たった, 型が分かったが無い, ファイルの語で代わり, 何も無い]
-        let mut n = [0usize; 4];
-        let mut miss: HashMap<String, usize> = HashMap::new();
-        let mut untyped: HashMap<String, usize> = HashMap::new();
-        let mut example: HashMap<String, String> = HashMap::new();
-        let t0 = std::time::Instant::now();
-        // NAGI_RATE_EXT（, 区切り）の拡張子のファイル（既定は java）
+        Some((root, e))
+    }
+
+    /// 測るファイル: NAGI_RATE_EXT（, 区切り）の拡張子（既定は java）
+    fn rate_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
         let exts: Vec<String> = std::env::var("NAGI_RATE_EXT").unwrap_or_else(|_| "java".into()).split(',').map(String::from).collect();
         let mut files = Vec::new();
-        let mut stack = vec![root.clone()];
+        let mut stack = vec![root.to_path_buf()];
         while let Some(d) = stack.pop() {
             for f in std::fs::read_dir(&d).into_iter().flatten().flatten() {
                 let p = f.path();
@@ -853,6 +900,138 @@ mod tests {
             }
         }
         files.sort();
+        files
+    }
+
+    /// 実際に打つときの補完の良さ: コードの中の名前（`.` の後と、そうでない所）の頭を NAGI_PICK_TYPED 文字（既定 2）打ったとき、
+    /// 正しい名前が絞り込んだ一覧の何番目に出るか（1 番・5 番まで・10 番まで・どこか・無い）。宣言する名前は除く
+    /// （NAGI_JAVA_ROOT=… cargo test -p nagi pick_rate -- --ignored --nocapture。NAGI_PICK_STEP ごとに 1 か所（既定 5））
+    #[test]
+    #[ignore]
+    fn pick_rate() {
+        let Some((root, mut e)) = rate_editor() else { return };
+        let typed: usize = std::env::var("NAGI_PICK_TYPED").ok().and_then(|v| v.parse().ok()).unwrap_or(2);
+        let step: usize = std::env::var("NAGI_PICK_STEP").ok().and_then(|v| v.parse().ok()).unwrap_or(5).max(1);
+        let only = std::env::var("NAGI_RATE_ONLY").ok();
+        let word = regex::Regex::new(r"[A-Za-z_$][\w$]*").unwrap();
+        let lang_kws = |e: &Editor| e.language().keywords();
+        // [.の後, そうでない所] × [1 番, 5 番まで, 10 番まで, どこか, 無い]
+        let mut n = [[0usize; 5]; 2];
+        // 外れた所で上に出ていたもの（そうでない所）
+        let mut above: HashMap<String, usize> = HashMap::new();
+        let mut miss: Vec<String> = Vec::new();
+        let mut dump = std::env::var_os("NAGI_RATE_DUMP").map(|f| std::io::BufWriter::new(std::fs::File::create(f).unwrap()));
+        let mut count = 0usize;
+        let mut took = [0u128; 2];
+        let mut slowest: Vec<(u128, String)> = Vec::new();
+        let t0 = std::time::Instant::now();
+        for p in rate_files(&root).iter().filter(|p| only.as_ref().is_none_or(|o| p.to_string_lossy().contains(o.as_str()))) {
+            let Ok(buf) = Buffer::open(p) else { continue };
+            e.buf = buf;
+            e.buf.path = Some(p.to_path_buf());
+            e.syntax = nagi_syntax::Lang::detect(p).and_then(nagi_syntax::Syntax::new);
+            if let Some(s) = &mut e.syntax {
+                s.parse(&mut e.buf);
+            }
+            let text = e.buf.text();
+            let lx = e.language().lexis();
+            let blank = nagi_lang::text::blank_literals(lx, &text);
+            let kws = lang_kws(&e);
+            // TypeScript はこれらの後が宣言する名前（Java は型）
+            let ts = p.extension().is_some_and(|x| x == "ts");
+            let rel = p.strip_prefix(&root).unwrap_or(p).to_string_lossy().replace('\\', "/");
+            for li in 0..e.buf.line_count() {
+                let line = e.buf.line(li).to_string();
+                let t = line.trim_start();
+                if ["import", "package", "@"].iter().any(|x| t.starts_with(x)) {
+                    continue;
+                }
+                let ls = e.buf.line_start(li);
+                let code = &blank[ls..ls + line.len().min(blank.len() - ls)];
+                for m in word.find_iter(code) {
+                    let name = m.as_str();
+                    let ws = m.start();
+                    if name.len() <= typed || code[..ws].ends_with(|c: char| c.is_ascii_digit()) || kws.contains(&name) || name.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+                        continue;
+                    }
+                    let before = code[..ws].trim_end();
+                    // 宣言する名前（型の後の名前・メソッドの宣言）・注釈は除く
+                    let prev = word.find_iter(before).last().filter(|w| w.end() == before.len()).map(|w| w.as_str());
+                    if before.ends_with('@') || before.ends_with(['>', ']']) && !before.ends_with("->") || prev.is_some_and(|w| ts && ["readonly", "static", "private", "public", "protected", "async", "get", "set", "abstract", "override"].contains(&w)) || prev.is_some_and(|w| !kws.contains(&w) || ["class", "interface", "enum", "record", "fun", "val", "var", "let", "const", "function", "fn", "struct", "type", "int", "long", "short", "byte", "char", "boolean", "double", "float", "void"].contains(&w)) {
+                        continue;
+                    }
+                    count += 1;
+                    if count % step != 0 {
+                        continue;
+                    }
+                    let dot = before.ends_with('.');
+                    let start = ls + ws;
+                    e.cursor.byte = ws + typed;
+                    let t1 = std::time::Instant::now();
+                    let c = e.smart_candidates(&line, ws, start);
+                    let us = t1.elapsed().as_micros();
+                    took[usize::from(!before.ends_with('.'))] += us;
+                    slowest.push((us, format!("{rel}:{} {name}", li + 1)));
+                    let prefix = &name[..typed];
+                    let q = Query::new(prefix);
+                    let mut scored: Vec<(u8, u8, i32, usize, usize)> = c.iter().enumerate().filter_map(|(i, x)| matches(prefix, &q, &x.name, "none").map(|(m, s)| (m, x.rank, -s, x.name.len(), i))).collect();
+                    scored.sort();
+                    let shown: Vec<&str> = scored.iter().map(|x| c[x.4].name.as_str()).collect();
+                    let pos = shown.iter().position(|x| *x == name);
+                    let k = match pos {
+                        Some(0) => 0,
+                        Some(i) if i < 5 => 1,
+                        Some(i) if i < 10 => 2,
+                        Some(_) => 3,
+                        None => 4,
+                    };
+                    n[usize::from(!dot)][k] += 1;
+                    if let Some(d) = &mut dump {
+                        std::io::Write::write_fmt(d, format_args!("{rel}:{}:{ws}\t{name}\t{}\t{}\n", li + 1, pos.map_or(-1, |x| x as i64), shown.iter().take(5).copied().collect::<Vec<_>>().join(","))).unwrap();
+                    }
+                    if !dot && k > 0 {
+                        for x in shown.iter().take(pos.unwrap_or(5).min(5)) {
+                            *above.entry((*x).to_string()).or_default() += 1;
+                        }
+                        if miss.len() < 60 && count % (step * 7) == 0 {
+                            miss.push(format!("{}:{} {name} @{:?} {:?}  | {}", p.file_name().unwrap().to_string_lossy(), li + 1, pos, &shown[..shown.len().min(5)], line.trim().chars().take(80).collect::<String>()));
+                        }
+                    }
+                }
+            }
+        }
+        for (title, v, us) in [(".の後", n[0], took[0]), ("そうでない所", n[1], took[1])] {
+            let all: usize = v.iter().sum();
+            let pc = |x: usize| x as f64 * 100.0 / all.max(1) as f64;
+            println!("{title}: {all} 箇所（{typed} 文字）: 1 番 {:.1}% / 5 番まで {:.1}% / 10 番まで {:.1}% / どこか {:.1}% / 無い {:.1}%（1 回 {} µs）", pc(v[0]), pc(v[0] + v[1]), pc(v[0] + v[1] + v[2]), pc(v[3]), pc(v[4]), us / all.max(1) as u128);
+        }
+        println!("{:?}", t0.elapsed());
+        slowest.sort_by(|a, b| b.0.cmp(&a.0));
+        println!("-- 遅い所: {:?}", &slowest[..slowest.len().min(8)]);
+        let mut v: Vec<_> = above.into_iter().collect();
+        v.sort_by(|a, b| b.1.cmp(&a.1));
+        println!("-- 外れた所で上に出ていたもの: {:?}", &v[..v.len().min(40)]);
+        println!("-- 外れた例");
+        for m in miss {
+            println!("{m}");
+        }
+    }
+
+    /// 実際の Java のプロジェクトで、`x.m` の m（コンパイルが通るコードなので正しい答え）が `.` の後の候補に入る割合
+    /// （NAGI_JAVA_ROOT=… LOCALAPPDATA=… cargo test -p nagi member_rate -- --ignored --nocapture。読むだけ）
+    #[test]
+    #[ignore]
+    fn member_rate() {
+        let Some((root, mut e)) = rate_editor() else { return };
+        // x.m と、行の頭の .m（前の行からの連なり）
+        let site = regex::Regex::new(r"(?:[\w)]|^\s*)\.([A-Za-z_]\w*)").unwrap();
+        // [型が分かって当たった, 型が分かったが無い, ファイルの語で代わり, 何も無い]
+        let mut n = [0usize; 4];
+        let mut miss: HashMap<String, usize> = HashMap::new();
+        let mut untyped: HashMap<String, usize> = HashMap::new();
+        let mut example: HashMap<String, String> = HashMap::new();
+        let t0 = std::time::Instant::now();
+        let files = rate_files(&root);
         // NAGI_RATE_FILES があれば、その数ごとに 1 つのファイルだけ（速く測る）
         let step = std::env::var("NAGI_RATE_FILES").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(1).max(1);
         let mut slow: Vec<(u128, String)> = Vec::new();

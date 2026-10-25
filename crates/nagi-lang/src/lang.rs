@@ -89,6 +89,8 @@ pub struct Cx<'a> {
     pub inside: Option<String>,
     /// ライブラリの索引
     pub libs: &'a Libraries,
+    /// 構文木で分かった、今の場所で見える名前（(名前, 関数の中のものか)、近い順）。言語が names_from_tree なら、ファイルの中の語の代わりに
+    pub visible: Option<Vec<(String, bool)>>,
     /// 設定: ファイルの中の語を出す・予約語を出す
     pub words: bool,
     pub keywords: bool,
@@ -106,7 +108,7 @@ impl<'a> Cx<'a> {
             _ => String::new(),
         };
         let inside = lang.enclosing_type(src, start);
-        Cx { lang, src, here, line, ws, start, prefix, index, rel, inside, libs, words: true, keywords: true, out_dir: None, console: None }
+        Cx { lang, src, here, line, ws, start, prefix, index, rel, inside, libs, visible: None, words: true, keywords: true, out_dir: None, console: None }
     }
 
     /// `at`（名前の始まりの絶対 byte）の場所（定義へ・参照の絞り込み）
@@ -178,6 +180,21 @@ pub trait Language: Sync {
     /// よく使う予約語（補完に出す）
     fn keywords(&self) -> &'static [&'static str] {
         &[]
+    }
+
+    /// switch の case の後なら、調べる式（`switch (x)` の x）。その型の定数を先に出す
+    fn case_subject(&self, _cx: &Cx) -> Option<String> {
+        None
+    }
+
+    /// names_from_tree のとき、ファイルの中の語も一番下の順位に残すか（型の分からないオブジェクトのキーなど。import の行の語は除く）
+    fn words_below_tree(&self) -> bool {
+        false
+    }
+
+    /// 名前を打つ途中の候補に、ファイルの中の語でなく構文木で見える名前（引数・ローカル変数・定義）を出す（Cx::visible があれば）
+    fn names_from_tree(&self) -> bool {
+        false
     }
 
     /// ファイルの中の語を候補に集めるとき、コメントと文字列の中を除くか（既定は除く。文章を書くファイルは除かない）

@@ -266,6 +266,10 @@ impl Language for Kotlin {
     }
 
     /// 依存の jar・JDK の型（打った語で始まるもの。決めたら import を足す）
+    fn names_from_tree(&self) -> bool {
+        true
+    }
+
     fn scope_names(&self, cx: &Cx) -> ScopeNames {
         crate::java::lang::JAVA.scope_names(cx)
     }

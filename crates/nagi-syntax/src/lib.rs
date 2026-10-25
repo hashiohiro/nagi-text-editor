@@ -917,6 +917,12 @@ impl Syntax {
         defs::receiver_at(tree, at, &text, &binds)
     }
 
+    /// `at` で見える束縛の名前（(名前, 関数の中のものか)、近い順。補完に。`skip` は打っている語の範囲）
+    pub fn visible_names(&self, buf: &Buffer, at: usize, skip: Range<usize>) -> Option<Vec<(String, bool)>> {
+        let tree = self.tree.as_ref()?;
+        Some(defs::visible_bindings(tree, at, skip, &|r: Range<usize>| buf.slice_string(r.start, r.end)))
+    }
+
     /// `at` の識別子の、このファイルの中の定義の位置（引数・ローカル変数を含む）
     pub fn local_definition(&self, buf: &Buffer, at: usize) -> Option<usize> {
         let tree = self.tree.as_ref()?;

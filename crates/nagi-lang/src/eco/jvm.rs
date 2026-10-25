@@ -601,6 +601,21 @@ impl JarIndex {
         self.packages.get(i).is_some_and(|p| &**p == pkg || p.strip_prefix(pkg).is_some_and(|r| r.starts_with('/')))
     }
 
+    /// `prefix` で始まる一番上のパッケージの名前（`co` → `com`）
+    pub fn top_packages(&self, prefix: &str) -> Vec<&str> {
+        let mut out: Vec<&str> = Vec::new();
+        let mut from = prefix.to_string();
+        loop {
+            let i = self.packages.partition_point(|p| **p < *from);
+            let Some(p) = self.packages.get(i).filter(|p| p.starts_with(prefix)) else { break };
+            let top = p.split('/').next().unwrap_or(p);
+            out.push(top);
+            // 次の一番上の名前へ（'/' の次の文字 '0' で、その下のパッケージを飛ばす）
+            from = format!("{top}0");
+        }
+        out
+    }
+
     /// `pkg` の下のパッケージの次の名前（`java` → `util`・`io` …）
     pub fn subpackages(&self, pkg: &str) -> Vec<&str> {
         let head = format!("{pkg}/");

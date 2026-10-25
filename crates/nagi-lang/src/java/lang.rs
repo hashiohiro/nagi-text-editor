@@ -17,7 +17,8 @@ pub const STYLES: crate::project::VarStyles = crate::project::VarStyles { type_f
 const KEYWORDS: &[&str] = &[
     "abstract", "boolean", "break", "case", "catch", "char", "class", "continue", "default", "double", "else", "enum", "extends", "final", "finally", "float", "for", "if",
     "implements", "import", "instanceof", "int", "interface", "long", "new", "null", "package", "private", "protected", "public", "return", "static", "super", "switch",
-    "synchronized", "this", "throw", "throws", "try", "var", "void", "while", "true", "false", "record", "yield",
+    "synchronized", "this", "throw", "throws", "try", "var", "void", "while", "true", "false", "record", "yield", "byte", "short", "do", "assert",
+    "transient", "volatile", "native",
 ];
 
 impl Language for Java {
@@ -91,24 +92,56 @@ impl Language for Java {
     }
 
     /// 依存の jar・JDK の型（打った語で始まるもの。決めたら import を足す）
+    fn case_subject(&self, cx: &Cx) -> Option<String> {
+        super::rules::case_subject(cx.src, cx.line, cx.ws, cx.start)
+    }
+
+    fn names_from_tree(&self) -> bool {
+        true
+    }
+
     fn scope_names(&self, cx: &Cx) -> ScopeNames {
         let Some(jars) = eco::jars(cx.libs) else { return ScopeNames::default() };
         let prefix = cx.prefix;
-        let imported = |fqn: &str| cx.src.contains(&format!("import {fqn};"));
+        // import した型（ファイルを 1 度だけ見る）
+        let imports: std::collections::HashSet<&str> = cx.src.lines().filter_map(|l| l.trim().strip_prefix("import ")?.strip_suffix(';')).map(str::trim).collect();
+        let imported = |fqn: &str| imports.contains(fqn);
         let mut up = prefix.to_string();
         if let Some(f) = up.get(0..1) {
             up.replace_range(0..1, &f.to_ascii_uppercase());
         }
-        let mut names = jars.by_prefix(prefix, 200);
+        // その名前で始まる型をすべて見て、java.lang と import したものは全部、ほかは短い順に（名前の順の先頭だけだと String が外れた）
+        let mut names = jars.by_prefix(prefix, usize::MAX);
         if up != prefix {
-            names.extend(jars.by_prefix(&up, 200));
+            names.extend(jars.by_prefix(&up, usize::MAX));
         }
-        let mut last = Vec::new();
-        for internal in names {
+        let item = |internal: &str, rank| {
             let fqn = super::import::java_name(internal);
-            let Some((pkg, simple)) = fqn.rsplit_once('.') else { continue };
-            let rank = if pkg == "java.lang" || imported(&fqn) { 2 } else { 3 };
-            last.push(Item { name: simple.to_string(), mark: 'c', note: pkg.to_string(), call: None, rank, insert: None, import: Some(fqn.clone()) });
+            let (pkg, simple) = fqn.rsplit_once('.')?;
+            Some(Item { name: simple.to_string(), mark: 'c', note: pkg.to_string(), call: None, rank, insert: None, import: Some(fqn.clone()) })
+        };
+        let simple_len = |internal: &str| internal.len() - internal.rfind(['/', '$']).map_or(0, |i| i + 1);
+        let mut last = Vec::new();
+        let mut far = Vec::new();
+        for internal in names {
+            let java_lang = internal.strip_prefix("java/lang/").is_some_and(|r| !r.contains(['/', '$']));
+            if java_lang || imported(&internal.replace(['/', '$'], ".")) {
+                last.extend(item(internal, 2));
+            } else {
+                far.push(internal);
+            }
+        }
+        far.sort_by_key(|n| simple_len(n));
+        last.extend(far.into_iter().take(300).filter_map(|n| item(n, 3)));
+        // 一番上のパッケージ（`co` → `com`。型の後に。打ったのが小文字のとき）
+        if prefix.starts_with(|c: char| c.is_ascii_lowercase()) {
+            let mut tops: std::collections::BTreeSet<String> = jars.top_packages(prefix).into_iter().map(String::from).collect();
+            if let Some(i) = cx.index {
+                tops.extend(i.files().filter(|f| f.ends_with(".java")).filter_map(|f| Some(super::types::source_package(f)?.split('/').next()?.to_string())).filter(|t| t.starts_with(prefix)));
+            }
+            for t in tops {
+                last.push(Item::new(t, 'p', "", 4));
+            }
         }
         ScopeNames { first: Vec::new(), last }
     }
