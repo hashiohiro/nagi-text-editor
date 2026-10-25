@@ -10,6 +10,8 @@ pub mod grammars;
 pub mod grep;
 pub mod index;
 pub mod jdk;
+pub mod jdwp;
+pub mod debug;
 pub mod jobs;
 pub mod maven;
 pub mod maven_deps;
