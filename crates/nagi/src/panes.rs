@@ -244,7 +244,9 @@ impl Editor {
         }
         let new = self.wins.len();
         self.wins.push(WinSlot::Parked(Win { doc: self.cur_doc, cursor: self.cursor, top: self.top, left: self.left }));
-        self.layout.insert(self.cur_win, new, vertical, true);
+        // 新しい窓は上・左に（Vim と同じ）。設定の splitbelow・splitright なら下・右に
+        let after = if vertical { self.settings.bool("editor.split_right") } else { self.settings.bool("editor.split_below") };
+        self.layout.insert(self.cur_win, new, vertical, !after);
         self.focus_window(new);
     }
 

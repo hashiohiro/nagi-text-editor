@@ -113,6 +113,28 @@ pub static OPTS: &[VimOpt] = &[
     bool_opt!(["autoindent", "ai"], "editor.auto_indent"),
     bool_opt!(["smartindent", "si"], "editor.smart_indent"),
     bool_opt!(["cindent", "cin"], "editor.smart_indent"),
+    num_opt!(["scrolloff", "so"], "editor.scrolloff"),
+    VimOpt {
+        names: &["list"],
+        kind: VKind::Bool,
+        keys: &["editor.show_whitespace"],
+        get: |s| b(s.get("editor.show_whitespace") != "off"),
+        put: |_, v| vec![("editor.show_whitespace", if on(v) { "trailing" } else { "off" }.to_string())],
+    },
+    bool_opt!(["cursorline", "cul"], "editor.cursorline"),
+    VimOpt {
+        names: &["colorcolumn", "cc"],
+        kind: VKind::Str,
+        keys: &["editor.colorcolumn"],
+        get: |s| s.get("editor.colorcolumn"),
+        put: |_, v| vec![("editor.colorcolumn", v.to_string())],
+    },
+    bool_opt!(["splitbelow", "sb"], "editor.split_below"),
+    bool_opt!(["splitright", "spr"], "editor.split_right"),
+    bool_opt!(["wrapscan", "ws"], "vim.wrapscan"),
+    num_opt!(["timeoutlen", "tm"], "vim.timeoutlen"),
+    bool_opt!(["highlightedyank"], "vim.highlight_yank"),
+    bool_opt!(["ideajoin"], "vim.ideajoin"),
     // 保存
     bool_opt!(["fixendofline", "fixeol"], "editor.final_newline"),
     // 新しいファイルの改行・文字コード（vimrc の ff・fenc。:set では今のファイルに。editor_settings.rs の buffer_option）
@@ -286,7 +308,7 @@ pub fn rc_layer(sets: &[(String, String)]) -> (HashMap<String, String>, HashMap<
 }
 
 /// vimrc にあってもよい、nagi が設定として持たないもの（IdeaVim のプラグイン・ほかの動きで足りているもの）
-const IGNORED: &[&str] = &["surround", "commentary", "easymotion", "multiple-cursors", "NERDTree", "argtextobj", "exchange", "textobj-entire", "ReplaceWithRegister", "highlightedyank", "ideajoin", "idearefactormode", "ideaput", "ideamarks", "ideastatusicon", "visualbell", "vb", "noerrorbells", "showmode", "showcmd", "history", "hi", "nocompatible", "compatible", "encoding", "enc"];
+const IGNORED: &[&str] = &["surround", "commentary", "easymotion", "multiple-cursors", "NERDTree", "argtextobj", "exchange", "textobj-entire", "ReplaceWithRegister", "idearefactormode", "ideaput", "ideamarks", "ideastatusicon", "visualbell", "vb", "noerrorbells", "showmode", "showcmd", "history", "hi", "nocompatible", "compatible", "encoding", "enc"];
 
 /// `:set` の引数を、この窓だけの層に当てる。見るものがあれば、その文字を返す
 pub fn ex_set(s: &mut Settings, arg: &str) -> Result<Option<String>, String> {

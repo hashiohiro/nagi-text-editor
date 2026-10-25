@@ -92,6 +92,9 @@ pub(crate) const DIAG_ERROR: [f32; 4] = rgb(0xd75f5f);
 pub(crate) const DIAG_WARN: [f32; 4] = rgb(0xd7af5f);
 /// 検索の一致（今いるもの以外）の背景
 pub(crate) const MATCH_BG: [f32; 4] = rgb(0x3a3a3a);
+/// カーソルの行（設定の cursorline）・ヤンクした範囲の光
+pub(crate) const CURSOR_LINE_BG: [f32; 4] = rgb(0x262626);
+pub(crate) const YANK_BG: [f32; 4] = rgb(0x5f5f87);
 /// 強調の色（選んでいる欄・決めるボタン。配色の設定で描いた後に置き換わる）
 pub(crate) const ACCENT_FG: [f32; 4] = rgb(DEFAULT_ACCENT);
 
@@ -443,6 +446,11 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
     let replacing = pane.active && ed.state() == State::Replace && !ed.query.text.is_empty();
     // 折り返し（設定）: 本文の幅で折り返す。1 行が使う画面の行を数えながら並べる
     let wrapw = if ed.settings.bool("editor.wrap") { rect.w.saturating_sub(gutter) } else { 0 };
+    // 空白を見せる（list）・全角の空白・カーソルの行・ヤンクした範囲
+    let show_ws = ed.settings.get("editor.show_whitespace");
+    let show_zen = ed.settings.bool("editor.show_fullwidth_space");
+    let cursorline = ed.settings.bool("editor.cursorline") && pane.active;
+    let flash = ed.yank_flash.filter(|_| pane.active).map(|f| (f.0, f.1));
 
     let mut vrow = 0usize;
     let mut next = 0usize;
@@ -591,6 +599,16 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
             }
             let width = p.cell_width(g);
             let mut it = Item { g: Cow::Borrowed(g), width, fg: colors.get(b).copied().unwrap_or(FG), bg: None, underline: false };
+            let trailing = b >= line.trim_end_matches([' ', '\t', '\u{3000}']).len();
+            match g {
+                "\t" if show_ws != "off" => (it.g, it.fg) = (Cow::Borrowed("→"), LINE_NO),
+                " " if show_ws == "all" || show_ws == "trailing" && trailing => (it.g, it.fg) = (Cow::Borrowed("·"), LINE_NO),
+                "\u{3000}" if show_zen || show_ws != "off" => (it.g, it.fg) = (Cow::Borrowed("□"), LINE_NO),
+                _ => {}
+            }
+            if flash.is_some_and(|(fs, fe)| a >= fs && a < fe) {
+                it.bg = Some(YANK_BG);
+            }
             if let Some(&(ms, me)) = line_matches.get(mi) {
                 if a >= ms && a < me {
                     if pane.active && Some((ms, me)) == ed.search.current && matches!(ed.state(), State::Search) {
@@ -630,6 +648,9 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
         if pane.left > 0 && wrapw == 0 {
             let width: usize = items.iter().map(|i| i.width).sum();
             cursor_gone = skip_cols(&mut items, pane.left, &mut cursor_item) || (cursor_item.is_none() && width < pane.left);
+        }
+        if cursorline && is_cursor_line {
+            p.out.push(Instance::fill((rect.x + gutter) as f32 * cell.w, y, rect.w.saturating_sub(gutter) as f32 * cell.w, cell.h * line_rows as f32, CURSOR_LINE_BG));
         }
         if !is_cursor_line || matches!(ed.state(), State::Command | State::Search | State::Replace | State::Finder | State::GrepPrompt | State::List | State::CommitMsg | State::Diff | State::Log | State::Branches | State::DbTable) {
             p.draw(&items, rect.x + gutter, y);
@@ -681,6 +702,19 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
 
     p.wrap_w = 0;
     p.wrap_rows = 1;
+    // 右端の線（設定の colorcolumn と .editorconfig の max_line_length）
+    if wrapw == 0 {
+        let mut cols: Vec<usize> = ed.settings.list("editor.colorcolumn").iter().filter_map(|c| c.parse().ok()).collect();
+        if pane.active {
+            cols.extend(ed.ec("max_line_length").and_then(|v| v.parse::<usize>().ok()));
+        }
+        for c in cols.into_iter().filter(|c| *c > pane.left) {
+            let x = rect.x + gutter + c - pane.left;
+            if x < rect.x + rect.w {
+                p.out.push(Instance::fill(x as f32 * cell.w, rect.y as f32 * cell.h, 1.0, rect.h as f32 * cell.h, LINE_NO));
+            }
+        }
+    }
     // EasyMotion の印（跳び先の文字の上に重ねる）
     if let Some(e) = ed.easy.as_ref().filter(|e| e.picking && pane.active) {
         for (l, b, label) in &e.targets {

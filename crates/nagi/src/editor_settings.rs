@@ -609,6 +609,39 @@ mod tests {
         assert_eq!(e.buf.line(0), "(f(\"a\"); don't x", "語の前では閉じない");
     }
 
+    /// scrolloff・wrapscan・ideajoin・highlightedyank（vimrc の書き方の :set で）
+    #[test]
+    fn vim_display_and_motion_options() {
+        use nagi_vim::Key;
+        let text: String = (0..30).map(|i| format!("line {i}\n")).collect();
+        let mut e = Editor::new(Buffer::from_str(&text), None);
+        e.rows = 10;
+        e.ex_set("so=3 nows hlsearch");
+        for _ in 0..8 {
+            e.key(Key::Char('j'));
+        }
+        assert_eq!(e.top, 2, "8 行目で下に 3 行残す");
+        e.key(Key::Char('G'));
+        assert_eq!(e.top, 20, "終わりより先へは送らない");
+        // wrapscan がオフなら、末尾の後ろから先頭へは戻らない
+        for k in nagi_vim::parse_keys("/line 1<CR>", " ") {
+            e.key(k);
+        }
+        assert!(e.notify.text.contains("E385"), "{}", e.notify.text);
+        // ideajoin
+        let mut e = Editor::new(Buffer::from_str("// a\n// b\nx = \"p\" +\n    \"q\";\n"), None);
+        e.ex_set("ideajoin");
+        e.key(Key::Char('J'));
+        assert_eq!(e.buf.line(0), "// a b");
+        e.key(Key::Char('j'));
+        e.key(Key::Char('J'));
+        assert_eq!(e.buf.line(1), "x = \"pq\";");
+        e.ex_set("highlightedyank");
+        e.key(Key::Char('y'));
+        e.key(Key::Char('y'));
+        assert!(e.yank_flash.is_some());
+    }
+
     /// .editorconfig は設定より強く、:set より弱い
     #[test]
     fn editorconfig_wins_over_settings() {

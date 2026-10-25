@@ -291,6 +291,8 @@ pub struct Editor {
     pub(crate) recent_edits: Vec<(std::path::PathBuf, usize)>,
     /// EasyMotion の印を出している・文字を待っている（easy.rs）
     pub(crate) easy: Option<crate::easy::Easy>,
+    /// ヤンクした範囲を光らせる（始め, 終わり, 消す時刻。設定の highlightedyank）
+    pub yank_flash: Option<(usize, usize, std::time::Instant)>,
     /// .editorconfig の値（ファイルごと。設定を効かせ直すとき・保存したときに捨てる。editorconfig.rs）
     pub(crate) ec_cache: std::cell::RefCell<std::collections::HashMap<std::path::PathBuf, std::rc::Rc<std::collections::HashMap<String, String>>>>,
     /// 閉じたファイル（ファイル, 行, byte。新しいものが後ろ。ReopenClosedTab）
@@ -646,6 +648,7 @@ impl Editor {
             last_change: None,
             recent_edits: Vec::new(),
             easy: None,
+            yank_flash: None,
             ec_cache: Default::default(),
             closed_files: Vec::new(),
             showcmd: String::new(),
@@ -1419,6 +1422,11 @@ impl Editor {
         } else {
             self.find_next(at, self.search.forward, include_at)
         };
+        // wrapscan がオフなら、端を越えた一致は使わない
+        if !self.settings.bool("vim.wrapscan") {
+            let fwd = self.search.forward;
+            self.search.current = self.search.current.filter(|(s, _)| if fwd { *s >= at } else { *s < at });
+        }
         match self.search.current {
             Some((s, _)) => self.set_abs(s),
             None => {
@@ -1471,7 +1479,13 @@ impl Editor {
                     }
                 }
                 if self.search.current.is_none() {
-                    self.notify.error(format!("E486: パターンは見つかりませんでした: {pattern}"));
+                    // wrapscan がオフで、端の向こうにはある
+                    let elsewhere = !self.settings.bool("vim.wrapscan") && self.find_next(0, true, true).is_some();
+                    match (elsewhere, self.search.forward) {
+                        (true, true) => self.notify.error("E385: 末尾まで検索しました（wrapscan がオフ）"),
+                        (true, false) => self.notify.error("E384: 先頭まで検索しました（wrapscan がオフ）"),
+                        _ => self.notify.error(format!("E486: パターンは見つかりませんでした: {pattern}")),
+                    }
                 } else {
                     self.show_count();
                 }
@@ -1519,10 +1533,15 @@ impl Editor {
         let fwd = forward != reverse;
         let mut at = self.abs();
         let mut found = None;
+        // wrapscan がオフなら、端を越えた一致は使わない
+        let wrap = self.settings.bool("vim.wrapscan");
         for _ in 0..count.max(1) {
-            found = self.find_next(at, fwd, false);
+            found = self.find_next(at, fwd, false).filter(|(s, _)| wrap || if fwd { *s > at } else { *s < at });
             if let Some((s, _)) = found {
                 at = s;
+            } else if !wrap {
+                self.notify.error(if fwd { "E385: 末尾まで検索しました（wrapscan がオフ）" } else { "E384: 先頭まで検索しました（wrapscan がオフ）" });
+                return None;
             }
         }
         match found {
@@ -2062,10 +2081,15 @@ impl Editor {
         if self.frac > 0.0 && self.cursor.line <= self.top {
             self.frac = 0.0;
         }
-        if self.cursor.line < self.top {
-            self.top = self.cursor.line;
-        } else if self.cursor.line >= self.top + rows {
-            self.top = self.cursor.line + 1 - rows;
+        // カーソルの上下に残す行（設定の scrolloff。画面の半分まで。ファイルの終わりより先へは送らない）
+        let so = (self.settings.int("editor.scrolloff") as usize).min(rows.saturating_sub(1) / 2);
+        let last_top = self.buf.line_count().saturating_sub(rows);
+        if self.cursor.line < self.top + so {
+            self.top = self.cursor.line.saturating_sub(so);
+        } else if self.cursor.line + so >= self.top + rows {
+            // カーソルが見える最も上の top より下へは、ファイルの終わりを越えて送らない
+            let need = (self.cursor.line + 1).saturating_sub(rows);
+            self.top = (self.cursor.line + so + 1 - rows).min(last_top).max(need);
         }
         // 折り返していれば、カーソルの行（の終わり）まで画面に入るように上の行を送る
         if let Some(w) = self.wrap_width() {

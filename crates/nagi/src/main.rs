@@ -822,7 +822,8 @@ impl Frame {
         let out = if let Some(m) = map_mode.filter(|_| vim) {
             match self.matcher.feed_in(&self.rc.keymap, m, k) {
                 Feed::Pending => {
-                    self.map_deadline = Some(Instant::now() + TIMEOUT_LEN);
+                    let wait = self.ed.as_ref().map_or(TIMEOUT_LEN, |e| Duration::from_millis(e.settings.int("vim.timeoutlen") as u64));
+                    self.map_deadline = Some(Instant::now() + wait);
                     return false;
                 }
                 Feed::Emit(keys) => keys,
@@ -1442,6 +1443,10 @@ impl Frame {
                 self.on_held(el);
             }
             // 入力補完を自動で出す（設定）
+            // ヤンクした範囲の光を消す
+            if self.ed.as_mut().is_some_and(|e| e.yank_flash.is_some_and(|f| now >= f.2) && e.yank_flash.take().is_some()) {
+                self.draw();
+            }
             if self.ed.as_mut().is_some_and(|e| e.fire_auto_complete(now)) {
                 self.draw();
             }
@@ -1473,7 +1478,8 @@ impl Frame {
             }
         }
         let auto = self.ed.as_ref().and_then(|e| e.auto_complete_at);
-        let deadline = [self.map_deadline, self.snap_deadline, self.autoscroll_deadline, self.replay_deadline, self.held.as_ref().map(|h| h.3), auto].into_iter().flatten().min();
+        let flash = self.ed.as_ref().and_then(|e| e.yank_flash.map(|f| f.2));
+        let deadline = [self.map_deadline, self.snap_deadline, self.autoscroll_deadline, self.replay_deadline, self.held.as_ref().map(|h| h.3), auto, flash].into_iter().flatten().min();
         let _ = el;
         self.flow = if self.scroll_anim.is_some() {
             ControlFlow::Poll

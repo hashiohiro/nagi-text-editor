@@ -22,6 +22,29 @@ enum Kd {
 }
 
 
+/// ideajoin で消す範囲: (今の行の中の始め, 次の行の字下げの後からの終わり, 間に入れるもの)。当たらなければ None
+fn idea_join(cur: &str, rest: &str) -> Option<(usize, usize, &'static str)> {
+    let body = cur.trim_start();
+    for mark in ["///", "//", "#", "--", "*"] {
+        if body.starts_with(mark) && rest.starts_with(mark) && !rest.starts_with("*/") {
+            let after = rest[mark.len()..].trim_start();
+            let cut = rest.len() - after.len();
+            let t = cur.trim_end().len();
+            return Some((t, cut, if after.is_empty() { "" } else { " " }));
+        }
+    }
+    // "a" + / "a" + の次の行が "b"
+    for q in ['"', '\''] {
+        let t = cur.trim_end();
+        if let Some(head) = t.strip_suffix('+').map(str::trim_end).filter(|h| h.ends_with(q)) {
+            if rest.starts_with(q) {
+                return Some((head.len() - 1, 1, ""));
+            }
+        }
+    }
+    None
+}
+
 fn leading_ws(line: &str) -> &str {
     &line[..line.len() - line.trim_start_matches([' ', '\t']).len()]
 }
@@ -609,6 +632,9 @@ impl Editor {
         match op {
             Op::Yank => {
                 self.set_register(reg, normalize(&text, lw), lw, true);
+                if self.settings.bool("vim.highlight_yank") {
+                    self.yank_flash = Some((s, e, std::time::Instant::now() + std::time::Duration::from_millis(300)));
+                }
                 if !lw {
                     self.set_abs(s);
                 } else {
@@ -1019,6 +1045,16 @@ impl Editor {
             let start = self.buf.line_start(l) + cur.len();
             let end = self.buf.line_start(l + 1) + leading_ws(&next).len();
             let rest = next.trim_start_matches([' ', '\t']);
+            // ideajoin: 注釈の続きは印（// # -- *）を、"a" +\n"b" は引用符と + を外してつなぐ
+            if self.settings.bool("vim.ideajoin") {
+                if let Some((s2, e2, sep)) = idea_join(&cur, rest) {
+                    let ls = self.buf.line_start(l);
+                    let ns = end;
+                    self.edit(ls + s2, ns + e2, sep);
+                    pos = Some(ls + s2);
+                    continue;
+                }
+            }
             let sep = if cur.ends_with([' ', '\t']) || rest.is_empty() || rest.starts_with(')') || cur.is_empty() { "" } else { " " };
             let cur_trimmed = cur.trim_end_matches([' ', '\t']).len();
             let start2 = if sep.is_empty() { start } else { self.buf.line_start(l) + cur_trimmed };
