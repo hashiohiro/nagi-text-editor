@@ -87,6 +87,7 @@ mod easy;
 mod editorconfig;
 mod session;
 mod surround;
+mod format;
 mod panes;
 mod instance;
 

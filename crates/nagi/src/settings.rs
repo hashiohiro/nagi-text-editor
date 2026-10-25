@@ -188,6 +188,7 @@ pub static SCHEMA: &[Item] = &[
     pitem("toolchain.dart", "ビルド・実行", "Dart", SKind::Tool("dart"), "", TOOL_HELP),
     pitem("toolchain.php", "ビルド・実行", "PHP", SKind::Tool("php"), "", TOOL_HELP),
 
+    pitem("tools.formatters", "ツール", "整形のコマンド", T, "java=google-java-format -, rs=rustfmt --edition 2021, go=gofmt, py=black -q -, ts|tsx|js|jsx|mjs|cjs|json|css|scss|less|html|vue|md|yaml|yml=npx --no-install prettier --stdin-filepath {file}, c|h|cpp|hpp|cc=clang-format --assume-filename={file}", "拡張子=コマンド をカンマで区切る（| で拡張子を並べる。{file} はファイルのパス）。標準入力で中身を受け、標準出力に整形した中身を出すもの。ReformatCode・:Format で動かす"),
     item("tools.extra_path", "ツール", "追加の PATH", T, "", "gradle・npm・cargo などの場所（; で区切る）"),
     item("git.path", "ツール", "Git: git の場所", T, "", "空なら PATH の git"),
     item("git.wsl", "ツール", "Git: WSL のプロジェクトは WSL の git", B, "true", ""),

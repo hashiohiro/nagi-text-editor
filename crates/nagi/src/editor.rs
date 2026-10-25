@@ -293,6 +293,8 @@ pub struct Editor {
     pub(crate) easy: Option<crate::easy::Easy>,
     /// ヤンクした範囲を光らせる（始め, 終わり, 消す時刻。設定の highlightedyank）
     pub yank_flash: Option<(usize, usize, std::time::Instant)>,
+    /// 動いている整形（format.rs）
+    pub(crate) format_job: Option<crate::format::FormatJob>,
     /// 最後に編集した時刻（自動で保存するまでの時間を数える）
     pub last_edit_at: Option<std::time::Instant>,
     /// .editorconfig の値（ファイルごと。設定を効かせ直すとき・保存したときに捨てる。editorconfig.rs）
@@ -528,6 +530,7 @@ impl Editor {
             changed = true;
         }
         for poll in [
+            Self::poll_format,
             Self::poll_search,
             Self::poll_finder,
             Self::poll_launcher,
@@ -651,6 +654,7 @@ impl Editor {
             recent_edits: Vec::new(),
             easy: None,
             yank_flash: None,
+            format_job: None,
             last_edit_at: None,
             ec_cache: Default::default(),
             closed_files: Vec::new(),
