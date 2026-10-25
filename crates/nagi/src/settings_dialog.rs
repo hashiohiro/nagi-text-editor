@@ -12,7 +12,8 @@ use std::cell::RefCell;
 use nagi_vim::Key;
 
 use crate::editor::{Editor, State};
-use crate::settings::{CATEGORIES, Item, SCHEMA, SKind, Settings};
+use crate::settings::{CATEGORIES, Item, MAPS_CAT, SCHEMA, SKind, Settings};
+use crate::vim_maps::{self, MapRow};
 use crate::vim_field::{FieldOut, VimField};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -89,6 +90,11 @@ pub struct SettingsDialog {
     /// ダウンロードできる版（種類 → 一覧。コンボボックスを初めて開いたときに裏で調べる）
     pub releases: Releases,
     waker: nagi_workers::Waker,
+    /// Vim の割り当て（直している写し。適用で keys.vim へ）
+    pub maps: Vec<MapRow>,
+    pub maps_dirty: bool,
+    /// 足す行で先に Action を選んだときの右辺（左辺を打って決める）
+    pub map_rhs: Option<String>,
 }
 
 pub type Releases = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, nagi_core::Result<Vec<nagi_workers::toolchains::Release>>>>>;
@@ -110,6 +116,88 @@ impl SettingsDialog {
                 cat == "（すべて）" || i.cat == cat
             })
             .collect()
+    }
+
+    /// Vim の割り当ての分類を見ている（絞り込んでいないとき）
+    pub fn is_maps(&self) -> bool {
+        CATEGORIES[self.cat] == MAPS_CAT && self.filter.text().is_empty()
+    }
+
+    /// 割り当てを直し始める（「モード 左辺 右辺」の 1 行で。最後の行なら足す）
+    fn map_edit(&mut self) {
+        let text = match self.maps.get(self.selected) {
+            Some(r) => vim_maps::line_of(r),
+            None => "n <leader>".into(),
+        };
+        let mut f = VimField::new(&text, false);
+        f.reinsert();
+        self.field = Some(f);
+        self.focus = SFocus::Edit;
+    }
+
+    /// 直した割り当てを決める
+    fn map_commit(&mut self) -> Option<String> {
+        let f = self.field.take()?;
+        self.focus = SFocus::Items;
+        let mut text = f.text().trim().to_string();
+        // 先に Action を選んでいれば、打ったのは左辺まで
+        if let Some(rhs) = self.map_rhs.take() {
+            if text.split_whitespace().count() <= 2 {
+                text = format!("{text} {rhs}");
+            }
+        }
+        let row = match vim_maps::parse_line(&text) {
+            Ok(r) => r,
+            Err(e) => return Some(e),
+        };
+        // 同じモード・左辺のものは置き換える
+        let at = if self.selected < self.maps.len() { Some(self.selected) } else { None };
+        if let Some(j) = self.maps.iter().position(|m| m.mode == row.mode && m.lhs == row.lhs).filter(|j| Some(*j) != at) {
+            self.maps.remove(j);
+            if at.is_some_and(|a| a > j) {
+                self.selected -= 1;
+            }
+        }
+        match at {
+            Some(_) => self.maps[self.selected] = row,
+            None => {
+                self.maps.push(row);
+                self.selected = self.maps.len() - 1;
+            }
+        }
+        self.maps_dirty = true;
+        self.dirty = true;
+        None
+    }
+
+    fn map_delete(&mut self) {
+        if self.selected < self.maps.len() {
+            self.maps.remove(self.selected);
+            self.maps_dirty = true;
+            self.dirty = true;
+        }
+    }
+
+    /// 元に戻す: nagi の既定・vimrc にあるものはその値に、画面で足したものは消す
+    fn map_revert(&mut self, base: &[MapRow]) {
+        let Some(r) = self.maps.get(self.selected) else { return };
+        match base.iter().find(|b| b.mode == r.mode && b.lhs == r.lhs) {
+            Some(b) => self.maps[self.selected] = b.clone(),
+            None => {
+                self.maps.remove(self.selected);
+            }
+        }
+        self.maps_dirty = true;
+        self.dirty = true;
+    }
+
+    /// 割り当ての右辺を一覧（IntelliJ のアクション・nagi のコマンド）から選ぶ
+    fn map_choose(&mut self) {
+        let items: Vec<ComboItem> = vim_maps::choices().into_iter().map(|(label, value, tag)| ComboItem { label, value, tag }).collect();
+        let cur = self.maps.get(self.selected).map(|r| r.rhs.clone()).unwrap_or_default();
+        let sel = items.iter().position(|i| i.value == cur).unwrap_or(0);
+        self.combo = Some(Combo { items, filter: VimField::new("", true), sel, top: sel.saturating_sub(5) });
+        self.focus = SFocus::Combo;
     }
 
     pub fn current(&self) -> Option<&'static Item> {
@@ -191,6 +279,26 @@ impl SettingsDialog {
 
     /// コンボボックスで選んだものに決める。ダウンロードを選んだら、何をかを返す（Editor が始める。JDK は版、ツールは tool:種類）
     fn choose_combo(&mut self, index: Option<usize>) -> Option<String> {
+        if self.is_maps() {
+            let c = self.combo.take()?;
+            self.focus = SFocus::Items;
+            let pick = index.or_else(|| c.shown().get(c.sel).copied());
+            let rhs = pick.and_then(|i| c.items.get(i)).map(|f| f.value.clone())?;
+            match self.maps.get_mut(self.selected) {
+                Some(r) => {
+                    r.rhs = rhs;
+                    r.from = vim_maps::SCREEN_FROM.into();
+                    self.maps_dirty = true;
+                    self.dirty = true;
+                }
+                // 足す行: 右辺を覚えて、左辺を打ってもらう
+                None => {
+                    self.map_rhs = Some(rhs);
+                    self.map_edit();
+                }
+            }
+            return None;
+        }
         let (Some(it), Some(c)) = (self.current(), self.combo.take()) else { return None };
         self.focus = SFocus::Items;
         let shown = c.shown();
@@ -210,6 +318,9 @@ impl SettingsDialog {
 
     /// 直した値を決める（数は範囲を確かめる）。うまくいけば None、だめなら理由
     fn commit_edit(&mut self) -> Option<String> {
+        if self.is_maps() {
+            return self.map_commit();
+        }
         let (Some(it), Some(f)) = (self.current(), self.field.take()) else { return None };
         let v = f.text().trim().to_string();
         self.focus = SFocus::Items;
@@ -550,6 +661,9 @@ impl Editor {
             tool_info: Default::default(),
             releases: Default::default(),
             waker: self.waker(),
+            maps: self.vim_maps.clone(),
+            maps_dirty: false,
+            map_rhs: None,
         };
         if !cfg!(test) {
             let waker = self.waker();
@@ -569,6 +683,21 @@ impl Editor {
                 return false;
             }
         }
+        // Vim の割り当て: vimrc との違いを keys.vim に書き、vimrc を読み直す（App が rc_dirty を見る）
+        if d.maps_dirty {
+            let text = vim_maps::render(&self.vim_maps_base, &d.maps);
+            if let Some(p) = crate::settings::keys_path() {
+                let r = if text.lines().count() <= 1 { std::fs::remove_file(&p).or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) }) } else { p.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(&p, &text)) };
+                if let Err(e) = r {
+                    self.notify.error(format!("割り当てを保存できません（{}）: {e}", p.display()));
+                    return false;
+                }
+            }
+            d.maps_dirty = false;
+            self.vim_maps = d.maps.clone();
+            self.rc_dirty = true;
+        }
+        let Some(d) = &mut self.settings_dialog else { return false };
         let mut work = d.work.clone();
         d.dirty = false;
         // 設定の画面で変えた項目だけを書く（ほかの窓が保存した項目は消さない。その値も読み込む）
@@ -736,6 +865,34 @@ impl Editor {
                 Key::Esc | Key::Char('q') => self.close_settings(confirm),
                 _ => {}
             },
+            SFocus::Items if d.is_maps() => {
+                let n = d.maps.len() + 1;
+                let moved = crate::list::step(key, d.selected, n, 10);
+                match key {
+                    _ if moved.is_some() => d.selected = moved.unwrap_or(d.selected),
+                    Key::Char('g') => d.selected = 0,
+                    Key::Tab | Key::Char('h') | Key::Left => d.focus = SFocus::Cats,
+                    Key::Char(' ') | Key::Enter | Key::Char('i') => d.map_edit(),
+                    Key::Char('o') => {
+                        d.selected = d.maps.len();
+                        d.map_edit();
+                    }
+                    Key::Char('a') => d.map_choose(),
+                    Key::Char('d') | Key::Char('x') | Key::Delete => d.map_delete(),
+                    Key::Char('r') => {
+                        let base = self.vim_maps_base.clone();
+                        if let Some(d) = &mut self.settings_dialog {
+                            d.map_revert(&base);
+                        }
+                    }
+                    Key::Char('/') => {
+                        d.focus = SFocus::Filter;
+                        d.filter.reinsert();
+                    }
+                    Key::Esc | Key::Char('q') => self.close_settings(confirm),
+                    _ => {}
+                }
+            }
             SFocus::Items => {
                 let n = d.items().len();
                 let moved = crate::list::step(key, d.selected, n, 10);
@@ -820,7 +977,7 @@ impl Editor {
             d.focus = SFocus::Items;
             // 値の上を押すか、選んでいる項目をもう一度押すか、ダブルクリックで、切り替え・直す
             if col >= vx || again || matches!(pick, Some(crate::list::Pick::Accept(_))) {
-                d.edit();
+                if d.is_maps() { d.map_edit() } else { d.edit() }
             }
         }
     }
@@ -875,6 +1032,18 @@ impl crate::layout::View for SettingsView {
         let _ = r;
         // 押した項目を選んでから（1 回のクリックは選ぶだけ）
         ed.settings_click(row, col, 1);
+        if ed.settings_dialog.as_ref().is_some_and(|d| d.is_maps()) {
+            let m = crate::menu::Menu::new(row, col)
+                .keys("直す", &[Enter])
+                .keys("Action・コマンドを選ぶ", &[Char('a')])
+                .keys("消す", &[Char('d')])
+                .keys("元に戻す（vimrc・既定の値に）", &[Char('r')])
+                .keys("足す", &[Char('o')])
+                .sep()
+                .keys("閉じる", &[Esc]);
+            ed.open_menu(m);
+            return true;
+        }
         let m = crate::menu::Menu::new(row, col)
             .keys("値を直す", &[Enter])
             .keys("既定に戻す", &[Char('r')])
@@ -986,7 +1155,9 @@ pub(crate) mod draw {
             }
             item_rows.push((y0 + r, k, vx));
         }
-        if items.is_empty() {
+        if d.is_maps() {
+            draw_maps(p, ed, d, rx, x0 + w, y0, h, &mut item_rows);
+        } else if items.is_empty() {
             p.text("合う項目がありません", rx, y(2), STATUS_FG);
         }
         // 説明（選んだ項目）
@@ -1091,6 +1262,65 @@ pub(crate) mod draw {
         *d.item_rows.borrow_mut() = item_rows;
         d.buttons.set(buttons);
     }
+
+    /// Vim の割り当ての一覧（モード・左辺・右辺・動かないものの印）と、選んだものの出所・説明
+    #[allow(clippy::too_many_arguments)]
+    fn draw_maps(p: &mut Painter, ed: &Editor, d: &crate::settings_dialog::SettingsDialog, rx: usize, right: usize, y0: usize, h: usize, item_rows: &mut Vec<(usize, usize, usize)>) {
+        use crate::settings_dialog::SFocus;
+        let cell = p.fonts.cell();
+        let y = |r: usize| (y0 + r) as f32 * cell.h;
+        let body = h.saturating_sub(7);
+        let n = d.maps.len() + 1;
+        let top = d.selected.saturating_sub(body.saturating_sub(1));
+        let lw = d.maps.iter().map(|m| p.width(&m.lhs)).max().unwrap_or(8).clamp(8, 24) + 2;
+        let vx = rx + 2 + lw;
+        if !ed.vim_on {
+            p.text("Vim のキー操作がオフなので、いまは効きません（Vim → Vim のキー操作）", rx, y(1), GIT_DEL);
+        }
+        for k in (0..n).skip(top).take(body) {
+            let r = 2 + k - top;
+            let sel = k == d.selected;
+            if sel {
+                p.out.push(Instance::fill(rx as f32 * cell.w, y(r), (right - rx - 1) as f32 * cell.w, cell.h, MATCH_BG));
+                if matches!(d.focus, SFocus::Items | SFocus::Edit) {
+                    p.out.push(Instance::fill(rx as f32 * cell.w - cell.w * 0.5, y(r), 2.0, cell.h, ACCENT_FG));
+                }
+            }
+            item_rows.push((y0 + r, k, vx));
+            if sel && d.focus == SFocus::Edit {
+                if let Some(f) = &d.field {
+                    draw_vim_field(p, f, rx, y(r), &ed.preedit);
+                }
+                continue;
+            }
+            let Some(m) = d.maps.get(k) else {
+                p.text("＋ 割り当てを足す（o）", rx, y(r), ACCENT_FG);
+                continue;
+            };
+            p.text(&m.mode.letter().to_string(), rx, y(r), STATUS_FG);
+            p.text(&m.lhs, rx + 2, y(r), FG);
+            let tag = vim_maps::status(&m.rhs).map(|s| s.0).filter(|t| !t.is_empty());
+            let tw = tag.map_or(0, |t| p.width(t) + 2);
+            let saved = p.cols;
+            p.cols = right.saturating_sub(tw + 1);
+            p.text(&m.rhs, vx, y(r), if m.from == vim_maps::SCREEN_FROM { FG } else { rgb(0xb0b0b0) });
+            p.cols = saved;
+            if let Some(t) = tag {
+                p.text(t, right.saturating_sub(tw), y(r), GIT_DEL);
+            }
+        }
+        // 説明
+        let desc = match d.maps.get(d.selected) {
+            Some(m) => {
+                let what = vim_maps::status(&m.rhs).map(|(t, s)| if t.is_empty() { s } else { format!("{t}: {s}") }).unwrap_or_default();
+                format!("{}{}出所: {}", what, if what.is_empty() { "" } else { "   " }, m.from)
+            }
+            None if d.map_rhs.is_some() => format!("左辺を打って Enter（右辺は {}）", d.map_rhs.as_deref().unwrap_or("")),
+            None => "「モード 左辺 右辺」の 1 行で（例: n <leader>r :action Run<CR>。モードは n・x・i）".into(),
+        };
+        p.text(&desc, rx, y(h - 4), STATUS_FG);
+        p.text("Enter 直す  a Action を選ぶ  d 消す  r 元に戻す  o 足す（vimrc は書き換えず nagi の keys.vim に違いだけ）", rx, y(h - 3), STATUS_FG);
+    }
 }
 
 #[cfg(test)]
@@ -1102,6 +1332,39 @@ mod tests {
         for key in nagi_vim::parse_keys(k, " ") {
             e.key(key);
         }
+    }
+
+    /// Vim の割り当て: 足す・Action を選ぶ・消す・元に戻す → 適用で一覧に入り、vimrc を読み直す印が立つ
+    #[test]
+    fn edit_vim_maps() {
+        let mut e = Editor::new(Buffer::from_str("x"), None);
+        e.set_screen(140, 40);
+        e.vim_maps_base = vim_maps::rows(&nagi_vim::parse_rc("nnoremap ew :<C-u>w<CR>\nnnoremap Q :<C-u>quit!<CR>\n").keymap, "\\");
+        e.vim_maps = e.vim_maps_base.clone();
+        e.open_settings("");
+        let cat = CATEGORIES.iter().position(|c| *c == MAPS_CAT).unwrap();
+        keys(&mut e, &format!("{}<Tab>", "j".repeat(cat)));
+        assert!(e.settings_dialog.as_ref().unwrap().is_maps());
+        // 足す: o で「n <leader>」の続きを打つ
+        keys(&mut e, "ox :Files<CR>");
+        let d = e.settings_dialog.as_ref().unwrap();
+        assert_eq!(d.maps.len(), 3, "{}", e.notify.text);
+        assert_eq!(vim_maps::line_of(&d.maps[2]), "n <leader>x :Files");
+        // 1 行目の右辺を Action の一覧から（絞り込んで Enter）
+        keys(&mut e, "gaFindInPath<CR>");
+        let d = e.settings_dialog.as_ref().unwrap();
+        assert_eq!(d.maps[0].rhs, ":<C-u>action FindInPath<CR>");
+        assert_eq!(d.maps[0].from, vim_maps::SCREEN_FROM);
+        // 2 行目を消し、1 行目を元に戻す
+        keys(&mut e, "jdgr");
+        let d = e.settings_dialog.as_ref().unwrap();
+        assert_eq!(d.maps.iter().map(vim_maps::line_of).collect::<Vec<_>>(), ["n ew :<C-u>w<CR>", "n <leader>x :Files"]);
+        keys(&mut e, "<C-m>");
+        assert_eq!(e.state(), State::Normal, "{}", e.notify.text);
+        assert_eq!(e.vim_maps.len(), 2);
+        assert!(e.rc_dirty);
+        let text = vim_maps::render(&e.vim_maps_base, &e.vim_maps);
+        assert_eq!(text.lines().skip(1).collect::<Vec<_>>(), ["nnoremap <leader>x :Files", "nunmap Q"]);
     }
 
     #[test]

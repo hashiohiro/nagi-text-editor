@@ -82,6 +82,7 @@ mod ui;
 mod grammars;
 mod vim_field;
 mod vim_opts;
+mod vim_maps;
 mod panes;
 mod instance;
 
@@ -532,6 +533,10 @@ impl Frame {
     }
 
     fn draw(&mut self) -> [Duration; 4] {
+        // 設定の画面で割り当てを書いたら vimrc を読み直す
+        if self.ed.as_mut().is_some_and(|e| std::mem::take(&mut e.rc_dirty)) {
+            self.reload_rc();
+        }
         // 設定を適用して外観が変わったら、フォントを作り直す
         if self.ed.as_mut().is_some_and(|e| std::mem::take(&mut e.appearance_changed)) {
             self.reload_fonts();
@@ -590,9 +595,9 @@ impl Frame {
     /// 設定（vimrc）を読み直して反映する（`:source` と、設定ファイルが書き換わったとき）
     fn reload_rc(&mut self) {
         let t = Instant::now();
-        self.rc = nagi_vim::load_rc_from(self.ed.as_ref().and_then(|e| e.settings.text("vim.rc_path")).as_deref());
+        self.rc = nagi_vim::load_rc_with(self.ed.as_ref().and_then(|e| e.settings.text("vim.rc_path")).as_deref(), settings::keys_path().as_deref());
         self.apply_rc();
-        let n = self.rc.keymap.normal.len();
+        let n = self.rc.keymap.len();
         let us = t.elapsed().as_micros();
         if let Some(ed) = &mut self.ed {
             ed.notify.info(format!("設定を読み直しました（マッピング {n} 件、{us}µs）"));
@@ -609,6 +614,11 @@ impl Frame {
                 self.rc.notes.push(n);
             }
         }
+        // 割り当ての一覧（設定の画面）。keys.vim を除いたものも（画面で直したときに vimrc との違いを書くため）
+        let rc_path = ed.settings.text("vim.rc_path");
+        ed.vim_leader = self.rc.leader.clone();
+        ed.vim_maps = vim_maps::rows(&self.rc.keymap, &self.rc.leader);
+        ed.vim_maps_base = vim_maps::rows(&nagi_vim::load_rc_from(rc_path.as_deref()).keymap, &self.rc.leader);
         let old = ed.settings.clone();
         (ed.settings.rc, ed.settings.rc_from) = (rc, from);
         if ed.settings != old {
@@ -787,7 +797,7 @@ impl Frame {
 
     /// 1 打をマッピングに通してからエディタに流す。終了したら true
     fn feed(&mut self, k: VKey, el: &ActiveEventLoop) -> bool {
-        // マッピングは Normal モードだけ（ideavimrc は nnoremap だけを使っている）。
+        // マッピングは Normal・Visual・Insert（nnoremap・xnoremap・inoremap）。
         // リストモード（ツリー・検索結果）では leader で始まるものだけを通す（j/k などは置き換えない。architecture.md §7.1）
         let mode = self.ed.as_ref().map(|e| e.state());
         let leader = nagi_vim::parse_keys(&self.rc.leader, &self.rc.leader).first().copied();
@@ -796,8 +806,15 @@ impl Frame {
         let list_leader = mode == Some(State::List) && !in_field && (!self.matcher.pending().is_empty() || Some(k) == leader);
         // Vim のキー操作を使わないときは .ideavimrc の割り当てを通さない
         let vim = self.ed.as_ref().is_some_and(|e| e.vim_on);
-        let out = if vim && (mode == Some(State::Normal) || list_leader) {
-            match self.matcher.feed(&self.rc.keymap, k) {
+        let map_mode = match mode {
+            Some(State::Normal) => Some(nagi_vim::Mode::Normal),
+            Some(State::Visual { .. }) => Some(nagi_vim::Mode::Visual),
+            Some(State::Insert) if !in_field => Some(nagi_vim::Mode::Insert),
+            _ if list_leader => Some(nagi_vim::Mode::Normal),
+            _ => None,
+        };
+        let out = if let Some(m) = map_mode.filter(|_| vim) {
+            match self.matcher.feed_in(&self.rc.keymap, m, k) {
                 Feed::Pending => {
                     self.map_deadline = Some(Instant::now() + TIMEOUT_LEN);
                     return false;
@@ -1839,8 +1856,8 @@ fn spawn_pending(open: Option<PathBuf>, gpu: Option<Gpu>) -> Pending {
     let (rtx, rc) = mpsc::channel();
     spawn("rc")
         .spawn(move || {
-            let rc = nagi_vim::load_rc_from(settings::Settings::load(None).text("vim.rc_path").as_deref());
-            clock::mark(format!("rc: {} mappings from {:?}", rc.keymap.normal.len(), rc.sources.first()));
+            let rc = nagi_vim::load_rc_with(settings::Settings::load(None).text("vim.rc_path").as_deref(), settings::keys_path().as_deref());
+            clock::mark(format!("rc: {} mappings from {:?}", rc.keymap.len(), rc.sources.first()));
             rtx.send(rc).unwrap();
         })
         .unwrap();

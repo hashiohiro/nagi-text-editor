@@ -55,8 +55,11 @@ const B: SKind = SKind::Bool;
 const T: SKind = SKind::Text;
 const K: SKind = SKind::Key;
 
+/// Vim の割り当ての分類（項目は SCHEMA ではなく、vimrc と keys.vim の割り当て。settings_dialog.rs）
+pub const MAPS_CAT: &str = "Vim の割り当て";
+
 /// 分類（画面の左の一覧の並び）
-pub const CATEGORIES: [&str; 10] = ["外観", "エディタ", "Vim", "入力補完", "キーマップ", "ビルド・実行", "ツール", "プロジェクト", "その他", "（すべて）"];
+pub const CATEGORIES: [&str; 11] = ["外観", "エディタ", "Vim", MAPS_CAT, "入力補完", "キーマップ", "ビルド・実行", "ツール", "プロジェクト", "その他", "（すべて）"];
 
 pub static SCHEMA: &[Item] = &[
     // 外観
@@ -203,6 +206,14 @@ pub struct Settings {
 /// 全体の設定のファイル
 pub fn global_path() -> Option<PathBuf> {
     std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("nagi").join("settings.conf"))
+}
+
+/// 設定の画面で決めた Vim の割り当て（vimrc の書き方。vimrc の後に読む。.ideavimrc は IntelliJ と共有するので書き換えない）。試験では None
+pub fn keys_path() -> Option<PathBuf> {
+    if cfg!(test) {
+        return None;
+    }
+    global_path().map(|p| p.with_file_name("keys.vim"))
 }
 
 pub fn project_path(root: &Path) -> PathBuf {

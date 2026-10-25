@@ -12,29 +12,97 @@ pub struct Mapping {
     pub rhs: Vec<Key>,
     /// true なら右辺を再マップしない（noremap）
     pub noremap: bool,
+    /// どこで決めたか（"ファイル:行"・"nagi の既定"。設定の画面に出す）
+    pub from: String,
+}
+
+/// 割り当てのモード（Vim の n・x（v）・i）
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Mode {
+    Normal,
+    Visual,
+    Insert,
+}
+
+impl Mode {
+    pub const ALL: [Mode; 3] = [Mode::Normal, Mode::Visual, Mode::Insert];
+
+    /// vimrc の頭の 1 文字（n・x・i）
+    pub fn letter(self) -> char {
+        match self {
+            Mode::Normal => 'n',
+            Mode::Visual => 'x',
+            Mode::Insert => 'i',
+        }
+    }
 }
 
 #[derive(Default, Clone, Debug)]
 pub struct Keymap {
     pub normal: Vec<Mapping>,
+    pub visual: Vec<Mapping>,
+    pub insert: Vec<Mapping>,
 }
 
 impl Keymap {
-    /// 同じ左辺は後から定義したものが勝つ（Vim と同じ）
+    pub fn list(&self, mode: Mode) -> &Vec<Mapping> {
+        match mode {
+            Mode::Normal => &self.normal,
+            Mode::Visual => &self.visual,
+            Mode::Insert => &self.insert,
+        }
+    }
+
+    fn list_mut(&mut self, mode: Mode) -> &mut Vec<Mapping> {
+        match mode {
+            Mode::Normal => &mut self.normal,
+            Mode::Visual => &mut self.visual,
+            Mode::Insert => &mut self.insert,
+        }
+    }
+
+    /// Normal の割り当てを足す
     pub fn add(&mut self, lhs: Vec<Key>, rhs: Vec<Key>, noremap: bool) {
+        self.add_in(Mode::Normal, lhs, rhs, noremap, String::new());
+    }
+
+    /// 同じ左辺は後から定義したものが勝つ（Vim と同じ）
+    pub fn add_in(&mut self, mode: Mode, lhs: Vec<Key>, rhs: Vec<Key>, noremap: bool, from: String) {
         if lhs.is_empty() {
             return;
         }
-        self.normal.retain(|m| m.lhs != lhs);
-        self.normal.push(Mapping { lhs, rhs, noremap });
+        let l = self.list_mut(mode);
+        l.retain(|m| m.lhs != lhs);
+        l.push(Mapping { lhs, rhs, noremap, from });
     }
 
+    /// 割り当てを外す（unmap）。外したら true
+    pub fn remove(&mut self, mode: Mode, lhs: &[Key]) -> bool {
+        let l = self.list_mut(mode);
+        let n = l.len();
+        l.retain(|m| m.lhs != lhs);
+        l.len() != n
+    }
+
+    pub fn len(&self) -> usize {
+        self.normal.len() + self.visual.len() + self.insert.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
+/// 1 つのモードの割り当て（照合に使う）
+struct Maps<'a>(&'a [Mapping]);
+
+impl Maps<'_> {
     fn exact(&self, keys: &[Key]) -> Option<&Mapping> {
-        self.normal.iter().find(|m| m.lhs == keys)
+        self.0.iter().find(|m| m.lhs == keys)
     }
 
     fn has_longer(&self, keys: &[Key]) -> bool {
-        self.normal.iter().any(|m| m.lhs.len() > keys.len() && m.lhs.starts_with(keys))
+        self.0.iter().any(|m| m.lhs.len() > keys.len() && m.lhs.starts_with(keys))
     }
 }
 
@@ -46,9 +114,16 @@ pub enum Feed {
     Emit(Vec<Key>),
 }
 
-#[derive(Default)]
 pub struct Matcher {
     buf: Vec<Key>,
+    /// 待っているキーを打ったモード（timeoutlen が切れたときに使う）
+    mode: Mode,
+}
+
+impl Default for Matcher {
+    fn default() -> Self {
+        Matcher { buf: Vec::new(), mode: Mode::Normal }
+    }
 }
 
 const MAX_DEPTH: usize = 20;
@@ -60,6 +135,14 @@ impl Matcher {
     }
 
     pub fn feed(&mut self, km: &Keymap, key: Key) -> Feed {
+        self.feed_in(km, Mode::Normal, key)
+    }
+
+    pub fn feed_in(&mut self, km: &Keymap, mode: Mode, key: Key) -> Feed {
+        if self.buf.is_empty() {
+            self.mode = mode;
+        }
+        let km = &Maps(km.list(self.mode));
         self.buf.push(key);
         let mut out = Vec::new();
         loop {
@@ -83,6 +166,7 @@ impl Matcher {
 
     /// timeoutlen が切れた: 完全一致していれば展開し、そうでなければそのまま流す
     pub fn timeout(&mut self, km: &Keymap) -> Vec<Key> {
+        let km = &Maps(km.list(self.mode));
         let mut out = Vec::new();
         while !self.buf.is_empty() {
             // 最も長い完全一致の左辺を探す
@@ -101,7 +185,7 @@ impl Matcher {
 }
 
 /// 右辺を展開する。nmap（noremap でない）なら右辺をもう一度照合する
-fn expand(km: &Keymap, m: &Mapping, out: &mut Vec<Key>, depth: usize) {
+fn expand(km: &Maps, m: &Mapping, out: &mut Vec<Key>, depth: usize) {
     if m.noremap || depth >= MAX_DEPTH {
         out.extend(m.rhs.iter().copied());
         return;

@@ -3,7 +3,7 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
-use crate::{Keymap, parse_keys};
+use crate::{Keymap, Mode, parse_keys};
 
 #[derive(Default, Debug)]
 pub struct Rc {
@@ -43,6 +43,11 @@ pub fn load_rc() -> Rc {
 
 /// 設定を読む（`path` が空でなければそのファイル。nagi の設定の「Vim の設定ファイル」）
 pub fn load_rc_from(path: Option<&str>) -> Rc {
+    load_rc_with(path, None)
+}
+
+/// vimrc の後に `extra`（nagi の設定の画面で決めた割り当て。vimrc より強い）も読む
+pub fn load_rc_with(path: Option<&str>, extra: Option<&Path>) -> Rc {
     let mut rc = Rc { leader: "\\".into(), ..Default::default() };
     let path = match path.map(str::trim).filter(|p| !p.is_empty()) {
         Some(p) => expand_path(p),
@@ -55,6 +60,9 @@ pub fn load_rc_from(path: Option<&str>) -> Rc {
         source(&mut rc, &path, 0);
     }
     add_default_maps(&mut rc);
+    if let Some(p) = extra.filter(|p| p.exists()) {
+        source(&mut rc, p, 0);
+    }
     rc
 }
 
@@ -75,9 +83,24 @@ pub fn add_default_maps(rc: &mut Rc) {
         let taken = rc.keymap.normal.iter().any(|m| m.lhs.starts_with(&lhs) || lhs.starts_with(&m.lhs));
         if !taken {
             let rhs = parse_keys(rhs, &rc.leader);
-            rc.keymap.add(lhs, rhs, true);
+            rc.keymap.add_in(Mode::Normal, lhs, rhs, true, DEFAULT_FROM.into());
         }
     }
+}
+
+/// nagi の既定の割り当ての出所
+pub const DEFAULT_FROM: &str = "nagi の既定";
+
+/// 割り当てのコマンドのモード（map は Normal と Visual、map! は Insert）。割り当てでなければ None
+fn map_modes(cmd: &str) -> Option<&'static [Mode]> {
+    Some(match cmd.trim_end_matches('!') {
+        "nnoremap" | "nmap" | "nn" | "nno" | "nm" | "nunmap" | "nun" => &[Mode::Normal],
+        "vnoremap" | "vmap" | "vn" | "vno" | "vm" | "xnoremap" | "xmap" | "xn" | "xno" | "xm" | "vunmap" | "vu" | "xunmap" | "xu" => &[Mode::Visual],
+        "inoremap" | "imap" | "ino" | "im" | "iunmap" | "iu" => &[Mode::Insert],
+        "noremap" | "map" | "no" | "unmap" | "unm" if cmd.ends_with('!') => &[Mode::Insert],
+        "noremap" | "map" | "no" | "unmap" | "unm" => &[Mode::Normal, Mode::Visual],
+        _ => return None,
+    })
 }
 
 fn source(rc: &mut Rc, path: &Path, depth: usize) {
@@ -133,8 +156,15 @@ fn parse_into(rc: &mut Rc, text: &str, name: &str, depth: usize) {
                 }
             }
             "source" | "so" => source(rc, &expand_path(rest), depth + 1),
-            "nnoremap" | "nmap" | "noremap" | "map" | "nn" | "nno" | "nm" => {
-                let noremap = !matches!(cmd, "nmap" | "map" | "nm");
+            c if c.contains("un") && map_modes(c).is_some() => {
+                let lhs = parse_keys(rest.trim(), &rc.leader);
+                for m in map_modes(c).unwrap() {
+                    rc.keymap.remove(*m, &lhs);
+                }
+            }
+            c if map_modes(c).is_some() => {
+                let modes = map_modes(c).unwrap();
+                let noremap = c.contains("no") || matches!(c, "nn" | "vn" | "xn");
                 let mut args = rest;
                 let mut is_expr = false;
                 // <silent> <expr> などの修飾
@@ -165,8 +195,11 @@ fn parse_into(rc: &mut Rc, text: &str, name: &str, depth: usize) {
                 if typed.starts_with(':') && typed.contains("%s/") && rhs.last() != Some(&crate::Key::Enter) {
                     rhs = parse_keys(":<C-u>%s///cg<CR>", &rc.leader);
                 }
-                rc.keymap.add(lhs, rhs, noremap);
+                for m in modes {
+                    rc.keymap.add_in(*m, lhs.clone(), rhs.clone(), noremap, format!("{name}:{}", no + 1));
+                }
             }
+            "onoremap" | "omap" | "ono" | "om" | "cnoremap" | "cmap" | "cno" | "cm" | "snoremap" | "smap" => note(rc, "Operator・コマンドラインの割り当ては使わない"),
             _ => note(rc, "未対応のコマンド"),
         }
     }
@@ -203,6 +236,11 @@ nnoremap <leader><leader>R :<C-u>source ~/.ideavimrc \| echo "Reloaded"<CR>
         let zj = rc.keymap.normal.iter().find(|m| m.lhs == vec![Key::Char(' '), Key::Char('z'), Key::Char('j')]).unwrap();
         assert_eq!(zj.rhs, parse_keys(":action Back<CR>", " "));
         assert_eq!(rc.notes.len(), 1, "{:?}", rc.notes);
+        // モード（x・i・map は n と x）、unmap、出所
+        let rc3 = parse_rc("xnoremap <leader>c y\ninoremap jj <Esc>\nnoremap Y y$\nnunmap Y\nimap <C-l> <Right>\n");
+        assert_eq!((rc3.keymap.normal.len(), rc3.keymap.visual.len(), rc3.keymap.insert.len()), (0, 2, 2));
+        assert_eq!(rc3.keymap.insert[0].from, "<text>:2");
+        assert!(!rc3.keymap.insert[1].noremap);
         let rc = parse_rc("nnoremap <C-s> :<C-u>%s///cg<left><left><left><left>");
         assert_eq!(rc.keymap.normal[0].rhs, parse_keys(":<C-u>%s///cg<CR>", " "));
     }

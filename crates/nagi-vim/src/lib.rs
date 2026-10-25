@@ -11,5 +11,5 @@ mod map;
 mod rc;
 
 pub use key::{Key, Mods, Nav, parse_keys};
-pub use map::{Feed, Keymap, Matcher};
-pub use rc::{Rc, load_rc, load_rc_from, parse_rc};
+pub use map::{Feed, Keymap, Mapping, Matcher, Mode};
+pub use rc::{DEFAULT_FROM, Rc, load_rc, load_rc_from, load_rc_with, parse_rc};

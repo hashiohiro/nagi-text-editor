@@ -401,6 +401,12 @@ pub struct Editor {
     pub(crate) click_effect: Option<Effect>,
     /// 設定の外観（フォント・大きさ・行の高さ）が変わった（App がフォントを作り直す）
     pub appearance_changed: bool,
+    /// Vim の割り当て（設定の画面に出す。vim_maps.rs）: 今効いているもの、keys.vim を除いたもの（nagi の既定と vimrc）、leader
+    pub vim_maps: Vec<crate::vim_maps::MapRow>,
+    pub vim_maps_base: Vec<crate::vim_maps::MapRow>,
+    pub vim_leader: String,
+    /// 割り当てを書いたので vimrc を読み直してほしい（App が見る）
+    pub rc_dirty: bool,
     /// JDK のダウンロード（版, 進み具合）
     pub jdk_download: Option<(u32, nagi_workers::drivers::Download)>,
     /// 言語のツールのダウンロード（種類）
@@ -718,6 +724,10 @@ impl Editor {
             data_wait: None,
             click_effect: None,
             appearance_changed: false,
+            vim_maps: Vec::new(),
+            vim_maps_base: Vec::new(),
+            vim_leader: "\\".into(),
+            rc_dirty: false,
             jdk_download: None,
             tool_download: None,
             after_tools: None,
