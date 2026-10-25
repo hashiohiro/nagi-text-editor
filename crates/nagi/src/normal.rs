@@ -71,6 +71,7 @@ impl Editor {
     fn is_change(kind: &Kind) -> bool {
         match kind {
             Kind::Operate(op, _) => *op != Op::Yank,
+            Kind::SurroundDel(_) | Kind::SurroundChange(..) => true,
             Kind::Act(a) => matches!(
                 a,
                 Action::Insert(_) | Action::Put { .. } | Action::Join | Action::Replace(_) | Action::ToggleCase
@@ -187,6 +188,8 @@ impl Editor {
                 self.set_abs(self.anchor);
                 self.anchor = a;
             }
+            Kind::SurroundDel(c) => self.surround_del(c),
+            Kind::SurroundChange(a, b) => self.surround_change(a, b),
             Kind::Act(a) => return self.act(a, cmd, visual),
         }
         Effect::None
@@ -630,6 +633,15 @@ impl Editor {
     pub(crate) fn apply(&mut self, op: Op, s: usize, e: usize, lw: bool, reg: Option<char>) {
         let text = self.buf.slice_string(s, e);
         match op {
+            Op::Comment => {
+                let (a, b) = (self.buf.pos_of(s).0, self.buf.pos_of(e.saturating_sub(1).max(s)).0);
+                if !self.comment_lines(a, b) {
+                    return;
+                }
+                self.cursor.line = a;
+                self.with_motion(|m, c| m.first_non_blank(c));
+            }
+            Op::Surround(c) => self.surround_add(s, e, lw, c),
             Op::Yank => {
                 self.set_register(reg, normalize(&text, lw), lw, true);
                 if self.settings.bool("vim.highlight_yank") {

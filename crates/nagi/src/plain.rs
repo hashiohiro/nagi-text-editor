@@ -520,33 +520,14 @@ impl Editor {
     /// 行コメントを付ける・外す（選んでいれば、かかる行をすべて。全部に付いていれば外す）
     pub(crate) fn plain_comment(&mut self) {
         self.plain_break();
-        let Some(mark) = comment_mark(self.buf.path.as_deref()) else {
-            self.notify.info("この種類のファイルの行コメントが分かりません");
-            return;
-        };
         let (a, b) = match self.plain_selection() {
             Some((s, e)) => (self.buf.pos_of(s).0, self.buf.pos_of(e.saturating_sub(1).max(s)).0),
             None => (self.cursor.line, self.cursor.line),
         };
-        let lines: Vec<String> = (a..=b).map(|l| self.buf.line(l)).collect();
-        let all = lines.iter().filter(|t| !t.trim().is_empty()).all(|t| t.trim_start().starts_with(mark));
-        // 付ける位置は、選んだ行のいちばん浅い字下げ
-        let indent = lines.iter().filter(|t| !t.trim().is_empty()).map(|t| t.len() - t.trim_start().len()).min().unwrap_or(0);
-        self.hist.begin();
-        for (i, t) in lines.iter().enumerate() {
-            let start = self.buf.line_start(a + i);
-            if t.trim().is_empty() {
-                continue;
-            }
-            if all {
-                let at = t.len() - t.trim_start().len();
-                let n = mark.len() + usize::from(t[at + mark.len()..].starts_with(' '));
-                self.edit(start + at, start + at + n, "");
-            } else {
-                self.edit(start + indent, start + indent, &format!("{mark} "));
-            }
+        // 付ける・外すのは commentary の gc と同じ（surround.rs）
+        if !self.comment_lines(a, b) {
+            return;
         }
-        self.hist.close();
         if self.plain_selection().is_none() {
             let len = self.buf.line_len(self.cursor.line);
             self.cursor.byte = self.cursor.byte.min(len);
@@ -559,7 +540,7 @@ impl Editor {
 }
 
 /// 拡張子から行コメントの記号
-fn comment_mark(path: Option<&std::path::Path>) -> Option<&'static str> {
+pub(crate) fn comment_mark(path: Option<&std::path::Path>) -> Option<&'static str> {
     let ext = path?.extension()?.to_string_lossy().to_ascii_lowercase();
     Some(match ext.as_str() {
         "rs" | "c" | "h" | "cc" | "cpp" | "cxx" | "hpp" | "java" | "kt" | "kts" | "js" | "mjs" | "cjs" | "jsx" | "ts" | "tsx" | "go" | "cs" | "swift" | "scala" | "dart" | "zig" | "groovy" | "gradle" | "php" | "css" | "scss" | "json" | "jsonc" | "proto" | "fs" => "//",

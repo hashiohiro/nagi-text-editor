@@ -86,6 +86,7 @@ mod vim_maps;
 mod easy;
 mod editorconfig;
 mod session;
+mod surround;
 mod panes;
 mod instance;
 

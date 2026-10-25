@@ -134,9 +134,21 @@ impl Editor {
         let sel = self.block_sel();
         let spans = self.block_spans();
         self.set_state(State::Normal);
-        if matches!(op, Op::Indent | Op::Dedent) {
+        if matches!(op, Op::Indent | Op::Dedent | Op::Comment) {
             let (s, e) = self.lines_range(sel.l1, sel.l2);
             self.apply(op, s, e, true, None);
+            return;
+        }
+        // 矩形を囲む: 行ごとに囲む（vim-surround と同じ）
+        if let Op::Surround(c) = op {
+            self.hist.begin();
+            for &(_, s, e) in spans.iter().rev() {
+                if e > s {
+                    self.surround_add(s, e, false, c);
+                }
+            }
+            self.hist.close();
+            self.to_block_top_left(&sel);
             return;
         }
         let text: Vec<String> = spans.iter().map(|&(_, s, e)| self.buf.slice_string(s, e)).collect();

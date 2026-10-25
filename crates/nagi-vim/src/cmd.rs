@@ -56,6 +56,10 @@ pub enum Op {
     Yank,
     Indent,
     Dedent,
+    /// commentary の `gc`（行コメントを付ける・外す）
+    Comment,
+    /// surround の `ys{動き}{c}`・Visual の `S{c}`（c の括弧・引用符で囲む）
+    Surround(char),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -134,6 +138,10 @@ pub enum Kind {
     VisualSwap,
     /// Visual block の `O`（同じ行の反対の角へ）
     VisualCorner,
+    /// surround の `ds{c}`（囲みを外す）
+    SurroundDel(char),
+    /// surround の `cs{a}{b}`（囲みを a から b へ）
+    SurroundChange(char, char),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -318,28 +326,59 @@ pub fn parse_normal(keys: &[Key]) -> Parse {
     };
     let done = |kind| Parse::Done(Cmd { count, reg, kind });
     let Some(k) = p.peek() else { return Parse::Incomplete };
+    let second = p.keys.get(p.i + 1).copied();
 
-    // オペレーター
-    if let Some(op) = op_of(k) {
-        p.i += 1;
+    // surround の ds{c}・cs{a}{b}
+    if matches!(k, Key::Char('d' | 'c')) && second == Some(Key::Char('s')) {
+        p.i += 2;
+        let Some(a) = p.next() else { return Parse::Incomplete };
+        let Key::Char(a) = a else { return Parse::Invalid };
+        if k == Key::Char('d') {
+            return done(Kind::SurroundDel(a));
+        }
+        return match p.next() {
+            None => Parse::Incomplete,
+            Some(Key::Char(b)) => done(Kind::SurroundChange(a, b)),
+            Some(_) => Parse::Invalid,
+        };
+    }
+    // オペレーター（commentary の gc は gcc で行、surround の ys は yss で行。ys は後に囲む文字）
+    let op = match (k, second) {
+        (Key::Char('g'), Some(Key::Char('c'))) => Some((Op::Comment, 2, Key::Char('c'))),
+        (Key::Char('y'), Some(Key::Char('s'))) => Some((Op::Surround(' '), 2, Key::Char('s'))),
+        _ => op_of(k).map(|op| (op, 1, k)),
+    };
+    if let Some((op, len, again)) = op {
+        p.i += len;
         let c2 = p.count();
         let count = mul(count, c2);
-        let done = |t| Parse::Done(Cmd { count, reg, kind: Kind::Operate(op, t) });
-        let Some(k2) = p.peek() else { return Parse::Incomplete };
-        if k2 == k {
-            return done(Target::Lines);
-        }
-        if let Some(r) = text_obj(&mut p) {
-            return match r {
-                None => Parse::Incomplete,
-                Some((inner, obj)) => done(Target::Obj { inner, obj }),
-            };
-        }
-        return match motion(&mut p) {
-            Some(None) => Parse::Incomplete,
-            Some(Some(m)) => done(Target::Motion(m)),
-            None => Parse::Invalid,
+        let target = {
+            let Some(k2) = p.peek() else { return Parse::Incomplete };
+            if k2 == again {
+                p.i += 1;
+                Target::Lines
+            } else if let Some(r) = text_obj(&mut p) {
+                match r {
+                    None => return Parse::Incomplete,
+                    Some((inner, obj)) => Target::Obj { inner, obj },
+                }
+            } else {
+                match motion(&mut p) {
+                    Some(None) => return Parse::Incomplete,
+                    Some(Some(m)) => Target::Motion(m),
+                    None => return Parse::Invalid,
+                }
+            }
         };
+        let op = match op {
+            Op::Surround(_) => match p.next() {
+                None => return Parse::Incomplete,
+                Some(Key::Char(c)) => Op::Surround(c),
+                Some(_) => return Parse::Invalid,
+            },
+            op => op,
+        };
+        return Parse::Done(Cmd { count, reg, kind: Kind::Operate(op, target) });
     }
 
     match motion(&mut p) {
@@ -445,6 +484,13 @@ pub fn parse_visual(keys: &[Key]) -> Parse {
     if let Some(op) = op_of(k) {
         return done(Kind::VisualOp(op));
     }
+    // commentary の gc、surround の S{c}
+    match (k, p.keys.get(p.i + 1).copied()) {
+        (Key::Char('g'), Some(Key::Char('c'))) => return done(Kind::VisualOp(Op::Comment)),
+        (Key::Char('S'), None) => return Parse::Incomplete,
+        (Key::Char('S'), Some(Key::Char(c))) => return done(Kind::VisualOp(Op::Surround(c))),
+        _ => {}
+    }
     match k {
         Key::Char('x') | Key::Delete => return done(Kind::VisualOp(Op::Delete)),
         Key::Char('s') => return done(Kind::VisualOp(Op::Change)),
@@ -498,6 +544,28 @@ mod tests {
 
     fn n(s: &str) -> Parse {
         parse_normal(&parse_keys(s, " "))
+    }
+
+    #[test]
+    fn commentary_and_surround() {
+        let op = |s: &str| match n(s) {
+            Parse::Done(c) => Some(c.kind),
+            _ => None,
+        };
+        assert_eq!(op("gcc"), Some(Kind::Operate(Op::Comment, Target::Lines)));
+        assert_eq!(op("gcap"), Some(Kind::Operate(Op::Comment, Target::Obj { inner: false, obj: TextObj::Paragraph })));
+        assert_eq!(n("gc"), Parse::Incomplete);
+        assert_eq!(op("ysiw\""), Some(Kind::Operate(Op::Surround('"'), Target::Obj { inner: true, obj: TextObj::Word { big: false } })));
+        assert_eq!(n("ysiw"), Parse::Incomplete);
+        assert_eq!(op("yss)"), Some(Kind::Operate(Op::Surround(')'), Target::Lines)));
+        assert_eq!(op("ds\""), Some(Kind::SurroundDel('"')));
+        assert_eq!(op("cs\"'"), Some(Kind::SurroundChange('"', '\'')));
+        assert_eq!(n("cs\""), Parse::Incomplete);
+        assert_eq!(op("yy"), Some(Kind::Operate(Op::Yank, Target::Lines)), "ys 以外の y はそのまま");
+        let v = |s: &str| parse_visual(&parse_keys(s, " "));
+        assert_eq!(v("gc"), Parse::Done(Cmd { count: None, reg: None, kind: Kind::VisualOp(Op::Comment) }));
+        assert_eq!(v("S("), Parse::Done(Cmd { count: None, reg: None, kind: Kind::VisualOp(Op::Surround('(')) }));
+        assert_eq!(v("gg"), Parse::Done(Cmd { count: None, reg: None, kind: Kind::Move(Motion::FirstLine) }));
     }
 
     #[test]
