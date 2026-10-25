@@ -34,6 +34,32 @@ pub(crate) enum Layout {
     Split { vertical: bool, kids: Vec<Layout>, weights: Vec<f32> },
 }
 
+fn parse_layout(t: &[&str], i: &mut usize, n: usize) -> Option<Layout> {
+    let tok = *t.get(*i)?;
+    *i += 1;
+    if tok != "(" {
+        return tok.parse::<usize>().ok().filter(|w| *w < n).map(Layout::Leaf);
+    }
+    let vertical = match *t.get(*i)? {
+        "v" => true,
+        "h" => false,
+        _ => return None,
+    };
+    *i += 1;
+    let mut weights = Vec::new();
+    while *t.get(*i)? != ":" {
+        weights.push(t[*i].parse::<f32>().ok()?);
+        *i += 1;
+    }
+    *i += 1;
+    let mut kids = Vec::new();
+    while *t.get(*i)? != ")" {
+        kids.push(parse_layout(t, i, n)?);
+    }
+    *i += 1;
+    (kids.len() == weights.len() && kids.len() >= 2).then_some(Layout::Split { vertical, kids, weights })
+}
+
 /// 並びの子の大きさ（セル）。等しい比率なら余りを前の子から 1 つずつ配る（前からの割り方と同じ）
 pub(crate) fn split_sizes(avail: usize, weights: &[f32]) -> Vec<usize> {
     let n = weights.len();
@@ -72,6 +98,27 @@ impl Rect {
 }
 
 impl Layout {
+    /// 書き出す形（開き直すため。session.rs）: 窓は並びの順の番号、分割は `(v 1 1 : 0 1)`（向き・比率・子）
+    pub(crate) fn render(&self, index: &dyn Fn(usize) -> usize) -> String {
+        match self {
+            Layout::Leaf(w) => index(*w).to_string(),
+            Layout::Split { vertical, kids, weights } => {
+                let ws: Vec<String> = weights.iter().map(|w| format!("{w}")).collect();
+                let ks: Vec<String> = kids.iter().map(|k| k.render(index)).collect();
+                format!("({} {} : {})", if *vertical { "v" } else { "h" }, ws.join(" "), ks.join(" "))
+            }
+        }
+    }
+
+    /// `render` の形を読む（窓の番号は `n` 未満）
+    pub(crate) fn parse(s: &str, n: usize) -> Option<Layout> {
+        let spaced = s.replace('(', " ( ").replace(')', " ) ");
+        let toks: Vec<&str> = spaced.split_whitespace().collect();
+        let mut i = 0;
+        let l = parse_layout(&toks, &mut i, n)?;
+        (i == toks.len()).then_some(l)
+    }
+
     fn leaves(&self, out: &mut Vec<usize>) {
         match self {
             Layout::Leaf(w) => out.push(*w),
@@ -279,6 +326,50 @@ impl Editor {
             self.wins[w] = WinSlot::Closed;
         }
         self.layout = Layout::Leaf(self.cur_win);
+        self.prev_win = None;
+        self.rows = self.text_rows(self.active_rect());
+    }
+
+    /// 分けている窓（並びの形, 窓ごとの (バッファの番号, カーソル, 表示の上, 作業中か)）。分けていなければ None
+    pub(crate) fn window_snapshot(&self) -> Option<(String, Vec<(usize, Cursor, usize, bool)>)> {
+        if !self.is_split() {
+            return None;
+        }
+        let mut order = Vec::new();
+        self.layout.leaves(&mut order);
+        let wins: Vec<(usize, Cursor, usize, bool)> = order
+            .iter()
+            .filter_map(|&w| match self.wins.get(w)? {
+                WinSlot::Active => Some((self.cur_doc, self.cursor, self.top, true)),
+                WinSlot::Parked(p) => Some((p.doc, p.cursor, p.top, false)),
+                WinSlot::Closed => None,
+            })
+            .collect();
+        if wins.len() != order.len() {
+            return None;
+        }
+        let shape = self.layout.render(&|w| order.iter().position(|o| *o == w).unwrap_or(0));
+        Some((shape, wins))
+    }
+
+    /// 窓の分け方を戻す（`docs` は窓ごとの (バッファの番号, カーソル, 表示の上)。`active` の窓を作業中に）
+    pub(crate) fn restore_windows(&mut self, layout: Layout, docs: Vec<(usize, Cursor, usize)>, active: usize) {
+        self.only_window();
+        // 今の窓（0 でなくてもよい）は使わずに閉じ、窓を作り直す
+        let base = self.wins.len();
+        for (doc, cursor, top) in &docs {
+            self.wins.push(WinSlot::Parked(Win { doc: *doc, cursor: *cursor, top: *top, left: 0 }));
+        }
+        fn shift(l: Layout, by: usize) -> Layout {
+            match l {
+                Layout::Leaf(w) => Layout::Leaf(w + by),
+                Layout::Split { vertical, kids, weights } => Layout::Split { vertical, kids: kids.into_iter().map(|k| shift(k, by)).collect(), weights },
+            }
+        }
+        let old = self.cur_win;
+        self.layout = shift(layout, base);
+        self.focus_window(base + active.min(docs.len().saturating_sub(1)));
+        self.wins[old] = WinSlot::Closed;
         self.prev_win = None;
         self.rows = self.text_rows(self.active_rect());
     }

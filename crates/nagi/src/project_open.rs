@@ -272,7 +272,10 @@ impl Editor {
         self.run_last = None;
         // 前に開いていたファイル（nagi で開いていたもの、無ければ IntelliJ）。前面にあったものを最後に開く
         let mine = self.settings.bool("editor.restore_session").then(|| crate::session::load(&p.root)).flatten();
-        let mut files = mine.unwrap_or_else(|| project::open_files(&p.root));
+        let (mut files, saved_windows) = match mine {
+            Some((f, w)) => (f, w),
+            None => (project::open_files(&p.root), None),
+        };
         files.sort_by_key(|f| f.current);
         let restored = files.len();
         if files.is_empty() {
@@ -292,6 +295,10 @@ impl Editor {
                 self.clamp_normal();
                 self.scroll_into_view();
             }
+        }
+        // 窓の分け方も（前回 nagi で分けていたら）
+        if let Some(w) = saved_windows {
+            self.restore_saved_windows(w);
         }
         self.start_index();
         self.start_git();

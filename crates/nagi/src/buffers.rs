@@ -57,6 +57,16 @@ impl Editor {
             .collect()
     }
 
+    /// バッファ `id` のファイル（名前が無ければ None）
+    pub(crate) fn doc_path(&self, id: usize) -> Option<PathBuf> {
+        match self.docs.get(id)? {
+            Slot::Active => self.buf.path.clone(),
+            Slot::Parked(d) => d.buf.path.clone(),
+            Slot::Deleted => None,
+        }
+        .and_then(|p| std::path::absolute(p).ok())
+    }
+
     /// 作業中のバッファを脇へ置き、`id` を作業中にする
     pub(crate) fn switch_doc(&mut self, id: usize) {
         if id == self.cur_doc || !matches!(self.docs.get(id), Some(Slot::Parked(_))) {

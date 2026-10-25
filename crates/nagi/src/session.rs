@@ -25,8 +25,36 @@ pub fn render(files: &[OpenFile]) -> String {
     files.iter().map(|f| format!("{}\t{}\t{}\t{}\n", f.path.display(), f.line, f.col, u8::from(f.current))).collect()
 }
 
+/// 窓の分け方（`#layout 形` と `#win パス 行 byte 上 作業中なら 1`）
+#[derive(Debug, PartialEq)]
+pub struct Windows {
+    pub shape: String,
+    pub wins: Vec<(PathBuf, usize, usize, usize, bool)>,
+}
+
+pub fn render_windows(w: &Windows) -> String {
+    let mut s = format!("#layout\t{}\n", w.shape);
+    for (p, l, b, top, active) in &w.wins {
+        s.push_str(&format!("#win\t{}\t{l}\t{b}\t{top}\t{}\n", p.display(), u8::from(*active)));
+    }
+    s
+}
+
+pub fn parse_windows(text: &str) -> Option<Windows> {
+    let shape = text.lines().find_map(|l| l.strip_prefix("#layout\t"))?.to_string();
+    let wins = text
+        .lines()
+        .filter_map(|l| {
+            let mut it = l.strip_prefix("#win\t")?.split('\t');
+            Some((PathBuf::from(it.next()?), it.next()?.parse().ok()?, it.next()?.parse().ok()?, it.next()?.parse().ok()?, it.next() == Some("1")))
+        })
+        .collect();
+    Some(Windows { shape, wins })
+}
+
 pub fn parse(text: &str) -> Vec<OpenFile> {
     text.lines()
+        .filter(|l| !l.starts_with('#'))
         .filter_map(|l| {
             let mut it = l.split('\t');
             let path = PathBuf::from(it.next()?);
@@ -37,11 +65,11 @@ pub fn parse(text: &str) -> Vec<OpenFile> {
         .collect()
 }
 
-/// 前回 nagi で開いていたファイル（無ければ None。消えたファイルは除く）
-pub fn load(root: &Path) -> Option<Vec<OpenFile>> {
+/// 前回 nagi で開いていたファイル（無ければ None。消えたファイルは除く）と、窓の分け方
+pub fn load(root: &Path) -> Option<(Vec<OpenFile>, Option<Windows>)> {
     let text = std::fs::read_to_string(session_path(root)?).ok()?;
     let files: Vec<OpenFile> = parse(&text).into_iter().filter(|f| f.path.is_file()).collect();
-    (!files.is_empty()).then_some(files)
+    (!files.is_empty()).then(|| (files, parse_windows(&text)))
 }
 
 impl Editor {
@@ -59,7 +87,30 @@ impl Editor {
         if let Some(d) = p.parent() {
             let _ = std::fs::create_dir_all(d);
         }
-        let _ = std::fs::write(&p, render(&files));
+        let mut text = render(&files);
+        if let Some(w) = self.windows_to_save() {
+            text.push_str(&render_windows(&w));
+        }
+        let _ = std::fs::write(&p, text);
+    }
+
+    /// 書き出す窓の分け方（分けていて、どの窓も名前のあるファイルを出しているとき）
+    fn windows_to_save(&self) -> Option<Windows> {
+        let (shape, wins) = self.window_snapshot()?;
+        let wins = wins.into_iter().map(|(doc, c, top, active)| Some((self.doc_path(doc)?, c.line, c.byte, top, active))).collect::<Option<Vec<_>>>()?;
+        Some(Windows { shape, wins })
+    }
+
+    /// 前回の窓の分け方に戻す（ファイルは開いてあるもの）
+    pub(crate) fn restore_saved_windows(&mut self, w: Windows) {
+        let Some(layout) = crate::panes::Layout::parse(&w.shape, w.wins.len()) else { return };
+        let mut docs = Vec::new();
+        for (p, line, byte, top, _) in &w.wins {
+            let Some(id) = self.find_doc(p) else { return };
+            docs.push((id, nagi_core::Cursor { line: *line, byte: *byte, want_col: 0 }, *top));
+        }
+        let active = w.wins.iter().position(|x| x.4).unwrap_or(0);
+        self.restore_windows(layout, docs, active);
     }
 
     /// 自動で保存する（設定の「自動で保存」）。`why` が設定に合えば、名前のある変更したファイルをすべて保存する
@@ -124,6 +175,38 @@ mod tests {
         assert!(e.autosave_deadline().is_some());
         let rows = e.open_file_positions(&dir);
         assert_eq!((rows.len(), rows[0].col, rows[0].current), (1, 2, true));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 分けた窓を書き出して、読み戻すと同じ形・同じファイル・同じ位置
+    #[test]
+    fn windows_round_trip() {
+        let dir = std::env::temp_dir().join(format!("nagi-wins-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        for (n, t) in [("a.txt", "a1\na2\na3\n"), ("b.txt", "b1\nb2\n")] {
+            std::fs::write(dir.join(n), t).unwrap();
+        }
+        let mut e = Editor::new(nagi_core::Buffer::open(&dir.join("a.txt")).unwrap(), None);
+        e.buf.path = Some(dir.join("a.txt"));
+        e.set_screen(120, 40);
+        e.split(true);
+        e.edit_file(dir.join("b.txt"));
+        e.cursor.line = 1;
+        e.split(false);
+        let w = e.windows_to_save().unwrap();
+        let text = render_windows(&w);
+        let back = parse_windows(&text).unwrap();
+        assert_eq!(back, w);
+        assert_eq!(back.shape, "(v 1 1 : (h 1 1 : 0 1) 2)");
+        // 分けていない窓に戻す
+        let mut e2 = Editor::new(nagi_core::Buffer::open(&dir.join("a.txt")).unwrap(), None);
+        e2.buf.path = Some(dir.join("a.txt"));
+        e2.set_screen(120, 40);
+        e2.edit_file(dir.join("b.txt"));
+        e2.restore_saved_windows(back);
+        let again = e2.windows_to_save().unwrap();
+        assert_eq!(again.shape, w.shape);
+        assert_eq!(again.wins.iter().map(|x| (x.0.clone(), x.1, x.4)).collect::<Vec<_>>(), w.wins.iter().map(|x| (x.0.clone(), x.1, x.4)).collect::<Vec<_>>());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
