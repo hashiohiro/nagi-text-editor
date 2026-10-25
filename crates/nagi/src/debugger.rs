@@ -1,8 +1,11 @@
-//! デバッグ（IntelliJ のデバッガと同じキー。Java だけ。nagi-workers の debug.rs が JDWP でつなぐ）。
+//! デバッグ（IntelliJ のデバッガと同じキー）。Java・Kotlin は JDWP（nagi-workers の debug.rs）、ブラウザの
+//! TypeScript・JavaScript は Chrome DevTools Protocol（cdp.rs）、Python は debugpy の DAP（dap.rs）。画面とキーはどれも同じ。
 //!
 //! - ブレークポイント: 行番号の欄を押す・Ctrl+F8・`:Breakpoint`（ファイルごとの行。編集で行がずれれば一緒に動く）
-//! - 始める: Shift+F9・`:Debug`（選んでいる実行の構成を、JVM に JDWP の口を開けて動かし、つなぐ）、
-//!   `:DebugTest`（カーソルの位置のテスト）、`:DebugAttach 5005`（動いている JVM につなぐ）
+//! - 始める: Shift+F9・`:Debug`（選んでいる実行の構成を、デバッグの口を開けて動かし、つなぐ。Java の構成・
+//!   IntelliJ の JavaScript Debug（URL）の構成・Python）、`:DebugTest`（カーソルの位置のテスト。Maven・pytest）、
+//!   `:DebugBrowser URL`（Chrome・Edge をデバッグの口を開けて起こす）、`:DebugAttach 5005`（動いている JVM）・
+//!   `:DebugAttachBrowser 9222`（--remote-debugging-port で起こしたブラウザ）・`:DebugAttachPython 5678`（debugpy）
 //! - 止まったら: その行へ移って行を目立たせ、下の欄の「デバッグ」にスタックと変数を出す
 //! - F9 続ける、F8 次へ、F7 中へ、Shift+F8 外へ、Ctrl+F2 止める（実行の構成と同じ）
 //!
@@ -19,6 +22,24 @@ use nagi_workers::jdwp::Depth;
 use crate::editor::{Editor, Side, State};
 use crate::result_grid::BottomKind;
 
+/// デバッグする言語（ブレークポイントの置き方とつなぐ相手）
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Lang {
+    Java,
+    Browser,
+    Python,
+}
+
+/// ファイルの言語（デバッグできないものは None）
+pub fn lang_of(path: &Path) -> Option<Lang> {
+    match path.extension()?.to_string_lossy().to_ascii_lowercase().as_str() {
+        "java" | "kt" => Some(Lang::Java),
+        "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "mts" | "cts" | "vue" | "svelte" => Some(Lang::Browser),
+        "py" => Some(Lang::Python),
+        _ => None,
+    }
+}
+
 /// 変数の木の 1 行
 #[derive(Clone, Debug)]
 pub struct VarRow {
@@ -28,6 +49,7 @@ pub struct VarRow {
 }
 
 pub struct DebugUi {
+    pub lang: Lang,
     tx: Option<Sender<Cmd>>,
     task: Option<nagi_core::task::Task<Ev>>,
     /// 何をデバッグしているか（構成の名前・つないだ先）
@@ -120,8 +142,8 @@ impl Editor {
         if set.is_empty() {
             self.breakpoints.remove(&path);
         }
-        if class_of(&path, &self.buf.line(0)).is_none() {
-            self.notify.info("ブレークポイントで止まるのは Java（Kotlin）のファイルだけです");
+        if lang_of(&path).is_none() {
+            self.notify.info("ブレークポイントで止まるのは Java・Kotlin・TypeScript・JavaScript・Python のファイルだけです");
         } else {
             self.notify.info(format!("{} 行目のブレークポイントを{}", line + 1, if on { "付けました" } else { "外しました" }));
         }
@@ -165,29 +187,41 @@ impl Editor {
         *set = moved;
     }
 
-    /// すべてのブレークポイント（クラスと行）
-    fn all_bps(&self) -> Vec<Bp> {
+    /// `lang` のブレークポイント（Java はクラスも。行は 1 始まり）
+    fn all_bps(&self, lang: Lang) -> Vec<Bp> {
         let mut out = Vec::new();
-        for (path, lines) in &self.breakpoints {
-            let text = if self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()).as_ref() == Some(path) { self.buf.text() } else { std::fs::read_to_string(path).unwrap_or_default() };
-            let Some(class) = class_of(path, &text) else { continue };
+        for (path, lines) in self.breakpoints.iter().filter(|(p, _)| lang_of(p) == Some(lang)) {
+            let class = if lang == Lang::Java {
+                let text = if self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()).as_ref() == Some(path) { self.buf.text() } else { std::fs::read_to_string(path).unwrap_or_default() };
+                let Some(c) = class_of(path, &text) else { continue };
+                c
+            } else {
+                String::new()
+            };
             out.extend(lines.iter().map(|l| Bp { class: class.clone(), file: path.clone(), line: l + 1 }));
         }
         out
     }
 
     fn send_breakpoints(&mut self) {
-        let bps = self.all_bps();
+        let Some(lang) = self.debug.as_ref().map(|d| d.lang) else { return };
+        let bps = self.all_bps(lang);
         if let Some(tx) = self.debug.as_ref().and_then(|d| d.tx.as_ref()) {
             let _ = tx.send(Cmd::Breakpoints(bps));
         }
     }
 
-    /// つなぐ（`addr` に JVM が起きるのを待つ）
-    fn start_debug(&mut self, name: String, addr: String, terminal: Option<String>) {
+    /// つなぐ（`addr` に相手が起きるのを待つ。ブラウザなら `hint` を含む URL のページへ）
+    fn start_debug(&mut self, name: String, lang: Lang, addr: String, terminal: Option<String>, hint: &str) {
         self.stop_debug_session();
-        let (tx, task) = nagi_workers::debug::start(addr.clone(), self.all_bps(), true, self.waker());
+        let bps = self.all_bps(lang);
+        let (tx, task) = match lang {
+            Lang::Java => nagi_workers::debug::start(addr.clone(), bps, true, self.waker()),
+            Lang::Browser => nagi_workers::cdp::start(addr.clone(), hint.to_string(), self.nav_root(), bps, self.waker()),
+            Lang::Python => nagi_workers::dap::start(addr.clone(), bps, self.waker()),
+        };
         self.debug = Some(DebugUi {
+            lang,
             tx: Some(tx),
             task: Some(task),
             name,
@@ -212,26 +246,121 @@ impl Editor {
     pub(crate) fn debug_run(&mut self, name: &str) {
         let configs = self.load_run_configs();
         let want = if name.trim().is_empty() { self.run_selected.clone() } else { Some(name.trim().to_string()) };
-        let Some(cfg) = want.and_then(|w| configs.iter().find(|c| c.name == w).cloned()).or_else(|| configs.first().cloned()) else {
-            self.notify.info("実行の構成がありません（:DebugTest でカーソルの位置のテスト、:DebugAttach 5005 で動いている JVM へ）");
+        // 今のファイルが Python なら、構成が無くてもそのファイルを
+        let here_py = self.buf.path.as_deref().is_some_and(|p| lang_of(p) == Some(Lang::Python));
+        let picked = want.and_then(|w| configs.iter().find(|c| c.name == w).cloned()).or_else(|| if here_py { self.current_file_config() } else { None }).or_else(|| configs.first().cloned()).or_else(|| self.current_file_config());
+        let Some(cfg) = picked else {
+            self.notify.info("実行の構成がありません（:DebugTest でカーソルの位置のテスト、:DebugBrowser でブラウザ、:DebugAttach 5005 で動いている JVM へ）");
             return;
         };
         self.debug_config(cfg);
     }
 
     fn debug_config(&mut self, cfg: nagi_workers::runconfig::RunConfig) {
+        use nagi_workers::runconfig::Kind;
         let Some(port) = free_port() else {
             self.notify.error("空いているポートがありません");
             return;
         };
-        let Some(dcfg) = with_agent(&cfg, &agent(port)) else {
-            self.notify.error(format!("「{}」（{}）はデバッグで動かせません（Maven・Spring Boot・アプリケーション・java のコマンド）", cfg.name, cfg.kind_label()));
+        // IntelliJ の JavaScript Debug の構成（URL）: ブラウザを起こしてつなぐ
+        if let Kind::Url { url } = &cfg.kind {
+            let url = url.clone();
+            self.debug_browser(&url);
             return;
+        }
+        let (dcfg, lang) = match with_agent(&cfg, &agent(port)) {
+            Some(c) => (c, Lang::Java),
+            None => match self.with_debugpy(&cfg, port) {
+                Some(c) => (c, Lang::Python),
+                None => {
+                    self.notify.error(format!("「{}」（{}）はデバッグで動かせません（Java の Maven・Spring Boot・アプリケーション・java のコマンド、Python、ブラウザの URL）", cfg.name, cfg.kind_label()));
+                    return;
+                }
+            },
         };
+        if lang == Lang::Python && !self.has_debugpy() {
+            return;
+        }
         let name = dcfg.name.clone();
         self.run_config(dcfg);
-        self.start_debug(name.clone(), format!("127.0.0.1:{port}"), Some(format!("{}{name}", crate::run_configs::RUN_PREFIX)));
-        self.notify.info(format!("デバッグ: {name}（JVM が起きたらつなぐ）"));
+        self.start_debug(name.clone(), lang, format!("127.0.0.1:{port}"), Some(format!("{}{name}", crate::run_configs::RUN_PREFIX)), "");
+        self.notify.info(format!("デバッグ: {name}（起きたらつなぐ）"));
+    }
+
+    /// プロジェクトの Python（.venv・venv があればその中のもの）
+    fn python_exe(&self) -> String {
+        let root = self.nav_root();
+        [".venv", "venv"].iter().map(|v| root.join(v).join("Scripts").join("python.exe")).find(|p| p.is_file()).map_or("python".into(), |p| p.display().to_string())
+    }
+
+    /// debugpy が入っているか（無ければ入れ方を知らせる）
+    fn has_debugpy(&mut self) -> bool {
+        let py = self.python_exe();
+        let mut c = std::process::Command::new(&py);
+        c.args(["-c", "import debugpy"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+        nagi_workers::sys::no_window(&mut c);
+        let ok = c.status().is_ok_and(|s| s.success());
+        if !ok {
+            self.notify.error(format!("{py} に debugpy がありません（{py} -m pip install debugpy）"));
+        }
+        ok
+    }
+
+    /// Python の構成を debugpy の口を開けて動かす形に（python のコマンド・Python の構成）
+    fn with_debugpy(&self, cfg: &nagi_workers::runconfig::RunConfig, port: u16) -> Option<nagi_workers::runconfig::RunConfig> {
+        use nagi_workers::runconfig::Kind;
+        let py = self.python_exe();
+        let listen = format!("-m debugpy --listen 127.0.0.1:{port} --wait-for-client");
+        let (command, workdir) = match &cfg.kind {
+            Kind::Tool { tool, target, args, workdir, .. } if tool == "python" => (format!("\"{py}\" {listen} {} {}", target.trim(), args.trim()), workdir.clone()),
+            Kind::Shell { command, workdir } => {
+                let rest = command.trim_start().strip_prefix("python ").or_else(|| command.trim_start().strip_prefix("python3 "))?;
+                (format!("\"{py}\" {listen} {rest}"), workdir.clone())
+            }
+            _ => return None,
+        };
+        Some(nagi_workers::runconfig::RunConfig { name: format!("{}（デバッグ）", cfg.name), kind: Kind::Shell { command: command.trim().to_string(), workdir }, from: "nagi" })
+    }
+
+    /// `:DebugBrowser [URL]`: Chrome（無ければ Edge）をデバッグの口を開けて、いつもとは別のプロフィールで起こしてつなぐ
+    pub(crate) fn debug_browser(&mut self, url: &str) {
+        let url = if url.trim().is_empty() { self.dev_server_url() } else { url.trim().to_string() };
+        let Some(exe) = nagi_workers::cdp::find_browser() else {
+            self.notify.error("Chrome も Edge も見つかりません");
+            return;
+        };
+        let Some(port) = free_port() else { return };
+        match nagi_workers::cdp::launch_browser(&exe, port, &url, false) {
+            Ok(_) => {
+                let hint = url.split("://").nth(1).unwrap_or(&url).to_string();
+                self.start_debug(format!("ブラウザ（{url}）"), Lang::Browser, format!("127.0.0.1:{port}"), None, &hint);
+                self.notify.info(format!("デバッグ: {} で {url} を開きました", exe.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+            }
+            Err(e) => self.notify.error(e),
+        }
+    }
+
+    /// 開発サーバーの URL（package.json から当てる。Vite は 5173、Angular は 4200、ほかは 3000）
+    fn dev_server_url(&self) -> String {
+        let pkg = std::fs::read_to_string(self.nav_root().join("package.json")).unwrap_or_default();
+        let port = if pkg.contains("\"vite\"") { 5173 } else if pkg.contains("@angular/core") { 4200 } else { 3000 };
+        format!("http://localhost:{port}")
+    }
+
+    /// `:DebugAttachBrowser [ポート]`: --remote-debugging-port で起こしてあるブラウザにつなぐ
+    pub(crate) fn debug_attach_browser(&mut self, arg: &str) {
+        let a = arg.trim();
+        let addr = if a.is_empty() { "127.0.0.1:9222".to_string() } else if a.contains(':') { a.to_string() } else { format!("127.0.0.1:{a}") };
+        self.start_debug(format!("ブラウザ（{addr}）"), Lang::Browser, addr, None, "");
+        self.notify.info("ブラウザにつないでいます…（chrome --remote-debugging-port=9222 で起こしたもの）");
+    }
+
+    /// `:DebugAttachPython [ポート]`: debugpy（python -m debugpy --listen 5678 ...）につなぐ
+    pub(crate) fn debug_attach_python(&mut self, arg: &str) {
+        let a = arg.trim();
+        let addr = if a.is_empty() { "127.0.0.1:5678".to_string() } else if a.contains(':') { a.to_string() } else { format!("127.0.0.1:{a}") };
+        self.start_debug(format!("Python（{addr}）"), Lang::Python, addr, None, "");
+        self.notify.info("debugpy につないでいます…");
     }
 
     /// `:DebugTest`: カーソルの位置のテストをデバッグで（Maven の surefire の口を開ける）
@@ -248,7 +377,7 @@ impl Editor {
             a if a.contains(':') => a.to_string(),
             a => format!("127.0.0.1:{a}"),
         };
-        self.start_debug(format!("つないだ JVM（{addr}）"), addr, None);
+        self.start_debug(format!("つないだ JVM（{addr}）"), Lang::Java, addr, None, "");
         self.notify.info("JVM につないでいます…");
     }
 
@@ -296,12 +425,18 @@ impl Editor {
         self.debug = None;
     }
 
-    /// ソースのパス（com/x/Foo.java）のファイル（開いているもの → プロジェクトの中を探す）
+    /// ソースのパス（com/x/Foo.java・/src/App.tsx・絶対のパス）のファイル（開いているもの → プロジェクトの中を探す）
     fn source_path(&mut self, rel: &str) -> Option<PathBuf> {
         if let Some(p) = self.debug.as_ref().and_then(|d| d.src.get(rel).cloned()) {
             return p;
         }
-        let rel_path = PathBuf::from(rel);
+        // 絶対のパス（Python・file:// のページ）ならそのまま
+        let abs = PathBuf::from(rel);
+        if abs.is_absolute() && abs.is_file() {
+            return Some(abs);
+        }
+        // ブラウザの /src/App.tsx はプロジェクトの根から
+        let rel_path = PathBuf::from(rel.trim_start_matches('/'));
         let open = self.buffer_list().into_iter().filter_map(|(_, p, ..)| p).find(|p| p.ends_with(&rel_path));
         let found = open.or_else(|| find_under(&self.nav_root(), &rel_path));
         if let Some(d) = &mut self.debug {
@@ -349,7 +484,8 @@ impl Editor {
                     }
                 }
                 Ev::Stopped { reason, thread, frames, frame, vars } => {
-                    let top = frames.first().map(|f| format!("{}.{}:{}", f.class.rsplit('.').next().unwrap_or(&f.class), f.method, f.line.unwrap_or(0))).unwrap_or_default();
+                    let lang = self.debug.as_ref().map_or(Lang::Java, |d| d.lang);
+                    let top = frames.first().map(|f| format!("{}:{}", frame_label(lang, f), f.line.unwrap_or(0))).unwrap_or_default();
                     if let Some(d) = &mut self.debug {
                         d.stopped = true;
                         d.frames = frames;
@@ -507,6 +643,14 @@ impl Editor {
     }
 }
 
+/// スタックの 1 行の名前（Java は Foo.main、ほかは main（a.ts））
+pub(crate) fn frame_label(lang: Lang, f: &Frame) -> String {
+    match lang {
+        Lang::Java => format!("{}.{}", f.class.rsplit('.').next().unwrap_or(&f.class), f.method),
+        _ => format!("{}（{}）", f.method, f.class),
+    }
+}
+
 /// `root` の下で `rel`（com/x/Foo.java）で終わるファイルを探す（target・node_modules・.git などは見ない）
 fn find_under(root: &Path, rel: &Path) -> Option<PathBuf> {
     let name = rel.file_name()?;
@@ -590,9 +734,8 @@ pub(crate) mod draw {
                 p.out.push(Instance::fill(r.x as f32 * cell.w, y(1 + k), fw.saturating_sub(1) as f32 * cell.w, cell.h, if focused && !d.on_vars { FG } else { MATCH_BG }));
             }
             let rev = sel && focused && !d.on_vars;
-            let short = f.class.rsplit('.').next().unwrap_or(&f.class);
             let line = f.line.map_or(String::new(), |l| format!(":{l}"));
-            let c = p.text(&format!(" {}.{}", short, f.method), r.x, y(1 + k), if rev { BG } else { FG });
+            let c = p.text(&format!(" {}", frame_label(d.lang, f)), r.x, y(1 + k), if rev { BG } else { FG });
             p.text(&line, c, y(1 + k), if rev { BG } else { LINE_NO });
         }
         p.out.push(Instance::fill((r.x + fw) as f32 * cell.w - cell.w * 0.5, y(1), 1.0, h as f32 * cell.h, LINE_NO));
@@ -716,6 +859,96 @@ mod tests {
         e.debug_resume();
         wait(&mut e, &|d| d.ended);
         let _ = jvm.wait();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn python_commands_get_debugpy() {
+        use nagi_workers::runconfig::{Kind, RunConfig};
+        let e = Editor::new(nagi_core::Buffer::from_str(""), None);
+        let t = RunConfig { name: "t".into(), kind: Kind::Shell { command: "python -m pytest \"a.py::f\"".into(), workdir: None }, from: "nagi" };
+        let d = e.with_debugpy(&t, 5678).unwrap();
+        assert!(matches!(&d.kind, Kind::Shell { command, .. } if command.ends_with("-m debugpy --listen 127.0.0.1:5678 --wait-for-client -m pytest \"a.py::f\"")), "{:?}", d.kind);
+        let f = RunConfig { name: "f".into(), kind: Kind::Tool { tool: "python".into(), target: "app.py".into(), args: "-v".into(), env: Vec::new(), workdir: None }, from: "file" };
+        assert!(matches!(&e.with_debugpy(&f, 1).unwrap().kind, Kind::Shell { command, .. } if command.ends_with("--wait-for-client app.py -v")));
+        assert_eq!(lang_of(Path::new("a/App.tsx")), Some(Lang::Browser));
+        assert_eq!(frame_label(Lang::Browser, &Frame { class: "a.ts".into(), method: "add".into(), source: None, line: None }), "add（a.ts）");
+    }
+
+    fn wait_until(e: &mut Editor, f: &dyn Fn(&DebugUi) -> bool) {
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(40);
+        while std::time::Instant::now() < until {
+            e.poll_debug();
+            if e.debug.as_ref().is_some_and(f) {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        panic!("待ちきれない: {:?}", e.debug.as_ref().map(|d| d.status.clone()));
+    }
+
+    /// 窓なしの Chrome に画面の側からつなぐ: TypeScript の行番号の欄のブレークポイントで止まり、その .ts の行を出す。
+    /// ブラウザを起こすので普段は流さない
+    #[test]
+    #[ignore]
+    fn debugs_browser_from_the_editor() {
+        let exe = nagi_workers::cdp::find_browser().unwrap();
+        let dir = std::env::temp_dir().join(format!("nagi-tsui-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        let ts = "function add(a: number, b: number): number {\n  const c = a + b;\n  return c;\n}\nsetInterval(() => { document.title = String(add(2, 3)); }, 300);\n";
+        std::fs::write(dir.join("src/a.ts"), ts).unwrap();
+        let js = ts.replace(": number", "");
+        let map = r#"{"version":3,"file":"a.js","sources":["a.ts"],"mappings":"AAAA;AACA;AACA;AACA;AACA"}"#;
+        std::fs::write(dir.join("src/a.js"), format!("{js}//# sourceMappingURL=data:application/json;base64,{}\n", nagi_workers::ws::base64_encode(map.as_bytes()))).unwrap();
+        std::fs::write(dir.join("index.html"), "<html><body><script src=\"src/a.js\"></script></body></html>").unwrap();
+        let port = free_port().unwrap();
+        let url = format!("file:///{}", dir.join("index.html").display().to_string().replace('\\', "/"));
+        let mut child = nagi_workers::cdp::launch_browser(&exe, port, &url, true).unwrap();
+        let file = dir.join("src/a.ts");
+        let mut e = Editor::new(nagi_core::Buffer::open(&file).unwrap(), None);
+        e.buf.path = Some(file.clone());
+        e.cwd = dir.clone();
+        e.set_screen(120, 40);
+        e.toggle_breakpoint(Some(1));
+        e.debug_attach_browser(&port.to_string());
+        wait_until(&mut e, &|d| d.stopped);
+        assert_eq!(e.exec_line_for(Some(&file)), Some(1), "{}", e.debug.as_ref().unwrap().status);
+        assert!(e.debug.as_ref().unwrap().vars.iter().any(|r| r.var.name == "b" && r.var.value == "3"));
+        e.debug_stop();
+        let _ = child.kill();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// debugpy に画面の側からつなぐ（NAGI_DEBUGPY_PYTHON に debugpy の入った python）。普段は流さない
+    #[test]
+    #[ignore]
+    fn debugs_python_from_the_editor() {
+        let py = std::env::var("NAGI_DEBUGPY_PYTHON").unwrap_or_else(|_| "python".into());
+        let dir = std::env::temp_dir().join(format!("nagi-pyui-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("app.py");
+        std::fs::write(&file, "total = 0\nfor i in range(3):\n    total += i\nprint(total)\n").unwrap();
+        let port = free_port().unwrap();
+        let mut child = std::process::Command::new(&py)
+            .args(["-m", "debugpy", "--listen", &format!("127.0.0.1:{port}"), "--wait-for-client", &file.display().to_string()])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut e = Editor::new(nagi_core::Buffer::open(&file).unwrap(), None);
+        e.buf.path = Some(file.clone());
+        e.cwd = dir.clone();
+        e.set_screen(120, 40);
+        e.toggle_breakpoint(Some(2));
+        e.debug_attach_python(&port.to_string());
+        wait_until(&mut e, &|d| d.stopped);
+        assert_eq!(e.exec_line_for(Some(&file)), Some(2), "{}", e.debug.as_ref().unwrap().status);
+        e.debug_resume();
+        wait_until(&mut e, &|d| d.stopped && d.vars.iter().any(|r| r.var.name == "i" && r.var.value == "1"));
+        e.toggle_breakpoint(Some(2));
+        e.debug_resume();
+        wait_until(&mut e, &|d| d.ended);
+        let _ = child.wait();
         let _ = std::fs::remove_dir_all(&dir);
     }
 

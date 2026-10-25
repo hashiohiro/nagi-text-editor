@@ -1937,9 +1937,9 @@ impl Editor {
         if self.text_click_blocked() {
             return;
         }
-        // Java・Kotlin のファイルの行番号の欄を押したら、その行のブレークポイントを付ける・外す（IntelliJ と同じ）
+        // デバッグできるファイル（Java・Kotlin・TypeScript・JavaScript・Python）の行番号の欄を押したら、その行のブレークポイントを付ける・外す（IntelliJ と同じ）
         let r = self.active_rect();
-        let java = self.buf.path.as_deref().and_then(|p| p.extension()).is_some_and(|e| e == "java" || e == "kt");
+        let java = self.buf.path.as_deref().and_then(crate::debugger::lang_of).is_some();
         if java && r.contains(row, col) && col < r.x + self.gutter() && col >= r.x + self.gutter() - GUTTER {
             let line = self.pos_at(row, r.x + self.gutter()).line;
             self.toggle_breakpoint(Some(line));
