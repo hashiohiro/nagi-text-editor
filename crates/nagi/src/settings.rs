@@ -87,6 +87,7 @@ pub static SCHEMA: &[Item] = &[
     pitem("editor.soft_tabs", "エディタ", "ソフトタブ（Backspace で 1 段ずつ消す）", B, "true", "空白のインデントの中の Backspace で、前のインデントの位置まで消す（softtabstop）"),
     pitem("editor.detect_indent", "エディタ", "ファイルのインデントを見分けて使う", B, "true", "開いたファイルがタブか空白か・空白の幅を中身から見分け、上の設定より先に使う（IntelliJ の Detect and use existing file indents）"),
     pitem("editor.auto_indent", "エディタ", "自動インデント", B, "true", "改行した行を前の行のインデントに揃える（autoindent）"),
+    pitem("editor.auto_pairs", "エディタ", "括弧・引用符を自動で閉じる", B, "true", "( [ { \" ' ` を打つと閉じる方も入れる。閉じる方を打てば上を進むだけ、間で Backspace なら両方消す"),
     pitem("editor.smart_indent", "エディタ", "括弧で字下げ", B, "true", "{ ( [ の後の改行で 1 段深く、閉じ括弧を打てば 1 段浅く（smartindent）"),
     pitem("editor.editorconfig", "エディタ", ".editorconfig を使う", B, "true", "プロジェクトの .editorconfig のインデント・タブの幅・保存時の処理・新しいファイルの改行と文字コードを、ここの設定より先に使う"),
     pitem("editor.trim_trailing", "エディタ", "保存時に行末の空白を消す", B, "false", ""),

@@ -1024,7 +1024,11 @@ impl Editor {
 
     fn backspace(&mut self) {
         let line = self.buf.line(self.cursor.line);
-        if let Some(to) = self.soft_tab_back() {
+        if let Some((s, e)) = self.pair_back() {
+            let ls = self.buf.line_start(self.cursor.line);
+            self.edit(ls + s, ls + e, "");
+            self.set_abs(ls + s);
+        } else if let Some(to) = self.soft_tab_back() {
             let ls = self.buf.line_start(self.cursor.line);
             self.edit(ls + to, self.abs(), "");
             self.set_abs(ls + to);
@@ -1193,8 +1197,10 @@ impl Editor {
                 }
             }
             Key::Char(c) => {
-                self.dedent_for_closer(c);
-                self.insert_text(c.encode_utf8(&mut [0; 4]));
+                if !self.auto_pair(c) {
+                    self.dedent_for_closer(c);
+                    self.insert_text(c.encode_utf8(&mut [0; 4]));
+                }
                 // SQL コンソールでは「別名.」の後にすぐ列の候補を出す（列がまだ無ければ、届いたら出る）
                 if c == '.' && self.console_source().is_some() {
                     let msg = self.notify.text.clone();

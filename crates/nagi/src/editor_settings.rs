@@ -191,6 +191,50 @@ impl Editor {
         (format!("\n{inner}"), 0)
     }
 
+    /// 括弧・引用符を自動で閉じる（設定の「括弧・引用符を自動で閉じる」）。打った文字をここで入れたら true
+    pub(crate) fn auto_pair(&mut self, c: char) -> bool {
+        if !self.settings.bool("editor.auto_pairs") {
+            return false;
+        }
+        let line = self.buf.line(self.cursor.line);
+        let at = self.cursor.byte.min(line.len());
+        let next = line[at..].chars().next();
+        let prev = line[..at].chars().next_back();
+        // 閉じる方の上なら進むだけ
+        if matches!(c, ')' | ']' | '}' | '"' | '\'' | '`') && next == Some(c) {
+            self.cursor.byte = at + c.len_utf8();
+            return true;
+        }
+        // 後ろが空白・行末・閉じ括弧・区切りのときだけ足す（語の前では足さない）
+        let free = next.is_none_or(|n| n.is_whitespace() || matches!(n, ')' | ']' | '}' | ',' | ';' | ':'));
+        let close = match c {
+            '(' => ')',
+            '[' => ']',
+            '{' => '}',
+            '"' | '`' => c,
+            // ' は語の後（don't）と Rust の寿命（&'a）では足さない
+            '\'' if !self.buf.path.as_deref().and_then(|p| p.extension()).is_some_and(|e| e == "rs") => c,
+            _ => return false,
+        };
+        if !free || matches!(c, '"' | '\'' | '`') && prev.is_some_and(|p| p.is_alphanumeric() || p == c) {
+            return false;
+        }
+        self.insert_text(&format!("{c}{close}"));
+        self.cursor.byte -= close.len_utf8();
+        true
+    }
+
+    /// 空の括弧・引用符の間の Backspace で両方消す範囲（行内 byte の始め, 終わり）
+    pub(crate) fn pair_back(&self) -> Option<(usize, usize)> {
+        if !self.settings.bool("editor.auto_pairs") || self.cursor.byte == 0 {
+            return None;
+        }
+        let line = self.buf.line(self.cursor.line);
+        let at = self.cursor.byte.min(line.len());
+        let (p, n) = (line[..at].chars().next_back()?, line[at..].chars().next()?);
+        matches!((p, n), ('(', ')') | ('[', ']') | ('{', '}') | ('"', '"') | ('\'', '\'') | ('`', '`')).then(|| (at - p.len_utf8(), at + n.len_utf8()))
+    }
+
     /// 空白だけの行で閉じ括弧を打ったら 1 段浅くする（設定の「括弧で字下げ」）
     pub(crate) fn dedent_for_closer(&mut self, c: char) {
         if !matches!(c, '}' | ')' | ']') || !self.settings.bool("editor.smart_indent") || !self.settings.bool("editor.auto_indent") {
@@ -535,6 +579,34 @@ mod tests {
         e.set_fileformat(true);
         assert_eq!(e.buf.text(), "a\r\nb\r\nc\r\n");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 括弧・引用符を自動で閉じ、閉じる方は上を進み、空の間の Backspace は両方消す
+    #[test]
+    fn auto_pairs() {
+        use nagi_vim::Key;
+        let mut e = Editor::new(Buffer::from_str(""), None);
+        e.buf.path = Some("x/a.ts".into());
+        for c in "if(\"a".chars() {
+            e.key(Key::Char(c));
+        }
+        assert_eq!(e.buf.line(0), "f(\"a\")");
+        e.key(Key::Char('"'));
+        e.key(Key::Char(')'));
+        e.key(Key::Char(';'));
+        assert_eq!(e.buf.line(0), "f(\"a\");", "閉じる方は上を進む");
+        for c in " don't [".chars() {
+            e.key(Key::Char(c));
+        }
+        assert_eq!(e.buf.line(0), "f(\"a\"); don't []", "語の後の ' は 1 つ");
+        e.key(Key::Backspace);
+        assert_eq!(e.buf.line(0), "f(\"a\"); don't ");
+        e.key(Key::Char('x'));
+        e.key(Key::Esc);
+        e.key(Key::Char('0'));
+        e.key(Key::Char('i'));
+        e.key(Key::Char('('));
+        assert_eq!(e.buf.line(0), "(f(\"a\"); don't x", "語の前では閉じない");
     }
 
     /// .editorconfig は設定より強く、:set より弱い
