@@ -93,7 +93,26 @@ pub static OPTS: &[VimOpt] = &[
         get: |s| b(s.get("editor.indent_style") != "tabs"),
         put: |_, v| vec![("editor.indent_style", if on(v) { "spaces" } else { "tabs" }.to_string())],
     },
-    num_opt!(["shiftwidth", "sw"], "editor.indent_width"),
+    // sw=0 は tabstop と同じ（vim と同じ）
+    VimOpt {
+        names: &["shiftwidth", "sw"],
+        kind: VKind::Num,
+        keys: &["editor.indent_width"],
+        get: |s| s.int("editor.indent_width").to_string(),
+        put: |s, v| vec![("editor.indent_width", if v == "0" { s.int("editor.tab_width").to_string() } else { v.to_string() })],
+    },
+    num_opt!(["tabstop", "ts"], "editor.tab_width"),
+    // 0 でなければソフトタブ（幅はいつもインデントの幅。vim の sts=-1 と同じ）
+    VimOpt {
+        names: &["softtabstop", "sts"],
+        kind: VKind::Num,
+        keys: &["editor.soft_tabs"],
+        get: |s| if s.bool("editor.soft_tabs") { "-1".into() } else { "0".into() },
+        put: |_, v| vec![("editor.soft_tabs", (v != "0").to_string())],
+    },
+    bool_opt!(["autoindent", "ai"], "editor.auto_indent"),
+    bool_opt!(["smartindent", "si"], "editor.smart_indent"),
+    bool_opt!(["cindent", "cin"], "editor.smart_indent"),
     // 保存
     bool_opt!(["fixendofline", "fixeol"], "editor.final_newline"),
     // クリップボード（unnamed・unnamedplus のどちらかがあれば、ヤンク・削除をいつもクリップボードへ）

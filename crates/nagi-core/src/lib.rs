@@ -10,7 +10,18 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 const LT: LineType = LineType::LF_CR;
-pub const TAB_WIDTH: usize = 4;
+thread_local! {
+    static TAB_WIDTH: std::cell::Cell<usize> = const { std::cell::Cell::new(4) };
+}
+
+/// タブの表示幅（設定の「タブの表示幅」・vim の tabstop。窓とファイルで違うので、描く前・キーを処理する前にエディタが入れる）
+pub fn tab_width() -> usize {
+    TAB_WIDTH.with(std::cell::Cell::get)
+}
+
+pub fn set_tab_width(w: usize) {
+    TAB_WIDTH.with(|t| t.set(w.clamp(1, 16)));
+}
 
 mod history;
 pub mod error;
@@ -398,10 +409,10 @@ impl Buffer {
     }
 }
 
-/// 書記素の表示幅（1 か 2。タブは TAB_WIDTH）
+/// 書記素の表示幅（1 か 2。タブは tab_width）
 pub fn grapheme_width(g: &str, ambiguous_wide: bool) -> usize {
     if g == "\t" {
-        return TAB_WIDTH;
+        return tab_width();
     }
     if ambiguous_wide { g.width_cjk() } else { g.width() }.clamp(1, 2)
 }

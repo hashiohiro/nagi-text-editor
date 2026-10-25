@@ -919,8 +919,11 @@ impl Editor {
             'I' => self.motion().first_non_blank(&mut cur),
             'A' => cur.byte = self.line_len(cur.line),
             'o' | 'O' => {
-                // 新しい行のインデントは今の行に合わせる（autoindent。Neovim の既定と同じ）
-                let indent = leading_ws(&self.buf.line(cur.line)).to_string();
+                // 新しい行のインデントは今の行に合わせ、o で { の後なら 1 段深く（設定の自動インデント）
+                let mut indent = if self.settings.bool("editor.auto_indent") { leading_ws(&self.buf.line(cur.line)).to_string() } else { String::new() };
+                if c == 'o' && self.settings.bool("editor.auto_indent") && self.settings.bool("editor.smart_indent") && self.buf.line(cur.line).trim_end().ends_with(['{', '(', '[']) {
+                    indent.push_str(&self.indent_unit());
+                }
                 let nl = self.buf.newline();
                 self.enter_insert();
                 if c == 'o' {

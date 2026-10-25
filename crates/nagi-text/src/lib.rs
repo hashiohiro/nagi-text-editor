@@ -292,7 +292,7 @@ fn raster(faces: &[Face], px: f32, cell: CellSize, ctx: &mut ScaleContext, key: 
 
 /// 行を書記素に区切り、(書記素, 開始 byte, セル幅) を返す
 pub fn graphemes<'a>(fonts: &'a Fonts, line: &'a str) -> impl Iterator<Item = (&'a str, usize, usize)> + 'a {
-    line.grapheme_indices(true).map(move |(i, g)| (g, i, if g == "\t" { 4 } else { fonts.width(g) }))
+    line.grapheme_indices(true).map(move |(i, g)| (g, i, if g == "\t" { nagi_core::tab_width() } else { fonts.width(g) }))
 }
 
 fn is_color(f: &FontData) -> bool {

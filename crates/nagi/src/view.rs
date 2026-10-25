@@ -146,9 +146,9 @@ impl Painter<'_> {
         s.graphemes(true).map(|g| Item { g: Cow::Borrowed(g), width: self.cell_width(g), fg, bg: None, underline: false }).collect()
     }
 
-    /// 書記素 1 つのセル幅（タブは 4）
+    /// 書記素 1 つのセル幅（タブは設定のタブの表示幅）
     pub(crate) fn cell_width(&self, g: &str) -> usize {
-        if g == "\t" { 4 } else { self.fonts.width(g) }
+        if g == "\t" { nagi_core::tab_width() } else { self.fonts.width(g) }
     }
 
     /// 部品の並びを (col, y) から描く。戻り値は描き終えた列
@@ -373,6 +373,8 @@ pub(crate) fn skip_cols(items: &mut Vec<Item>, cols: usize, cursor_item: &mut Op
 
 /// 窓 1 つを `rect`（本文の行だけ。状態行は含まない）に描く
 pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
+    // タブの表示幅は今の設定で（窓とファイルで違う）
+    ed.sync_tab();
     let cell = p.fonts.cell();
     // 作業中の窓に blame を出しているときは、行番号の左にその欄を足す
     let gutter = if pane.active { ed.gutter() } else { GUTTER };

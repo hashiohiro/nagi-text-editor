@@ -983,7 +983,11 @@ impl Editor {
 
     fn backspace(&mut self) {
         let line = self.buf.line(self.cursor.line);
-        if self.cursor.byte > 0 {
+        if let Some(to) = self.soft_tab_back() {
+            let ls = self.buf.line_start(self.cursor.line);
+            self.edit(ls + to, self.abs(), "");
+            self.set_abs(ls + to);
+        } else if self.cursor.byte > 0 {
             let prev = line[..self.cursor.byte].grapheme_indices(true).next_back().map_or(0, |(i, _)| i);
             let start = self.buf.line_start(self.cursor.line) + prev;
             self.edit(start, self.abs(), "");
@@ -999,6 +1003,7 @@ impl Editor {
     }
 
     pub fn key(&mut self, key: Key) -> Effect {
+        self.sync_tab();
         let effect = self.key_inner(key);
         // 入力補完を打っている間に自動で出す（設定）
         if self.state() == State::Insert && self.settings.bool("completion.auto") {
@@ -1116,12 +1121,19 @@ impl Editor {
         }
         match key {
             Key::Esc | Key::Ctrl('c') => self.leave_insert(),
-            // 新しい行のインデントは今の行に合わせる（autoindent。Neovim の既定と同じ）
+            // 新しい行のインデントは今の行に合わせ、{ の後なら 1 段深く（設定の自動インデント。editor_settings.rs）
             Key::Enter => {
-                let line = self.buf.line(self.cursor.line);
-                let indent: String = line.chars().take_while(|c| *c == ' ' || *c == '\t').collect();
-                let indent = &indent[..indent.len().min(self.cursor.byte)];
-                self.insert_text(&format!("\n{indent}"));
+                let (text, back) = self.newline_text();
+                // 閉じ括弧を次の行へ送るときは、カーソルと閉じ括弧の間の空白を消しておく
+                if back > 0 {
+                    let line = self.buf.line(self.cursor.line);
+                    let ws = line[self.cursor.byte..].len() - line[self.cursor.byte..].trim_start().len();
+                    let at = self.abs();
+                    self.edit(at, at + ws, "");
+                }
+                self.insert_text(&text);
+                let back = if back > 0 { back - "\n".len() + self.buf.newline().len() } else { 0 };
+                self.set_abs(self.abs() - back);
             }
             Key::Backspace => self.backspace(),
             Key::Tab => self.insert_tab(),
@@ -1136,6 +1148,7 @@ impl Editor {
                 }
             }
             Key::Char(c) => {
+                self.dedent_for_closer(c);
                 self.insert_text(c.encode_utf8(&mut [0; 4]));
                 // SQL コンソールでは「別名.」の後にすぐ列の候補を出す（列がまだ無ければ、届いたら出る）
                 if c == '.' && self.console_source().is_some() {

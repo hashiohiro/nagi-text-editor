@@ -1463,6 +1463,10 @@ impl Frame {
     }
 
     fn window_event(&mut self, el: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        // タブの表示幅はこの窓の設定で（1 つのプロセスの窓どうしで違ってよい）
+        if let Some(ed) = &self.ed {
+            ed.sync_tab();
+        }
         match event {
             WindowEvent::CloseRequested => self.closed = true,
             WindowEvent::Resized(size) => {

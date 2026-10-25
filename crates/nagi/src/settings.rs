@@ -77,8 +77,13 @@ pub static SCHEMA: &[Item] = &[
     item("editor.tabs", "エディタ", "タブ", B, "true", "本文の上に開いているファイルのタブを出す（× で閉じる・右クリックでまとめて閉じる）"),
     item("editor.wrap", "エディタ", "折り返す", B, "false", "画面の幅で行を折り返して表示する"),
     pitem("editor.indent_style", "エディタ", "インデント", SKind::Choice(&[("spaces", "空白"), ("tabs", "タブ")]), "spaces", "Tab キー・>>・自動インデントで入れるもの"),
-    pitem("editor.indent_width", "エディタ", "インデントの幅", SKind::Int(1, 16), "4", ""),
+    pitem("editor.indent_width", "エディタ", "インデントの幅", SKind::Int(1, 16), "4", "shiftwidth"),
     pitem("editor.indent_overrides", "エディタ", "言語ごとのインデントの幅", T, "js=2, ts=2, json=2, yaml=2, html=2, css=2, scss=2", "拡張子=幅 をカンマで区切る"),
+    pitem("editor.tab_width", "エディタ", "タブの表示幅", SKind::Int(1, 16), "4", "タブの文字を何文字ぶんで出すか（tabstop）"),
+    pitem("editor.soft_tabs", "エディタ", "ソフトタブ（Backspace で 1 段ずつ消す）", B, "true", "空白のインデントの中の Backspace で、前のインデントの位置まで消す（softtabstop）"),
+    pitem("editor.detect_indent", "エディタ", "ファイルのインデントを見分けて使う", B, "true", "開いたファイルがタブか空白か・空白の幅を中身から見分け、上の設定より先に使う（IntelliJ の Detect and use existing file indents）"),
+    pitem("editor.auto_indent", "エディタ", "自動インデント", B, "true", "改行した行を前の行のインデントに揃える（autoindent）"),
+    pitem("editor.smart_indent", "エディタ", "括弧で字下げ", B, "true", "{ ( [ の後の改行で 1 段深く、閉じ括弧を打てば 1 段浅く（smartindent）"),
     pitem("editor.trim_trailing", "エディタ", "保存時に行末の空白を消す", B, "false", ""),
     pitem("editor.final_newline", "エディタ", "保存時に最後に改行を入れる", B, "false", ""),
     pitem("editor.new_newline", "エディタ", "新しいファイルの改行", SKind::Choice(&[("lf", "LF"), ("crlf", "CRLF")]), "lf", ""),
@@ -455,6 +460,7 @@ impl crate::editor::Editor {
             self.log_detail_w = self.log_detail_w.or(num("state.log_detail_width"));
         }
         self.sync_clipboard();
+        self.sync_tab();
         self.set_vim(self.settings.bool("vim.enabled"));
         if !self.settings.bool("vim.hlsearch") {
             self.search.highlight = false;
