@@ -2,6 +2,8 @@
 //!
 //! 上の欄に打つと絞り込む（文字はそのまま欄に入る）。並びは 新しいブランチ… / フェッチ、最近、ローカル、リモート。
 //! Enter でチェックアウト（リモートなら追跡するローカルのブランチを作る）、→ で操作の一覧。
+//! `feature/x` のように / を含む名前は、IntelliJ と同じくフォルダ（feature）にまとめて開く・閉じる（Enter・→・←・クリック）。
+//! 初めは今のブランチの入っているフォルダだけを開く。絞り込んでいる間はまとめずに全部の名前を出す。
 //! フェッチと pull はネットワークを使うので裏で行う。
 
 
@@ -26,6 +28,8 @@ pub enum Entry {
     Fetch,
     Header(&'static str),
     Branch(usize),
+    /// ブランチの名前のフォルダ（`L:feature`・`R:origin/feature` のように、ローカルかリモートかと / までの名前）
+    Folder(String),
 }
 
 /// 操作の一覧
@@ -77,6 +81,12 @@ pub struct BranchPopup {
     rx: Option<nagi_core::task::Task<nagi_core::Result<Vec<Branch>>>>,
     /// 上の帯のブランチを押して開いたときの列（その下に出す。無ければ画面の上の中央）
     pub anchor: Option<usize>,
+    /// 行の字下げ（entries と同じ並び。フォルダの中ほど深い）
+    pub depth: Vec<usize>,
+    /// 開いているフォルダ（Entry::Folder の鍵）
+    pub open: std::collections::HashSet<String>,
+    /// 今のブランチのフォルダを開いたか（初めの 1 回だけ）
+    opened_current: bool,
 }
 
 impl BranchPopup {
@@ -93,14 +103,76 @@ impl BranchPopup {
         self.branches.iter().find(|b| b.current).map_or_else(|| "HEAD".into(), |b| b.name.clone())
     }
 
+    /// ブランチの名前をフォルダにまとめて並べる（`kind` は L か R。フォルダを先に、名前の順）
+    fn tree(&self, kind: char, items: &[usize], prefix: &[&str], depth: usize, out: &mut Vec<(Entry, usize)>) {
+        let mut folders: Vec<&str> = Vec::new();
+        let mut leaves = Vec::new();
+        for &i in items {
+            let segs: Vec<&str> = self.branches[i].name.split('/').collect();
+            if segs.len() > prefix.len() + 1 {
+                if !folders.contains(&segs[prefix.len()]) {
+                    folders.push(segs[prefix.len()]);
+                }
+            } else {
+                leaves.push(i);
+            }
+        }
+        folders.sort_unstable();
+        for f in folders {
+            let mut path: Vec<&str> = prefix.to_vec();
+            path.push(f);
+            let key = format!("{kind}:{}", path.join("/"));
+            let inside: Vec<usize> = items.iter().copied().filter(|&i| self.branches[i].name.split('/').take(path.len()).eq(path.iter().copied()) && self.branches[i].name.split('/').count() > path.len()).collect();
+            let open = self.open.contains(&key);
+            out.push((Entry::Folder(key), depth));
+            if open {
+                self.tree(kind, &inside, &path, depth + 1, out);
+            }
+        }
+        out.extend(leaves.into_iter().map(|i| (Entry::Branch(i), depth)));
+    }
+
+    /// フォルダの中のブランチの数
+    pub fn folder_count(&self, key: &str) -> usize {
+        let Some((kind, path)) = key.split_once(':') else { return 0 };
+        let prefix = format!("{path}/");
+        self.branches.iter().filter(|b| b.remote == (kind == "R") && b.name.starts_with(&prefix)).count()
+    }
+
+    /// フォルダを開く・閉じる（選びはそのフォルダのまま）
+    pub(crate) fn toggle_folder(&mut self, key: &str, open: Option<bool>) {
+        let now = self.open.contains(key);
+        if open.unwrap_or(!now) {
+            self.open.insert(key.to_string());
+        } else {
+            self.open.remove(key);
+        }
+        self.rebuild();
+        if let Some(i) = self.entries.iter().position(|e| matches!(e, Entry::Folder(k) if k == key)) {
+            self.selected = i;
+        }
+    }
+
     /// 検索語で並べ直す
     fn rebuild(&mut self) {
+        // 初めは今のブランチの入っているフォルダを開いておく
+        if !self.opened_current {
+            if let Some(cur) = self.branches.iter().find(|b| b.current) {
+                let segs: Vec<&str> = cur.name.split('/').collect();
+                for n in 1..segs.len() {
+                    self.open.insert(format!("L:{}", segs[..n].join("/")));
+                }
+                self.opened_current = true;
+            }
+        }
+        let mut depth = Vec::new();
         let q = Query::new(&self.query.text);
         let ok = |b: &Branch| q.is_empty() || q.score(&b.name).is_some();
         let mut e = Vec::new();
         if q.is_empty() {
             e.push(Entry::NewBranch);
             e.push(Entry::Fetch);
+            depth.extend([0, 0]);
         }
         let local: Vec<usize> = (0..self.branches.len()).filter(|&i| !self.branches[i].remote && ok(&self.branches[i])).collect();
         let remote: Vec<usize> = (0..self.branches.len()).filter(|&i| self.branches[i].remote && ok(&self.branches[i])).collect();
@@ -109,17 +181,33 @@ impl BranchPopup {
         if !recent.is_empty() && q.is_empty() {
             e.push(Entry::Header("最近"));
             e.extend(recent.iter().map(|&i| Entry::Branch(i)));
+            depth.extend(std::iter::repeat_n(0, recent.len() + 1));
         }
-        let rest: Vec<usize> = local.into_iter().filter(|i| q.is_empty().then(|| !recent.contains(i)).unwrap_or(true)).collect();
-        if !rest.is_empty() {
-            e.push(Entry::Header("ローカル"));
-            e.extend(rest.into_iter().map(Entry::Branch));
-        }
-        if !remote.is_empty() {
-            e.push(Entry::Header("リモート"));
-            e.extend(remote.into_iter().map(Entry::Branch));
-        }
+        // ローカルは全部（IntelliJ と同じく、最近に出したものもフォルダの中に出す）
+        let rest: Vec<usize> = local;
+        // 絞り込んでいる間はまとめない（全部の名前を出す）
+        let section = |e: &mut Vec<Entry>, depth: &mut Vec<usize>, title: &'static str, kind: char, items: Vec<usize>| {
+            if items.is_empty() {
+                return;
+            }
+            e.push(Entry::Header(title));
+            depth.push(0);
+            if q.is_empty() {
+                let mut rows = Vec::new();
+                self.tree(kind, &items, &[], 0, &mut rows);
+                for (x, d) in rows {
+                    e.push(x);
+                    depth.push(d);
+                }
+            } else {
+                depth.extend(std::iter::repeat_n(0, items.len()));
+                e.extend(items.into_iter().map(Entry::Branch));
+            }
+        };
+        section(&mut e, &mut depth, "ローカル", 'L', rest);
+        section(&mut e, &mut depth, "リモート", 'R', remote);
         self.entries = e;
+        self.depth = depth;
         self.selected = self.entries.iter().position(|x| !matches!(x, Entry::Header(_))).unwrap_or(0);
     }
 
@@ -160,7 +248,7 @@ impl Editor {
                 .map(|b| parse_refs(&String::from_utf8_lossy(&b)));
             ctx.send(r);
         });
-        let mut p = BranchPopup { query: Prompt::default(), branches: Vec::new(), entries: Vec::new(), selected: 0, ops: None, naming: None, rx: Some(rx), anchor: None };
+        let mut p = BranchPopup { query: Prompt::default(), branches: Vec::new(), entries: Vec::new(), selected: 0, ops: None, naming: None, rx: Some(rx), anchor: None, depth: Vec::new(), open: Default::default(), opened_current: false };
         p.rebuild();
         self.branch_popup = Some(p);
         self.set_state(State::Branches);
@@ -376,6 +464,22 @@ impl Editor {
                     p.selected = crate::list::snap(p.selected, to, p.entries.len(), |i| !matches!(p.entries[i], Entry::Header(_)));
                 }
             }
+            // フォルダ: → で開く、← で閉じる。フォルダの中のブランチで ← なら、そのフォルダを閉じる
+            Key::Right | Key::Ctrl('l') if matches!(p.entries.get(p.selected), Some(Entry::Folder(_))) => {
+                if let Some(Entry::Folder(k)) = p.entries.get(p.selected).cloned() {
+                    p.toggle_folder(&k, Some(true));
+                }
+            }
+            Key::Left | Key::Ctrl('h') => match p.entries.get(p.selected).cloned() {
+                Some(Entry::Folder(k)) => p.toggle_folder(&k, Some(false)),
+                Some(Entry::Branch(i)) if p.depth.get(p.selected).is_some_and(|d| *d > 0) => {
+                    let b = &p.branches[i];
+                    let parent = b.name.rsplit_once('/').map(|x| x.0.to_string()).unwrap_or_default();
+                    let key = format!("{}:{parent}", if b.remote { 'R' } else { 'L' });
+                    p.toggle_folder(&key, Some(false));
+                }
+                _ => {}
+            },
             Key::Right | Key::Ctrl('l') => {
                 if let Some(b) = p.selected_branch().cloned() {
                     let mut ops = vec![Op::Checkout, Op::NewFrom];
@@ -405,6 +509,7 @@ impl Editor {
                         self.checkout_branch(&b);
                     }
                 }
+                Some(Entry::Folder(k)) => p.toggle_folder(&k, None),
                 _ => {}
             },
             k => {
@@ -431,6 +536,11 @@ impl Editor {
         }
         let scroll = (p.selected + 1).saturating_sub(list_h);
         let hit = Some(scroll + row - top - 1).filter(|&i| i < p.entries.len() && !matches!(p.entries[i], Entry::Header(_)));
+        // フォルダは 1 回で開く・閉じる
+        if let Some(Entry::Folder(k)) = hit.and_then(|i| p.entries.get(i)).cloned() {
+            p.toggle_folder(&k, None);
+            return;
+        }
         if let Some(crate::list::Pick::Accept(_)) = crate::list::pick(&mut p.selected, hit, clicks, 2) {
             self.branches_key(Key::Enter);
         }
@@ -561,11 +671,27 @@ pub(crate) mod draw {
                 Entry::Header(t) => {
                     p.text(&format!(" {t}"), x0, yy, STATUS_FG);
                 }
+                Entry::Folder(key) => {
+                    // ▸ / ▾、フォルダのアイコン、名前と中の数
+                    let d = b.depth.get(k).copied().unwrap_or(0);
+                    let open = b.open.contains(key);
+                    let ui = std::mem::replace(&mut p.ui, false);
+                    p.text(&format!("{}{}", "  ".repeat(d + 1), if open { "▾" } else { "▸" }), x0, yy, STATUS_FG);
+                    p.ui = ui;
+                    let ic = x0 + 2 * d + 3;
+                    crate::tree_panel::draw::draw_tree_icon(p, &crate::tree_panel::draw::TreeIcon::Svg("n_folder"), ic, yy);
+                    let name = key.rsplit(['/', ':']).next().unwrap_or(key);
+                    let c = p.text(name, ic + 2, yy, FG);
+                    p.text(&format!("  {}", b.folder_count(key)), c, yy, STATUS_FG);
+                }
                 Entry::Branch(i) => {
                     let br = &b.branches[*i];
+                    let d = b.depth.get(k).copied().unwrap_or(0);
                     let mark = if br.current { "●" } else { " " };
-                    let c = p.text(&format!("   {mark} "), x0, yy, GIT_ADD);
-                    let c = p.text(&br.name, c, yy, if br.current { rgb(0xe8e8e8) } else { FG });
+                    let c = p.text(&format!("   {}{mark} ", "  ".repeat(d)), x0, yy, GIT_ADD);
+                    // フォルダの中では / より後だけ
+                    let label = if d > 0 { br.name.split('/').skip(d).collect::<Vec<_>>().join("/") } else { br.name.clone() };
+                    let c = p.text(&label, c, yy, if br.current { rgb(0xe8e8e8) } else { FG });
                     if !br.track.is_empty() {
                         let t = br.track.replace("ahead", "↑").replace("behind", "↓").replace(['[', ']'], "");
                         p.text(&format!("  {t}"), c, yy, STATUS_FG);
@@ -709,5 +835,36 @@ mod tests {
         crate::layout::press(&mut e, s, 0, 0, |_| 1);
         assert!(e.branch_popup.is_none());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// feature/x のような名前は、フォルダにまとめて開く・閉じる（初めは今のブランチのフォルダだけ開く）。絞り込むとまとめない
+    #[test]
+    fn folders_open_and_close() {
+        let b = |name: &str, remote: bool, current: bool| Branch { name: name.into(), remote, current, track: String::new() };
+        let mut p = BranchPopup { query: Prompt::default(), branches: vec![b("feature/sub/c", false, true), b("main", false, false), b("feature/a", false, false), b("bugfix/x", false, false), b("origin/main", true, false), b("origin/feature/a", true, false)], entries: Vec::new(), selected: 0, ops: None, naming: None, rx: None, anchor: None, depth: Vec::new(), open: Default::default(), opened_current: false };
+        p.rebuild();
+        let show = |p: &BranchPopup| -> Vec<String> {
+            p.entries.iter().zip(&p.depth).filter_map(|(e, d)| match e {
+                Entry::Folder(k) => Some(format!("{}{}{}", "  ".repeat(*d), if p.open.contains(k) { "-" } else { "+" }, k)),
+                Entry::Branch(i) => Some(format!("{}{}", "  ".repeat(*d), p.branches[*i].name)),
+                Entry::Header(h) => Some(format!("[{h}]")),
+                _ => None,
+            }).collect()
+        };
+        // ローカル: 今のブランチの入った feature と feature/sub は開いている。bugfix は閉じている。リモート: origin は閉じている
+        let v = show(&p);
+        let local = v.iter().position(|x| x == "[ローカル]").unwrap();
+        assert_eq!(&v[local..], ["[ローカル]", "+L:bugfix", "-L:feature", "  -L:feature/sub", "    feature/sub/c", "  feature/a", "main", "[リモート]", "+R:origin"], "{v:?}");
+        // bugfix を開き、feature を閉じる
+        p.toggle_folder("L:bugfix", None);
+        p.toggle_folder("L:feature", Some(false));
+        let v = show(&p);
+        assert!(v.contains(&"  bugfix/x".to_string()) && !v.contains(&"  feature/a".to_string()), "{v:?}");
+        assert!(matches!(&p.entries[p.selected], Entry::Folder(k) if k == "L:feature"), "閉じたフォルダを選んだまま");
+        assert_eq!(p.folder_count("L:feature"), 2);
+        // 絞り込むとまとめない
+        p.query.set("feat");
+        p.rebuild();
+        assert!(!p.entries.iter().any(|e| matches!(e, Entry::Folder(_))));
     }
 }
