@@ -963,6 +963,25 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// 行番号の欄を押すとブレークポイントが付き、もう一度で外れる（窓が画面の左上から始まらなくても。枠・木・タブの分ずれる）
+    #[test]
+    fn click_gutter_toggles_breakpoint() {
+        let mut e = Editor::new(nagi_core::Buffer::from_str("a\nb\nc\nd\n"), None);
+        e.buf.path = Some(std::env::temp_dir().join("nagi-bp-click/A.java"));
+        e.set_screen(120, 40);
+        assert!(e.active_rect().x > 0, "枠の分だけ右から");
+        // 窓の中の位置（main.rs の mouse_cell と同じ）: 2 行目・行番号の欄の真ん中
+        e.click(2, e.gutter() - 2);
+        assert_eq!(e.breaks_for(e.buf.path.as_deref()), [2]);
+        e.click(0, e.gutter() - 2);
+        assert_eq!(e.breaks_for(e.buf.path.as_deref()), [0, 2], "1 行目も");
+        e.click(2, e.gutter() - 2);
+        assert_eq!(e.breaks_for(e.buf.path.as_deref()), [0]);
+        // 本文を押したらカーソルが動くだけ
+        e.click(3, e.gutter());
+        assert_eq!((e.cursor.line, e.breaks_for(e.buf.path.as_deref())), (3, vec![0]));
+    }
+
     /// ブレークポイントは編集で行がずれれば一緒に動く
     #[test]
     fn breakpoints_follow_edits() {

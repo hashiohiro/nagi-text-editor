@@ -1992,10 +1992,10 @@ impl Editor {
             return;
         }
         // デバッグできるファイル（Java・Kotlin・TypeScript・JavaScript・Python）の行番号の欄を押したら、その行のブレークポイントを付ける・外す（IntelliJ と同じ）
-        let r = self.active_rect();
+        // （row・col は作業中の窓の中の位置。窓の左上が 0, 0）
         let java = self.buf.path.as_deref().and_then(crate::debugger::lang_of).is_some();
-        if java && r.contains(row, col) && col < r.x + self.gutter() && col >= r.x + self.gutter() - GUTTER {
-            let line = self.pos_at(row, r.x + self.gutter()).line;
+        if java && row < self.rows && col < self.gutter() && col + GUTTER >= self.gutter() {
+            let line = self.pos_at(row, self.gutter()).line;
             self.toggle_breakpoint(Some(line));
             return;
         }
