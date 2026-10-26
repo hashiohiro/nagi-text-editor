@@ -423,6 +423,8 @@ pub struct Editor {
     pub vim_maps_base: Vec<crate::vim_maps::MapRow>,
     /// Vim の側が持つキー（vimrc の割り当て・sethandler。キーマップの既定より先に。keymap::vim_claims）
     pub vim_claims: Vec<(nagi_vim::Mode, nagi_vim::Key, bool)>,
+    /// いくつものファイルを一度に変えた操作（名前の変更）。どれかのバッファで u・Ctrl-r したら、ほかも一緒に（rename.rs）
+    pub multi_edits: Vec<crate::rename::MultiEdit>,
     pub vim_leader: String,
     /// 割り当てを書いたので vimrc を読み直してほしい（App が見る）
     pub rc_dirty: bool,
@@ -759,6 +761,7 @@ impl Editor {
             appearance_changed: false,
             vim_maps: Vec::new(),
             vim_claims: Vec::new(),
+            multi_edits: Vec::new(),
             vim_maps_base: Vec::new(),
             vim_leader: "\\".into(),
             rc_dirty: false,

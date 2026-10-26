@@ -458,7 +458,7 @@ impl Editor {
     pub(crate) fn plain_undo(&mut self, redo: bool) {
         self.plain_break();
         self.set_state(State::Normal);
-        let at = if redo { self.hist.redo(&mut self.buf) } else { self.hist.undo(&mut self.buf) };
+        let at = self.undo_step(redo);
         match at {
             Some(at) => self.set_abs(at),
             None if !redo => self.notify.info("これ以上は元に戻せません"),

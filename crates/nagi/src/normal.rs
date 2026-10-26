@@ -867,12 +867,12 @@ impl Editor {
             }
             Action::Replace(ch) => self.replace_chars(ch, n, visual),
             Action::ToggleCase => self.toggle_case(n, visual),
-            Action::Undo => match self.hist.undo(&mut self.buf) {
+            Action::Undo => match self.undo_step(false) {
                 Some(at) => self.set_abs(at),
                 None => self.notify.info("これ以上は元に戻せません"),
             },
             Action::Redo => {
-                if let Some(at) = self.hist.redo(&mut self.buf) {
+                if let Some(at) = self.undo_step(true) {
                     self.set_abs(at);
                 }
             }

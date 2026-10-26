@@ -166,10 +166,10 @@ impl Editor {
         self.trim_trees();
     }
 
-    /// 脇にあるバッファ `id` の中身（作業中・閉じたものは None）
-    pub(crate) fn parked_buf(&mut self, id: usize) -> Option<&mut Buffer> {
+    /// 脇にあるバッファ `id`（作業中・閉じたものは None）
+    pub(crate) fn parked_doc_mut(&mut self, id: usize) -> Option<&mut Doc> {
         match self.docs.get_mut(id)? {
-            Slot::Parked(d) => Some(&mut d.buf),
+            Slot::Parked(d) => Some(d),
             _ => None,
         }
     }

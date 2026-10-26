@@ -22,6 +22,8 @@ struct Node {
     next: Option<usize>,
     /// まとめて畳んだ節（どこからも辿らない）
     dead: bool,
+    /// いくつものファイルを一度に変えた操作（名前の変更）の札。同じ札の節は、どれかを戻せばほかも戻す
+    tag: Option<u64>,
 }
 
 pub struct History {
@@ -33,7 +35,7 @@ pub struct History {
 
 impl Default for History {
     fn default() -> Self {
-        Self { nodes: vec![Node { parent: 0, changes: Vec::new(), seq: 0, next: None, dead: false }], cur: 0, open: None }
+        Self { nodes: vec![Node { parent: 0, changes: Vec::new(), seq: 0, next: None, dead: false, tag: None }], cur: 0, open: None }
     }
 }
 
@@ -56,7 +58,7 @@ impl History {
     fn push(&mut self, changes: Vec<Change>) {
         let id = self.nodes.len();
         let seq = self.nodes.iter().map(|n| n.seq).max().unwrap_or(0) + 1;
-        self.nodes.push(Node { parent: self.cur, changes, seq, next: None, dead: false });
+        self.nodes.push(Node { parent: self.cur, changes, seq, next: None, dead: false, tag: None });
         self.nodes[self.cur].next = Some(id);
         self.cur = id;
     }
@@ -137,6 +139,30 @@ impl History {
         let pos = self.redo_node(id, buf);
         self.cur = id;
         Some(pos)
+    }
+
+    /// 今の状態の節（直前のグループ）に札を付ける（グループを閉じてから）
+    pub fn tag_current(&mut self, tag: u64) {
+        self.close();
+        if self.cur != 0 {
+            self.nodes[self.cur].tag = Some(tag);
+        }
+    }
+
+    /// u で戻す節の札
+    pub fn undo_tag(&self) -> Option<u64> {
+        if self.open.as_ref().is_some_and(|g| !g.is_empty()) {
+            return None;
+        }
+        self.nodes[self.cur].tag
+    }
+
+    /// Ctrl-r で進む節の札
+    pub fn redo_tag(&self) -> Option<u64> {
+        if self.open.as_ref().is_some_and(|g| !g.is_empty()) {
+            return None;
+        }
+        self.nodes[self.nodes[self.cur].next?].tag
     }
 
     /// 今の状態の番号（`g-` `g+` の時間の順）
