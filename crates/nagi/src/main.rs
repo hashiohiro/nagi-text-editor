@@ -673,29 +673,7 @@ impl Frame {
         // キーマップ（設定。Ctrl+Alt+S・Shift+F10 などの IntelliJ の組み合わせは既定値）: 付けた操作にする。
         // 元の組み合わせから別のキーへ移した操作は、元のキーでは動かさない
         if let Some(chord) = chord_of(&ev.logical_key, self.modifiers) {
-            // vimrc で割り当てたキー・sethandler は、設定で決めたキーの次に強い（IntelliJ と同じ既定より先）
-            let (action, moved) = ed.chord_action(&chord);
-            match action {
-                Some(keymap::Action::Key(k)) => {
-                    self.held = None;
-                    self.handle_keys(vec![k], el);
-                    return;
-                }
-                // コマンドの表の操作（今の状態で動かせないときは、キーとしてそのまま流す）
-                Some(keymap::Action::Cmd(c)) => {
-                    self.sync_screen();
-                    if let Some(eff) = self.ed.as_mut().and_then(|ed| ed.shortcut(c)) {
-                        self.held = None;
-                        if !self.apply_effect(eff, el) {
-                            self.draw();
-                            self.sync_ime();
-                        }
-                        return;
-                    }
-                }
-                None => {}
-            }
-            if moved {
+            if self.on_chord(&chord, el) {
                 return;
             }
         }
@@ -750,6 +728,34 @@ impl Frame {
             self.held = Some((ev.physical_key, keys.clone(), now, now + Duration::from_millis(delay)));
         }
         self.handle_keys(keys, el);
+    }
+
+    /// キーマップの組み合わせ（設定 → vimrc → IntelliJ と同じ既定）を操作にする。キーとして流さなくてよければ true
+    pub(crate) fn on_chord(&mut self, chord: &keymap::Chord, el: &ActiveEventLoop) -> bool {
+        let Some(ed) = &self.ed else { return false };
+        // vimrc で割り当てたキー・sethandler は、設定で決めたキーの次に強い（IntelliJ と同じ既定より先）
+        let (action, moved) = ed.chord_action(chord);
+        match action {
+            Some(keymap::Action::Key(k)) => {
+                self.held = None;
+                self.handle_keys(vec![k], el);
+                return true;
+            }
+            // コマンドの表の操作（今の状態で動かせないときは、キーとしてそのまま流す）
+            Some(keymap::Action::Cmd(c)) => {
+                self.sync_screen();
+                if let Some(eff) = self.ed.as_mut().and_then(|ed| ed.shortcut(c)) {
+                    self.held = None;
+                    if !self.apply_effect(eff, el) {
+                        self.draw();
+                        self.sync_ime();
+                    }
+                    return true;
+                }
+            }
+            None => {}
+        }
+        moved
     }
 
     /// 自分で繰り返す移動のキーか（本文・ビジュアル・一覧で、数や演算子の途中でないとき）
@@ -815,7 +821,7 @@ impl Frame {
     }
 
     /// Shift だけを 2 回続けて押したら（間が短く、ほかのキーを挟まない）どこでも検索（IntelliJ と同じ。設定で切れる）
-    fn on_shift(&mut self, pressed: bool, repeat: bool, el: &ActiveEventLoop) {
+    pub(crate) fn on_shift(&mut self, pressed: bool, repeat: bool, el: &ActiveEventLoop) {
         const GAP: Duration = Duration::from_millis(400);
         if repeat {
             self.shift_alone = false;

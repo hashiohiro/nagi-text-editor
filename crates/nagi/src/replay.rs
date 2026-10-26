@@ -4,6 +4,8 @@
 //!   画面に描いた文字（いちばん上に描いたものの真ん中を押す。前後の空白を除いて同じ文字の所を先に、無ければ含む所）
 //! - `<WaitFor:文字>` `<WaitGone:文字>`: その文字が出る・消えるまで待つ（10 秒まで。過ぎたら NG を記録して先へ）
 //! - `<See:文字>` `<NotSee:文字>`: 今の画面にある・無いを確かめて記録する
+//! - `<Chord:Shift+F6>`: 本物のキーと同じくキーマップ（設定 → vimrc → IntelliJ と同じ既定）を通して押す（操作が無ければキーとして流す）
+//! - `<ShiftTap>`: Shift だけを押して離す（2 回続けるとどこでも検索）
 //! - `<Wait:ミリ秒>` `<Shot:名前>`（画面の写しを BMP で）`<Dump>`（描いた文字を全部記録へ）`<Quit>`（閉じる）
 //!
 //! 記録は `NAGI_REPLAY_LOG` のファイル（無ければ標準エラー）へ 1 行ずつ（`OK …` / `NG …` / `INFO …`）。
@@ -32,12 +34,14 @@ pub enum Step {
     Wait(u64),
     Shot(String),
     Dump,
+    Chord(String),
+    ShiftTap,
     Quit,
 }
 
 /// キー列を手順に分ける（`<名前:引数>` の形の手順と、それ以外のキー）
 pub fn parse(s: &str, leader: &str) -> VecDeque<Step> {
-    const NAMES: [&str; 10] = ["Click", "DClick", "RClick", "WaitFor", "WaitGone", "See", "NotSee", "Wait", "Shot", "Dump"];
+    const NAMES: [&str; 12] = ["Click", "DClick", "RClick", "WaitFor", "WaitGone", "See", "NotSee", "Wait", "Shot", "Dump", "Chord", "ShiftTap"];
     let mut out = VecDeque::new();
     let mut rest = s;
     let keys = |k: &str, out: &mut VecDeque<Step>| out.extend(nagi_vim::parse_keys(k, leader).into_iter().map(Step::Key));
@@ -86,6 +90,8 @@ fn step_of(name: &str, arg: &str) -> Step {
         "NotSee" => Step::See { text: arg.into(), gone: true },
         "Wait" => Step::Wait(arg.trim().parse().unwrap_or(0)),
         "Shot" => Step::Shot(arg.into()),
+        "Chord" => Step::Chord(arg.into()),
+        "ShiftTap" => Step::ShiftTap,
         _ => Step::Dump,
     }
 }
@@ -216,6 +222,22 @@ impl crate::Frame {
                     None => log(&format!("NG shot {name}: 読み戻せません")),
                 }
             }
+            Step::Chord(s) => {
+                let Some(chord) = crate::keymap::parse_chord(&s) else {
+                    log(&format!("NG chord {s}: 読めません"));
+                    return false;
+                };
+                if !self.on_chord(&chord, el) {
+                    match crate::keymap::vim_key(&chord) {
+                        Some(k) => self.handle_keys(vec![k], el),
+                        None => log(&format!("INFO chord {s}: 操作もキーもありません")),
+                    }
+                }
+            }
+            Step::ShiftTap => {
+                self.on_shift(true, false, el);
+                self.on_shift(false, false, el);
+            }
             Step::Dump => {
                 for (r, c, s) in self.texts() {
                     log(&format!("INFO text {r},{c} {s:?}"));
@@ -235,6 +257,12 @@ impl crate::Frame {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_chord_and_shift_tap() {
+        let v: Vec<Step> = parse("<ShiftTap><ShiftTap><Chord:Shift+F6>x", " ").into_iter().collect();
+        assert_eq!(v, vec![Step::ShiftTap, Step::ShiftTap, Step::Chord("Shift+F6".into()), Step::Key(VKey::Char('x'))]);
+    }
 
     #[test]
     fn parses_steps_between_keys() {
