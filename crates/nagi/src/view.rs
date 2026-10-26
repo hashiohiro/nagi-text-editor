@@ -904,6 +904,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     let (w, h) = r.size();
     let cols = (w as f32 / cell.w) as usize;
     let rows = ((h as f32 / cell.h) as usize).saturating_sub(ed.status_rows()).max(1);
+    crate::chrome::set_metrics(cell.w, cell.h, fonts.ui_ratio());
     ed.set_screen(cols, rows);
     // Markdown のプレビュー: 打った内容と幅に合わせて作り直し、カーソルの行へ送る
     ed.refresh_md_preview();

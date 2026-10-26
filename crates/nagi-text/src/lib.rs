@@ -153,6 +153,8 @@ pub struct Fonts {
     pub ambiguous_wide: bool,
     /// 画面の部品（ツールバー・木・ダイアログなど）の文字（等幅でないフォント。IntelliJ の UI の文字と同じ）
     pub ui: Option<UiFont>,
+    /// 部品の文字の大きさの、本文の文字に対する比（設定の「画面の部品の文字の大きさ」）
+    ui_ratio: f32,
 }
 
 impl Fonts {
@@ -170,7 +172,7 @@ impl Fonts {
         for f in faces.iter_mut() {
             fit_face(f, px, cell);
         }
-        Self { px, line: 1.0, cell, faces, extra: HashMap::new(), pick_cache: FastMap::default(), ctx: ScaleContext::new(), ambiguous_wide: false, ui: None }
+        Self { px, line: 1.0, cell, faces, extra: HashMap::new(), pick_cache: FastMap::default(), ctx: ScaleContext::new(), ambiguous_wide: false, ui: None, ui_ratio: 1.0 }
     }
 
     pub fn cell(&self) -> CellSize {
@@ -187,17 +189,34 @@ impl Fonts {
     pub fn set_px(&mut self, px: f32) {
         self.px = px;
         self.cell = cell_metrics(&self.faces[0], px, self.line);
+        // 部品の文字のほうが大きければ、行をその高さに広げる（本文は行の真ん中に）
+        if let Some(ui) = &self.ui {
+            self.cell.h = self.cell.h.max(ui.line_height(px * self.ui_ratio));
+        }
         for f in self.faces.iter_mut() {
             fit_face(f, px, self.cell);
         }
+        let ui_px = px * self.ui_ratio;
         if let Some(ui) = &mut self.ui {
-            ui.resize(px, self.cell.h);
+            ui.resize(ui_px, self.cell.h);
         }
+    }
+
+    /// 部品の文字の大きさの、本文の文字に対する比
+    pub fn ui_ratio(&self) -> f32 {
+        self.ui_ratio
+    }
+
+    /// 部品の文字の大きさを本文の文字の `ratio` 倍にする（行の高さも合わせ直す）
+    pub fn set_ui_ratio(&mut self, ratio: f32) {
+        self.ui_ratio = ratio.clamp(0.5, 3.0);
+        self.set_px(self.px);
     }
 
     /// 画面の部品の文字のフォントを使う（`chain` は前から探す。見つからない字はセルの文字で描く）
     pub fn enable_ui(&mut self, chain: Vec<FontData>) {
-        self.ui = (!chain.is_empty()).then(|| UiFont::new(chain, self.px, self.cell.h));
+        self.ui = (!chain.is_empty()).then(|| UiFont::new(chain, self.px * self.ui_ratio, self.cell.h));
+        self.set_px(self.px);
     }
 
     /// 書記素のセル幅（1 か 2）
@@ -361,9 +380,6 @@ fn map_characters(text: &str, base_family: &str) -> Option<(String, Arc<FontByte
 /// 画面の部品の文字のフォントの名前（前から探す）。Windows の UI と同じ
 pub const UI_FONTS: &[&str] = &["Segoe UI", "Yu Gothic UI", "Meiryo UI", "Segoe UI Symbol"];
 
-/// 部品の文字の大きさ（本文の文字に対する比。IntelliJ と同じく同じ大きさ）
-const UI_SCALE: f32 = 1.0;
-
 /// 等幅でない文字（画面の部品用）。字ごとに幅を持ち、行の高さの真ん中に置く
 pub struct UiFont {
     faces: Vec<FontData>,
@@ -376,18 +392,24 @@ pub struct UiFont {
 }
 
 impl UiFont {
-    fn new(faces: Vec<FontData>, editor_px: f32, cell_h: f32) -> Self {
+    fn new(faces: Vec<FontData>, px: f32, cell_h: f32) -> Self {
         let mut u = UiFont { faces, px: 0.0, baseline: 0.0, cache: Default::default(), ctx: ScaleContext::new() };
-        u.resize(editor_px, cell_h);
+        u.resize(px, cell_h);
         u
+    }
+
+    /// `px` の大きさで描くときの 1 行の高さ
+    fn line_height(&self, px: f32) -> f32 {
+        let m = self.font_ref(0).metrics(&[]).scale(px.round());
+        (m.ascent + m.descent + m.leading).round()
     }
 
     fn font_ref(&self, i: usize) -> FontRef<'_> {
         FontRef::from_index(&self.faces[i].data[..], self.faces[i].index as usize).unwrap()
     }
 
-    fn resize(&mut self, editor_px: f32, cell_h: f32) {
-        self.px = (editor_px * UI_SCALE).round();
+    fn resize(&mut self, px: f32, cell_h: f32) {
+        self.px = px.round();
         let m = self.font_ref(0).metrics(&[]).scale(self.px);
         self.baseline = ((cell_h - (m.ascent + m.descent)) / 2.0 + m.ascent).round();
         self.cache.borrow_mut().clear();

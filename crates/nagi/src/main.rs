@@ -126,6 +126,14 @@ fn font_px(s: &settings::Settings) -> f64 {
     }
 }
 
+/// 画面の部品の文字の大きさの、ソースコードの文字に対する比（設定が 0 なら同じ）
+fn ui_ratio(s: &settings::Settings) -> f32 {
+    match s.int("appearance.ui_font_size") {
+        0 => 1.0,
+        pt => (pt as f64 * 96.0 / 72.0 / font_px(s)) as f32,
+    }
+}
+
 /// 設定のフォントの名前（英数字・日本語）
 fn font_names(s: &settings::Settings) -> Vec<String> {
     vec![s.get("appearance.font"), s.get("appearance.font_ja")]
@@ -374,6 +382,7 @@ impl Frame {
         let mut fonts = Fonts::new(chain, (self.font_px * self.scale).round() as f32);
         fonts.set_line_height(st.int("appearance.line_height") as f32 / 100.0);
         fonts.enable_ui(ui_font_chain());
+        fonts.set_ui_ratio(ui_ratio(&st));
         self.font_names = font_names(&st);
         // 題名は最初の描画で（プロジェクトの根が決まってから）付ける
         window.set_title(&title_for(buf.path.as_deref(), None));
@@ -543,8 +552,10 @@ impl Frame {
             }
         }
         self.font_px = px;
+        let ratio = ui_ratio(&ed.settings);
         if let (Some(f), Some(r)) = (&mut self.fonts, &mut self.renderer) {
             f.set_line_height(line);
+            f.set_ui_ratio(ratio);
             f.set_px((px * self.scale).round() as f32);
             r.clear_glyphs();
             view::prefetch_ascii(f, r);

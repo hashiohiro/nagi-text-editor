@@ -14,17 +14,39 @@ use crate::tree_panel::{LeftTab, TABS};
 
 /// 上の帯の行の数
 pub const TOOLBAR_ROWS: usize = 1;
+/// 左右のアイコンの列の幅（列。行の高さに合わせて view.rs が set_metrics で決める）
+static STRIPE: AtomicUsize = AtomicUsize::new(3);
+/// 部品の文字の幅の、等幅の文字に対する倍率（×100。部品の文字を大きくしたとき）
+static UI_SCALE: AtomicUsize = AtomicUsize::new(100);
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 /// 左右のアイコンの列の幅（列）
-pub const STRIPE_W: usize = 3;
+pub fn stripe_w() -> usize {
+    STRIPE.load(Ordering::Relaxed)
+}
+
+/// 文字の大きさから枠の寸法を決める（セルの幅・高さと、部品の文字の大きさの比）。描くたびに呼ぶ
+pub fn set_metrics(cell_w: f32, cell_h: f32, ui_ratio: f32) {
+    // アイコンの列はアイコン（行の高さ）より少し広く
+    STRIPE.store(((cell_h * 1.5 / cell_w).round() as usize).clamp(3, 10), Ordering::Relaxed);
+    UI_SCALE.store((ui_ratio.max(1.0) * 100.0).round() as usize, Ordering::Relaxed);
+}
+
+/// 部品の文字で書いた `s` の幅（列）。部品の文字を本文より大きくしていれば、その分広く
+pub fn ui_width(s: &str) -> usize {
+    let w = nagi_core::display_col(s, s.len(), false);
+    (w * UI_SCALE.load(Ordering::Relaxed)).div_ceil(100)
+}
 /// アイコン 1 つが使う行（アイコンの行と、間の 1 行）
 const SLOT: usize = 2;
 
 /// 枠の内側（狭すぎる画面では枠を出さない）
 pub fn area((cols, rows): (usize, usize)) -> Rect {
-    if cols < 2 * STRIPE_W + 30 || rows < TOOLBAR_ROWS + 6 {
+    if cols < 2 * stripe_w() + 30 || rows < TOOLBAR_ROWS + 6 {
         return Rect { x: 0, y: 0, w: cols, h: rows };
     }
-    Rect { x: STRIPE_W, y: TOOLBAR_ROWS, w: cols - 2 * STRIPE_W, h: rows - TOOLBAR_ROWS }
+    Rect { x: stripe_w(), y: TOOLBAR_ROWS, w: cols - 2 * stripe_w(), h: rows - TOOLBAR_ROWS }
 }
 
 /// ストライプのアイコンが出し入れする欄
@@ -66,7 +88,7 @@ type Icon = &'static str;
 const INITIALS: Icon = "<initials>";
 
 fn width(s: &str) -> usize {
-    nagi_core::display_col(s, s.len(), false)
+    ui_width(s)
 }
 
 /// 道具のアイコン（icons.rs の名前。IntelliJ のツールウィンドウのアイコン）
@@ -165,7 +187,7 @@ impl Editor {
     fn toolbar_layout(&self) -> Vec<(usize, usize, Widget)> {
         let cols = self.screen.0;
         let mut out = Vec::new();
-        let (mut left, mut right) = (STRIPE_W, cols.saturating_sub(1));
+        let (mut left, mut right) = (stripe_w(), cols.saturating_sub(1));
         let ws = self.toolbar_widgets();
         let (l, r): (Vec<Widget>, Vec<Widget>) = ws.into_iter().partition(|w| !w.right);
         for w in l {
@@ -249,13 +271,13 @@ pub(crate) mod draw {
                 // IntelliJ と同じく、出している欄のアイコンは角の丸い地の上に
                 let px = crate::icons::large(cell.h);
                 let pad = (cell.h * 0.25).round();
-                let bx = x0 as f32 * cell.w + ((STRIPE_W as f32 * cell.w - px) / 2.0).round();
+                let bx = x0 as f32 * cell.w + ((stripe_w() as f32 * cell.w - px) / 2.0).round();
                 let by = crate::icons::centered(y, cell.h, px);
                 if open {
                     p.out.push(Instance::rounded(bx - pad, by - pad, px + 2.0 * pad, px + 2.0 * pad, 6.0, LIST_SEL_BG));
                 }
                 crate::icons::draw(p, icon_of(t), bx, by, px, None);
-                p.tab_hits.push((row, x0, x0 + STRIPE_W, label));
+                p.tab_hits.push((row, x0, x0 + stripe_w(), label));
             }
         }
         // 上の帯の部品

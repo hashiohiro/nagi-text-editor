@@ -51,7 +51,7 @@ impl Editor {
     pub(crate) fn buffer_tabs(&self, w: usize) -> Vec<BufTab> {
         let list: Vec<_> = self.buffer_list().into_iter().filter(|(i, p, d, _)| self.tab_worthy(*i, p, *d)).collect();
         let names: Vec<String> = list.iter().map(|(_, p, ..)| p.as_deref().map_or("無題".into(), file_name)).collect();
-        let width = |s: &str| nagi_core::display_col(s, s.len(), false);
+        let width = crate::chrome::ui_width;
         let mut tabs: Vec<BufTab> = list
             .iter()
             .zip(&names)

@@ -668,7 +668,8 @@ pub(crate) mod draw {
         let cell = p.fonts.cell();
         match icon {
             TreeIcon::Svg(name) => {
-                let px = crate::icons::small(cell.h);
+                // 2 列の中に収める（部品の文字を大きくして行が高くなっても、名前に重ならない）
+                let px = crate::icons::small(cell.h).min(2.0 * cell.w);
                 let x = col as f32 * cell.w + ((2.0 * cell.w - px) / 2.0).max(0.0) - 2.0;
                 crate::icons::draw(p, name, x, crate::icons::centered(y, cell.h, px), px, None);
             }
