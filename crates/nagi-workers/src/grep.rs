@@ -403,4 +403,24 @@ mod tests {
         assert_eq!(run("Foo", Opts { case: true, words: true, mask: "A.java".into(), context: Context::InComments, ..Default::default() })[1].2, "Foo");
         assert!(mask_matches("src/*.java", "src/A.java") && !mask_matches("*.ts", "a.java") && mask_matches("", "x"));
     }
+
+    /// 本物の大きなプロジェクトで、文脈の条件ごとの速さを測る（NAGI_GREP_BENCH_DIR。語は NAGI_GREP_BENCH_PAT、既定は TODO）
+    #[test]
+    #[ignore]
+    fn context_speed_on_real_project() {
+        let Some(dir) = std::env::var_os("NAGI_GREP_BENCH_DIR").map(PathBuf::from) else { return };
+        let pat = std::env::var("NAGI_GREP_BENCH_PAT").unwrap_or_else(|_| "TODO".into());
+        let run = |c: Context| {
+            let t = std::time::Instant::now();
+            let job = search_with(&dir, &pat, &Opts { context: c, ..Default::default() }, Arc::new(|| {})).unwrap();
+            let n: usize = job.rx.iter().map(|v| v.len()).sum();
+            (n, t.elapsed().as_millis())
+        };
+        // 1 回目はファイルの読み込み（OS のキャッシュ）を温める
+        let _ = run(Context::Anywhere);
+        for c in Context::ALL {
+            let (n, ms) = run(c);
+            eprintln!("{c:?}: {n} hits {ms}ms");
+        }
+    }
 }

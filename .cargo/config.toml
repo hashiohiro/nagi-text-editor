@@ -7,3 +7,7 @@ rustflags = ["-C", "target-feature=+crt-static"]
 # 先に grammars/build.sh を流しておく）。配った exe には関係しない（%LOCALAPPDATA%\nagi\grammars に取ってくる）
 [env]
 NAGI_GRAMMARS_DIR = { value = "target/grammars/dist", relative = true }
+# 試験が普段使いの %LOCALAPPDATA%\nagi（索引のかけら・データベースのコンソール）に書かないように、置き場所を target の下に
+# （試験の中で別の場所を決めるものはそちら。cargo run でも同じ場所になる）
+NAGI_INDEX_DIR = { value = "target/test-appdata/index", relative = true }
+NAGI_DB_DIR = { value = "target/test-appdata/db", relative = true }

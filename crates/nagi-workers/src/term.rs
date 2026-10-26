@@ -286,12 +286,14 @@ mod utf8_tests {
         }
         for (shell, input) in shells {
             let mut t = Term::spawn(shell, &dir, 30, 120, std::sync::Arc::new(|| {})).unwrap();
+            // ほかの試験と並べて流すと、シェルの起動（Git Bash の --login）に 10 秒を超えることがある。時間で待つ
+            let start = std::time::Instant::now();
             let mut sent = false;
             let mut ok = false;
-            for k in 0..400 {
+            while start.elapsed() < std::time::Duration::from_secs(60) {
                 std::thread::sleep(std::time::Duration::from_millis(25));
                 let screen = t.with_screen(|s| s.contents());
-                if !sent && (screen.contains('>') || screen.contains('$') || k > 120) {
+                if !sent && (screen.contains('>') || screen.contains('$') || start.elapsed() > std::time::Duration::from_secs(3)) {
                     t.write(input.as_bytes());
                     sent = true;
                 }
@@ -300,7 +302,10 @@ mod utf8_tests {
                     break;
                 }
             }
-            assert!(ok, "{shell}: {}", t.with_screen(|s| s.contents()));
+            if std::env::var_os("NAGI_TERM_TIMING").is_some() {
+                eprintln!("{shell}: {:?}", start.elapsed());
+            }
+            assert!(ok, "{shell}: {:?} {}", start.elapsed(), t.with_screen(|s| s.contents()));
         }
     }
 }

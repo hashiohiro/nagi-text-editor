@@ -719,16 +719,20 @@ mod tests {
     }
 
     fn wait(e: &mut Editor) {
-        for _ in 0..2000 {
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_secs(120) {
             e.poll_git();
             e.poll_commit();
             let busy = e.commit.as_ref().is_some_and(|p| p.running.is_some()) || e.git_status_pending();
             if !busy && e.git.status.is_some() {
+                if std::env::var_os("NAGI_GIT_TIMING").is_some() {
+                    eprintln!("wait {:?}", start.elapsed());
+                }
                 return;
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        panic!("git が終わらない");
+        panic!("git が終わらない: running={} pending={} status={}", e.commit.as_ref().is_some_and(|p| p.running.is_some()), e.git_status_pending(), e.git.status.is_some());
     }
 
     #[test]
@@ -888,10 +892,15 @@ mod tests {
         wait(&mut e);
         assert_eq!(e.commit.as_ref().unwrap().items.len(), 1);
         g(&["commit", "-q", "-am", "outside"]);
-        for _ in 0..600 {
+        // ほかの試験と並べて流すと git が遅い（数十秒）。時間で待つ
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_secs(120) {
             e.poll_watch();
             e.poll_git();
             if e.commit.as_ref().unwrap().items.is_empty() {
+                if std::env::var_os("NAGI_GIT_TIMING").is_some() {
+                    eprintln!("outside {:?}", start.elapsed());
+                }
                 return;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
