@@ -951,6 +951,7 @@ impl Frame {
                         None => (&ed.query, rows),
                     },
                     State::GrepPrompt => match &ed.grep {
+                        Some(g) if g.editing_mask => (&g.mask, rows),
                         Some(g) => (&g.query, rows),
                         None => (&ed.query, rows),
                     },
@@ -959,7 +960,10 @@ impl Frame {
                 // 入力欄の前の印（`:` `/` は 1 セル、ファインダーの `> ` は 2 セル）
                 let lead = match ed.state() {
                     State::Finder => 2,
-                    State::GrepPrompt => nagi_core::display_col(grep_panel::GREP_LEAD, grep_panel::GREP_LEAD.len(), false),
+                    State::GrepPrompt => {
+                        let lead = if ed.grep.as_ref().is_some_and(|g| g.editing_mask) { grep_panel::MASK_LEAD } else { grep_panel::GREP_LEAD };
+                        nagi_core::display_col(lead, lead.len(), false)
+                    }
                     _ => 1,
                 };
                 (lead + nagi_core::display_col(&p.text, p.cursor, false), row)

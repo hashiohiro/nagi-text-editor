@@ -382,7 +382,25 @@ impl crate::layout::View for BottomView {
                 }
                 let m = if ed.bottom_kind == BottomKind::Grep { m.keys("開く", &[Enter]).keys("開いて欄に残る", &[Char('o')]) } else { m };
                 let m = m.keys("コピー", &[Char('y')]);
-                let m = if ed.bottom_kind == BottomKind::Grep { m.keys("検索し直す", &[Char('/')]) } else { m };
+                let m = if ed.bottom_kind == BottomKind::Grep && ed.grep.as_ref().is_some_and(|g| g.title.is_none()) {
+                    // 検索の条件（見出しの札・Alt+C などと同じ）
+                    use crate::grep_panel::Chip;
+                    let on = ed.grep.as_ref().map(crate::grep_panel::chips).unwrap_or_default();
+                    let mark = |c: Chip| if on.iter().any(|x| x.2 == c && x.1) { "✓ " } else { "   " };
+                    let ctx = ed.grep.as_ref().map_or("", |g| g.opts.context.label());
+                    m.keys("検索し直す", &[Char('/')])
+                        .sep()
+                        .item(format!("{}大文字小文字を区別（Alt+C）", mark(Chip::Case)), |e| e.toggle_chip(Chip::Case))
+                        .item(format!("{}単語として（Alt+O）", mark(Chip::Words)), |e| e.toggle_chip(Chip::Words))
+                        .item(format!("{}正規表現（Alt+X）", mark(Chip::Regex)), |e| e.toggle_chip(Chip::Regex))
+                        .item(format!("{}ファイルマスク…（Alt+F）", mark(Chip::Mask)), |e| e.toggle_chip(Chip::Mask))
+                        .item(format!("{}今のファイルのフォルダだけ（Alt+D・Alt+P で全体）", mark(Chip::Scope)), |e| e.toggle_chip(Chip::Scope))
+                        .item(format!("   文脈: {ctx} → 次へ（Alt+T）"), |e| e.toggle_chip(Chip::Context))
+                } else if ed.bottom_kind == BottomKind::Grep {
+                    m.keys("検索し直す", &[Char('/')])
+                } else {
+                    m
+                };
                 m.sep().keys("欄を閉じる", &[Char('q')])
             }
             BottomKind::Problems => {

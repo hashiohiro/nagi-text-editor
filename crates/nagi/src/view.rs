@@ -968,8 +968,11 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         State::Command => prompt_line(&mut p, ":", &ed.cmdline.text, ed.cmdline.cursor, &ed.preedit, y, true),
         State::GrepPrompt if ed.grep.is_some() => {
             let g = ed.grep.as_ref().unwrap();
-            prompt_line(&mut p, crate::grep_panel::GREP_LEAD, &g.query.text, g.query.cursor, &ed.preedit, y, true);
-            let info = format!("{}{} 件{} ", if g.regex { "[.*]  " } else { "" }, g.hits.len(), if g.searching() { " …" } else { "" });
+            let (lead, field) = if g.editing_mask { (crate::grep_panel::MASK_LEAD, &g.mask) } else { (crate::grep_panel::GREP_LEAD, &g.query) };
+            prompt_line(&mut p, lead, &field.text, field.cursor, &ed.preedit, y, true);
+            let on: String = crate::grep_panel::chips(g).into_iter().filter(|c| c.1).map(|c| c.0 + " ").collect();
+            let help = if g.editing_mask { "*.java, !*Test.java  Enter 戻る   " } else { "Alt+C 大小 Alt+O 単語 Alt+X 正規 Alt+F マスク Alt+D/P 範囲 Alt+T 文脈   " };
+            let info = format!("{help}{on}{} 件{} ", g.hits.len(), if g.searching() { " …" } else { "" });
             let pc = scols.saturating_sub(p.width(&info));
             p.text(&info, pc, y, STATUS_FG);
         }

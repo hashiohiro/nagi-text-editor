@@ -513,10 +513,13 @@ impl crate::layout::View for TreeView {
             return false;
         }
         let dir = t.rows[t.selected].dir;
+        let path = t.rows[t.selected].path.clone();
+        let folder = if dir { path } else { path.parent().map(|p| p.to_path_buf()).unwrap_or(path) };
         ed.list_side = crate::editor::Side::Left;
         ed.set_state(crate::editor::State::List);
         let m = crate::menu::Menu::new(row, col).keys(if dir { "開く・畳む" } else { "開く" }, &[Enter]);
         let m = if dir { m } else { m.keys("開いて木に残る", &[Char('o')]) };
+        let m = m.sep().item("このフォルダを検索…（Find in Path）", move |e| e.open_grep_in(folder));
         let m = m.sep().keys("読み直す", &[Char('R')]).keys("木を閉じる", &[Char('q')]);
         ed.open_menu(m);
         true

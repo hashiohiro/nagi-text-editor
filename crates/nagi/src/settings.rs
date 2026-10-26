@@ -59,7 +59,7 @@ const K: SKind = SKind::Key;
 pub const MAPS_CAT: &str = "Vim の割り当て";
 
 /// 分類（画面の左の一覧の並び）
-pub const CATEGORIES: [&str; 11] = ["外観", "エディタ", "Vim", MAPS_CAT, "入力補完", "キーマップ", "ビルド・実行", "ツール", "プロジェクト", "その他", "（すべて）"];
+pub const CATEGORIES: [&str; 12] = ["外観", "エディタ", "Vim", MAPS_CAT, "入力補完", "検索", "キーマップ", "ビルド・実行", "ツール", "プロジェクト", "その他", "（すべて）"];
 
 pub static SCHEMA: &[Item] = &[
     // 外観
@@ -134,6 +134,12 @@ pub static SCHEMA: &[Item] = &[
     item("completion.case", "入力補完", "大文字小文字", SKind::Choice(&[("first", "最初の文字だけ区別"), ("none", "区別しない"), ("all", "区別する")]), "none", "IntelliJ の Match case"),
     item("completion.keywords", "入力補完", "予約語を出す", B, "true", ""),
     item("completion.words", "入力補完", "ファイルの中の語を出す", B, "true", ""),
+    // 全文検索（Ctrl+Shift+F。その場では Alt+C・O・X・F・D・P・T と見出しの札で変えられる）
+    item("search.grep_case", "検索", "全文検索で大文字小文字を区別する", B, "false", "IntelliJ の Match case（Alt+C）"),
+    item("search.grep_words", "検索", "全文検索で単語として", B, "false", "Words（Alt+O）"),
+    item("search.grep_regex", "検索", "全文検索で正規表現", B, "false", "Regex（Alt+X）"),
+    item("search.grep_mask", "検索", "全文検索のファイルマスク", SKind::Text, "", "File mask（Alt+F）。*.java, !*Test.java のように , で区切る。空ならすべて"),
+    item("search.grep_context", "検索", "全文検索の文脈", SKind::Choice(&[("anywhere", "どこでも"), ("incomments", "コメントの中"), ("instrings", "文字列の中"), ("exceptcomments", "コメントを除く"), ("exceptstrings", "文字列を除く"), ("exceptboth", "コメント・文字列を除く")]), "anywhere", "Alt+T で切り替え"),
     // キーマップ
     item("keymap.settings", "キーマップ", "設定", K, "Ctrl+Alt+S", ""),
     item("keymap.double_shift", "キーマップ", "Shift 2 回でどこでも検索", B, "true", "IntelliJ の Search Everywhere（型・シンボル・ファイル・コマンド）"),

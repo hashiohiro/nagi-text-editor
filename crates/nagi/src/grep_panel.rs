@@ -6,14 +6,21 @@
 use std::path::PathBuf;
 
 use nagi_vim::Key;
-use nagi_workers::grep::{GrepJob, Hit};
+use nagi_workers::grep::{Context, GrepJob, Hit, Opts};
 
 use crate::editor::{Editor, State, Prompt};
 use crate::panes::Rect;
 
 pub struct GrepPanel {
     pub query: Prompt,
-    pub regex: bool,
+    /// 検索の条件（IntelliJ の Find in Files: Alt+C 大文字小文字・Alt+O 単語・Alt+X 正規表現・Alt+F ファイルマスク・
+    /// Alt+D ディレクトリ・Alt+P プロジェクト。文脈は Alt+T か見出しの札）
+    pub opts: Opts,
+    /// 参照の検索（gr）が使う条件（打った検索の条件は変えない）
+    pub forced: Option<Opts>,
+    /// ファイルマスクの欄（Alt+F で打つ）
+    pub mask: Prompt,
+    pub editing_mask: bool,
     pub root: PathBuf,
     /// 一致（パス, 行の順）
     pub hits: Vec<Hit>,
@@ -53,6 +60,66 @@ pub struct RefsFilter {
 
 /// 最下行の入力欄の前の印
 pub const GREP_LEAD: &str = "検索> ";
+pub const MASK_LEAD: &str = "マスク> ";
+
+/// 見出しの条件の札（押すと切り替える）
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Chip {
+    Case,
+    Words,
+    Regex,
+    Mask,
+    Scope,
+    Context,
+}
+
+/// 見出しの札の後の部分（検索語と件数）
+pub fn head_main(g: &GrepPanel) -> String {
+    format!(
+        " 全文検索: {}   {} 件 / {} ファイル{}{}",
+        g.query.text,
+        g.hits.len(),
+        g.files(),
+        if g.hits.len() >= nagi_workers::grep::MAX_HITS { "（上限）" } else { "" },
+        if g.searching() { " …" } else { "" }
+    )
+}
+
+/// 条件の札（文字, 効いているか, 種類）
+pub fn chips(g: &GrepPanel) -> Vec<(String, bool, Chip)> {
+    let o = g.forced.as_ref().unwrap_or(&g.opts);
+    let scope = match &o.dir {
+        Some(d) => format!("範囲: {}", d.strip_prefix(&g.root).map_or_else(|_| d.display().to_string(), |r| format!("{}/", r.to_string_lossy().replace('\\', "/")))),
+        None => "範囲: プロジェクト".into(),
+    };
+    vec![
+        ("[Aa]".into(), o.case, Chip::Case),
+        ("[W]".into(), o.words, Chip::Words),
+        ("[.*]".into(), o.regex, Chip::Regex),
+        (if o.mask.is_empty() { "[マスク]".into() } else { format!("[{}]", o.mask) }, !o.mask.is_empty(), Chip::Mask),
+        (format!("[{scope}]"), o.dir.is_some(), Chip::Scope),
+        (format!("[{}]", o.context.label()), o.context != Context::Anywhere, Chip::Context),
+    ]
+}
+
+/// 見出しの `col`（パネルの中の列）にある札（札は見出しの左に並ぶので、件数が変わっても動かない）
+pub fn chip_at(g: &GrepPanel, col: usize) -> Option<Chip> {
+    let mut x = 0;
+    for (t, _, c) in chips(g) {
+        let w = nagi_core::display_col(&t, t.len(), false);
+        if col >= x && col < x + w {
+            return Some(c);
+        }
+        x += w + 1;
+    }
+    None
+}
+
+/// 設定の既定の条件（設定の「検索」）
+pub fn default_opts(s: &crate::settings::Settings) -> Opts {
+    let context = nagi_workers::grep::Context::ALL.into_iter().find(|c| format!("{c:?}").eq_ignore_ascii_case(&s.get("search.grep_context"))).unwrap_or_default();
+    Opts { case: s.bool("search.grep_case"), words: s.bool("search.grep_words"), regex: s.bool("search.grep_regex"), mask: s.get("search.grep_mask"), dir: None, context }
+}
 
 impl GrepPanel {
     pub fn searching(&self) -> bool {
@@ -145,7 +212,68 @@ impl Editor {
         if self.grep.is_none() {
             self.swap_grep_for(crate::result_grid::BottomKind::Grep);
         }
+        // 打って探すときは、打った検索の条件で（参照の検索の条件は捨てる）
+        if let Some(g) = &mut self.grep {
+            g.forced = None;
+            g.editing_mask = false;
+        }
         self.open_grep_raw(initial);
+    }
+
+    /// `dir` の中を探す（プロジェクトの木の「このフォルダを検索」・IntelliJ の Find in Path をフォルダで）
+    pub(crate) fn open_grep_in(&mut self, dir: PathBuf) {
+        self.open_grep("");
+        if let Some(g) = &mut self.grep {
+            g.opts.dir = Some(dir);
+        }
+        self.restart_grep();
+    }
+
+    /// 条件のキー（Alt+C・O・X・F・D・P・T。検索語を打っている間と一覧で）。扱ったら true
+    pub(crate) fn grep_option_key(&mut self, key: Key) -> bool {
+        let chip = match key {
+            Key::Alt('c') => Chip::Case,
+            Key::Alt('o') => Chip::Words,
+            Key::Alt('x' | 'r') => Chip::Regex,
+            Key::Alt('f') => Chip::Mask,
+            Key::Alt('t') => Chip::Context,
+            Key::Alt('d') | Key::Alt('p') => {
+                let here = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()).and_then(|p| p.parent().map(|d| d.to_path_buf()));
+                let Some(g) = &mut self.grep else { return false };
+                g.forced = None;
+                g.opts.dir = if key == Key::Alt('d') { here.or(g.opts.dir.clone()) } else { None };
+                self.restart_grep();
+                return true;
+            }
+            _ => return false,
+        };
+        self.toggle_chip(chip);
+        true
+    }
+
+    /// 見出しの札を押した・条件のキー
+    pub(crate) fn toggle_chip(&mut self, chip: Chip) {
+        let here = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()).and_then(|p| p.parent().map(|d| d.to_path_buf()));
+        let Some(g) = &mut self.grep else { return };
+        // 参照の検索の結果を出していれば、打った検索の条件に戻してから
+        if g.forced.take().is_some() {
+            g.query.set("");
+        }
+        let o = &mut g.opts;
+        match chip {
+            Chip::Case => o.case = !o.case,
+            Chip::Words => o.words = !o.words,
+            Chip::Regex => o.regex = !o.regex,
+            Chip::Context => o.context = o.context.next(),
+            Chip::Scope => o.dir = if o.dir.is_some() { None } else { here },
+            Chip::Mask => {
+                // マスクの欄を打つ（もう一度で検索語へ戻る）
+                g.editing_mask = !g.editing_mask;
+                self.set_state(State::GrepPrompt);
+                return;
+            }
+        }
+        self.restart_grep();
     }
 
     pub(crate) fn open_grep_raw(&mut self, initial: &str) {
@@ -158,10 +286,14 @@ impl Editor {
             .or_else(|| Some(self.cwd.clone()))
             .unwrap_or_default();
         let root = std::path::absolute(&root).unwrap_or(root);
+        let opts = default_opts(&self.settings);
         let g = self.grep.get_or_insert_with(|| GrepPanel {
             left: 0,
             query: Prompt::default(),
-            regex: false,
+            mask: Prompt { cursor: opts.mask.len(), text: opts.mask.clone() },
+            opts,
+            forced: None,
+            editing_mask: false,
             root: root.clone(),
             hits: Vec::new(),
             selected: 0,
@@ -194,7 +326,7 @@ impl Editor {
     pub(crate) fn open_grep_regex(&mut self, pattern: &str) {
         self.open_grep("");
         if let Some(g) = &mut self.grep {
-            g.regex = true;
+            g.forced = Some(Opts { regex: true, case: true, ..Default::default() });
             g.query.set(pattern);
         }
         self.set_state(State::Normal);
@@ -216,7 +348,8 @@ impl Editor {
         if g.query.text.is_empty() {
             return;
         }
-        match nagi_workers::grep::search(&g.root, &g.query.text, g.regex, waker) {
+        let opts = g.forced.clone().unwrap_or_else(|| g.opts.clone());
+        match nagi_workers::grep::search_with(&g.root, &g.query.text, &opts, waker) {
             Ok(job) => g.job = Some(job),
             Err(e) => g.error = Some(e.to_string()),
         }
@@ -261,6 +394,23 @@ impl Editor {
             self.set_state(State::Normal);
             return;
         };
+        // マスクの欄: Enter・Esc で検索語へ戻る。打つたびに探し直す
+        if g.editing_mask && !matches!(key, Key::Alt(_)) {
+            match key {
+                Key::Enter | Key::Esc | Key::Ctrl('c') | Key::Ctrl('[') | Key::Tab => g.editing_mask = false,
+                k => {
+                    if g.mask.key(k) {
+                        g.opts.mask = g.mask.text.clone();
+                        self.restart_grep();
+                    }
+                }
+            }
+            return;
+        }
+        if self.grep_option_key(key) {
+            return;
+        }
+        let Some(g) = &mut self.grep else { return };
         match key {
             // 結果があればパネルは残す（リストモードへは Ctrl-w j かクリックで）
             Key::Esc | Key::Ctrl('c') | Key::Ctrl('[') => {
@@ -281,10 +431,6 @@ impl Editor {
                 let i = g.selected.saturating_sub(1);
                 g.select(i);
             }
-            Key::Alt('r') => {
-                g.regex = !g.regex;
-                self.restart_grep();
-            }
             k => {
                 if g.query.key(k) {
                     self.restart_grep();
@@ -295,7 +441,12 @@ impl Editor {
 
     pub(crate) fn grep_insert(&mut self, text: &str) {
         if let Some(g) = &mut self.grep {
-            g.query.insert(text);
+            if g.editing_mask {
+                g.mask.insert(text);
+                g.opts.mask = g.mask.text.clone();
+            } else {
+                g.query.insert(text);
+            }
             self.restart_grep();
         }
     }
@@ -357,6 +508,9 @@ impl Editor {
             return self.output_view_key(key);
         }
         let half = (self.panel_rect().map_or(10, |r| r.h) / 2).max(1);
+        if !output && self.grep.as_ref().is_some_and(|g| g.title.is_none()) && self.grep_option_key(key) {
+            return crate::editor::Effect::None;
+        }
         let Some(g) = &mut self.grep else {
             self.set_state(State::Normal);
             return crate::editor::Effect::None;
@@ -538,6 +692,11 @@ impl Editor {
         }
         let Some(g) = &mut self.grep else { return };
         if row == 0 {
+            // 条件の札を押したら切り替える
+            if let Some(c) = g.title.is_none().then(|| chip_at(g, col)).flatten() {
+                self.toggle_chip(c);
+                return;
+            }
             self.focus_panel();
             return;
         }
@@ -608,21 +767,20 @@ pub(crate) mod draw {
         p.out.push(Instance::fill(x, y0, w, r.h as f32 * cell.h, BG));
         p.out.push(Instance::fill(x, y0, w, 1.0, LINE_NO));
         let head = match (&g.error, &g.title) {
-            (Some(e), _) => format!("正規表現の誤り: {}", e.lines().last().unwrap_or("")),
+            (Some(e), _) => format!("正規表現の誤り: {}   ", e.lines().last().unwrap_or("")),
             (None, Some(t)) => format!("{t}   {} 件{}", g.hits.len(), if g.searching() { " …" } else { "" }),
-            (None, None) => format!(
-                "全文検索: {}{}   {} 件 / {} ファイル{}{}",
-                g.query.text,
-                if g.regex { "  [.*]" } else { "" },
-                g.hits.len(),
-                g.files(),
-                if g.hits.len() >= nagi_workers::grep::MAX_HITS { "（上限）" } else { "" },
-                if g.searching() { " …" } else { "" }
-            ),
+            (None, None) => crate::grep_panel::head_main(g),
         };
         let saved = p.cols;
         p.cols = (r.x + r.w).saturating_sub(3);
-        p.text(&head, r.x, y0, STATUS_FG);
+        // 条件の札（左に並べる。効いているものは強く。押すと切り替える）
+        let mut cx = r.x;
+        if g.title.is_none() {
+            for (t, on, _) in crate::grep_panel::chips(g) {
+                cx = p.text(&t, cx, y0, if on { FINDER_MATCH } else { STATUS_FG }) + 1;
+            }
+        }
+        p.text(&head, cx, y0, STATUS_FG);
         p.cols = saved;
         for k in 0..r.h.saturating_sub(1) {
             let Some(h) = g.hits.get(g.scroll + k) else { break };
@@ -674,6 +832,75 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         panic!("検索が終わらない");
+    }
+
+    /// 検索の条件（IntelliJ の Find in Files）: Alt+C・Alt+O・Alt+F のマスク・Alt+T の文脈・見出しの札のクリック・Alt+D
+    #[test]
+    fn grep_options() {
+        let dir = std::env::temp_dir().join(format!("nagi-grep-opts-panel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::create_dir_all(dir.join("docs")).unwrap();
+        std::fs::write(dir.join("src/a.rs"), "let needle = 1; // Needle\nlet needles = 2;\n").unwrap();
+        std::fs::write(dir.join("docs/b.txt"), "Needle\n").unwrap();
+        let mut e = Editor::new(Buffer::open(&dir.join("src/a.rs")).unwrap(), None);
+        e.buf.path = Some(dir.join("src/a.rs"));
+        e.set_screen(160, 40);
+        e.open_grep("");
+        keys(&mut e, "needle");
+        wait(&mut e);
+        let n = |e: &Editor| e.grep.as_ref().unwrap().hits.len();
+        assert_eq!(n(&e), 3);
+        // 大文字小文字を区別 → Needle は外れる。単語 → needles も外れる
+        e.key(Key::Alt('c'));
+        wait(&mut e);
+        assert_eq!(n(&e), 2);
+        e.key(Key::Alt('o'));
+        wait(&mut e);
+        assert_eq!(n(&e), 1);
+        e.key(Key::Alt('c'));
+        e.key(Key::Alt('o'));
+        // マスク: Alt+F で打ち、Enter で検索語へ戻る
+        e.key(Key::Alt('f'));
+        assert!(e.grep.as_ref().unwrap().editing_mask);
+        keys(&mut e, "*.txt<CR>");
+        wait(&mut e);
+        assert!(!e.grep.as_ref().unwrap().editing_mask);
+        assert_eq!(e.grep.as_ref().unwrap().hits.iter().map(|h| h.path.as_str()).collect::<Vec<_>>(), ["docs/b.txt"]);
+        e.key(Key::Alt('f'));
+        keys(&mut e, "<BS><BS><BS><BS><BS><CR>");
+        wait(&mut e);
+        assert_eq!(n(&e), 3);
+        // 文脈: コメントの中（Alt+T を 1 回）
+        e.key(Key::Alt('t'));
+        wait(&mut e);
+        assert_eq!(e.grep.as_ref().unwrap().hits.iter().map(|h| (h.path.as_str(), h.line)).collect::<Vec<_>>(), [("src/a.rs", 1)], "書き方の分からない .txt は本文なので、コメントの中には入らない");
+        // 見出しの札を押して戻す（文脈の札は 5 つ目の後）
+        let g = e.grep.as_ref().unwrap();
+        let mut col = 0;
+        for (t, _, c) in chips(g) {
+            if c == Chip::Context {
+                break;
+            }
+            col += nagi_core::display_col(&t, t.len(), false) + 1;
+        }
+        assert_eq!(chip_at(g, col), Some(Chip::Context));
+        for _ in 0..5 {
+            e.panel_click_at(0, col, 1);
+        }
+        wait(&mut e);
+        assert_eq!(e.grep.as_ref().unwrap().opts.context, Context::Anywhere);
+        assert_eq!(n(&e), 3);
+        // 今のファイルのフォルダだけ（Alt+D）・プロジェクト（Alt+P）
+        e.set_state(State::GrepPrompt);
+        e.key(Key::Alt('d'));
+        wait(&mut e);
+        assert_eq!(n(&e), 2);
+        e.key(Key::Alt('p'));
+        wait(&mut e);
+        assert_eq!(n(&e), 3);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
