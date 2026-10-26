@@ -1079,12 +1079,14 @@ pub(crate) mod draw {
         let mut buttons = Vec::new();
         // 1 行目: 題と絞り込みの欄、保存先
         let end = p.text(" 設定   ", x0, y(0), FG);
+        // 虫眼鏡は線で描く（🔍 の字はカラー絵文字のフォントに落ちて重い）
+        draw_tab_icon(p, TabIcon::Search, (end as f32 + 0.5) * cell.w, y(0), STATUS_FG);
+        let e = end + 2;
         let fend = if d.focus == SFocus::Filter {
-            let e = p.text("🔍 ", end, y(0), FG);
             draw_vim_field(p, &d.filter, e, y(0), &ed.preedit)
         } else {
             let t = d.filter.text();
-            p.text(&format!("🔍 {}", if t.is_empty() { "/ で絞り込み".to_string() } else { t }), end, y(0), STATUS_FG)
+            p.text(if t.is_empty() { "/ で絞り込み" } else { &t }, e, y(0), STATUS_FG)
         };
         let scope = if d.project_scope { " 保存先: このプロジェクト（p で切り替え） " } else { " 保存先: 全体（p で切り替え） " };
         let sw = p.width(scope);
@@ -1101,13 +1103,13 @@ pub(crate) mod draw {
             let r = 2 + i;
             let sel = i == d.cat && !filtering;
             if sel {
-                p.out.push(Instance::fill(x0 as f32 * cell.w, y(r), lw as f32 * cell.w, cell.h, if d.focus == SFocus::Cats { FG } else { MATCH_BG }));
+                p.out.push(Instance::fill(x0 as f32 * cell.w, y(r), lw as f32 * cell.w, cell.h, if d.focus == SFocus::Cats { LIST_SEL_BG } else { MATCH_BG }));
             }
             p.text(&format!(" {c}"), x0, y(r), if sel && d.focus == SFocus::Cats { FG_BRIGHT } else if filtering { STATUS_FG } else { FG });
             cat_rows.push((y0 + r, x0, x0 + lw, i));
         }
         p.out.push(Instance::fill((x0 + lw) as f32 * cell.w + cell.w * 0.5, y(1), 1.0, (h - 3) as f32 * cell.h, LINE_NO));
-        // 右: 項目
+        // 右: 項目。上に分類の名前（IntelliJ の右の欄の見出し）
         let rx = x0 + lw + 2;
         let items = d.items();
         let body = h.saturating_sub(6);
@@ -1116,6 +1118,8 @@ pub(crate) mod draw {
         let vx = rx + label_w;
         let mut item_rows = Vec::new();
         p.cols = x0 + w;
+        let title = if filtering { "絞り込んだ項目" } else { CATEGORIES.get(d.cat).copied().unwrap_or("") };
+        p.text(title, rx, y(1), FG_BRIGHT);
         for (k, it) in items.iter().enumerate().skip(top).take(body) {
             let r = 2 + k - top;
             let sel = k == d.selected;
@@ -1128,7 +1132,7 @@ pub(crate) mod draw {
             }
             let saved2 = p.cols;
             p.cols = vx.saturating_sub(1);
-            p.text(it.label, rx, y(r), if focused { FG } else { rgb(0xb0b0b0) });
+            p.text(it.label, rx, y(r), if focused { FG_BRIGHT } else { FG });
             p.cols = saved2;
             // 値（直している項目は入力欄）
             let overridden = d.work.project.contains_key(it.key) && it.project;
@@ -1220,7 +1224,7 @@ pub(crate) mod draw {
             SFocus::Combo => "打って絞り込み  ↑↓ 選ぶ  Enter・クリック 決める  Esc やめる",
         };
         let by = h - 1;
-        buttons.extend(dialog_buttons(p, x0 + w, y0 + by, &[(" 取り消し ", SButton::Cancel), (" 適用 ", SButton::Apply), (" OK ", SButton::Ok)], SButton::Ok));
+        buttons.extend(dialog_buttons(p, x0 + w, y0 + by, &[(" 適用 ", SButton::Apply), (" キャンセル ", SButton::Cancel), (" OK ", SButton::Ok)], SButton::Ok));
         p.cols = x0 + w.saturating_sub(30);
         p.text(help, x0 + 1, y(by), STATUS_FG);
         // コンボボックス（フォントの一覧）: 選んでいる項目の下（入らなければ上）に重ねる
