@@ -205,7 +205,7 @@ impl Editor {
 
     /// 窓の領域の上端の行（枠の内側の上から、バッファのタブと SQL コンソールの帯を除いた所）
     pub fn windows_top(&self) -> usize {
-        self.area().y + self.tabs_row() + self.console_row()
+        self.area().y + self.tabs_row() + self.console_row() + self.search_bar_rows()
     }
 
     /// 枠（上の帯と左右のアイコンの列。chrome.rs）の内側

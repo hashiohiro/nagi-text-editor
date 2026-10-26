@@ -253,8 +253,14 @@ pub static COMMANDS: &[Cmd] = &[
     cmd!(["ErrorPrev"], "前のエラーへ（Shift+F2）", Args::None, |e, c| e.next_error(false)),
     cmd!(["HunkNext"], "次の変更へ（Ctrl+Alt+Shift+Down）", Args::None, |e, c| e.hunk_jump(true, 1)),
     cmd!(["HunkPrev"], "前の変更へ（Ctrl+Alt+Shift+Up）", Args::None, |e, c| e.hunk_jump(false, 1)),
-    cmd!(["Find"], "ファイルの中を探す（/）", Args::None, |e, c| e.start_search(true, false, "")),
-    cmd!(["Replace"], "ファイルの中を置き換える", Args::None, |e, c| e.start_search(true, true, "")),
+    cmd!(["Find"], "ファイルの中を探す（本文の上の帯。Ctrl+F）", Args::None, |e, c| {
+        e.start_search(true, false, "");
+        e.search_bar = true;
+    }),
+    cmd!(["Replace"], "ファイルの中を置き換える（本文の上の帯。Ctrl+R）", Args::None, |e, c| {
+        e.start_search(true, true, "");
+        e.search_bar = true;
+    }),
     cmd!(["RunAgain"], "最後に動かした構成をもう一度（Ctrl+F5）", Args::None, |e, c| e.run_again()),
     cmd!(["GotoDefinition", "Definition"], "定義へ（F12）", Args::None, |e, c| e.goto_definition()),
     // git

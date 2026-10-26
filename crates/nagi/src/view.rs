@@ -1056,6 +1056,8 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         }
         // ファインダーは入力欄も件数も小窓の中（finder.rs）
         State::Finder if ed.finder.is_some() => {}
+        // 本文の上の帯で打っている検索・置換（search_bar.rs）
+        State::Search | State::Replace if ed.search_bar => {}
         State::Search => {
             let lead = if ed.search.forward { "/" } else { "?" };
             prompt_line(&mut p, lead, &ed.query.text, ed.query.cursor, &ed.preedit, y, true);

@@ -68,6 +68,7 @@ mod sql_complete;
 mod chrome;
 mod icons;
 mod input_dialog;
+mod search_bar;
 mod toggles;
 mod tree_panel;
 mod normal;
@@ -950,7 +951,7 @@ impl Frame {
         } else if want {
             let cell = f.cell();
             // ファインダー・全文検索の入力欄は小窓の中（描いたときの縦棒の位置）
-            let popup = matches!(ed.state(), State::Finder | State::GrepPrompt | State::Input).then(|| ed.prompt_caret.get()).flatten();
+            let popup = (matches!(ed.state(), State::Finder | State::GrepPrompt | State::Input) || ed.search_bar_rows() > 0).then(|| ed.prompt_caret.get()).flatten();
             let (col, row) = if let Some((c, y)) = popup {
                 (c, (y / cell.h).round() as usize)
             } else if ed.has_prompt() {

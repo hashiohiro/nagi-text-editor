@@ -461,6 +461,8 @@ pub struct Editor {
     pub hover_button: Option<crate::toggles::Button>,
     /// マウスを載せている上の帯の部品（chrome.rs）
     pub hover_chrome: Option<crate::chrome::Hit>,
+    /// ファイルの中の検索を本文の上の帯で打っている（Ctrl+F・Ctrl+R。search_bar.rs）
+    pub search_bar: bool,
     /// 入力のダイアログ（input_dialog.rs）
     pub input: Option<crate::input_dialog::InputDialog>,
     /// 全文検索の小窓のプレビューに読んだファイル（パス, 行）
@@ -737,6 +739,7 @@ impl Editor {
             hover_button: None,
             hover_chrome: None,
             input: None,
+            search_bar: false,
             grep_preview: Default::default(),
             click_mods: Default::default(),
             hover_tab: None,
@@ -1429,6 +1432,7 @@ impl Editor {
     }
 
     pub(crate) fn start_search(&mut self, forward: bool, replace: bool, initial: &str) {
+        self.search_bar = false;
         self.search.origin = Some((self.cursor, self.top));
         self.search.forward = forward;
         self.search.current = None;
@@ -1485,10 +1489,51 @@ impl Editor {
     }
 
     fn search_key(&mut self, key: Key) {
+        // 本文の上の帯（Ctrl+F・search_bar.rs）: Enter・↓ で次、↑ で前へ移り、帯は開いたまま。Esc は今の一致で決めて閉じる
+        if self.search_bar {
+            match key {
+                Key::Enter | Key::Down | Key::Ctrl('n') if !self.query.text.is_empty() => return self.bar_step(true),
+                Key::Up | Key::Ctrl('p') if !self.query.text.is_empty() => return self.bar_step(false),
+                Key::Esc | Key::Ctrl('c') if !self.query.text.is_empty() => return self.confirm_search(),
+                _ => {}
+            }
+        }
         match key {
             Key::Esc | Key::Ctrl('c') => self.cancel_search(),
             Key::Backspace if self.query.text.is_empty() => self.cancel_search(),
-            Key::Enter => {
+            Key::Enter => self.confirm_search(),
+            Key::Alt('r') => {
+                self.search.regex = !self.search.regex;
+                self.update_incsearch();
+            }
+            k => {
+                if self.query.key(k) {
+                    self.update_incsearch();
+                }
+            }
+        }
+    }
+
+    /// 帯の検索: 今の一致から次（前）の一致へ（打っている語はそのまま）
+    pub(crate) fn bar_step(&mut self, forward: bool) {
+        let Some((s, _)) = self.search.current else {
+            self.update_incsearch();
+            return;
+        };
+        let (line, byte) = self.buf.pos_of(s);
+        if let Some((c, top)) = &mut self.search.origin {
+            c.line = line;
+            c.byte = byte;
+            *top = self.top;
+        }
+        self.search.forward = forward;
+        self.update_incsearch();
+    }
+
+    /// 検索を決める（Enter。今の一致へ移り、n / N・強調に使う）
+    pub(crate) fn confirm_search(&mut self) {
+        {
+            {
                 let pattern = self.query.text.clone();
                 if pattern.is_empty() {
                     // 空なら前回の検索を繰り返す（Vim と同じ）
@@ -1529,15 +1574,6 @@ impl Editor {
                     self.show_count();
                 }
                 self.clamp_normal();
-            }
-            Key::Alt('r') => {
-                self.search.regex = !self.search.regex;
-                self.update_incsearch();
-            }
-            k => {
-                if self.query.key(k) {
-                    self.update_incsearch();
-                }
             }
         }
     }

@@ -89,6 +89,7 @@ pub static PANELS: &[&dyn View] = &[
     &crate::db_table::DbTableView,
     &crate::db_panel::ConsoleBarView,
     &crate::buffer_tabs::BufferTabsView,
+    &crate::search_bar::SearchBarView,
     &crate::bottom_panel::BottomView,
     &crate::grep_panel::GrepPopupView,
     &crate::finder::FinderView,
