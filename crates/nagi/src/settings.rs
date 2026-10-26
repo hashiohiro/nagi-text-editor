@@ -71,8 +71,7 @@ pub static SCHEMA: &[Item] = &[
     item("appearance.theme", "外観", "配色", SKind::Choice(&[("dark", "IntelliJ ダーク（既定）"), ("darcula", "Darcula"), ("light", "IntelliJ ライト")]), "dark", ""),
     item("appearance.accent", "外観", "強調の色", T, "#3574f0", "選んでいるタブの下線・ボタンなど（#rrggbb）"),
     item("appearance.remember_panels", "外観", "欄の大きさを覚える", B, "true", "ドラッグで変えた左・右・下の欄の大きさを次の起動でも使う"),
-    item("appearance.tab_names", "外観", "欄のタブの名前", SKind::Choice(&[("hover", "マウスを載せたとき"), ("always", "いつも（アイコンの横）")]), "hover", ""),
-    item("appearance.status_run", "外観", "状態の行: 実行の構成", B, "true", ""),
+    item("appearance.status_run", "外観", "状態の行: 実行の構成", B, "false", "上の帯にもある"),
     item("appearance.status_branch", "外観", "状態の行: ブランチ", B, "true", ""),
     item("appearance.status_path", "外観", "状態の行: ファイルのパス", B, "true", ""),
     item("appearance.status_lang", "外観", "状態の行: 言語", B, "true", ""),
@@ -561,7 +560,7 @@ impl crate::editor::Editor {
     /// 設定を動いている nagi に効かせる（`old` は前の設定。変わった項目だけ効かせる）
     pub(crate) fn apply_settings(&mut self, old: Option<&Settings>) {
         // 外観: 配色・強調の色・タブの名前は描き方へ、フォント・大きさ・行の高さが変わったら App が作り直す
-        crate::view::set_appearance(&self.settings.get("appearance.theme"), &self.settings.get("appearance.accent"), self.settings.get("appearance.tab_names") == "always");
+        crate::view::set_appearance(&self.settings.get("appearance.theme"), &self.settings.get("appearance.accent"));
         if let Some(o) = old {
             if ["appearance.font", "appearance.font_ja", "appearance.font_size", "appearance.line_height"].iter().any(|k| o.get(k) != self.settings.get(k)) {
                 self.appearance_changed = true;

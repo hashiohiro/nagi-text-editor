@@ -75,7 +75,7 @@ fn node_mut<'a>(l: &'a mut Layout, path: &[usize]) -> Option<&'a mut Layout> {
 impl Editor {
     /// 左の欄の幅（ドラッグで変えていればその幅）
     pub fn left_width(&self) -> usize {
-        let cols = self.screen.0;
+        let cols = self.area().w;
         let w = self.left_w.unwrap_or_else(|| crate::tree_panel::tree_width(cols));
         // 右の欄が出ていればその分も除いて、窓に 20 列は残す
         let right = if self.right_visible().is_some() { self.right_w.unwrap_or(10).min(40) + 1 } else { 0 };
@@ -106,12 +106,12 @@ impl Editor {
             return None;
         }
         if let Some(r) = self.left_rect() {
-            if col == r.x + r.w && row < r.y + r.h {
+            if col == r.x + r.w && row >= r.y && row < r.y + r.h {
                 return Some(Sep::Left);
             }
         }
         if let Some(r) = self.right_rect() {
-            if r.x > 0 && col == r.x - 1 && row < r.y + r.h {
+            if r.x > self.area().x && col == r.x - 1 && row >= r.y && row < r.y + r.h {
                 return Some(Sep::Right);
             }
         }
@@ -135,8 +135,11 @@ impl Editor {
     /// ドラッグ中: マウスの (行, 列) に区切りを合わせる
     pub(crate) fn drag_sep(&mut self, sep: &Sep, row: usize, col: usize) {
         match sep {
-            Sep::Left => self.left_w = Some(col),
-            Sep::Right => self.right_w = Some(self.screen.0.saturating_sub(col + 1)),
+            Sep::Left => self.left_w = Some(col.saturating_sub(self.area().x)),
+            Sep::Right => {
+                let a = self.area();
+                self.right_w = Some((a.x + a.w).saturating_sub(col + 1));
+            }
             Sep::Bottom => self.bottom_h = Some(self.screen.1.saturating_sub(row)),
             Sep::LogBranch { x } => self.log_branch_w = Some(col.saturating_sub(*x)),
             Sep::LogDetail { end } => self.log_detail_w = Some(end.saturating_sub(col + 1)),
@@ -194,38 +197,40 @@ mod tests {
         let mut e = Editor::new(Buffer::from_str("x\n"), None);
         e.set_screen(100, 40);
         keys(&mut e, ":vs<CR>");
+        let a = e.area();
         let w0: Vec<Rect> = e.window_rects().into_iter().map(|r| r.1).collect();
-        assert_eq!((w0[0].w, w0[1].x), (50, 51), "区切りの 1 列を除いた 99 列を分ける");
-        // 間の 1 列（50 列目）をつかんで 30 列目へ
-        let sep = e.sep_at(5, 50).expect("左右の間の線");
+        let half = w0[0].w;
+        assert_eq!((w0[0].x, w0[1].x, w0[0].w + w0[1].w + 1), (a.x, a.x + half + 1, a.w), "区切りの 1 列を除いた枠の内側を分ける");
+        // 間の 1 列をつかんで、枠の左端から 30 列目へ
+        let sep = e.sep_at(5, a.x + half).expect("左右の間の線");
         assert!(sep.horizontal_drag());
-        e.drag_sep(&sep, 5, 30);
+        e.drag_sep(&sep, 5, a.x + 30);
         let w1: Vec<Rect> = e.window_rects().into_iter().map(|r| r.1).collect();
-        assert_eq!((w1[0].w, w1[1].x, w1[1].w), (30, 31, 69));
-        assert_eq!(e.sep_at(5, 30), Some(Sep::Split { path: vec![], idx: 0, vertical: true, area: Rect { x: 0, y: 0, w: 100, h: 40 } }));
+        assert_eq!((w1[0].w, w1[1].x, w1[1].w), (30, a.x + 31, a.w - 31));
+        assert_eq!(e.sep_at(5, a.x + 30), Some(Sep::Split { path: vec![], idx: 0, vertical: true, area: Rect { x: a.x, y: a.y, w: a.w, h: a.h } }));
         // 端までは行かない
         e.drag_sep(&sep, 5, 0);
         assert_eq!(e.window_rects()[0].1.w, 3);
         // ダブルクリックで等分
         e.reset_sep(&sep);
-        assert_eq!(e.window_rects()[0].1.w, 50);
+        assert_eq!(e.window_rects()[0].1.w, half);
         // 上下の窓: 上の窓の状態行（19 行目）をつかんで 9 行目へ
         keys(&mut e, ":sp<CR>");
         let r = e.active_rect();
         let sep = e.sep_at(r.y + r.h - 1, r.x + 2).expect("上の窓の状態行");
         assert!(!sep.horizontal_drag());
         e.drag_sep(&sep, 9, r.x + 2);
-        let top = e.window_rects().into_iter().map(|r| r.1).find(|q| q.x == r.x && q.y == 0).unwrap();
-        assert_eq!(top.h, 10);
+        let top = e.window_rects().into_iter().map(|r| r.1).find(|q| q.x == r.x && q.y == a.y).unwrap();
+        assert_eq!(top.h, 10 - a.y);
         // 左の欄の幅
         e.open_tree();
         let w = e.left_width();
-        assert_eq!(e.sep_at(3, w), Some(Sep::Left));
-        e.drag_sep(&Sep::Left, 3, 50);
-        assert_eq!((e.left_width(), e.windows_x()), (50, (51, 49)));
+        assert_eq!(e.sep_at(3, a.x + w), Some(Sep::Left));
+        e.drag_sep(&Sep::Left, 3, a.x + 50);
+        assert_eq!((e.left_width(), e.windows_x()), (50, (a.x + 51, a.w - 51)));
         e.drag_sep(&Sep::Left, 3, 95);
-        assert_eq!(e.left_width(), 80, "窓に 20 列は残す");
+        assert_eq!(e.left_width(), a.w - 20, "窓に 20 列は残す");
         e.reset_sep(&Sep::Left);
-        assert_eq!(e.left_width(), 33);
+        assert_eq!(e.left_width(), crate::tree_panel::tree_width(a.w));
     }
 }

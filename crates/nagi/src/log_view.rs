@@ -752,7 +752,7 @@ impl Editor {
         }
         if !l.docked {
             let (x, w) = self.windows_x();
-            return Some(crate::panes::Rect { x, y: 0, w, h: self.windows_rows() });
+            return Some(crate::panes::Rect { x, y: self.area().y, w, h: self.windows_rows().saturating_sub(self.area().y) });
         }
         (self.bottom_kind == crate::result_grid::BottomKind::Git).then(|| self.bottom_content_rect()).flatten()
     }
@@ -1162,7 +1162,7 @@ impl crate::layout::View for LogScreenView {
             return None;
         }
         let (x, w) = ed.windows_x();
-        Some(crate::panes::Rect { x, y: 0, w, h: ed.windows_rows() })
+        Some(crate::panes::Rect { x, y: ed.area().y, w, h: ed.windows_rows().saturating_sub(ed.area().y) })
     }
 
     fn draw(&self, ed: &crate::editor::Editor, p: &mut crate::view::Painter, r: crate::panes::Rect, s: crate::layout::Screen) {

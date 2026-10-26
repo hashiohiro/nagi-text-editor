@@ -76,6 +76,8 @@ pub enum Layer {
 
 /// 下から順（描く順。押したときは上から当てる）
 pub static PANELS: &[&dyn View] = &[
+    // 上の帯と左右のアイコンの列（いちばん下に描く）
+    &crate::chrome::ChromeView,
     &crate::tree_panel::TreeView,
     &crate::commit_panel::CommitView,
     &crate::run_panel::RunPanelView,
@@ -167,6 +169,7 @@ mod tests {
     fn mouse_rules() {
         const NO_CLICK: &[(&str, &str)] = &[
             ("BlamePopupView", "blame の枠: カーソルの行のコミットを見せるだけ"),
+            ("ChromeView", "押した位置は main.rs が Editor::chrome_at で受け取る（コマンドの Effect を動かすため）"),
             ("HunkPopupView", "変更の差分の小窓: 見せるだけ（戻す・ステージは u / s）"),
             // 向いている部品（Component::click）が先に受け取り、その中で list::pick を通す
             ("CmdCompleteView", "クリックは CommandLineComponent::click が受け取る"),
@@ -248,11 +251,12 @@ mod tests {
         let s = Screen { rows: 40, cols: 120 };
         let at = |name: &str| PANELS.iter().position(|v| v.name().ends_with(name)).unwrap();
         let tree = at("::TreeView");
-        assert_eq!(press(&mut e, s, 2, 3, |_| 1).map(|p| p.0), Some(tree));
+        let a = e.area();
+        assert_eq!(press(&mut e, s, a.y + 2, a.x + 3, |_| 1).map(|p| p.0), Some(tree));
         assert_eq!(e.state(), State::List);
         // 1 行目はタブ（木の矩形にも入るが、タブが先に受け取る）
         let tabs = at("::LeftTabsView");
-        assert_eq!(press(&mut e, s, 0, 1, |_| 1).map(|p| p.0), Some(tabs));
+        assert_eq!(press(&mut e, s, a.y, a.x + 1, |_| 1).map(|p| p.0), Some(tabs));
         // 本文はどれも受け取らない
         e.set_state(State::Normal);
         assert_eq!(press(&mut e, s, 5, 100, |_| 1), None);

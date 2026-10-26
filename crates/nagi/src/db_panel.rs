@@ -2274,7 +2274,7 @@ impl crate::layout::View for ConsoleBarView {
             return None;
         }
         let (x, w) = ed.windows_x();
-        Some(crate::panes::Rect { x, y: ed.tabs_row(), w, h: 1 })
+        Some(crate::panes::Rect { x, y: ed.area().y + ed.tabs_row(), w, h: 1 })
     }
 
     fn draw(&self, ed: &crate::editor::Editor, p: &mut crate::view::Painter, r: crate::panes::Rect, s: crate::layout::Screen) {
@@ -2303,7 +2303,7 @@ pub(crate) mod draw {
         let (x, w) = ed.windows_x();
         let (x0, wpx) = (x as f32 * cell.w, w as f32 * cell.w);
         // タブの行の下
-        let y0 = ed.tabs_row() as f32 * cell.h;
+        let y0 = (ed.area().y + ed.tabs_row()) as f32 * cell.h;
         p.out.push(Instance::fill(x0, y0, wpx, cell.h, BG));
         p.out.push(Instance::fill(x0, y0 + cell.h - 1.0, wpx, 1.0, SEPARATOR));
         let hover = ed.hover_bar;

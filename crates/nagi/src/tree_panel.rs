@@ -64,22 +64,6 @@ pub enum LeftTab {
 /// タブ（1 行目にアイコンで並べる。名前は出しているタブの横に出す）
 pub const TABS: [(&str, LeftTab); 3] = [("プロジェクト", LeftTab::Project), ("コミット", LeftTab::Commit), ("実行", LeftTab::Run)];
 
-/// アイコンのタブ 1 つの幅（列）
-pub const TAB_W: usize = 4;
-
-/// 左のストライプのラベル（縦書き。見出し, タブ, 上端の行）
-pub const STRIPE: [(&str, LeftTab, usize); 3] = [("プロジェクト", LeftTab::Project, 0), ("コミット", LeftTab::Commit, 7), ("実行", LeftTab::Run, 12)];
-
-/// 左のストライプの `row` にあるラベル
-pub fn stripe_at(row: usize) -> Option<LeftTab> {
-    STRIPE.iter().find(|(l, _, top)| row >= *top && row < top + l.chars().count()).map(|s| s.1)
-}
-
-/// 1 行目の `col` にあるタブ
-pub fn tab_at(col: usize) -> Option<LeftTab> {
-    TABS.get(col / TAB_W).map(|t| t.1)
-}
-
 impl TreePanel {
     fn rebuild(&mut self) {
         let sel = self.rows.get(self.selected).map(|r| r.path.clone());
@@ -210,11 +194,8 @@ impl Editor {
     /// 左の欄の矩形（1 行目はタブ）
     pub fn left_rect(&self) -> Option<Rect> {
         self.left_visible()?;
-        let (cols, _) = self.screen;
-        let _ = cols;
-        // 下の欄を隠しているときは、左下の隅を ▴ のボタンに空ける
-        let h = self.windows_rows() - usize::from(self.show_bottom_button() && self.windows_rows() > 2);
-        Some(Rect { x: 0, y: 0, w: self.left_width(), h })
+        let a = self.area();
+        Some(Rect { x: a.x, y: a.y, w: self.left_width(), h: self.windows_rows().saturating_sub(a.y) })
     }
 
     pub fn tree_rect(&self) -> Option<Rect> {
@@ -223,15 +204,15 @@ impl Editor {
 
     /// 窓に使える範囲の左端と幅（左の欄の分と区切りの 1 列を除く）
     pub(crate) fn windows_x(&self) -> (usize, usize) {
-        let cols = self.screen.0;
+        let a = self.area();
         // 右の欄の分と区切りの 1 列も除く
         let right = self.right_rect().map_or(0, |r| r.w + 1);
         match self.left_visible() {
             Some(_) => {
                 let w = self.left_width() + 1;
-                (w, cols.saturating_sub(w + right))
+                (a.x + w, a.w.saturating_sub(w + right))
             }
-            None => (0, cols.saturating_sub(right)),
+            None => (a.x, a.w.saturating_sub(right)),
         }
     }
 
@@ -538,7 +519,8 @@ impl crate::layout::View for LeftTabsView {
 
     fn click(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, clicks: u32) -> crate::layout::Click {
         let _ = (r, row, col, clicks);
-        if let Some(tab) = tab_at(col - r.x) {
+        // 見出しを押したら、その欄へ移る（タブを替えるのは左のアイコンの列）
+        if let Some(tab) = ed.left_visible() {
             ed.select_left_tab(tab);
         }
         crate::layout::Click::Done
@@ -822,7 +804,8 @@ mod tests {
         e.toggle_tree();
         settle(&mut e);
         assert_eq!(e.state(), State::List);
-        assert_eq!(e.windows_x(), (37, 83), "ツリーの分だけ窓が右へ寄る");
+        let a = e.area();
+        assert_eq!(e.windows_x(), (a.x + e.left_width() + 1, a.w - e.left_width() - 1), "ツリーの分だけ窓が右へ寄る");
         let t = e.tree.as_ref().unwrap();
         let names: Vec<String> = t.rows.iter().map(|r| format!("{}{}", "  ".repeat(r.depth), r.name)).collect();
         // フォルダが先、.gitignore の target は出さない、.git も出さない。今のファイルまで展開して選ぶ
@@ -842,6 +825,6 @@ mod tests {
         assert_eq!(e.state(), State::List);
         keys(&mut e, "q");
         assert!(e.tree.is_none());
-        assert_eq!(e.windows_x(), (0, 120));
+        assert_eq!(e.windows_x(), (a.x, a.w));
     }
 }

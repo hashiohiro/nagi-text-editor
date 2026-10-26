@@ -65,6 +65,7 @@ mod result_grid;
 mod right_panel;
 mod save_dialog;
 mod sql_complete;
+mod chrome;
 mod toggles;
 mod tree_panel;
 mod normal;
@@ -254,7 +255,6 @@ fn title_for(path: Option<&std::path::Path>, root: Option<&std::path::Path>) -> 
 }
 
 /// ストライプの幅（セル。全角 1 字がちょうど入る）
-const STRIPE_W: usize = 2;
 
 /// 窓 1 枚分（窓・描画・エディタと、その窓の入力の状態）。App が束ねる
 struct Frame {
@@ -1016,14 +1016,6 @@ impl Frame {
         let (Some(f), Some(ed)) = (&self.fonts, &mut self.ed) else { return };
         let cell = f.cell();
         let (col, row) = (self.mouse.0 / cell.w as f64, (self.mouse.1 / cell.h as f64) as usize);
-        let edge = if ed.stripe == Some(editor::Side::Left) { STRIPE_W as f64 } else { 1.0 };
-        let rows = ed.screen.1;
-        let cols = ed.screen.0 as f64;
-        // 左右のストライプは出さない（欄の 1 行目にタブがあり、隠した欄は端の » « のボタンで出すため）
-        let _ = (edge, cols);
-        // 下のストライプも出さない（下の欄の 1 行目にタブがあり、隠した欄は ▴ のボタンで出す）
-        let _ = (rows, row >= rows);
-        let want: Option<editor::Side> = None;
         // 区切りの上ではカーソルを ↔ / ↕ に（メニューが出ている間はつかめないので、そのまま）
         let icon = match ed.sep_at(row, col as usize).filter(|_| ed.menu.is_none()) {
             Some(s) if s.horizontal_drag() => winit::window::CursorIcon::ColResize,
@@ -1036,10 +1028,8 @@ impl Frame {
                 w.set_cursor(icon);
             }
         }
-        // 出す・隠すのボタンの上なら明るくして名前を出す。ボタンは左端にもあるので、
-        // ストライプがまだ出ていなければボタンを優先し、もう出ていればストライプを優先する
         // SQL コンソールの帯のボタン
-        let bar = if row == ed.tabs_row() && ed.console_row() > 0 {
+        let bar = if row == ed.area().y + ed.tabs_row() && ed.console_row() > 0 {
             let (x, w) = ed.windows_x();
             let c = col as usize;
             ed.console_bar(w).into_iter().find(|b| c >= x + b.1 && c < x + b.1 + b.2).map(|b| b.3)
@@ -1052,51 +1042,35 @@ impl Frame {
         let buftab = ed.buftab_at(row, col as usize);
         let bar_changed = bar_changed || buftab != ed.hover_buftab;
         ed.hover_buftab = buftab;
-        let mut hover = ed.button_at(row, col as usize);
-        let mut want = want;
-        if want.is_some() && want == ed.stripe {
-            hover = None;
-        } else if hover.is_some() {
-            want = None;
-        }
+        // 上の帯の部品（載せたら地を明るく）
+        let chrome = ed.chrome_at(row, col as usize).filter(|h| !matches!(h, chrome::Hit::Tool(_)));
+        let bar_changed = bar_changed || chrome != ed.hover_chrome;
+        ed.hover_chrome = chrome;
+        // 見出しの「隠す」ボタンの上なら明るくして名前を出す
+        let hover = ed.button_at(row, col as usize);
         // タブのアイコンの上なら名前を出す
         let tab = ed.tab_hits.borrow().iter().find(|(r, c0, c1, _)| *r == row && (col as usize) >= *c0 && (col as usize) < *c1).map(|t| (t.0, t.1, t.3));
         let tab_changed = tab != ed.hover_tab;
         ed.hover_tab = tab;
-        if want != ed.stripe || hover != ed.hover_button || bar_changed || tab_changed {
-            ed.stripe = want;
+        if hover != ed.hover_button || bar_changed || tab_changed {
             ed.hover_button = hover;
             self.draw();
         }
     }
 
-    /// ストライプのラベルのクリック。押したら true
-    fn press_stripe(&mut self) -> bool {
-        let (Some(f), Some(ed)) = (&self.fonts, &mut self.ed) else { return false };
-        let cell = f.cell();
-        let (col, row) = ((self.mouse.0 / cell.w as f64) as usize, (self.mouse.1 / cell.h as f64) as usize);
-        match ed.stripe {
-            Some(editor::Side::Left) if col < STRIPE_W && row < ed.windows_rows() => match tree_panel::stripe_at(row) {
-                Some(tree_panel::LeftTab::Project) => ed.toggle_tree(),
-                Some(tree_panel::LeftTab::Commit) => ed.toggle_commit(),
-                Some(tree_panel::LeftTab::Run) => ed.toggle_left_tab(tree_panel::LeftTab::Run),
-                None => return false,
-            },
-            Some(editor::Side::Right) if col + STRIPE_W >= ed.screen.0 && row < ed.windows_rows() => match right_panel::rstripe_at(row) {
-                Some(tab) => ed.toggle_right_tab(tab),
-                None => return false,
-            },
-            // 下のストライプ: タブの名前を押すと、そのタブを出す・隠す
-            Some(editor::Side::Bottom) if row + 1 == ed.screen.1 => match ed.btab_at(col) {
-                Some(k) => ed.toggle_bottom_tab(k),
-                None => return false,
-            },
-            _ => return false,
+    /// 上の帯・アイコンの列を押した（chrome.rs）
+    fn press_chrome(&mut self, hit: chrome::Hit, row: usize, col: usize) {
+        let Some(ed) = &mut self.ed else { return };
+        match hit {
+            chrome::Hit::Projects => ed.open_launcher(),
+            chrome::Hit::Branches => ed.open_branches(),
+            chrome::Hit::RunMenu => ed.run_menu(row, col),
+            chrome::Hit::Tool(t) => ed.toggle_tool(t),
+            // コマンドの Effect は押した後に App が動かす（on_left の click_effect）
+            chrome::Hit::Cmd(c) => ed.click_effect = ed.shortcut(c),
         }
-        ed.stripe = None;
         self.sync_ime();
         self.draw();
-        true
     }
 
     /// マウスの下の窓へ移る。窓の状態行や区切りの上なら false（本文のクリックとしては扱わない）
@@ -1138,9 +1112,6 @@ impl Frame {
         self.sync_screen();
         // メニュー（確認の窓を含む）が出ている間は、下にある区切り・ストライプ・ボタンをつかまない（メニューの項目が押せなくなる）
         let menu_open = self.ed.as_ref().is_some_and(|e| e.menu.is_some());
-        if !menu_open && self.press_stripe() {
-            return;
-        }
         // 区切りをつかむ（ダブルクリックで元の大きさに）。下のパネルの見出しは、つかみつつ従来どおりパネルへ移る
         if let (Some(f), Some(ed), false) = (&self.fonts, &mut self.ed, menu_open) {
             let cell = f.cell();
@@ -1163,6 +1134,15 @@ impl Frame {
                         return;
                     }
                 }
+            }
+        }
+        // 上の帯・左右のアイコンの列（chrome.rs）
+        if let (Some(f), Some(ed), false) = (&self.fonts, &mut self.ed, menu_open) {
+            let cell = f.cell();
+            let (row, col) = ((self.mouse.1 as f32 / cell.h) as usize, (self.mouse.0.max(0.0) as f32 / cell.w) as usize);
+            if let Some(hit) = ed.chrome_at(row, col) {
+                self.press_chrome(hit, row, col);
+                return;
             }
         }
         // 出す・隠すのボタン

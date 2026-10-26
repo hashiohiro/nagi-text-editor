@@ -354,8 +354,6 @@ pub struct Editor {
     pub tree: Option<crate::tree_panel::TreePanel>,
     /// リストモードでいるパネル
     pub list_side: Side,
-    /// マウスを寄せていて出しているストライプ（App がマウスの位置から入れる）
-    pub stripe: Option<Side>,
     /// 一度集めたプロジェクトのファイル一覧（根 → 相対パス）
     pub(crate) file_cache: HashMap<PathBuf, Vec<String>>,
     /// ファイルの見張り（外部での変更と設定ファイル）
@@ -456,6 +454,8 @@ pub struct Editor {
     pub hover_buftab: Option<(usize, bool)>,
     /// マウスを載せているボタン
     pub hover_button: Option<crate::toggles::Button>,
+    /// マウスを載せている上の帯の部品（chrome.rs）
+    pub hover_chrome: Option<crate::chrome::Hit>,
     /// 部品を左クリックしている間の修飾キー（Ctrl・Shift+クリックで一覧の複数を選ぶ）。押した間だけ App が入れる
     pub click_mods: nagi_vim::Mods,
     /// マウスを載せているタブのアイコン（行, 列, 名前）と、描いたアイコンの位置
@@ -697,7 +697,6 @@ impl Editor {
             grep: None,
             tree: None,
             list_side: Side::Bottom,
-            stripe: None,
             file_cache: HashMap::new(),
             watcher: None,
             rc_files: Vec::new(),
@@ -726,6 +725,7 @@ impl Editor {
             left_hidden: false,
             bottom_hidden: false,
             hover_button: None,
+            hover_chrome: None,
             click_mods: Default::default(),
             hover_tab: None,
             tab_hits: Default::default(),

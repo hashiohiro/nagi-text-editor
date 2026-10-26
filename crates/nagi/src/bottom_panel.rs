@@ -61,12 +61,6 @@ impl Editor {
         Some(Rect { x: r.x, y: r.y + 1, w: r.w, h: r.h.saturating_sub(1) })
     }
 
-    /// 1 行目の `col` にあるタブ
-    pub fn btab_at(&self, col: usize) -> Option<BottomKind> {
-        // 左端の 2 列は ▾ のボタン
-        self.bottom_tabs().get(col.checked_sub(BTAB_X)? / crate::tree_panel::TAB_W).map(|t| t.1)
-    }
-
     /// ログ（コマンドの出力）の入れ物（出していなくても）
     pub(crate) fn output_panel_mut(&mut self) -> Option<&mut crate::grep_panel::GrepPanel> {
         if self.grep.as_ref().is_some_and(|g| g.title.is_some()) {
@@ -233,10 +227,9 @@ impl Editor {
 
     /// 下の欄の押した位置（欄の中の行・列。0 行目はタブ）
     pub(crate) fn bottom_click(&mut self, row: usize, col: usize, clicks: u32) {
+        // 見出しを押したら、その欄へ移る（タブを替えるのは左のアイコンの列）
         if row == 0 {
-            if let Some(k) = self.btab_at(col) {
-                self.select_bottom_tab(k);
-            }
+            self.select_bottom_tab(self.bottom_kind);
             return;
         }
         let row = row - 1;
@@ -480,7 +473,7 @@ pub(crate) mod draw {
         let cell = p.fonts.cell();
         let (x0, y0, wpx) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
         p.out.push(Instance::fill(x0, y0, wpx, r.h as f32 * cell.h, PANEL_BG));
-        p.out.push(Instance::fill(x0, y0, wpx, 1.0, LINE_NO));
+        p.out.push(Instance::fill(x0, y0, wpx, 1.0, SEPARATOR));
         let focused = ed.bottom_focused();
         // 左右の欄と同じく、タブはアイコンで並べ、出しているタブの名前を横に
         let tabs: Vec<(TabIcon, &'static str, bool)> = ed
@@ -502,7 +495,7 @@ pub(crate) mod draw {
         // 左端の 2 列は ▾ のボタン
         let bx = crate::bottom_panel::BTAB_X;
         draw_icon_tabs(p, Rect { x: r.x + bx, y: r.y, w: r.w.saturating_sub(bx), h: 1 }, &tabs, focused, "");
-        p.out.push(Instance::fill(x0, y0 + cell.h - 1.0, bx as f32 * cell.w, 1.0, LINE_NO));
+        p.out.push(Instance::fill(x0, y0 + cell.h - 1.0, bx as f32 * cell.w, 1.0, SEPARATOR));
         let c = Rect { x: r.x, y: r.y + 1, w: r.w, h: r.h.saturating_sub(1) };
         let empty = |p: &mut Painter, s: &str| {
             p.text(s, c.x + 1, (c.y + 1) as f32 * cell.h, STATUS_FG);
@@ -624,9 +617,5 @@ mod tests {
         assert_eq!((m.cursor.line, m.state()), (0, State::Normal), "{}", m.notify.text);
         assert_eq!(m.bottom_kind, BottomKind::Output);
         assert_eq!(m.problem_rows().len(), 3, "問題のタブにも出る");
-        // タブの位置
-        assert_eq!(e.btab_at(0), None, "▾ のボタン");
-        assert_eq!(e.btab_at(3), Some(BottomKind::Git));
-        assert_eq!(e.btab_at(7), Some(BottomKind::Grep));
     }
 }

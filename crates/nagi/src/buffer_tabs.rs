@@ -83,7 +83,7 @@ impl Editor {
 
     /// 画面の (行, 列) にあるタブ（バッファの番号, × の上か）
     pub fn buftab_at(&self, row: usize, col: usize) -> Option<(usize, bool)> {
-        if self.tabs_row() == 0 || row != 0 {
+        if self.tabs_row() == 0 || row != self.area().y {
             return None;
         }
         let (x, w) = self.tabs_span();
@@ -96,7 +96,7 @@ impl Editor {
     pub(crate) fn tabs_span(&self) -> (usize, usize) {
         let (mut x, mut w) = self.windows_x();
         for (_, r, c) in self.toggle_buttons() {
-            if r != 0 || w == 0 {
+            if r != self.area().y || w == 0 {
                 continue;
             }
             if c == x {
@@ -170,7 +170,7 @@ impl crate::layout::View for BufferTabsView {
             return None;
         }
         let (x, w) = ed.tabs_span();
-        Some(Rect { x, y: 0, w, h: 1 })
+        Some(Rect { x, y: ed.area().y, w, h: 1 })
     }
 
     fn draw(&self, ed: &Editor, p: &mut crate::view::Painter, r: Rect, s: crate::layout::Screen) {
@@ -217,32 +217,35 @@ pub(crate) mod draw {
 
     pub(crate) fn draw_tabs(p: &mut Painter, ed: &Editor, r: Rect) {
         let cell = p.fonts.cell();
-        let (x0, wpx) = (r.x as f32 * cell.w, r.w as f32 * cell.w);
-        p.out.push(Instance::fill(x0, 0.0, wpx, cell.h, BG));
-        p.out.push(Instance::fill(x0, cell.h - 1.0, wpx, 1.0, SEPARATOR));
+        let (x0, wpx, y0) = (r.x as f32 * cell.w, r.w as f32 * cell.w, r.y as f32 * cell.h);
+        p.out.push(Instance::fill(x0, y0, wpx, cell.h, BG));
+        p.out.push(Instance::fill(x0, y0 + cell.h - 1.0, wpx, 1.0, SEPARATOR));
         let saved = p.cols;
         p.cols = r.x + r.w;
         for t in ed.buffer_tabs(r.w) {
             let hover = ed.hover_buftab.filter(|h| h.0 == t.doc);
             let tx = (r.x + t.x) as f32 * cell.w;
-            if t.active {
-                p.out.push(Instance::fill(tx, 0.0, t.w as f32 * cell.w, cell.h - 1.0, RAISED_BG));
-                p.out.push(Instance::fill(tx, cell.h - 2.0, t.w as f32 * cell.w, 2.0, ACCENT_FG));
+            // 選んでいるタブは青い下線（IntelliJ の New UI と同じ）。載せたタブは地を明るく
+            if hover.is_some() && !t.active {
+                p.out.push(Instance::fill(tx, y0, t.w as f32 * cell.w, cell.h - 1.0, RAISED_BG));
             }
-            let fg = if t.active || hover.is_some() { FG } else { STATUS_FG };
-            p.text(&t.label, r.x + t.x + 1, 0.0, fg);
+            if t.active {
+                p.out.push(Instance::fill(tx, y0 + cell.h - 3.0, t.w as f32 * cell.w, 3.0, ACCENT_FG));
+            }
+            let fg = if t.active { FG_BRIGHT } else if hover.is_some() { FG } else { STATUS_FG };
+            p.text(&t.label, r.x + t.x + 1, y0, fg);
             // × は控えめに。載せたら明るく、変更があれば載せるまで ●
             let cx = r.x + t.close_col();
             let (mark, color) = match hover {
                 Some((_, true)) => {
-                    p.out.push(Instance::fill(cx as f32 * cell.w - 2.0, 1.0, cell.w + 4.0, cell.h - 3.0, MATCH_BG));
+                    p.out.push(Instance::fill(cx as f32 * cell.w - 2.0, y0 + 1.0, cell.w + 4.0, cell.h - 3.0, MATCH_BG));
                     ("×", FG)
                 }
                 Some(_) => ("×", STATUS_FG),
                 None if t.dirty => ("●", STATUS_FG),
                 None => ("×", LINE_NO),
             };
-            p.text(mark, cx, 0.0, color);
+            p.text(mark, cx, y0, color);
         }
         p.cols = saved;
     }
@@ -281,17 +284,18 @@ mod tests {
         let (mut e, dir) = editor(&["a.txt", "b.txt", "c.txt"]);
         assert_eq!(labels(&e), ["a.txt", "b.txt", "c.txt"]);
         // 本文はタブの下から
-        assert_eq!(e.windows_top(), 1);
+        let y = e.area().y;
+        assert_eq!(e.windows_top(), y + 1);
         let s = crate::layout::Screen { rows: 30, cols: 100 };
         let r = crate::buffer_tabs::BufferTabsView.rect(&e, s).unwrap();
         // a.txt を押すとそのバッファへ
         let a = e.buffer_tabs(100).remove(0);
-        crate::buffer_tabs::BufferTabsView.click(&mut e, r, 0, r.x + a.x + 1, 1);
+        crate::buffer_tabs::BufferTabsView.click(&mut e, r, y, r.x + a.x + 1, 1);
         assert_eq!(e.buf.path.as_deref(), Some(dir.join("a.txt").as_path()));
         // b.txt の × で閉じる
         let b = e.buffer_tabs(100).remove(1);
-        assert_eq!(e.buftab_at(0, r.x + b.close_col()), Some((b.doc, true)));
-        crate::buffer_tabs::BufferTabsView.click(&mut e, r, 0, r.x + b.close_col(), 1);
+        assert_eq!(e.buftab_at(y, r.x + b.close_col()), Some((b.doc, true)));
+        crate::buffer_tabs::BufferTabsView.click(&mut e, r, y, r.x + b.close_col(), 1);
         assert_eq!(labels(&e), ["a.txt", "c.txt"]);
         let _ = std::fs::remove_dir_all(&dir);
     }

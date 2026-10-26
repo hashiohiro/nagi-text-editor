@@ -912,7 +912,6 @@ mod tests {
 #[cfg(test)]
 mod layout_tests {
     use super::*;
-    use crate::tree_panel::{LeftTab, stripe_at, tab_at};
 
     #[test]
     fn left_panel_layout() {
@@ -922,12 +921,6 @@ mod layout_tests {
             assert!(l.list + l.list_h < l.title, "{h}: {l:?}");
             assert!(l.title < l.msg && l.msg + l.msg_h < l.amend && l.amend < l.buttons && l.buttons < h, "{h}: {l:?}");
         }
-        // タブはアイコン（4 列ずつ）: プロジェクト・コミット・実行
-        assert_eq!(tab_at(1), Some(LeftTab::Project));
-        assert_eq!(tab_at(5), Some(LeftTab::Commit));
-        assert_eq!(tab_at(8), Some(LeftTab::Run));
-        assert_eq!(tab_at(12), None);
-        assert_eq!((stripe_at(0), stripe_at(8), stripe_at(13), stripe_at(20)), (Some(LeftTab::Project), Some(LeftTab::Commit), Some(LeftTab::Run), None));
         // ボタンは右寄せで重ならない
         let [(_, px, pw, true), (_, mx, _, false)] = buttons(36) else { panic!() };
         assert!(px + pw < mx);

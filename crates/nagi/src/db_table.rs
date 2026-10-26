@@ -610,7 +610,7 @@ impl crate::layout::View for DbTableView {
         let _ = s;
         ed.db_table.as_ref()?;
         let (x, w) = ed.windows_x();
-        Some(crate::panes::Rect { x, y: 0, w, h: ed.windows_rows() })
+        Some(crate::panes::Rect { x, y: ed.area().y, w, h: ed.windows_rows().saturating_sub(ed.area().y) })
     }
 
     fn draw(&self, ed: &crate::editor::Editor, p: &mut crate::view::Painter, r: crate::panes::Rect, s: crate::layout::Screen) {
@@ -848,25 +848,26 @@ mod tests {
         e.db_open_table(i, "main", "item");
         wait(&mut e, &|e| e.db_table.as_ref().is_some_and(|t| !t.running && !t.rows.is_empty()));
         let s = crate::layout::Screen { rows: 50, cols: 160 };
+        let ay = e.area().y;
         let (x, _) = e.windows_x();
         // 表は 2 行目から（見出し 2 行）なので、データの 2 行目は 5 行目。name は 7 列目 + id の幅 + 3 から
         let name_x = x + 7 + e.db_table.as_ref().unwrap().widths[0] + 3 + 1;
-        crate::layout::press(&mut e, s, 5, name_x, |_| 1);
+        crate::layout::press(&mut e, s, ay + 5, name_x, |_| 1);
         let te = e.db_table.as_ref().unwrap();
         assert_eq!((te.row, te.col), (1, 1));
         assert!(te.editing.is_none(), "1 回では直さない");
-        crate::layout::press(&mut e, s, 5, name_x, |_| 2);
+        crate::layout::press(&mut e, s, ay + 5, name_x, |_| 2);
         assert!(e.db_table.as_ref().unwrap().editing.is_some(), "ダブルクリックで直し始める");
         // 打っている間に別の行・列をダブルクリック: 打った値を決めて、押したセルを直し始める
         keys(&mut e, "<Esc>ccz");
-        crate::layout::press(&mut e, s, 4, x + 8, |_| 1);
-        crate::layout::press(&mut e, s, 4, x + 8, |_| 2);
+        crate::layout::press(&mut e, s, ay + 4, x + 8, |_| 1);
+        crate::layout::press(&mut e, s, ay + 4, x + 8, |_| 2);
         let te = e.db_table.as_ref().unwrap();
         assert_eq!(te.value(1, 1).as_deref(), Some("z"));
         assert_eq!((te.row, te.col), (0, 0));
         assert_eq!(te.editing.as_ref().map(|f| f.text()).as_deref(), Some("1"));
         // 同じセルを押しても、打っている欄は閉じない
-        crate::layout::press(&mut e, s, 4, x + 8, |_| 1);
+        crate::layout::press(&mut e, s, ay + 4, x + 8, |_| 1);
         assert!(e.db_table.as_ref().unwrap().editing.is_some());
         keys(&mut e, "<Esc><Esc>");
         assert!(e.db_table.as_ref().unwrap().editing.is_none());
@@ -907,30 +908,31 @@ mod tests {
         e.db_open_table(i, "main", "item");
         wait(&mut e, &|e| e.db_table.as_ref().is_some_and(|t| !t.running && !t.rows.is_empty()));
         let s = crate::layout::Screen { rows: 50, cols: 160 };
+        let ay = e.area().y;
         let (x, _) = e.windows_x();
         let field = |e: &Editor| e.db_table.as_ref().unwrap().filter_edit.as_ref().map(|f| (f.0, f.1.mode_label(), f.1.text()));
         // WHERE を打っている間（Insert）に ORDER BY を押す: 打った条件は残して ORDER BY へ
         keys(&mut e, "fid > 0");
-        crate::layout::press(&mut e, s, 1, x + 50, |_| 1);
+        crate::layout::press(&mut e, s, ay + 1, x + 50, |_| 1);
         assert_eq!(field(&e), Some((Field::Order, "INSERT", String::new())));
         assert_eq!(e.db_table.as_ref().unwrap().where_, "id > 0");
         // Visual のまま WHERE を押す
         keys(&mut e, "id<Esc>v");
-        crate::layout::press(&mut e, s, 1, x + 10, |_| 1);
+        crate::layout::press(&mut e, s, ay + 1, x + 10, |_| 1);
         assert_eq!(field(&e), Some((Field::Where, "INSERT", "id > 0".into())));
         assert_eq!(e.db_table.as_ref().unwrap().order, "id");
         // Insert のまま表を押す: 決めて読み直す
         keys(&mut e, " and id < 2");
-        crate::layout::press(&mut e, s, 4, x + 8, |_| 1);
+        crate::layout::press(&mut e, s, ay + 4, x + 8, |_| 1);
         assert_eq!(field(&e), None);
         wait(&mut e, &|e| e.db_table.as_ref().is_some_and(|t| !t.running));
         let te = e.db_table.as_ref().unwrap();
         assert_eq!((te.where_.as_str(), te.len()), ("id > 0 and id < 2", 1));
         // 値を打っている間（Insert）に WHERE を押す: 値を決めてから（未送信の変更があるので欄は開かない）
-        crate::layout::press(&mut e, s, 4, x + 8, |_| 2);
+        crate::layout::press(&mut e, s, ay + 4, x + 8, |_| 2);
         assert!(e.db_table.as_ref().unwrap().editing.is_some());
         keys(&mut e, "<Esc>cc5");
-        crate::layout::press(&mut e, s, 1, x + 10, |_| 1);
+        crate::layout::press(&mut e, s, ay + 1, x + 10, |_| 1);
         let te = e.db_table.as_ref().unwrap();
         assert!(te.editing.is_none() && te.filter_edit.is_none());
         assert_eq!(te.value(0, 0).as_deref(), Some("5"));

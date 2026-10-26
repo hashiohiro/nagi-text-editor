@@ -20,18 +20,6 @@ pub enum RightTab {
 /// タブ（左の欄と同じく、いつも全部をアイコンで並べる。名前は出しているタブの横に出す）
 pub const RTABS: [(&str, RightTab); 3] = [("データベース", RightTab::Database), ("Maven", RightTab::Maven), ("プレビュー", RightTab::Preview)];
 
-/// 右のストライプのラベル（縦書き。見出し, タブ, 上端の行）
-pub const RSTRIPE: [(&str, RightTab, usize); 3] = [("データベース", RightTab::Database, 0), ("Maven", RightTab::Maven, 7), ("プレビュー", RightTab::Preview, 13)];
-
-pub fn rstripe_at(row: usize) -> Option<RightTab> {
-    RSTRIPE.iter().find(|(l, _, top)| row >= *top && row < top + l.chars().count()).map(|s| s.1)
-}
-
-/// 1 行目の（欄の左端から数えた）`col` にあるタブ
-pub fn rtab_at(col: usize) -> Option<RightTab> {
-    RTABS.get(col / crate::tree_panel::TAB_W).map(|t| t.1)
-}
-
 impl Editor {
     /// 中身のあるタブ
     fn right_open_tabs(&self) -> Vec<RightTab> {
@@ -56,15 +44,9 @@ impl Editor {
         if open.contains(&self.right_tab) { Some(self.right_tab) } else { open.first().copied() }
     }
 
-    /// 最後に選んだタブ（隠していても覚えている）
-    pub fn right_last(&self) -> RightTab {
-        let open = self.right_open_tabs();
-        if open.contains(&self.right_tab) { self.right_tab } else { open.first().copied().unwrap_or(RightTab::Database) }
-    }
-
     /// 右の欄の幅（既定は 40 列。狭い画面では 1/3 まで。窓に 20 列は残す）
     pub fn right_width(&self) -> usize {
-        let cols = self.screen.0;
+        let cols = self.area().w;
         let left = self.left_rect().map_or(0, |r| r.w + 1);
         // プレビューは広め（画面の 45%）
         let def = if self.right_visible() == Some(RightTab::Preview) { cols * 45 / 100 } else { 40.min(cols / 3) };
@@ -74,9 +56,9 @@ impl Editor {
 
     pub fn right_rect(&self) -> Option<Rect> {
         self.right_visible()?;
-        let cols = self.screen.0;
+        let a = self.area();
         let w = self.right_width();
-        Some(Rect { x: cols.saturating_sub(w), y: 0, w, h: self.windows_rows() })
+        Some(Rect { x: (a.x + a.w).saturating_sub(w), y: a.y, w, h: self.windows_rows().saturating_sub(a.y) })
     }
 
     /// 右の欄にいるか（リストモード）
@@ -150,8 +132,10 @@ impl Editor {
 
     /// マウス: 右の欄の中の (行, 列) を押した（矩形の中の位置）
     pub(crate) fn right_click(&mut self, row: usize, col: usize, clicks: u32) {
+        let _ = col;
+        // 見出しを押したら、その欄へ移る（タブを替えるのは右のアイコンの列）
         if row == 0 {
-            if let Some(tab) = rtab_at(col) {
+            if let Some(tab) = self.right_visible() {
                 self.select_right_tab(tab);
             }
             return;

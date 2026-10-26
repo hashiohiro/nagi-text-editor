@@ -185,9 +185,9 @@ impl Editor {
         if !self.bottom_visible() {
             return None;
         }
-        let (cols, rows) = self.screen;
+        let (a, rows) = (self.area(), self.screen.1);
         let h = self.bottom_height();
-        Some(Rect { x: 0, y: rows - h, w: cols, h })
+        Some(Rect { x: a.x, y: rows - h, w: a.w, h })
     }
 
     /// コミットのパネルの矩形（左の欄。1 行目はタブ）

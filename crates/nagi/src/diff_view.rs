@@ -300,7 +300,7 @@ impl crate::layout::View for DiffScreenView {
         let _ = s;
         ed.diff.as_ref()?;
         let (x, w) = ed.windows_x();
-        Some(crate::panes::Rect { x, y: 0, w, h: ed.windows_rows() })
+        Some(crate::panes::Rect { x, y: ed.area().y, w, h: ed.windows_rows().saturating_sub(ed.area().y) })
     }
 
     fn draw(&self, ed: &crate::editor::Editor, p: &mut crate::view::Painter, r: crate::panes::Rect, s: crate::layout::Screen) {
@@ -494,10 +494,11 @@ mod tests {
         // 本文に向くと閉じる
         e.set_state(State::Normal);
         assert!(e.diff.is_none());
-        // 左の欄を隠していても、差分の間に出すボタンがある
+        // 左の欄を隠していても、差分の間に出すアイコンがある
         e.show_diff("a".into(), "b".into(), "a\n", "b\n", None);
         e.left_hidden = true;
-        assert!(e.toggle_buttons().iter().any(|b| b.0 == crate::toggles::Button::ShowLeft));
+        let row = e.left_stripe()[0].0;
+        assert!(e.chrome_at(row, 0).is_some());
     }
 
     /// 列のカーソル: h / l で動き、行末で止まり、長い行は左端が付いてくる。押した位置へ置く

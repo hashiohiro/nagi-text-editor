@@ -203,9 +203,14 @@ impl Editor {
         out
     }
 
-    /// 窓の領域の上に取る行（バッファのタブと SQL コンソールの帯）
+    /// 窓の領域の上端の行（枠の内側の上から、バッファのタブと SQL コンソールの帯を除いた所）
     pub fn windows_top(&self) -> usize {
-        self.tabs_row() + self.console_row()
+        self.area().y + self.tabs_row() + self.console_row()
+    }
+
+    /// 枠（上の帯と左右のアイコンの列。chrome.rs）の内側
+    pub fn area(&self) -> Rect {
+        crate::chrome::area(self.screen)
     }
 
     /// 差分・ログ・テーブルを画面いっぱいに出していないか（タブ・帯を出す）
@@ -213,7 +218,7 @@ impl Editor {
         self.diff.is_none() && !self.log_fullscreen() && self.db_table.is_none()
     }
 
-    /// バッファのタブの行（buffer_tabs.rs。設定の「タブ」で隠せる）
+    /// バッファのタブの行の数（0 か 1。buffer_tabs.rs。設定の「タブ」で隠せる）。行の位置は area().y
     pub fn tabs_row(&self) -> usize {
         usize::from(self.editor_shown() && self.settings.bool("editor.tabs"))
     }
@@ -525,14 +530,16 @@ mod tests {
         keys(&mut e, ":vs<CR>");
         let r = e.window_rects();
         assert_eq!(r.len(), 2);
-        // 左右で等分し、間に区切りの 1 列
-        assert_eq!((r[0].1.x, r[0].1.w, r[1].1.x, r[1].1.w), (0, 50, 51, 49));
+        // 枠の内側を左右で等分し、間に区切りの 1 列
+        let a = e.area();
+        assert_eq!((r[0].1.x, r[1].1.x, r[0].1.w + r[1].1.w + 1), (a.x, a.x + r[0].1.w + 1, a.w));
+        assert!(r[0].1.w.abs_diff(r[1].1.w) <= 1);
         assert_eq!(r[0].0, e.cur_win, "新しい窓は左で、そこへ移る");
         keys(&mut e, ":sp<CR>");
         let r = e.window_rects();
         assert_eq!(r.len(), 3);
-        assert_eq!((r[0].1.y, r[0].1.h, r[1].1.y, r[1].1.h), (0, 20, 20, 20));
-        assert_eq!(e.rows, 19, "状態行の 1 行を除く");
+        assert_eq!((r[0].1.y, r[1].1.y, r[0].1.h + r[1].1.h), (a.y, a.y + r[0].1.h, a.h));
+        assert_eq!(e.rows, r[0].1.h - 1, "状態行の 1 行を除く");
     }
 
     #[test]

@@ -19,7 +19,7 @@ pub(crate) const fn rgb(hex: u32) -> [f32; 4] {
 // 見た目は IntelliJ IDEA の New UI（ダーク）に合わせる。本文の地とツールウィンドウの地を分け、選択・カーソルの行は地の色で示す
 pub const BG: [f32; 4] = rgb(0x1e1f22);
 
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
 // 部品の中でほかの部品の描き方を使うもの（下の欄が検索・ログ・ターミナルを、右の欄がプレビューを描く）
 pub(crate) use crate::finder::draw::finder_height;
 pub(crate) use crate::grep_panel::draw::draw_grep_panel;
@@ -33,11 +33,9 @@ pub(crate) use crate::terminal::draw::draw_terminal;
 pub(crate) static THEME: AtomicU8 = AtomicU8::new(0);
 pub(crate) static ACCENT: AtomicU32 = AtomicU32::new(DEFAULT_ACCENT);
 pub(crate) const DEFAULT_ACCENT: u32 = 0x3574f0;
-/// 欄のタブの名前をいつも出すか（設定の「欄のタブの名前」）
-pub(crate) static TAB_NAMES: AtomicBool = AtomicBool::new(false);
 
-/// 設定の外観（配色・強調の色・タブの名前）を描き方に入れる
-pub fn set_appearance(theme: &str, accent: &str, tab_names_always: bool) {
+/// 設定の外観（配色・強調の色）を描き方に入れる
+pub fn set_appearance(theme: &str, accent: &str) {
     let t = match theme {
         "darcula" => 1,
         "light" => 2,
@@ -46,7 +44,6 @@ pub fn set_appearance(theme: &str, accent: &str, tab_names_always: bool) {
     THEME.store(t, Ordering::Relaxed);
     let a = u32::from_str_radix(accent.trim().trim_start_matches('#'), 16).ok().filter(|v| *v <= 0xffffff).unwrap_or(DEFAULT_ACCENT);
     ACCENT.store(a, Ordering::Relaxed);
-    TAB_NAMES.store(tab_names_always, Ordering::Relaxed);
 }
 
 /// 配色ごとの置き換え（IntelliJ ダークの色 → その配色の色。IntelliJ の Darcula と Light の色）
@@ -919,7 +916,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     // 窓ごとの状態行（分割中だけ。Vim の laststatus=1 と同じ）と、左右の窓の間の 1px の区切り線
     if split {
         for &(win, rect) in &rects {
-            if rect.x > 0 {
+            if rect.x > ed.windows_x().0 {
                 let x = ((rect.x as f32 - 0.5) * cell.w).round();
                 p.out.push(Instance::fill(x, rect.y as f32 * cell.h, 1.0, rect.h as f32 * cell.h, LINE_NO));
             }
@@ -957,12 +954,6 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     // 欄・小窓（layout.rs の表の順に下から）
     crate::layout::draw(crate::layout::Layer::Panels, ed, &mut p, crate::layout::Screen { rows, cols });
     draw_toggle_buttons(&mut p, ed, cols, false);
-    match ed.stripe {
-        Some(crate::editor::Side::Left) => draw_stripe_left(&mut p, ed.windows_rows(), ed.left_visible()),
-        Some(crate::editor::Side::Bottom) => draw_stripe_bottom(&mut p, rows, cols, ed),
-        Some(crate::editor::Side::Right) => draw_stripe_right(&mut p, ed.windows_rows(), cols, ed.right_visible()),
-        Some(crate::editor::Side::Commit | crate::editor::Side::Run) | None => {}
-    }
     // ---- 最下行: 左にモード・メッセージ・入力欄、右に位置（Vim の showmode と ruler と同じ形）
     // 右端の 2 列は設定のボタン（⚙）
     let scols = cols.saturating_sub(2);
@@ -970,7 +961,18 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     // はみ出した本文の最終行（スムーズスクロール中）を最下行の地で隠す
     p.out.push(Instance::fill(0.0, y, w as f32, h as f32 - y, PANEL_BG));
     p.out.push(Instance::fill(0.0, y, w as f32, 1.0, SEPARATOR));
-    let name = ed.buf.path.as_ref().map_or("[No Name]".to_string(), |p| p.display().to_string());
+    // ファイルの場所はプロジェクトからのパンくず（IntelliJ の状態の行と同じ。nagi-rn › src › App.java）
+    let name = match ed.buf.path.as_ref() {
+        None => "[No Name]".to_string(),
+        Some(path) => {
+            let root = ed.nav_root();
+            let abs = std::path::absolute(path).unwrap_or_else(|_| path.clone());
+            match abs.strip_prefix(&root) {
+                Ok(rel) => std::iter::once(root.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned())).chain(rel.iter().map(|c| c.to_string_lossy().into_owned())).filter(|c| !c.is_empty()).collect::<Vec<_>>().join(" › "),
+                Err(_) => abs.display().to_string(),
+            }
+        }
+    };
     let keys = format!("{}{}", ed.pending_keys.iter().map(|k| k.label()).collect::<String>(), ed.showcmd);
     // 選んでいる実行の構成（Shift+F10 で動かすもの）
     // （設定の「状態の行」で出すものを選べる）
@@ -994,7 +996,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         format!("{keys} ")
     } else {
         format!(
-            "{keys}   {}{}   {}{},{} ",
+            "{keys}   {}{}   {}{}:{} ",
             name,
             if ed.buf.dirty { " [+]" } else { "" },
             ed.syntax.as_ref().map(|s| s.lang.name()).or_else(|| {
@@ -1155,71 +1157,6 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     p.out
 }
 
-/// 左のストライプ（マウスを左端に寄せている間だけ）。幅 2 セルの帯に「プロジェクト」「コミット」を縦に書く。出しているタブは反転
-pub(crate) fn draw_stripe_left(p: &mut Painter, rows: usize, shown: Option<crate::tree_panel::LeftTab>) {
-    let cell = p.fonts.cell();
-    let w = 2.0 * cell.w;
-    p.out.push(Instance::fill(0.0, 0.0, w, rows as f32 * cell.h, BG));
-    p.out.push(Instance::fill(w, 0.0, 1.0, rows as f32 * cell.h, LINE_NO));
-    for (label, tab, top) in crate::tree_panel::STRIPE {
-        let open = shown == Some(tab);
-        let n = label.chars().count();
-        let y0 = top as f32 * cell.h;
-        if open {
-            p.out.push(Instance::fill(0.0, y0, w, n as f32 * cell.h, FG));
-        }
-        for (k, c) in label.chars().enumerate() {
-            // 縦書きでは長音を縦の線にする
-            let c = if c == 'ー' { '｜' } else { c };
-            let mut buf = [0u8; 4];
-            p.text(c.encode_utf8(&mut buf), 0, y0 + k as f32 * cell.h, if open { BG } else { STATUS_FG });
-        }
-    }
-}
-
-/// 右のストライプ（マウスを右端に寄せている間だけ）。「データベース」「Maven」を縦に書く
-pub(crate) fn draw_stripe_right(p: &mut Painter, rows: usize, cols: usize, shown: Option<crate::right_panel::RightTab>) {
-    let cell = p.fonts.cell();
-    let x0 = cols.saturating_sub(2);
-    let w = 2.0 * cell.w;
-    p.out.push(Instance::fill(x0 as f32 * cell.w, 0.0, w, rows as f32 * cell.h, BG));
-    p.out.push(Instance::fill(x0 as f32 * cell.w, 0.0, 1.0, rows as f32 * cell.h, LINE_NO));
-    for (label, tab, top) in crate::right_panel::RSTRIPE {
-        let open = shown == Some(tab);
-        let n = label.chars().count();
-        let y0 = top as f32 * cell.h;
-        if open {
-            p.out.push(Instance::fill(x0 as f32 * cell.w, y0, w, n as f32 * cell.h, FG));
-        }
-        for (k, c) in label.chars().enumerate() {
-            let c = if c == 'ー' { '｜' } else { c };
-            let mut buf = [0u8; 4];
-            // 半角の字は帯の真ん中に
-            let x = if c.is_ascii() { x0 + 1 } else { x0 };
-            p.text(c.encode_utf8(&mut buf), x, y0 + k as f32 * cell.h, if open { BG } else { STATUS_FG });
-        }
-    }
-}
-
-/// 下のストライプ（マウスを最下行に寄せている間だけ）。最下行のすぐ上に「検索」を出す
-pub(crate) fn draw_stripe_bottom(p: &mut Painter, rows: usize, cols: usize, ed: &Editor) {
-    let cell = p.fonts.cell();
-    let y = (rows - 1) as f32 * cell.h;
-    p.out.push(Instance::fill(0.0, y, cols as f32 * cell.w, cell.h, BG));
-    p.out.push(Instance::fill(0.0, y, cols as f32 * cell.w, 1.0, LINE_NO));
-    // 下の欄のタブの名前（出しているタブは反転）。押すとそのタブを出す・隠す
-    let mut x = 0;
-    for (label, k) in ed.bottom_tabs() {
-        let open = ed.bottom_visible() && ed.bottom_kind == k;
-        let w = p.width(label);
-        if open {
-            p.out.push(Instance::fill(x as f32 * cell.w, y, w as f32 * cell.w, cell.h, FG));
-        }
-        x = p.text(label, x, y, if open { BG } else { STATUS_FG });
-    }
-}
-
-/// 出す・隠すのボタン。ふだんは薄い 1 文字、マウスを載せると明るくして名前を横に出す
 pub(crate) fn draw_toggle_buttons(p: &mut Painter, ed: &Editor, cols: usize, status_row: bool) {
     let cell = p.fonts.cell();
     for (b, row, col) in ed.toggle_buttons().into_iter().filter(|b| (b.1 == ed.screen.1) == status_row) {
@@ -1227,13 +1164,11 @@ pub(crate) fn draw_toggle_buttons(p: &mut Painter, ed: &Editor, cols: usize, sta
         let (x, y) = (col as f32 * cell.w, row as f32 * cell.h);
         // 本文の長い行と重なっても見えるように地を塗る
         let cw = if b.wide() { 2.0 * cell.w } else { cell.w };
-        p.out.push(Instance::fill(x, y, cw, cell.h, if hover { MATCH_BG } else { BG }));
+        p.out.push(Instance::fill(x, y, cw, cell.h, if hover { MATCH_BG } else { PANEL_BG }));
         let color = if hover { FG } else { STATUS_FG };
         match b {
             // 下の欄は、左右の « » に合わせて縦の二重の山形を線で描く（フォントに揃った字が無いため）
-            crate::toggles::Button::ShowBottom | crate::toggles::Button::HideBottom => draw_double_chevron(p, x, y, b == crate::toggles::Button::ShowBottom, color),
-            // 歯車も点で描く（⚙ の字はカラー絵文字のフォントに落ち、それを読むだけで 12 MB 増えた）
-            crate::toggles::Button::Settings => draw_gear(p, x, y, cw, color),
+            crate::toggles::Button::HideBottom => draw_double_chevron(p, x, y, false, color),
             _ => {
                 p.text(b.glyph(), col, y, color);
             }
@@ -1321,39 +1256,20 @@ pub(crate) enum TabIcon {
     Debug,
 }
 
-/// 左右の欄の 1 行目: タブをアイコンで並べ（出しているタブは明るく下線）、その横に出しているタブの名前
+/// 欄の 1 行目: 出している道具の名前（IntelliJ のツールウィンドウの見出しと同じ）。タブを替えるのは左右のアイコンの列（chrome.rs）
 pub(crate) fn draw_icon_tabs(p: &mut Painter, r: Rect, tabs: &[(TabIcon, &'static str, bool)], focused: bool, extra: &str) {
     let cell = p.fonts.cell();
     let y = r.y as f32 * cell.h;
-    let tw = crate::tree_panel::TAB_W;
-    let mut x = r.x;
-    let mut name = "";
-    for &(icon, label, on) in tabs {
-        if x + tw + 3 > r.x + r.w {
-            break;
-        }
-        let color = if on && focused { FG } else if on { rgb(0xc8c8c8) } else { STATUS_FG };
-        draw_tab_icon(p, icon, (x as f32 + tw as f32 / 2.0) * cell.w, y, color);
-        if on {
-            p.out.push(Instance::fill(x as f32 * cell.w + cell.w * 0.5, y + cell.h - 2.0, (tw - 1) as f32 * cell.w, 2.0, if focused { GIT_MOD } else { STATUS_FG }));
-        }
-        // 名前は（設定で「いつも」でなければ）出さず、マウスを載せたときに出す
-        p.tab_hits.push((r.y, x, x + tw, label));
-        if on {
-            name = label;
-        }
-        x += tw;
-    }
+    let name = tabs.iter().find(|t| t.2).map_or("", |t| t.1);
     let saved = p.cols;
     p.cols = (r.x + r.w).saturating_sub(3);
-    if TAB_NAMES.load(Ordering::Relaxed) && !name.is_empty() {
-        x = p.text(&format!(" {name}"), x, y, STATUS_FG);
-    }
+    let mut x = p.text(&format!(" {name}"), r.x, y, if focused { FG_BRIGHT } else { FG });
     if !extra.is_empty() {
-        p.text(&format!(" {extra}"), x, y, LINE_NO);
+        x = p.text(&format!("  {extra}"), x, y, STATUS_FG);
     }
+    let _ = x;
     p.cols = saved;
-    p.out.push(Instance::fill(r.x as f32 * cell.w, y + cell.h - 1.0, r.w as f32 * cell.w, 1.0, LINE_NO));
+    p.out.push(Instance::fill(r.x as f32 * cell.w, y + cell.h - 1.0, r.w as f32 * cell.w, 1.0, SEPARATOR));
 }
 
 /// タブのアイコンを、中心の x・行の y に 1 色で描く（IntelliJ の新しい UI のような線のアイコン）
