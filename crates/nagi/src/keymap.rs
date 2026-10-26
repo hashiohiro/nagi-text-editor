@@ -75,9 +75,10 @@ pub enum Action {
     Key(Key),
 }
 
-/// 操作（設定のキー, 操作）。既定は IntelliJ（Windows）の既定のキーマップと同じ。
+/// 操作（設定のキー, 操作）。既定は IntelliJ（Windows）の既定のキーマップと同じ。ただし定義へは F12、
+/// デバッグは Visual Studio と同じ（F5 続ける・F9 ブレークポイント・F10 次へ・F11 中へ・Shift+F11 外へ・Shift+F5 止める）。
 /// ここは Vim のキー操作を使うときも効くので、Vim と重ならないもの（F キー・Alt・Ctrl+Alt・Ctrl+Shift）だけ
-pub const ACTIONS: [(&str, Action); 50] = [
+pub const ACTIONS: [(&str, Action); 52] = [
     ("keymap.settings", Action::Cmd("Settings")),
     ("keymap.complete", Action::Key(Key::Ctrl(' '))),
     ("keymap.run", Action::Cmd("Run")),
@@ -85,6 +86,7 @@ pub const ACTIONS: [(&str, Action); 50] = [
     ("keymap.run_stop", Action::Cmd("RunStop")),
     ("keymap.run_again", Action::Cmd("RunAgain")),
     ("keymap.run_test", Action::Cmd("RunTest")),
+    ("keymap.goto_def", Action::Cmd("GotoDefinition")),
     ("keymap.terminal", Action::Cmd("ToolTerminal")),
     ("keymap.project", Action::Cmd("ToolProject")),
     ("keymap.commit", Action::Cmd("ToolCommit")),
@@ -103,6 +105,7 @@ pub const ACTIONS: [(&str, Action); 50] = [
     ("keymap.step_over", Action::Cmd("StepOver")),
     ("keymap.step_into", Action::Cmd("StepInto")),
     ("keymap.step_out", Action::Cmd("StepOut")),
+    ("keymap.debug_stop", Action::Cmd("DebugStop")),
     ("keymap.debug_panel", Action::Cmd("ToolDebug")),
     ("keymap.palette", Action::Cmd("Commands")),
     ("keymap.goto_file", Action::Cmd("Files")),
@@ -130,9 +133,8 @@ pub const ACTIONS: [(&str, Action); 50] = [
     ("keymap.push", Action::Cmd("Gpush")),
 ];
 
-/// Vim のキー操作を使わないときだけ効く組み合わせ（Ctrl+C・V・Z・B・N など。Vim では Ctrl+V は矩形選択、Ctrl+R はやり直し、
-/// Ctrl+B は 1 画面上なので）。既定は IntelliJ と同じ
-pub const PLAIN_ACTIONS: [(&str, Action); 18] = [
+/// Vim のキー操作を使わないときだけ効く組み合わせ（Ctrl+C・V・Z・N など。Vim では Ctrl+V は矩形選択、Ctrl+R はやり直しなので）。既定は IntelliJ と同じ
+pub const PLAIN_ACTIONS: [(&str, Action); 17] = [
     ("keymap.undo", Action::Cmd("Undo")),
     ("keymap.redo", Action::Cmd("Redo")),
     ("keymap.copy", Action::Cmd("Copy")),
@@ -146,7 +148,6 @@ pub const PLAIN_ACTIONS: [(&str, Action); 18] = [
     ("keymap.delete_line", Action::Cmd("DeleteLine")),
     ("keymap.comment", Action::Cmd("CommentLine")),
     ("keymap.goto_line", Action::Cmd("GotoLine")),
-    ("keymap.goto_def", Action::Cmd("GotoDefinition")),
     ("keymap.goto_class", Action::Cmd("Types")),
     ("keymap.recent", Action::Cmd("Recent")),
     ("keymap.vcs_commit", Action::Cmd("Git")),
@@ -371,11 +372,14 @@ mod tests {
             let d = crate::settings::schema(k).unwrap().default;
             assert!(seen.insert(parse_chord(d).unwrap(), *k).is_none(), "{d} が {k} と {:?} で重なる", seen.get(&parse_chord(d).unwrap()));
         }
-        // IntelliJ と同じ: Vim を使わないときの Ctrl+B は定義へ、Vim のときは Vim の Ctrl-b
+        // 定義へは F12、デバッグは Visual Studio と同じ（Vim のときも）
         s.set("vim.enabled", "true", false);
-        assert_eq!(action_for(&s, &parse_chord("Ctrl+B").unwrap()), None);
+        for (k, c) in [("F12", "GotoDefinition"), ("F5", "DebugResume"), ("F9", "Breakpoint"), ("F10", "StepOver"), ("F11", "StepInto"), ("Shift+F11", "StepOut"), ("Shift+F5", "DebugStop")] {
+            assert_eq!(action_for(&s, &parse_chord(k).unwrap()), Some(Action::Cmd(c)), "{k}");
+        }
+        assert_eq!(action_for(&s, &parse_chord("Ctrl+N").unwrap()), None, "Vim のときは Vim の Ctrl-n");
         s.set("vim.enabled", "false", false);
-        assert_eq!(action_for(&s, &parse_chord("Ctrl+B").unwrap()), Some(Action::Cmd("GotoDefinition")));
+        assert_eq!(action_for(&s, &parse_chord("Ctrl+N").unwrap()), Some(Action::Cmd("Types")));
         assert_eq!(action_for(&s, &parse_chord("Ctrl+Alt+L").unwrap()), Some(Action::Cmd("Format")));
         assert_eq!(chord_of_key(Key::Alt('1')).unwrap().label(), "Alt+1");
         assert!(default_moved(&s, &parse_chord("Shift+F10").unwrap(), Claim::None, true));
@@ -399,12 +403,12 @@ mod tests {
         // 決まった項目ができたコマンドの、前の keymap.cmd.名前 も効く
         s.set("keymap.cmd.Outline", "Ctrl+Shift+O", false);
         assert_eq!(action_for(&s, &parse_chord("Ctrl+Shift+O").unwrap()), Some(Action::Cmd("Outline")));
-        // sethandler <C-b> a:ide: Vim のときも Ctrl+B は定義へ
+        // sethandler <C-n> a:ide: Vim のときも Ctrl+N は型へ
         s.set("vim.enabled", "true", false);
-        let cb = parse_chord("Ctrl+B").unwrap();
-        assert_eq!(action_in(&s, &cb, Claim::None, true), None);
-        assert_eq!(action_in(&s, &cb, Claim::Ide, true), Some(Action::Cmd("GotoDefinition")));
-        assert_eq!(vim_key(&cb), Some(Key::Ctrl('b')));
+        let cn = parse_chord("Ctrl+N").unwrap();
+        assert_eq!(action_in(&s, &cn, Claim::None, true), None);
+        assert_eq!(action_in(&s, &cn, Claim::Ide, true), Some(Action::Cmd("Types")));
+        assert_eq!(vim_key(&cn), Some(Key::Ctrl('n')));
         assert_eq!(vim_key(&parse_chord("Alt+Down").unwrap()).map(|k| k.label()).as_deref(), Some("<A-Down>"));
         assert_eq!(vim_key(&parse_chord("Ctrl+Shift+A").unwrap()), None);
         // vimrc の割り当て・sethandler から

@@ -419,12 +419,13 @@ impl crate::layout::View for BottomView {
             BottomKind::Debug => {
                 let w = ed.bottom_content_rect().map_or(0, |c| c.w);
                 ed.debug_click(prow + 1, pcol, w, 1);
+                let k = |key: &str| ed.settings.get(key);
                 m.keys("開く・閉じる", &[Enter])
                     .sep()
-                    .keys("続ける（F9）", &[Char('c')])
-                    .keys("次へ（F8）", &[Char('n')])
-                    .keys("中へ（F7）", &[Char('s')])
-                    .keys("外へ（Shift+F8）", &[Char('o')])
+                    .keys(format!("続ける（{}）", k("keymap.debug_resume")), &[Char('c')])
+                    .keys(format!("次へ（{}）", k("keymap.step_over")), &[Char('n')])
+                    .keys(format!("中へ（{}）", k("keymap.step_into")), &[Char('s')])
+                    .keys(format!("外へ（{}）", k("keymap.step_out")), &[Char('o')])
                     .keys("止める", &[Char('x')])
                     .sep()
                     .keys("欄を隠す", &[Char('q')])

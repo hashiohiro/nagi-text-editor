@@ -1,13 +1,13 @@
 //! デバッグ（IntelliJ のデバッガと同じキー）。Java・Kotlin は JDWP（nagi-workers の debug.rs）、ブラウザの
 //! TypeScript・JavaScript は Chrome DevTools Protocol（cdp.rs）、Python は debugpy の DAP（dap.rs）。画面とキーはどれも同じ。
 //!
-//! - ブレークポイント: 行番号の欄を押す・Ctrl+F8・`:Breakpoint`（ファイルごとの行。編集で行がずれれば一緒に動く）
+//! - ブレークポイント: 行番号の欄を押す・F9・`:Breakpoint`（ファイルごとの行。編集で行がずれれば一緒に動く）
 //! - 始める: Shift+F9・`:Debug`（選んでいる実行の構成を、デバッグの口を開けて動かし、つなぐ。Java の構成・
 //!   IntelliJ の JavaScript Debug（URL）の構成・Python）、`:DebugTest`（カーソルの位置のテスト。Maven・pytest）、
 //!   `:DebugBrowser URL`（Chrome・Edge をデバッグの口を開けて起こす）、`:DebugAttach 5005`（動いている JVM）・
 //!   `:DebugAttachBrowser 9222`（--remote-debugging-port で起こしたブラウザ）・`:DebugAttachPython 5678`（debugpy）
 //! - 止まったら: その行へ移って行を目立たせ、下の欄の「デバッグ」にスタックと変数を出す
-//! - F9 続ける、F8 次へ、F7 中へ、Shift+F8 外へ、Ctrl+F2 止める（実行の構成と同じ）
+//! - F5 続ける、F10 次へ、F11 中へ、Shift+F11 外へ、Shift+F5・Ctrl+F2 止める（Visual Studio と同じ。キーマップで変えられる）
 //!
 //! 変数は木で、オブジェクト・配列は開くと中身を裏で読む。式の評価（Alt+F8）はコンパイラが要るので作らない。
 
@@ -125,7 +125,7 @@ pub fn class_of(path: &Path, text: &str) -> Option<String> {
 }
 
 impl Editor {
-    /// 今の行のブレークポイントを付ける・外す（Ctrl+F8・:Breakpoint・行番号の欄を押す）
+    /// 今の行のブレークポイントを付ける・外す（F9・:Breakpoint・行番号の欄を押す）
     pub(crate) fn toggle_breakpoint(&mut self, line: Option<usize>) {
         let Some(path) = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()) else {
             self.notify.info("ファイル名がありません");
@@ -390,7 +390,12 @@ impl Editor {
         }
     }
 
+    /// 続ける（F5。Visual Studio と同じく、デバッグしていなければ始める）
     pub(crate) fn debug_resume(&mut self) {
+        if !self.debug.as_ref().is_some_and(|d| !d.ended && d.tx.is_some()) {
+            self.debug_run("");
+            return;
+        }
         self.debug_send(Cmd::Resume);
     }
 
@@ -683,7 +688,13 @@ pub struct DebugComponent;
 impl crate::component::Component for DebugComponent {
     fn status(&self, ed: &Editor) -> Option<crate::component::Status> {
         let _ = ed;
-        crate::component::Status::keys("-- デバッグ --", "j/k 選ぶ  Tab スタック⇔変数  Enter 開く  c 続ける(F9)  n 次へ(F8)  s 中へ(F7)  o 外へ(⇧F8)  x 止める  q 隠す ", "F9 続ける  F8 次へ  F7 中へ  Shift+F8 外へ  Ctrl+F2 止める ")
+        let k = |key: &str| ed.settings.get(key);
+        let (go, over, into, out, stop) = (k("keymap.debug_resume"), k("keymap.step_over"), k("keymap.step_into"), k("keymap.step_out"), k("keymap.debug_stop"));
+        crate::component::Status::keys(
+            "-- デバッグ --",
+            format!("j/k 選ぶ  Tab スタック⇔変数  Enter 開く  c 続ける({go})  n 次へ({over})  s 中へ({into})  o 外へ({out})  x 止める  q 隠す "),
+            format!("{go} 続ける  {over} 次へ  {into} 中へ  {out} 外へ  {stop} 止める "),
+        )
     }
 
     fn key(&self, ed: &mut Editor, key: Key) -> crate::editor::Effect {
@@ -703,7 +714,7 @@ pub(crate) mod draw {
         let y = |k: usize| (r.y + k) as f32 * cell.h;
         let Some(d) = &ed.debug else {
             p.text(" デバッグしていません（Shift+F9 で実行の構成を、:DebugTest でカーソルの位置のテストを、:DebugAttach 5005 で動いている JVM を）", r.x, y(0), STATUS_FG);
-            p.text(" ブレークポイントは行番号の欄を押すか Ctrl+F8", r.x, y(1), STATUS_FG);
+            p.text(&format!(" ブレークポイントは行番号の欄を押すか {}", ed.settings.get("keymap.breakpoint")), r.x, y(1), STATUS_FG);
             return;
         };
         let saved = p.cols;

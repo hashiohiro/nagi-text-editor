@@ -412,7 +412,7 @@ pub fn parse_normal(keys: &[Key]) -> Parse {
         Key::Ctrl('r') => Action::Redo,
         Key::Ctrl('^' | '6') => Action::AltBuffer,
         Key::Ctrl('o') => Action::Jump { older: true },
-        Key::Ctrl(']') => Action::GotoDef,
+        Key::Ctrl(']') | Key::F(12) => Action::GotoDef,
         Key::Ctrl('i') | Key::Tab => Action::Jump { older: false },
         Key::Char('q') => match p.next() {
             None => return Parse::Incomplete,
