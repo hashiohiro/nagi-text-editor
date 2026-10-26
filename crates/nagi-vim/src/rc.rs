@@ -15,6 +15,8 @@ pub struct Rc {
     pub sets: Vec<(String, String)>,
     /// 読み込んだファイル
     pub sources: Vec<PathBuf>,
+    /// IdeaVim の `sethandler <C-B> n-v:vim i:ide`（キー, モード, IDE に渡すなら true。後のものが勝つ）
+    pub handlers: Vec<(crate::Key, Mode, bool)>,
     /// 解釈しなかった行（行番号付き。起動時のメッセージや :NagiKeys で見られるようにする）
     pub notes: Vec<String>,
 }
@@ -156,6 +158,32 @@ fn parse_into(rc: &mut Rc, text: &str, name: &str, depth: usize) {
                 }
             }
             "source" | "so" => source(rc, &expand_path(rest), depth + 1),
+            "sethandler" => {
+                let mut parts = rest.split_whitespace();
+                let key = parts.next().map(|k| parse_keys(k, &rc.leader));
+                let Some([key]) = key.as_deref() else {
+                    note(rc, "sethandler のキーが読めない");
+                    continue;
+                };
+                for p in parts {
+                    let Some((modes, who)) = p.split_once(':') else { continue };
+                    let ide = match who {
+                        "ide" => true,
+                        "vim" => false,
+                        _ => continue,
+                    };
+                    for m in modes.split('-') {
+                        let ms: &[Mode] = match m {
+                            "a" => &Mode::ALL,
+                            "n" => &[Mode::Normal],
+                            "i" => &[Mode::Insert],
+                            "v" | "x" | "s" => &[Mode::Visual],
+                            _ => &[],
+                        };
+                        rc.handlers.extend(ms.iter().map(|m| (*key, *m, ide)));
+                    }
+                }
+            }
             c if c.contains("un") && map_modes(c).is_some() => {
                 let lhs = parse_keys(rest.trim(), &rc.leader);
                 for m in map_modes(c).unwrap() {
@@ -243,5 +271,14 @@ nnoremap <leader><leader>R :<C-u>source ~/.ideavimrc \| echo "Reloaded"<CR>
         assert!(!rc3.keymap.insert[1].noremap);
         let rc = parse_rc("nnoremap <C-s> :<C-u>%s///cg<left><left><left><left>");
         assert_eq!(rc.keymap.normal[0].rhs, parse_keys(":<C-u>%s///cg<CR>", " "));
+    }
+
+    #[test]
+    fn sethandler() {
+        let rc = parse_rc("sethandler <C-b> a:ide\nsethandler <C-d> n-v:vim i:ide\n");
+        assert!(rc.handlers.contains(&(crate::Key::Ctrl('b'), Mode::Normal, true)));
+        assert!(rc.handlers.contains(&(crate::Key::Ctrl('d'), Mode::Visual, false)));
+        assert!(rc.handlers.contains(&(crate::Key::Ctrl('d'), Mode::Insert, true)));
+        assert!(rc.notes.is_empty(), "{:?}", rc.notes);
     }
 }

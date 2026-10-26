@@ -141,7 +141,7 @@ pub static SCHEMA: &[Item] = &[
     item("keymap.run_choose", "キーマップ", "選んで実行", K, "Alt+Shift+F10", ""),
     item("keymap.run_stop", "キーマップ", "止める", K, "Ctrl+F2", ""),
     item("keymap.run_again", "キーマップ", "もう一度実行", K, "Ctrl+F5", ""),
-    item("keymap.goto_def", "キーマップ", "定義へ", K, "F12", ""),
+    item("keymap.run_test", "キーマップ", "カーソルの位置のテストを実行", K, "Ctrl+Shift+F10", ""),
     item("keymap.terminal", "キーマップ", "ターミナル", K, "Alt+F12", ""),
     item("keymap.project", "キーマップ", "プロジェクト", K, "Alt+1", ""),
     item("keymap.commit", "キーマップ", "コミット", K, "Alt+0", ""),
@@ -150,13 +150,41 @@ pub static SCHEMA: &[Item] = &[
     item("keymap.find", "キーマップ", "検索の欄", K, "Alt+3", ""),
     item("keymap.problems", "キーマップ", "問題", K, "Alt+6", ""),
     item("keymap.log", "キーマップ", "ログ", K, "Alt+4", ""),
+    item("keymap.structure", "キーマップ", "ファイルの構造（欄）", K, "Alt+7", ""),
+    item("keymap.hide_all", "キーマップ", "欄をすべて隠す", K, "Ctrl+Shift+F12", ""),
+    item("keymap.select_in", "キーマップ", "開いているファイルを木で選ぶ", K, "Alt+F1", "IntelliJ の Select In"),
     item("keymap.debug", "キーマップ", "デバッグ", K, "Shift+F9", "選んでいる実行の構成をデバッグで動かす"),
+    item("keymap.debug_test", "キーマップ", "カーソルの位置のテストをデバッグ", K, "Ctrl+Shift+F9", ""),
     item("keymap.breakpoint", "キーマップ", "ブレークポイント", K, "Ctrl+F8", ""),
     item("keymap.debug_resume", "キーマップ", "デバッグ: 続ける", K, "F9", ""),
     item("keymap.step_over", "キーマップ", "デバッグ: 次へ", K, "F8", ""),
     item("keymap.step_into", "キーマップ", "デバッグ: 中へ", K, "F7", ""),
     item("keymap.step_out", "キーマップ", "デバッグ: 外へ", K, "Shift+F8", ""),
     item("keymap.debug_panel", "キーマップ", "デバッグの欄", K, "Alt+5", ""),
+    item("keymap.palette", "キーマップ", "コマンドパレット", K, "Ctrl+Shift+A", "IntelliJ の Find Action"),
+    item("keymap.goto_file", "キーマップ", "ファイルを開く", K, "Ctrl+Shift+N", ""),
+    item("keymap.goto_symbol", "キーマップ", "シンボルへ", K, "Ctrl+Alt+Shift+N", ""),
+    item("keymap.file_structure", "キーマップ", "ファイルの構造", K, "Ctrl+F12", ""),
+    item("keymap.goto_impl", "キーマップ", "実装へ", K, "Ctrl+Alt+B", ""),
+    item("keymap.find_usages", "キーマップ", "参照を探す", K, "Alt+F7", ""),
+    item("keymap.find_in_files", "キーマップ", "プロジェクトを検索", K, "Ctrl+Shift+F", ""),
+    item("keymap.recent_locations", "キーマップ", "最近の編集箇所", K, "Ctrl+Shift+E", ""),
+    item("keymap.back", "キーマップ", "前の場所へ", K, "Ctrl+Alt+Left", ""),
+    item("keymap.forward", "キーマップ", "次の場所へ", K, "Ctrl+Alt+Right", ""),
+    item("keymap.last_edit", "キーマップ", "最後に変えた場所へ", K, "Ctrl+Shift+Backspace", ""),
+    item("keymap.error_next", "キーマップ", "次のエラーへ", K, "F2", ""),
+    item("keymap.error_prev", "キーマップ", "前のエラーへ", K, "Shift+F2", ""),
+    item("keymap.method_next", "キーマップ", "次のメソッドへ", K, "Alt+Down", ""),
+    item("keymap.method_prev", "キーマップ", "前のメソッドへ", K, "Alt+Up", ""),
+    item("keymap.reformat", "キーマップ", "整形", K, "Ctrl+Alt+L", ""),
+    item("keymap.switcher", "キーマップ", "バッファを選ぶ", K, "Ctrl+Tab", "IntelliJ の Switcher"),
+    item("keymap.close_tab", "キーマップ", "ファイルを閉じる", K, "Ctrl+F4", ""),
+    item("keymap.next_tab", "キーマップ", "次のファイル（タブ）", K, "Alt+Right", ""),
+    item("keymap.prev_tab", "キーマップ", "前のファイル（タブ）", K, "Alt+Left", ""),
+    item("keymap.hunk_next", "キーマップ", "次の変更へ", K, "Ctrl+Alt+Shift+Down", ""),
+    item("keymap.hunk_prev", "キーマップ", "前の変更へ", K, "Ctrl+Alt+Shift+Up", ""),
+    item("keymap.rollback", "キーマップ", "カーソルの変更を戻す", K, "Ctrl+Alt+Z", ""),
+    item("keymap.push", "キーマップ", "push", K, "Ctrl+Shift+K", ""),
     // Vim のキー操作を使わないときだけ効く（keymap.rs の PLAIN_ACTIONS）
     item("keymap.undo", "キーマップ", "元に戻す", K, "Ctrl+Z", "Vim を使わないとき"),
     item("keymap.redo", "キーマップ", "やり直す", K, "Ctrl+Shift+Z", "Vim を使わないとき"),
@@ -171,10 +199,11 @@ pub static SCHEMA: &[Item] = &[
     item("keymap.delete_line", "キーマップ", "行の削除", K, "Ctrl+Y", "Vim を使わないとき"),
     item("keymap.comment", "キーマップ", "行コメント", K, "Ctrl+/", "Vim を使わないとき"),
     item("keymap.goto_line", "キーマップ", "行へ移動", K, "Ctrl+G", "Vim を使わないとき"),
-    item("keymap.palette", "キーマップ", "コマンドパレット", K, "Ctrl+Shift+A", "Vim を使わないとき"),
-    item("keymap.goto_file", "キーマップ", "ファイルを開く", K, "Ctrl+Shift+N", "Vim を使わないとき"),
+    item("keymap.goto_def", "キーマップ", "定義へ", K, "Ctrl+B", "Vim を使わないとき（Vim では gd・Ctrl-]。Ctrl+クリックはどちらでも）"),
+    item("keymap.goto_class", "キーマップ", "型へ", K, "Ctrl+N", "Vim を使わないとき"),
     item("keymap.recent", "キーマップ", "最近のファイル", K, "Ctrl+E", "Vim を使わないとき"),
-    item("keymap.find_in_files", "キーマップ", "プロジェクトを検索", K, "Ctrl+Shift+F", "Vim を使わないとき"),
+    item("keymap.vcs_commit", "キーマップ", "コミット", K, "Ctrl+K", "Vim を使わないとき"),
+    item("keymap.vcs_update", "キーマップ", "pull", K, "Ctrl+T", "Vim を使わないとき"),
     // ツール
     item("terminal.shell", "ツール", "ターミナル: 既定のシェル", T, "", "空なら最後に選んだもの（cmd・powershell・pwsh・bash・wsl、またはコマンド）"),
     item("terminal.start_dir", "ツール", "ターミナル: 始めるフォルダ", SKind::Choice(&[("project", "プロジェクト"), ("file", "開いているファイルのフォルダ"), ("home", "ホーム")]), "project", ""),
@@ -218,7 +247,7 @@ pub const CMD_KEY: &str = "keymap.cmd.";
 pub fn items() -> &'static [Item] {
     static ALL: std::sync::OnceLock<Vec<Item>> = std::sync::OnceLock::new();
     ALL.get_or_init(|| {
-        let fixed: Vec<&str> = crate::keymap::ACTIONS.iter().chain(crate::keymap::PLAIN_ACTIONS.iter()).filter_map(|(_, a)| if let crate::keymap::Action::Cmd(c) = a { Some(*c) } else { None }).collect();
+        let fixed: Vec<&str> = crate::keymap::all_actions().filter_map(|(_, a)| if let crate::keymap::Action::Cmd(c) = a { Some(*c) } else { None }).collect();
         let mut all: Vec<Item> = SCHEMA.iter().map(|i| Item { ..*i }).collect();
         for c in crate::commands::COMMANDS.iter().filter(|c| !c.help.is_empty() && !c.names.iter().any(|n| fixed.contains(n))) {
             let name = c.names[0];
@@ -378,6 +407,19 @@ impl Settings {
             return None;
         }
         Some(self.rc_from.get(key).cloned().unwrap_or_else(|| "vimrc".into()))
+    }
+
+    /// 利用者が決めた値か（:set・プロジェクト・全体の設定。既定と vimrc の set は含めない）
+    pub fn user_set(&self, key: &str) -> bool {
+        self.session.contains_key(key) || (schema(key).is_some_and(|i| i.project) && self.project.contains_key(key)) || self.global.contains_key(key)
+    }
+
+    /// 利用者が決めた項目のうち、`prefix` で始まるもの（今は無い項目のものも）
+    pub fn user_keys(&self, prefix: &str) -> Vec<String> {
+        let mut v: Vec<String> = self.session.keys().chain(self.project.keys()).chain(self.global.keys()).filter(|k| k.starts_with(prefix)).cloned().collect();
+        v.sort();
+        v.dedup();
+        v
     }
 
     pub fn bool(&self, key: &str) -> bool {

@@ -1102,10 +1102,8 @@ mod tests {
         // Ctrl-o で戻る
         keys(&mut e, "<C-o>");
         assert!(e.buf.path.as_ref().unwrap().ends_with("a.ts"));
-        // F12 でも（Insert の最中でも）
-        keys(&mut e, "3G0<F12>");
-        assert!(e.buf.path.as_ref().unwrap().ends_with("b.ts"), "{:?} {}", e.buf.path, e.notify.text);
-        keys(&mut e, "<C-o>3G0i<F12>");
+        // Ctrl-] でも
+        keys(&mut e, "3G0<C-]>");
         assert!(e.buf.path.as_ref().unwrap().ends_with("b.ts"), "{:?} {}", e.buf.path, e.notify.text);
         assert_eq!(e.state(), State::Normal);
         keys(&mut e, "<C-o>");

@@ -624,6 +624,7 @@ impl Frame {
         let rc_path = ed.settings.text("vim.rc_path");
         ed.vim_leader = self.rc.leader.clone();
         ed.vim_maps = vim_maps::rows(&self.rc.keymap, &self.rc.leader);
+        ed.vim_claims = keymap::vim_claims(&self.rc);
         ed.vim_maps_base = vim_maps::rows(&nagi_vim::load_rc_from(rc_path.as_deref()).keymap, &self.rc.leader);
         let old = ed.settings.clone();
         (ed.settings.rc, ed.settings.rc_from) = (rc, from);
@@ -661,7 +662,8 @@ impl Frame {
         // キーマップ（設定。Ctrl+Alt+S・Shift+F10 などの IntelliJ の組み合わせは既定値）: 付けた操作にする。
         // 元の組み合わせから別のキーへ移した操作は、元のキーでは動かさない
         if let Some(chord) = chord_of(&ev.logical_key, self.modifiers) {
-            let (action, moved) = (keymap::action_for(&ed.settings, &chord), keymap::default_moved(&ed.settings, &chord));
+            // vimrc で割り当てたキー・sethandler は、設定で決めたキーの次に強い（IntelliJ と同じ既定より先）
+            let (action, moved) = ed.chord_action(&chord);
             match action {
                 Some(keymap::Action::Key(k)) => {
                     self.held = None;

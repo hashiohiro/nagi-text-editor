@@ -421,6 +421,8 @@ pub struct Editor {
     /// Vim の割り当て（設定の画面に出す。vim_maps.rs）: 今効いているもの、keys.vim を除いたもの（nagi の既定と vimrc）、leader
     pub vim_maps: Vec<crate::vim_maps::MapRow>,
     pub vim_maps_base: Vec<crate::vim_maps::MapRow>,
+    /// Vim の側が持つキー（vimrc の割り当て・sethandler。キーマップの既定より先に。keymap::vim_claims）
+    pub vim_claims: Vec<(nagi_vim::Mode, nagi_vim::Key, bool)>,
     pub vim_leader: String,
     /// 割り当てを書いたので vimrc を読み直してほしい（App が見る）
     pub rc_dirty: bool,
@@ -756,6 +758,7 @@ impl Editor {
             click_effect: None,
             appearance_changed: false,
             vim_maps: Vec::new(),
+            vim_claims: Vec::new(),
             vim_maps_base: Vec::new(),
             vim_leader: "\\".into(),
             rc_dirty: false,
@@ -1105,7 +1108,7 @@ impl Editor {
             return Effect::None;
         }
         // キーマップの組み合わせ（Alt+1・F12 など。再生・マクロ・試験で届くもの）: 付けたコマンドを動かす
-        if let Some(crate::keymap::Action::Cmd(c)) = crate::keymap::chord_of_key(key).and_then(|ch| crate::keymap::action_for(&self.settings, &ch)) {
+        if let Some(crate::keymap::Action::Cmd(c)) = crate::keymap::chord_of_key(key).and_then(|ch| self.chord_action(&ch).0) {
             if let Some(eff) = self.shortcut(c) {
                 return eff;
             }

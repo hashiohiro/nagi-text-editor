@@ -75,15 +75,16 @@ pub enum Action {
     Key(Key),
 }
 
-/// 操作（設定のキー, 操作）
-pub const ACTIONS: [(&str, Action); 22] = [
+/// 操作（設定のキー, 操作）。既定は IntelliJ（Windows）の既定のキーマップと同じ。
+/// ここは Vim のキー操作を使うときも効くので、Vim と重ならないもの（F キー・Alt・Ctrl+Alt・Ctrl+Shift）だけ
+pub const ACTIONS: [(&str, Action); 50] = [
     ("keymap.settings", Action::Cmd("Settings")),
     ("keymap.complete", Action::Key(Key::Ctrl(' '))),
     ("keymap.run", Action::Cmd("Run")),
     ("keymap.run_choose", Action::Cmd("RunConfigs")),
     ("keymap.run_stop", Action::Cmd("RunStop")),
     ("keymap.run_again", Action::Cmd("RunAgain")),
-    ("keymap.goto_def", Action::Cmd("GotoDefinition")),
+    ("keymap.run_test", Action::Cmd("RunTest")),
     ("keymap.terminal", Action::Cmd("ToolTerminal")),
     ("keymap.project", Action::Cmd("ToolProject")),
     ("keymap.commit", Action::Cmd("ToolCommit")),
@@ -92,18 +93,46 @@ pub const ACTIONS: [(&str, Action); 22] = [
     ("keymap.find", Action::Cmd("ToolFind")),
     ("keymap.problems", Action::Cmd("ToolProblems")),
     ("keymap.log", Action::Cmd("ToolLog")),
+    ("keymap.structure", Action::Cmd("Outline")),
+    ("keymap.hide_all", Action::Cmd("HideAll")),
+    ("keymap.select_in", Action::Cmd("SelectInTree")),
     ("keymap.debug", Action::Cmd("Debug")),
+    ("keymap.debug_test", Action::Cmd("DebugTest")),
     ("keymap.breakpoint", Action::Cmd("Breakpoint")),
     ("keymap.debug_resume", Action::Cmd("DebugResume")),
     ("keymap.step_over", Action::Cmd("StepOver")),
     ("keymap.step_into", Action::Cmd("StepInto")),
     ("keymap.step_out", Action::Cmd("StepOut")),
     ("keymap.debug_panel", Action::Cmd("ToolDebug")),
+    ("keymap.palette", Action::Cmd("Commands")),
+    ("keymap.goto_file", Action::Cmd("Files")),
+    ("keymap.goto_symbol", Action::Cmd("Symbols")),
+    ("keymap.file_structure", Action::Cmd("Outline")),
+    ("keymap.goto_impl", Action::Cmd("GotoImplementation")),
+    ("keymap.find_usages", Action::Cmd("Refs")),
+    ("keymap.find_in_files", Action::Cmd("Grep")),
+    ("keymap.recent_locations", Action::Cmd("RecentLocations")),
+    ("keymap.back", Action::Cmd("JumpBack")),
+    ("keymap.forward", Action::Cmd("JumpForward")),
+    ("keymap.last_edit", Action::Cmd("JumpLastChange")),
+    ("keymap.error_next", Action::Cmd("ErrorNext")),
+    ("keymap.error_prev", Action::Cmd("ErrorPrev")),
+    ("keymap.method_next", Action::Cmd("MethodNext")),
+    ("keymap.method_prev", Action::Cmd("MethodPrev")),
+    ("keymap.reformat", Action::Cmd("Format")),
+    ("keymap.switcher", Action::Cmd("Buffers")),
+    ("keymap.close_tab", Action::Cmd("bd")),
+    ("keymap.next_tab", Action::Cmd("bn")),
+    ("keymap.prev_tab", Action::Cmd("bp")),
+    ("keymap.hunk_next", Action::Cmd("HunkNext")),
+    ("keymap.hunk_prev", Action::Cmd("HunkPrev")),
+    ("keymap.rollback", Action::Cmd("GitRevert")),
+    ("keymap.push", Action::Cmd("Gpush")),
 ];
 
-/// Vim のキー操作を使わないときだけ効く組み合わせ（Ctrl+C・V・Z など。Vim では Ctrl+V は矩形選択、Ctrl+R はやり直しなので）。
-/// 既定は IntelliJ と同じ
-pub const PLAIN_ACTIONS: [(&str, Action); 17] = [
+/// Vim のキー操作を使わないときだけ効く組み合わせ（Ctrl+C・V・Z・B・N など。Vim では Ctrl+V は矩形選択、Ctrl+R はやり直し、
+/// Ctrl+B は 1 画面上なので）。既定は IntelliJ と同じ
+pub const PLAIN_ACTIONS: [(&str, Action); 18] = [
     ("keymap.undo", Action::Cmd("Undo")),
     ("keymap.redo", Action::Cmd("Redo")),
     ("keymap.copy", Action::Cmd("Copy")),
@@ -117,21 +146,166 @@ pub const PLAIN_ACTIONS: [(&str, Action); 17] = [
     ("keymap.delete_line", Action::Cmd("DeleteLine")),
     ("keymap.comment", Action::Cmd("CommentLine")),
     ("keymap.goto_line", Action::Cmd("GotoLine")),
-    ("keymap.palette", Action::Cmd("Commands")),
-    ("keymap.goto_file", Action::Cmd("Files")),
+    ("keymap.goto_def", Action::Cmd("GotoDefinition")),
+    ("keymap.goto_class", Action::Cmd("Types")),
     ("keymap.recent", Action::Cmd("Recent")),
-    ("keymap.find_in_files", Action::Cmd("Grep")),
+    ("keymap.vcs_commit", Action::Cmd("Git")),
+    ("keymap.vcs_update", Action::Cmd("Gpull")),
 ];
 
-/// 押したキーの組み合わせに付けた操作（設定で付け替えたものを含む）。どれにも付いていなければ None。
-/// `vim` が false（Vim のキー操作を使わない）なら PLAIN_ACTIONS も見る
+/// 本文（エディタ）にいるときだけ効く操作。下の欄の表の F2（値を直す）、ターミナルの Alt+←→ などはその欄のものにする
+const BODY_ONLY: [&str; 18] = [
+    "keymap.run_test",
+    "keymap.debug_test",
+    "keymap.goto_impl",
+    "keymap.find_usages",
+    "keymap.back",
+    "keymap.forward",
+    "keymap.last_edit",
+    "keymap.error_next",
+    "keymap.error_prev",
+    "keymap.method_next",
+    "keymap.method_prev",
+    "keymap.reformat",
+    "keymap.close_tab",
+    "keymap.next_tab",
+    "keymap.prev_tab",
+    "keymap.hunk_next",
+    "keymap.hunk_prev",
+    "keymap.rollback",
+];
+
+/// Vim のときも効く表と、Vim を使わないときだけの表
+fn tables(vim: bool) -> impl Iterator<Item = &'static (&'static str, Action)> {
+    ACTIONS.iter().chain(PLAIN_ACTIONS.iter().filter(move |_| !vim))
+}
+
+/// 今の場所で効く操作（`body` は本文にいるか）
+fn live(vim: bool, body: bool) -> impl Iterator<Item = &'static (&'static str, Action)> {
+    tables(vim).filter(move |(k, _)| body || !BODY_ONLY.contains(k))
+}
+
+/// すべての操作（設定の項目を作るとき）
+pub fn all_actions() -> impl Iterator<Item = &'static (&'static str, Action)> {
+    tables(false)
+}
+
+/// そのキーを Vim の側が持つか（vimrc の割り当て・IdeaVim の sethandler）
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Claim {
+    /// どちらでもない（既定どおり）
+    None,
+    /// vimrc で割り当てた・`sethandler … :vim`: 既定のキーマップより Vim を先に
+    Vim,
+    /// `sethandler … :ide`: Vim のときも IntelliJ のキー（Ctrl+B など、Vim を使わないときだけの表）を効かせる
+    Ide,
+}
+
+/// 押したキーの組み合わせに付けた操作（設定で付け替えたものを含む）。どれにも付いていなければ None
+#[cfg(test)]
 pub fn action_for(settings: &Settings, chord: &Chord) -> Option<Action> {
-    let vim = settings.bool("vim.enabled");
-    if let Some(a) = ACTIONS.iter().chain(PLAIN_ACTIONS.iter().filter(|_| !vim)).find(|(k, _)| parse_chord(&settings.get(k)).as_ref() == Some(chord)) {
+    action_in(settings, chord, Claim::None, true)
+}
+
+/// `claim`（vimrc）を見て引く。強いものから: 利用者が設定で決めたキー → vimrc → IntelliJ と同じ既定
+pub fn action_in(settings: &Settings, chord: &Chord, claim: Claim, body: bool) -> Option<Action> {
+    let vim = settings.bool("vim.enabled") && claim != Claim::Ide;
+    let hit = |k: &str| parse_chord(&settings.get(k)).as_ref() == Some(chord);
+    if let Some(a) = live(vim, body).find(|(k, _)| settings.user_set(k) && hit(k)) {
         return Some(a.1);
     }
-    // コマンドごとの項目（設定の画面のキーマップの下の方。keymap.cmd.名前）
-    crate::settings::items().iter().filter_map(|i| Some((i, i.key.strip_prefix(crate::settings::CMD_KEY)?))).find(|(i, _)| parse_chord(&settings.get(i.key)).as_ref() == Some(chord)).map(|(_, name)| Action::Cmd(name))
+    // コマンドごとの項目（設定の画面のキーマップの下の方。keymap.cmd.名前。決まった項目ができたコマンドのものも）
+    for k in settings.user_keys(crate::settings::CMD_KEY) {
+        if hit(&k) {
+            if let Some((c, _)) = crate::commands::find(&k[crate::settings::CMD_KEY.len()..]) {
+                return Some(Action::Cmd(c.names[0]));
+            }
+        }
+    }
+    if claim == Claim::Vim {
+        return None;
+    }
+    live(vim, body).find(|(k, _)| !settings.user_set(k) && hit(k)).map(|a| a.1)
+}
+
+/// IntelliJ のキーの組み合わせを Vim のキーに（vimrc の左辺・sethandler と比べる。Vim で書けないもの（Ctrl+Shift+A など）は None）
+pub fn vim_key(chord: &Chord) -> Option<Key> {
+    let one = {
+        let mut cs = chord.key.chars();
+        match (cs.next(), cs.next()) {
+            (Some(c), None) => Some(c.to_ascii_lowercase()),
+            _ => None,
+        }
+    };
+    let nav = match chord.key.as_str() {
+        "Up" => Some(Key::Up),
+        "Down" => Some(Key::Down),
+        "Left" => Some(Key::Left),
+        "Right" => Some(Key::Right),
+        "Home" => Some(Key::Home),
+        "End" => Some(Key::End),
+        "PageUp" => Some(Key::PageUp),
+        "PageDown" => Some(Key::PageDown),
+        "Backspace" => Some(Key::Backspace),
+        "Delete" => Some(Key::Delete),
+        "Tab" => Some(Key::Tab),
+        _ => None,
+    };
+    if let Some(k) = nav {
+        return k.with_mods(nagi_vim::Mods { shift: chord.shift, ctrl: chord.ctrl, alt: chord.alt });
+    }
+    match (chord.ctrl, chord.alt, chord.shift) {
+        (true, false, false) if chord.key == "Space" => Some(Key::Ctrl(' ')),
+        (true, false, false) => one.map(Key::Ctrl),
+        (false, true, false) => one.map(Key::Alt),
+        (false, false, false) => chord.key.strip_prefix('F').and_then(|n| n.parse().ok()).map(Key::F),
+        _ => None,
+    }
+}
+
+impl crate::editor::Editor {
+    /// 今のモードで、そのキーを Vim の側が持つか（vimrc の割り当ての最初のキー・sethandler。後に書いたものが勝つ）
+    pub fn vim_claim(&self, chord: &Chord) -> Claim {
+        use crate::editor::State;
+        if !self.vim_on {
+            return Claim::None;
+        }
+        let mode = match self.state() {
+            State::Normal => nagi_vim::Mode::Normal,
+            State::Visual { .. } => nagi_vim::Mode::Visual,
+            State::Insert if !self.in_text_field() => nagi_vim::Mode::Insert,
+            _ => return Claim::None,
+        };
+        let Some(k) = vim_key(chord) else { return Claim::None };
+        match self.vim_claims.iter().rev().find(|(m, x, _)| *m == mode && *x == k) {
+            Some((_, _, true)) => Claim::Ide,
+            Some((_, _, false)) => Claim::Vim,
+            None => Claim::None,
+        }
+    }
+
+    /// 本文（エディタ）にいるか（欄・入力欄・一覧ではない）
+    pub fn in_body(&self) -> bool {
+        use crate::editor::State;
+        crate::component::focused(self).is_none() && matches!(self.state(), State::Normal | State::Visual { .. } | State::Insert) && !self.in_text_field()
+    }
+
+    /// 押した組み合わせの操作と、既定のキーから移ったか（設定で決めたキー → vimrc → 既定。本文だけの操作は本文で）
+    pub fn chord_action(&self, chord: &Chord) -> (Option<Action>, bool) {
+        let (claim, body) = (self.vim_claim(chord), self.in_body());
+        (action_in(&self.settings, chord, claim, body), default_moved(&self.settings, chord, claim, body))
+    }
+}
+
+/// vimrc から、Vim の側が持つキーの表（割り当ての最初のキー、その後に sethandler。Editor::vim_claim が引く）
+pub fn vim_claims(rc: &nagi_vim::Rc) -> Vec<(nagi_vim::Mode, Key, bool)> {
+    let mut v: Vec<(nagi_vim::Mode, Key, bool)> = Vec::new();
+    for m in nagi_vim::Mode::ALL {
+        // 既定の割り当て（git の <leader>…）は数えない
+        v.extend(rc.keymap.list(m).iter().filter(|x| x.from != nagi_vim::DEFAULT_FROM).filter_map(|x| x.lhs.first()).map(|k| (m, *k, false)));
+    }
+    v.extend(rc.handlers.iter().map(|(k, m, ide)| (*m, *k, *ide)));
+    v
 }
 
 /// エディタのキー（再生・マクロ・試験で届くもの）を組み合わせに（Alt+1・Ctrl+X・F12 など。文字そのものは None）
@@ -146,10 +320,10 @@ pub fn chord_of_key(key: Key) -> Option<Chord> {
     }
 }
 
-/// 既定のキーの組み合わせが、付け替えで別の操作に移った・外れたか（そのときは元のキーとしては扱わない）
-pub fn default_moved(settings: &Settings, chord: &Chord) -> bool {
-    let vim = settings.bool("vim.enabled");
-    ACTIONS.iter().chain(PLAIN_ACTIONS.iter().filter(|_| !vim)).any(|(k, _)| {
+/// 既定のキーの組み合わせが、付け替えで別の操作に移った・外れたか（そのときは元のキーとしては扱わない。Vim の側が持つキーは除く）
+pub fn default_moved(settings: &Settings, chord: &Chord, claim: Claim, body: bool) -> bool {
+    let vim = settings.bool("vim.enabled") && claim != Claim::Ide;
+    claim != Claim::Vim && live(vim, body).any(|(k, _)| {
         let def = crate::settings::schema(k).map(|i| i.default).unwrap_or("");
         parse_chord(def).as_ref() == Some(chord) && settings.get(k) != def
     })
@@ -163,12 +337,12 @@ mod tests {
     #[test]
     fn any_command_gets_a_key() {
         let mut s = Settings::default();
-        assert!(crate::settings::schema("keymap.cmd.Outline").is_some(), "コマンドごとの項目がある");
+        assert!(crate::settings::schema("keymap.cmd.Glog").is_some(), "コマンドごとの項目がある");
         assert!(crate::settings::schema("keymap.cmd.Run").is_none(), "決まった項目のあるものは作らない");
-        s.set("keymap.cmd.Outline", "Ctrl+Shift+O", false);
-        assert_eq!(action_for(&s, &parse_chord("ctrl+shift+o").unwrap()), Some(Action::Cmd("Outline")));
-        s.set("keymap.cmd.Symbols", "Shift+F10", false);
-        let other: Vec<&str> = crate::settings::key_conflicts(&s, "keymap.cmd.Symbols").iter().map(|i| i.key).collect();
+        s.set("keymap.cmd.Glog", "Ctrl+Shift+O", false);
+        assert_eq!(action_for(&s, &parse_chord("ctrl+shift+o").unwrap()), Some(Action::Cmd("Glog")));
+        s.set("keymap.cmd.Gdiff", "Shift+F10", false);
+        let other: Vec<&str> = crate::settings::key_conflicts(&s, "keymap.cmd.Gdiff").iter().map(|i| i.key).collect();
         assert_eq!(other, ["keymap.run"]);
     }
 
@@ -185,12 +359,58 @@ mod tests {
         s.set("keymap.run", "Ctrl+R", false);
         assert_eq!(action_for(&s, &parse_chord("Ctrl+R").unwrap()), Some(Action::Cmd("Run")));
         // 操作の名前はどれもコマンドの表にある
-        for (_, a) in ACTIONS {
+        for (k, a) in all_actions() {
             if let Action::Cmd(c) = a {
                 assert!(crate::commands::find(c).is_some(), ":{c} がコマンドの表に無い");
             }
+            assert!(crate::settings::schema(k).is_some_and(|i| parse_chord(i.default).is_some()), "{k} の項目・既定のキーが無い");
         }
+        // 既定のキーは重ならない
+        let mut seen = std::collections::HashMap::new();
+        for (k, _) in all_actions() {
+            let d = crate::settings::schema(k).unwrap().default;
+            assert!(seen.insert(parse_chord(d).unwrap(), *k).is_none(), "{d} が {k} と {:?} で重なる", seen.get(&parse_chord(d).unwrap()));
+        }
+        // IntelliJ と同じ: Vim を使わないときの Ctrl+B は定義へ、Vim のときは Vim の Ctrl-b
+        s.set("vim.enabled", "true", false);
+        assert_eq!(action_for(&s, &parse_chord("Ctrl+B").unwrap()), None);
+        s.set("vim.enabled", "false", false);
+        assert_eq!(action_for(&s, &parse_chord("Ctrl+B").unwrap()), Some(Action::Cmd("GotoDefinition")));
+        assert_eq!(action_for(&s, &parse_chord("Ctrl+Alt+L").unwrap()), Some(Action::Cmd("Format")));
         assert_eq!(chord_of_key(Key::Alt('1')).unwrap().label(), "Alt+1");
-        assert!(default_moved(&s, &parse_chord("Shift+F10").unwrap()));
+        assert!(default_moved(&s, &parse_chord("Shift+F10").unwrap(), Claim::None, true));
+    }
+
+    /// 設定で決めたキー → vimrc → 既定 の順
+    #[test]
+    fn user_and_vimrc_win() {
+        let mut s = Settings::default();
+        let f2 = parse_chord("F2").unwrap();
+        assert_eq!(action_in(&s, &f2, Claim::None, true), Some(Action::Cmd("ErrorNext")));
+        // vimrc で <F2> を割り当てていれば、既定より Vim
+        assert_eq!(action_in(&s, &f2, Claim::Vim, true), None);
+        assert!(!default_moved(&s, &f2, Claim::Vim, true));
+        // 本文の外（下の欄の表など）では F2 はその欄のもの
+        assert_eq!(action_in(&s, &f2, Claim::None, false), None);
+        // 設定で決めたキーは vimrc より強い
+        s.set("keymap.cmd.Glog", "F2", false);
+        assert_eq!(action_in(&s, &f2, Claim::Vim, true), Some(Action::Cmd("Glog")));
+        assert_eq!(action_in(&s, &f2, Claim::None, true), Some(Action::Cmd("Glog")), "既定の F2 より設定で決めたもの");
+        // 決まった項目ができたコマンドの、前の keymap.cmd.名前 も効く
+        s.set("keymap.cmd.Outline", "Ctrl+Shift+O", false);
+        assert_eq!(action_for(&s, &parse_chord("Ctrl+Shift+O").unwrap()), Some(Action::Cmd("Outline")));
+        // sethandler <C-b> a:ide: Vim のときも Ctrl+B は定義へ
+        s.set("vim.enabled", "true", false);
+        let cb = parse_chord("Ctrl+B").unwrap();
+        assert_eq!(action_in(&s, &cb, Claim::None, true), None);
+        assert_eq!(action_in(&s, &cb, Claim::Ide, true), Some(Action::Cmd("GotoDefinition")));
+        assert_eq!(vim_key(&cb), Some(Key::Ctrl('b')));
+        assert_eq!(vim_key(&parse_chord("Alt+Down").unwrap()).map(|k| k.label()).as_deref(), Some("<A-Down>"));
+        assert_eq!(vim_key(&parse_chord("Ctrl+Shift+A").unwrap()), None);
+        // vimrc の割り当て・sethandler から
+        let rc = nagi_vim::parse_rc("nnoremap <F2> :echo<CR>\nsethandler <C-b> a:ide\n");
+        let c = vim_claims(&rc);
+        assert!(c.contains(&(nagi_vim::Mode::Normal, Key::F(2), false)));
+        assert!(c.contains(&(nagi_vim::Mode::Insert, Key::Ctrl('b'), true)));
     }
 }
