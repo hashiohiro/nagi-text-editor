@@ -1042,6 +1042,8 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             }
         }
         State::Command => prompt_line(&mut p, ":", &ed.cmdline.text, ed.cmdline.cursor, &ed.preedit, y, true),
+        // 全文検索の入力欄・件数は小窓の中（grep_panel.rs の GrepPopupView）
+        State::GrepPrompt if ed.grep.as_ref().is_some_and(|g| g.title.is_none()) => {}
         State::GrepPrompt if ed.grep.is_some() => {
             let g = ed.grep.as_ref().unwrap();
             let (lead, field) = if g.editing_mask { (crate::grep_panel::MASK_LEAD, &g.mask) } else { (crate::grep_panel::GREP_LEAD, &g.query) };

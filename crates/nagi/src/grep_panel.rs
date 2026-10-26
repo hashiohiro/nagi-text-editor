@@ -423,6 +423,8 @@ impl Editor {
                 self.set_state(State::Normal);
                 self.open_hit(false);
             }
+            // 下の欄に結果を出してそこへ（IntelliJ の Open in Find Window）
+            Key::Ctrl('m') => self.select_bottom_tab(crate::result_grid::BottomKind::Grep),
             Key::Down | Key::Ctrl('n') | Key::Ctrl('j') | Key::Tab => {
                 let i = g.selected + 1;
                 g.select(i);
@@ -751,10 +753,219 @@ impl crate::component::Component for ListComponent {
 }
 
 /// 描き方（view.rs の Painter で描く）
+/// 打っている間の全文検索の小窓の中の位置（IntelliJ の Find in Files と同じ形）
+pub mod popup {
+    use crate::panes::Rect;
+
+    /// 一覧が始まる行（見出し・入力欄・マスクと範囲・区切り）
+    pub const LIST_TOP: usize = 4;
+
+    /// 小窓（画面の真ん中より少し上。一覧の下にプレビュー）
+    pub fn rect(cols: usize, rows: usize) -> Rect {
+        let w = (cols * 7 / 10).max(80).min(cols.saturating_sub(4));
+        let h = (rows * 7 / 10).max(16).min(rows.saturating_sub(2));
+        let y = (rows / 10).max(1).min(rows.saturating_sub(h));
+        Rect { x: cols.saturating_sub(w) / 2, y, w, h }
+    }
+
+    /// 一覧の行の数とプレビューの行の数
+    pub fn heights(r: Rect) -> (usize, usize) {
+        let rest = r.h.saturating_sub(LIST_TOP + 2);
+        let preview = (rest * 2 / 5).min(9);
+        (rest.saturating_sub(preview).max(1), preview)
+    }
+
+    /// 一覧の先頭の候補（選んでいる候補が見えるように）
+    pub fn top(selected: usize, list_h: usize) -> usize {
+        (selected + 1).saturating_sub(list_h)
+    }
+}
+
+/// 打っている間の全文検索の小窓（layout.rs の View）
+pub struct GrepPopupView;
+
+impl crate::layout::View for GrepPopupView {
+    fn rect(&self, ed: &Editor, s: crate::layout::Screen) -> Option<Rect> {
+        (ed.state() == State::GrepPrompt && ed.grep.as_ref().is_some_and(|g| g.title.is_none())).then_some(Rect { x: 0, y: 0, w: s.cols, h: s.rows })
+    }
+
+    fn draw(&self, ed: &Editor, p: &mut crate::view::Painter, r: Rect, s: crate::layout::Screen) {
+        let _ = r;
+        if let Some(g) = &ed.grep {
+            draw::draw_grep_popup(p, ed, g, s.cols, s.rows);
+        }
+    }
+
+    fn click(&self, ed: &mut Editor, r: Rect, row: usize, col: usize, clicks: u32) -> crate::layout::Click {
+        ed.grep_popup_click(row, col, r.w, r.h, clicks);
+        crate::layout::Click::Done
+    }
+
+    fn wheel(&self, ed: &mut Editor, r: Rect, row: usize, col: usize, dy: isize, dx: isize) -> bool {
+        let _ = (r, row, col, dx);
+        let key = if dy > 0 { Key::Down } else { Key::Up };
+        for _ in 0..dy.unsigned_abs() {
+            ed.grep_prompt_key(key);
+        }
+        true
+    }
+}
+
+impl Editor {
+    /// 小窓の札の位置（札, 行, 始めの列, 終わりの列）。見出しの右に大小・単語・正規表現、3 行目にマスク・範囲・文脈
+    pub(crate) fn grep_popup_chips(&self, cols: usize, rows: usize) -> Vec<(Chip, usize, usize, usize)> {
+        let Some(g) = &self.grep else { return Vec::new() };
+        let b = popup::rect(cols, rows);
+        let w = |s: &str| nagi_core::display_col(s, s.len(), false);
+        let cs = chips(g);
+        let mut out = Vec::new();
+        // 見出しの右端から左へ
+        let mut x = b.x + b.w - 1;
+        for (t, _, c) in cs.iter().take(3).rev() {
+            x -= w(t);
+            out.push((*c, b.y, x, x + w(t)));
+            x -= 1;
+        }
+        let mut x = b.x + 1;
+        for (t, _, c) in cs.iter().skip(3) {
+            out.push((*c, b.y + 2, x, x + w(t)));
+            x += w(t) + 1;
+        }
+        out
+    }
+
+    /// 小窓を押した: 札は切り替え、候補は選ぶ（ダブルクリックで開く）、外は閉じる
+    pub(crate) fn grep_popup_click(&mut self, row: usize, col: usize, cols: usize, rows: usize, clicks: u32) {
+        let b = popup::rect(cols, rows);
+        if !b.contains(row, col) {
+            self.grep_prompt_key(Key::Esc);
+            return;
+        }
+        if let Some(c) = self.grep_popup_chips(cols, rows).into_iter().find(|c| c.1 == row && col >= c.2 && col < c.3).map(|c| c.0) {
+            self.toggle_chip(c);
+            if c != Chip::Mask {
+                self.set_state(State::GrepPrompt);
+            }
+            return;
+        }
+        let (list_h, _) = popup::heights(b);
+        let list_y = b.y + popup::LIST_TOP;
+        let Some(g) = &mut self.grep else { return };
+        if row < list_y || row >= list_y + list_h {
+            return;
+        }
+        let i = popup::top(g.selected, list_h) + (row - list_y);
+        if i >= g.hits.len() {
+            return;
+        }
+        g.select(i);
+        if clicks >= 2 {
+            self.grep_prompt_key(Key::Enter);
+        }
+    }
+
+    /// プレビューに出すファイルの行（同じファイルは読み直さない）
+    pub(crate) fn grep_preview_lines(&self, path: &std::path::Path) -> std::sync::Arc<Vec<String>> {
+        if let Some((p, lines)) = self.grep_preview.borrow().as_ref() {
+            if p == path {
+                return lines.clone();
+            }
+        }
+        let text = std::fs::read(path).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
+        let lines = std::sync::Arc::new(text.lines().map(|l| l.replace('\t', "    ")).collect::<Vec<_>>());
+        *self.grep_preview.borrow_mut() = Some((path.to_path_buf(), lines.clone()));
+        lines
+    }
+}
+
 pub(crate) mod draw {
     #![allow(unused_imports)]
     use super::*;
     use crate::view::*;
+
+    /// 打っている間の全文検索の小窓（IntelliJ の Find in Files）: 見出しと札、入力欄、マスク・範囲・文脈、候補、選んだ所のプレビュー、案内
+    pub(crate) fn draw_grep_popup(p: &mut Painter, ed: &Editor, g: &crate::grep_panel::GrepPanel, cols: usize, rows: usize) {
+        use crate::grep_panel::popup;
+        let cell = p.fonts.cell();
+        let b = popup::rect(cols, rows);
+        let (x0, y0, wpx, hpx) = (b.x as f32 * cell.w, b.y as f32 * cell.h, b.w as f32 * cell.w, b.h as f32 * cell.h);
+        p.out.push(Instance::fill(x0 - 1.0, y0 - 1.0, wpx + 2.0, hpx + 2.0, SEPARATOR));
+        p.out.push(Instance::fill(x0, y0, wpx, hpx, POPUP_BG));
+        let saved = p.cols;
+        p.cols = b.x + b.w;
+        let row_y = |r: usize| (b.y + r) as f32 * cell.h;
+        // 見出し（件数も）と札
+        let count = format!("  {} 件 / {} ファイル{}", g.hits.len(), g.files(), if g.searching() { " …" } else { "" });
+        let c = p.text(" ファイル内検索", b.x, row_y(0), FG_BRIGHT);
+        p.text(&count, c, row_y(0), STATUS_FG);
+        let on: std::collections::HashMap<String, bool> = crate::grep_panel::chips(g).into_iter().map(|c| (format!("{:?}", c.2), c.1)).collect();
+        for (chip, r, c0, c1) in ed.grep_popup_chips(cols, rows) {
+            let lit = on.get(&format!("{chip:?}")).copied().unwrap_or(false);
+            let label = crate::grep_panel::chips(g).into_iter().find(|c| c.2 == chip).map(|c| c.0).unwrap_or_default();
+            if lit {
+                p.out.push(Instance::fill(c0 as f32 * cell.w, (b.y + r - b.y) as f32 * cell.h + 2.0, (c1 - c0) as f32 * cell.w, cell.h - 4.0, LIST_SEL_BG));
+            }
+            p.text(&label, c0, r as f32 * cell.h, if lit { FG_BRIGHT } else { STATUS_FG });
+        }
+        // 入力欄
+        draw_tab_icon(p, TabIcon::Search, (b.x as f32 + 1.5) * cell.w, row_y(1), STATUS_FG);
+        let preedit = |active: bool| if active { ed.preedit.as_str() } else { "" };
+        field(p, &g.query.text, g.query.cursor, preedit(!g.editing_mask), b.x + 3, row_y(1), !g.editing_mask);
+        if g.editing_mask {
+            // マスクを打っている間は 3 行目の札の代わりに欄
+            p.out.push(Instance::fill(x0, row_y(2), wpx, cell.h, POPUP_BG));
+            let c = p.text(" マスク: ", b.x, row_y(2), FG);
+            field(p, &g.mask.text, g.mask.cursor, preedit(true), c, row_y(2), true);
+        }
+        p.out.push(Instance::fill(x0, row_y(3) + cell.h * 0.5, wpx, 1.0, SEPARATOR));
+        // 候補（本文、右に場所）
+        let (list_h, prev_h) = popup::heights(b);
+        let top = popup::top(g.selected, list_h);
+        for k in 0..list_h {
+            let Some(h) = g.hits.get(top + k) else { break };
+            let y = row_y(popup::LIST_TOP + k);
+            let sel = top + k == g.selected;
+            if sel {
+                p.out.push(Instance::fill(x0 + 4.0, y, wpx - 8.0, cell.h, LIST_SEL_BG));
+            }
+            let place = format!("{}:{} ", h.path.rsplit('/').next().unwrap_or(&h.path), h.line);
+            let pw = p.width(&place);
+            let right = b.x + b.w - pw;
+            p.cols = right.saturating_sub(1);
+            let before = format!(" {}", &h.text[..h.range.0.min(h.text.len())]);
+            let mut items = p.items(&before, if sel { FG_BRIGHT } else { FG });
+            let mut m = p.items(&h.text[h.range.0.min(h.text.len())..h.range.1.min(h.text.len())], FG_BRIGHT);
+            m.iter_mut().for_each(|i| i.bg = Some(SEARCH_BG));
+            items.extend(m);
+            items.extend(p.items(&h.text[h.range.1.min(h.text.len())..], if sel { FG_BRIGHT } else { FG }));
+            p.draw(&items, b.x + 1, y);
+            p.cols = b.x + b.w;
+            p.text(&place, right, y, STATUS_FG);
+        }
+        // プレビュー（選んだ所の前後。その行に地）
+        let py = popup::LIST_TOP + list_h;
+        p.out.push(Instance::fill(x0, row_y(py), wpx, 1.0, SEPARATOR));
+        p.out.push(Instance::fill(x0, row_y(py) + 1.0, wpx, prev_h as f32 * cell.h, BG));
+        if let Some(h) = g.hits.get(g.selected).filter(|_| prev_h > 0) {
+            let lines = ed.grep_preview_lines(&g.root.join(&h.path));
+            let first = h.line.saturating_sub(1).saturating_sub(prev_h / 2);
+            for k in 0..prev_h {
+                let ln = first + k;
+                let Some(text) = lines.get(ln) else { break };
+                let y = row_y(py + k) + 1.0;
+                if ln + 1 == h.line {
+                    p.out.push(Instance::fill(x0, y, wpx, cell.h, CURSOR_LINE_BG));
+                }
+                let c = p.text(&format!("{:>5}  ", ln + 1), b.x, y, if ln + 1 == h.line { LINE_NO_CUR } else { LINE_NO });
+                p.text(text, c, y, FG);
+            }
+        }
+        // 案内
+        let hint = " Enter 開く  Ctrl+Enter 下の欄へ  ↑↓ 選ぶ  Alt+C・O・X・F・T 条件  Esc 閉じる";
+        p.out.push(Instance::fill(x0, row_y(b.h - 1), wpx, 1.0, SEPARATOR));
+        p.text(hint, b.x, row_y(b.h - 1), STATUS_FG);
+        p.cols = saved;
+    }
 
     /// 全文検索のパネル。1 行目は見出し（検索語と件数）、2 行目から `path:行: 本文`（ripgrep の vimgrep と同じ形）
     pub(crate) fn draw_grep_panel(p: &mut Painter, g: &crate::grep_panel::GrepPanel, r: Rect, focused: bool) {

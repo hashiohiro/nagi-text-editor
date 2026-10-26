@@ -947,7 +947,11 @@ impl Frame {
             // コミットメッセージの欄は、描いた縦棒の位置を draw で IME に知らせる
         } else if want {
             let cell = f.cell();
-            let (col, row) = if ed.has_prompt() {
+            // ファインダー・全文検索の入力欄は小窓の中（描いたときの縦棒の位置）
+            let popup = matches!(ed.state(), State::Finder | State::GrepPrompt).then(|| ed.prompt_caret.get()).flatten();
+            let (col, row) = if let Some((c, y)) = popup {
+                (c, (y / cell.h).round() as usize)
+            } else if ed.has_prompt() {
                 // 最下行の入力欄のカーソル位置
                 let (p, row) = match ed.state() {
                     State::Replace if ed.replace_field == 1 => (&ed.repl, rows + 1),
