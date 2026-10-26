@@ -1052,20 +1052,8 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             let pc = scols.saturating_sub(p.width(&info));
             p.text(&info, pc, y, STATUS_FG);
         }
-        State::Finder if ed.finder.is_some() => {
-            let f = ed.finder.as_ref().unwrap();
-            if f.field.is_insert() {
-                prompt_line(&mut p, "> ", &f.query.text, f.query.cursor, &ed.preedit, y, true);
-            } else {
-                // ノーマル・Visual: Vim の欄（四角のカーソル・選んだ所の反転）
-                p.text("> ", 0, y, FG);
-                draw_vim_line(&mut p, &f.field, 0, 2, y, "", true);
-            }
-            let mode = if f.field.is_insert() { String::new() } else { format!("-- {} --  j/k 選ぶ  Esc 閉じる   ", f.field.mode_label()) };
-            let info = format!("{mode}{}  {}/{}{} ", f.source.label(), f.hits.len(), f.items.len(), if f.walking() { " …" } else { "" });
-            let pc = scols.saturating_sub(p.width(&info));
-            p.text(&info, pc, y, STATUS_FG);
-        }
+        // ファインダーは入力欄も件数も小窓の中（finder.rs）
+        State::Finder if ed.finder.is_some() => {}
         State::Search => {
             let lead = if ed.search.forward { "/" } else { "?" };
             prompt_line(&mut p, lead, &ed.query.text, ed.query.cursor, &ed.preedit, y, true);

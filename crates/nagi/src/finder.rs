@@ -68,6 +68,17 @@ impl Source {
     }
 }
 
+impl Source {
+    /// どこでも検索のタブの名前
+    pub fn tab_label(self) -> &'static str {
+        match self {
+            Source::Types => "クラス",
+            Source::Commands => "アクション",
+            s => s.label(),
+        }
+    }
+}
+
 impl Finder {
     /// プロジェクトの候補を入れる（`member` なら Eclipse のワークスペースの中から選ぶ）
     pub fn set_projects(&mut self, items: Vec<String>, locs: Vec<(PathBuf, usize, usize)>, member: bool) {
@@ -149,6 +160,17 @@ impl Finder {
         ids.extend(self.scored_upto as u32..self.items.len() as u32);
         let mut hits = rank_ids(&q, &self.items, &ids);
         sort_hits(&mut hits);
+        // どこでも検索は IntelliJ と同じく、型・ファイル・シンボル・アクションの順にまとめる（それぞれの中は良い順）
+        if self.source == Source::Everywhere {
+            let types = ["クラス", "インターフェース", "型", "enum"];
+            let group = |i: u32| match self.every.get(i as usize) {
+                Some(Every::Loc(..)) if self.items[i as usize].split("  ").nth(1).is_some_and(|k| types.contains(&k)) => 0,
+                Some(Every::File) => 1,
+                Some(Every::Loc(..)) => 2,
+                _ => 3,
+            };
+            hits.sort_by_key(|&(i, _)| group(i));
+        }
         self.hits = hits;
         self.scored_query = text;
         self.scored_upto = self.items.len();
@@ -380,8 +402,9 @@ impl Editor {
             return Effect::None;
         };
         let normal = !f.field.is_insert() && f.field.ed.pending_keys.is_empty() && f.field.visual().is_none();
-        let up = |f: &mut Finder| f.selected = (f.selected + 1).min(f.hits.len().saturating_sub(1));
-        let down = |f: &mut Finder| f.selected = f.selected.saturating_sub(1);
+        // 上が一番良い候補（IntelliJ と同じ）。↓ で次の候補へ
+        let up = |f: &mut Finder| f.selected = f.selected.saturating_sub(1);
+        let down = |f: &mut Finder| f.selected = (f.selected + 1).min(f.hits.len().saturating_sub(1));
         match key {
             Key::Ctrl('c') | Key::Ctrl('g') => self.close_finder(),
             Key::Enter => return self.accept_finder(None),
@@ -390,7 +413,7 @@ impl Editor {
             // 良い候補は下にあるので、上へ = 次の候補
             Key::Up | Key::Ctrl('p') | Key::Ctrl('k') => up(f),
             Key::Down | Key::Ctrl('n') | Key::Ctrl('j') | Key::Tab => down(f),
-            // ノーマルでは j / k で候補を選ぶ（下が良い候補なので j は下へ）
+            // ノーマルでは j / k で候補を選ぶ
             Key::Char('j') if normal => down(f),
             Key::Char('k') if normal => up(f),
             k => match self.feed_field(k, |e| e.finder.as_mut().map(|f| &mut f.field)) {
@@ -419,22 +442,40 @@ impl Editor {
         }
     }
 
-    /// ファインダーのクリック（画面の行・本文の行数）。候補を押すと選び、ダブルクリックで開く（Enter と同じ）。
-    /// 候補の欄より上を押したら閉じる（ほかの小窓と同じ）
-    pub(crate) fn finder_click(&mut self, row: usize, rows: usize, clicks: u32) {
-        let top = rows - draw::finder_height(rows);
+    /// ファインダーのクリック（画面の行・列と画面の大きさ）。候補を押すと選び、ダブルクリックで開く（Enter と同じ）。
+    /// 上のタブを押すとその種類に替え（打った語は残す）、小窓の外を押したら閉じる（ほかの小窓と同じ）
+    pub(crate) fn finder_click(&mut self, row: usize, col: usize, cols: usize, rows: usize, clicks: u32) {
+        let b = draw::finder_box(cols, rows);
         let Some(f) = &mut self.finder else { return };
-        if row < top {
+        if !b.contains(row, col) {
             self.close_finder();
             return;
         }
-        // 最下行のすぐ上が一番良い候補（scroll 番目）で、上へ行くほど次の候補
-        let hit = (row < rows).then(|| f.scroll + (rows - 1 - row)).filter(|&i| i < f.hits.len());
+        if row == b.y {
+            if let Some(src) = draw::finder_tabs(f.source).into_iter().find(|t| col >= b.x + t.1 && col < b.x + t.2).map(|t| t.0) {
+                self.finder_switch(src);
+            }
+            return;
+        }
+        let top = b.y + draw::LIST_TOP;
+        let hit = (row >= top).then(|| f.scroll + (row - top)).filter(|&i| i < f.hits.len() && row < top + draw::finder_height(rows));
         if let Some(crate::list::Pick::Accept(_)) = crate::list::pick(&mut f.selected, hit, clicks, 2) {
             let eff = self.accept_finder(None);
             if !matches!(eff, Effect::None) {
                 self.click_effect = Some(eff);
             }
+        }
+    }
+
+    /// どこでも検索のタブ: 種類を替える（打った語は残す）
+    pub(crate) fn finder_switch(&mut self, src: Source) {
+        let Some(q) = self.finder.as_ref().map(|f| f.query.text.clone()) else { return };
+        if self.finder.as_ref().is_some_and(|f| f.source == src) {
+            return;
+        }
+        self.open_finder(src);
+        if !q.is_empty() {
+            self.finder_insert(&q);
         }
     }
 
@@ -525,14 +566,13 @@ impl crate::layout::View for FinderView {
     fn draw(&self, ed: &crate::editor::Editor, p: &mut crate::view::Painter, r: crate::panes::Rect, s: crate::layout::Screen) {
         let _ = (r, s);
         if let Some(f) = &ed.finder {
-            draw::draw_finder(p, f, s.rows, s.cols);
+            draw::draw_finder(p, f, s.rows, s.cols, &ed.preedit);
         }
     }
 
     fn click(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, clicks: u32) -> crate::layout::Click {
-        let _ = col;
         // 小窓は画面全体を持つ（r.h は本文の行数）
-        ed.finder_click(row, r.h, clicks);
+        ed.finder_click(row, col, r.w, r.h, clicks);
         crate::layout::Click::Done
     }
 
@@ -548,40 +588,104 @@ pub(crate) mod draw {
     use super::*;
     use crate::view::*;
 
-    /// ファインダーの候補を出す高さ（画面の 4 割、少なくとも 8 行）
-    pub(crate) fn finder_height(rows: usize) -> usize {
-        (rows * 2 / 5).max(8).min(rows)
+    /// 小窓の中で候補の一覧が始まる行（タブ・入力欄・区切り）
+    pub(crate) const LIST_TOP: usize = 3;
+
+    /// 小窓（IntelliJ の Search Everywhere と同じく、画面の上の方の真ん中）
+    pub(crate) fn finder_box(cols: usize, rows: usize) -> Rect {
+        let w = (cols * 3 / 5).max(70).min(cols.saturating_sub(4));
+        let h = (rows * 3 / 5).max(12).min(rows.saturating_sub(2));
+        let y = (rows / 8).max(1).min(rows.saturating_sub(h));
+        Rect { x: cols.saturating_sub(w) / 2, y, w, h }
     }
 
-    /// ファインダーの候補。最下行のすぐ上が一番良い候補で、上へ行くほど点数が下がる（fzf と同じ並び）
-    pub(crate) fn draw_finder(p: &mut Painter, f: &crate::finder::Finder, rows: usize, cols: usize) {
+    /// ファインダーの候補を出す高さ（小窓からタブ・入力欄・区切り・下の案内を除いた行）
+    pub(crate) fn finder_height(rows: usize) -> usize {
+        let h = (rows * 3 / 5).max(12).min(rows.saturating_sub(2));
+        h.saturating_sub(LIST_TOP + 1).max(1)
+    }
+
+    /// 上のタブ（種類, 小窓の左端からの列の始め, 終わり）。どこでも検索の仲間のときだけ並べる（IntelliJ の All・Classes・Files・Symbols・Actions）
+    pub(crate) fn finder_tabs(src: Source) -> Vec<(Source, usize, usize)> {
+        const TABS: [(Source, &str); 5] = [(Source::Everywhere, "すべて"), (Source::Types, "クラス"), (Source::Files, "ファイル"), (Source::Symbols, "シンボル"), (Source::Commands, "アクション")];
+        if !TABS.iter().any(|t| t.0 == src) {
+            return Vec::new();
+        }
+        let mut x = 1;
+        TABS.iter()
+            .map(|(s, l)| {
+                let w = nagi_core::display_col(l, l.len(), false) + 2;
+                let t = (*s, x, x + w);
+                x += w + 1;
+                t
+            })
+            .collect()
+    }
+
+    /// ファインダー: 枠のある小窓に、上にタブ（か種類の名前）、入力欄、上から良い順の候補、下に件数と案内
+    pub(crate) fn draw_finder(p: &mut Painter, f: &crate::finder::Finder, rows: usize, cols: usize, preedit: &str) {
         let cell = p.fonts.cell();
-        let h = finder_height(rows);
-        let top = rows - h;
-        // 下の本文を隠し、上端に 1px の線を引く
-        p.out.push(Instance::fill(0.0, top as f32 * cell.h, cols as f32 * cell.w, h as f32 * cell.h, POPUP_BG));
-        p.out.push(Instance::fill(0.0, top as f32 * cell.h, cols as f32 * cell.w, 1.0, LINE_NO));
+        let b = finder_box(cols, rows);
+        let (x0, y0, wpx, hpx) = (b.x as f32 * cell.w, b.y as f32 * cell.h, b.w as f32 * cell.w, b.h as f32 * cell.h);
+        // 影の代わりの枠と地
+        p.out.push(Instance::fill(x0 - 1.0, y0 - 1.0, wpx + 2.0, hpx + 2.0, SEPARATOR));
+        p.out.push(Instance::fill(x0, y0, wpx, hpx, POPUP_BG));
+        let saved = p.cols;
+        p.cols = b.x + b.w;
+        // タブ（選んでいるものは青い下線）
+        let tabs = finder_tabs(f.source);
+        if tabs.is_empty() {
+            p.text(&format!(" {}", f.source.label()), b.x, y0, FG_BRIGHT);
+        }
+        for (s, c0, c1) in &tabs {
+            let on = *s == f.source;
+            p.text(&format!(" {} ", if *s == Source::Everywhere { "すべて" } else { s.tab_label() }), b.x + c0, y0, if on { FG_BRIGHT } else { STATUS_FG });
+            if on {
+                p.out.push(Instance::fill((b.x + c0) as f32 * cell.w, y0 + cell.h - 3.0, (c1 - c0) as f32 * cell.w, 3.0, ACCENT_FG));
+            }
+        }
+        // 入力欄（虫眼鏡のアイコンと、打った語）
+        let fy = y0 + cell.h;
+        draw_tab_icon(p, TabIcon::Search, (b.x as f32 + 1.5) * cell.w, fy, STATUS_FG);
+        draw_vim_line(p, &f.field, 0, b.x + 3, fy, preedit, true);
+        p.out.push(Instance::fill(x0, fy + cell.h + cell.h * 0.5, wpx, 1.0, SEPARATOR));
+        // 候補（上が一番良い）
         let q = nagi_core::fuzzy::Query::new(&f.query.text);
+        let h = finder_height(rows);
         for k in 0..h {
             let Some(&(i, _)) = f.hits.get(f.scroll + k) else { break };
             let text = &f.items[i as usize];
-            let y = (rows - 1 - k) as f32 * cell.h;
+            let y = (b.y + LIST_TOP + k) as f32 * cell.h;
             let selected = f.scroll + k == f.selected;
             let hit: std::collections::HashSet<usize> = if q.is_empty() { Default::default() } else { q.positions(text).into_iter().collect() };
             if selected {
-                p.out.push(Instance::fill(0.0, y, cols as f32 * cell.w, cell.h, LIST_SEL_BG));
+                p.out.push(Instance::fill(x0 + 4.0, y, wpx - 8.0, cell.h, LIST_SEL_BG));
             }
-            let (fg, accent) = if selected { (FG_BRIGHT, FG_BRIGHT) } else { (FG, FINDER_MATCH) };
-            let mut items = p.items(if selected { "> " } else { "  " }, fg);
+            // 「名前  種類  場所」の 2 つ目からは薄く（IntelliJ の場所の灰色）
+            let name_end = text.find("  ").unwrap_or(text.len());
+            let mut items = p.items(" ", FG);
             let mut ci = 0;
+            let mut bi = 0;
             for g in text.graphemes(true) {
                 let m = hit.contains(&ci);
                 let width = p.cell_width(g);
-                items.push(Item { g: Cow::Borrowed(g), width, fg: if m { accent } else { fg }, bg: None, underline: m && selected });
+                let base = if selected { FG_BRIGHT } else if bi < name_end { FG } else { STATUS_FG };
+                items.push(Item { g: Cow::Borrowed(g), width, fg: if m { FINDER_MATCH } else { base }, bg: None, underline: false });
                 ci += g.chars().count();
+                bi += g.len();
             }
-            p.draw(&items, 0, y);
+            p.draw(&items, b.x + 1, y);
         }
+        // 下の案内と件数
+        let by = (b.y + b.h - 1) as f32 * cell.h;
+        p.out.push(Instance::fill(x0, by, wpx, 1.0, SEPARATOR));
+        let mode = if f.field.is_insert() { String::new() } else { format!("-- {} --  ", f.field.mode_label()) };
+        let left = format!(" {mode}Enter 開く  Ctrl+V 左右に分割  ↑↓ 選ぶ  Esc 閉じる");
+        p.text(&left, b.x, by, STATUS_FG);
+        let count = format!("{}/{}{} ", f.hits.len(), f.items.len(), if f.walking() { " …" } else { "" });
+        let cw = p.width(&count);
+        p.text(&count, (b.x + b.w).saturating_sub(cw), by, STATUS_FG);
+        p.cols = saved;
     }
 }
 
@@ -618,7 +722,7 @@ mod tests {
         panic!("ファイルを集め終わらない");
     }
 
-    /// マウスで: 候補を押すと選び、ダブルクリックで開く。候補の欄より上を押すと閉じる（Space f a の「すべてを検索」もこのファインダー）
+    /// マウスで: 候補を押すと選び、ダブルクリックで開く。小窓の外を押すと閉じる。上のタブで種類を替える（Space f a の「すべてを検索」もこのファインダー）
     #[test]
     fn click_select_and_double_click_open() {
         let dir = project("click");
@@ -630,15 +734,23 @@ mod tests {
         let s = crate::layout::Screen { rows: 40, cols: 100 };
         let f = e.finder.as_ref().unwrap();
         let second = f.items[f.hits[1].0 as usize].clone();
-        // 最下行のすぐ上の行（本文の最後の行）が一番良い候補、その上が 2 番目
-        crate::layout::press(&mut e, s, 38, 5, |_| 1);
+        // 小窓の一覧の 1 行目が一番良い候補、その下が 2 番目
+        let b = draw::finder_box(100, 40);
+        let row = b.y + draw::LIST_TOP + 1;
+        crate::layout::press(&mut e, s, row, b.x + 5, |_| 1);
         assert_eq!(e.finder.as_ref().unwrap().selected, 1, "押した行の候補を選ぶ");
         assert_eq!(e.state(), State::Finder, "1 回では開かない");
-        crate::layout::press(&mut e, s, 38, 5, |_| 2);
+        crate::layout::press(&mut e, s, row, b.x + 5, |_| 2);
         assert_eq!(e.state(), State::Normal);
         assert!(e.buf.path.as_ref().unwrap().ends_with(second.replace('/', std::path::MAIN_SEPARATOR_STR)), "{:?} {second}", e.buf.path);
-        // 候補の欄より上を押すと閉じる
-        e.open_finder(Source::Files);
+        // どこでも検索のタブ: 「ファイル」を押すと、打った語を残してファイルだけに
+        e.open_finder(Source::Everywhere);
+        e.finder_insert("main");
+        let (_, c0, _) = draw::finder_tabs(Source::Everywhere)[2];
+        crate::layout::press(&mut e, s, b.y, b.x + c0 + 1, |_| 1);
+        let f = e.finder.as_ref().unwrap();
+        assert_eq!((f.source, f.query.text.as_str()), (Source::Files, "main"));
+        // 小窓の外を押すと閉じる
         crate::layout::press(&mut e, s, 0, 5, |_| 1);
         assert!(e.finder.is_none());
         assert_eq!(e.state(), State::Normal);
@@ -727,8 +839,8 @@ mod tests {
         // 直前のバッファが一番上（選んだ状態）、作業中のバッファは最後
         assert!(f.items[f.hits[0].0 as usize].ends_with("src/main.rs"), "{:?}", f.items);
         assert!(f.items[f.hits[2].0 as usize].ends_with("panes.rs"));
-        // 上へ 1 つ（次の候補）選んで開く
-        keys(&mut e, "<C-p><CR>");
+        // 下へ 1 つ（次の候補）選んで開く
+        keys(&mut e, "<C-n><CR>");
         assert_eq!(e.buf.line(0), "readme");
         // IME で確定した文字も検索語に入る
         e.open_finder(Source::Buffers);
