@@ -89,6 +89,7 @@ mod session;
 mod surround;
 mod format;
 mod debugger;
+mod rename;
 mod panes;
 mod instance;
 

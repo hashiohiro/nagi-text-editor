@@ -192,7 +192,7 @@ impl Editor {
     }
 
     /// カーソルの下の識別子（と、その始まりの絶対 byte）
-    fn word_at_cursor(&self) -> Option<(String, usize)> {
+    pub(crate) fn word_at_cursor(&self) -> Option<(String, usize)> {
         let line = self.buf.line(self.cursor.line);
         let b = self.cursor.byte.min(line.len());
         let start = line[..b].char_indices().rev().take_while(|(_, c)| ident_char(*c)).last().map_or(b, |(i, _)| i);
@@ -439,12 +439,12 @@ impl Editor {
         let target = self.definition_target(&name, word_at);
         self.open_grep_regex(&format!(r"\b{}\b", regex::escape(&name)));
         if let (Some(g), Some(target)) = (&mut self.grep, target) {
-            g.refs = Some(crate::grep_panel::RefsFilter { name, target });
+            g.refs = Some(crate::grep_panel::RefsFilter { name, target, rename: None });
         }
     }
 
     /// 名前 `name`（`word_at` の位置）のプロジェクトの定義が 1 か所に決まれば (根からの相対パス, 行, 列)
-    fn definition_target(&mut self, name: &str, word_at: usize) -> Option<(String, usize, usize)> {
+    pub(crate) fn definition_target(&mut self, name: &str, word_at: usize) -> Option<(String, usize, usize)> {
         let here = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok())?;
         self.ensure_syntax();
         let idx = self.nav.index.as_ref()?;
@@ -468,11 +468,21 @@ impl Editor {
 
     /// 参照の検索の結果から、別の定義を指すものを除く（呼び出し・型の参照は定義へのジャンプと同じ求め方で。コメントの行と、ほかの定義も除く）
     pub(crate) fn filter_refs(&mut self, f: crate::grep_panel::RefsFilter) {
+        let rename = f.rename.clone().map(|new| (f.name.clone(), new, f.target.clone()));
+        if rename.is_some() {
+            self.split_rename_hits(&f.name);
+        }
         let (Some(g), Some(idx)) = (&self.grep, &self.nav.index) else { return };
         let root = g.root.clone();
         let hits = &g.hits;
         let name = f.name.as_str();
         let defs = idx.lookup(name).to_vec();
+        // 型なら、同じファイルの同じ名前の定義（コンストラクタ）も同じもの（new Foo() は型の参照）
+        let target_is_type = defs.iter().any(|l| (&*l.path, l.line as usize, l.col as usize) == (f.target.0.as_str(), f.target.1, f.target.2) && l.kind.is_type());
+        let same: Vec<(String, usize, usize)> = std::iter::once(f.target.clone())
+            .chain(defs.iter().filter(|l| target_is_type && *l.path == *f.target.0 && !l.kind.is_type()).map(|l| (l.path.to_string(), l.line as usize, l.col as usize)))
+            .collect();
+        let is_target = |p: &str, l: usize, c: usize| same.iter().any(|t| (t.0.as_str(), t.1, t.2) == (p, l, c));
         // ファイルごとに (ヒットの番号)
         let mut by_file: Vec<(String, Vec<usize>)> = Vec::new();
         for (i, h) in hits.iter().enumerate() {
@@ -483,6 +493,10 @@ impl Editor {
         }
         // ファイルが多すぎれば名前の一致のまま（固まらないように）
         if by_file.len() > 400 {
+            if rename.is_some() {
+                self.notify.warn(format!("{} ファイルにあり、多すぎるので名前を変えません", by_file.len()));
+                return;
+            }
             self.notify.info(format!("参照: {} ファイル（多いので名前の一致のまま）", by_file.len()));
             return;
         }
@@ -522,7 +536,7 @@ impl Editor {
                     keep[i] = false;
                     continue;
                 };
-                if (rel.as_str(), line, col) == (f.target.0.as_str(), f.target.1, f.target.2) {
+                if is_target(&rel, line, col) {
                     continue;
                 }
                 let text = hits[i].text.trim_start();
@@ -538,7 +552,7 @@ impl Editor {
                 // ファイルの中の束縛（受け手が無いか this のとき。ローカル変数も）: それが定義そのものか
                 if let Some(d) = local.filter(|_| matches!(recv, None | Some(nagi_syntax::defs::Receiver::This))) {
                     let l = starts.partition_point(|&s| s <= d) - 1;
-                    keep[i] = (rel.as_str(), l, d - starts[l]) == (f.target.0.as_str(), f.target.1, f.target.2);
+                    keep[i] = is_target(&rel, l, d - starts[l]);
                     continue;
                 }
                 // 呼び出し・型の参照でないもの（フィールドの読み書きなど）は名前の一致のまま
@@ -553,7 +567,7 @@ impl Editor {
                 }
                 keep[i] = match ranker.resolve(&rel, &src, name, recv.as_ref(), args.as_deref(), defs.clone()) {
                     nagi_lang::project::Ranked::Outside(_) => false,
-                    nagi_lang::project::Ranked::Locs(v, best) if best >= 1 => v[..best.min(v.len())].iter().any(|l| (&*l.path, l.line as usize, l.col as usize) == (f.target.0.as_str(), f.target.1, f.target.2)),
+                    nagi_lang::project::Ranked::Locs(v, best) if best >= 1 => v[..best.min(v.len())].iter().any(|l| is_target(&l.path, l.line as usize, l.col as usize)),
                     // プロジェクトの索引で決まらない: 受け手がライブラリの型か（補完と同じ求め方で）
                     _ => !library(at[k]),
                 };
@@ -567,6 +581,9 @@ impl Editor {
         g.scroll = 0;
         let dropped = before - g.hits.len();
         self.notify.info(format!("参照: {} 件（名前が同じ別のもの {dropped} 件を除いた）", g.hits.len()));
+        if let Some((name, new, target)) = rename {
+            self.ask_rename(name, new, target);
+        }
     }
 
     /// シンボル検索（`types` なら型だけ）

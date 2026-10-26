@@ -54,6 +54,7 @@ pub static IDEA_ACTIONS: &[(&[&str], Option<&str>, &str)] = &[
     // 整形・実行（外部コマンド。M4）
     (&["ReformatCode"], Some("format"), "整形（外部フォーマッタ）"),
     (&["OptimizeImports"], Some("imports.optimize"), "import の整理（使っていないものを外す・並べる）"),
+    (&["RenameElement"], Some("refactor.rename"), "名前の変更"),
     (&["Run"], Some("job.run"), "実行（設定したコマンド）"),
     (&["RunContextTest"], Some("job.test"), "カーソル位置のテストを実行"),
     (&["Stop"], Some("job.stop"), "実行中のコマンドを止める"),

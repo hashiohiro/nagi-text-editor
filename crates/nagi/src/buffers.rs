@@ -38,6 +38,10 @@ const KEEP_TREES: usize = 4;
 const SYNC_REPARSE_BYTES: usize = 128 * 1024;
 
 /// 同じファイルかどうかの比較用。相対パスや大文字小文字の違いを吸収する
+pub(crate) fn same_path(a: &Path, b: &Path) -> bool {
+    same_file(a, b)
+}
+
 fn same_file(a: &Path, b: &Path) -> bool {
     let norm = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| std::path::absolute(p).unwrap_or_else(|_| p.to_path_buf()));
     norm(a).to_string_lossy().eq_ignore_ascii_case(&norm(b).to_string_lossy())
@@ -160,6 +164,24 @@ impl Editor {
         self.cur_doc = id;
         self.start_syntax();
         self.trim_trees();
+    }
+
+    /// 脇にあるバッファ `id` の中身（作業中・閉じたものは None）
+    pub(crate) fn parked_buf(&mut self, id: usize) -> Option<&mut Buffer> {
+        match self.docs.get_mut(id)? {
+            Slot::Parked(d) => Some(&mut d.buf),
+            _ => None,
+        }
+    }
+
+    /// ファイルの名前を変えたとき、そのバッファの名前も
+    pub(crate) fn repath_doc(&mut self, from: &Path, to: &Path) {
+        let Some(id) = self.find_doc(from) else { return };
+        match self.docs.get_mut(id) {
+            Some(Slot::Active) => self.buf.path = Some(to.to_path_buf()),
+            Some(Slot::Parked(d)) => d.buf.path = Some(to.to_path_buf()),
+            _ => {}
+        }
     }
 
     /// `path` のバッファを探す

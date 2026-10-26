@@ -47,6 +47,8 @@ pub struct GrepPanel {
 pub struct RefsFilter {
     pub name: String,
     pub target: (String, usize, usize),
+    /// 名前の変更（Shift+F6）なら新しい名前。絞り終えたら確かめて変える
+    pub rename: Option<String>,
 }
 
 /// 最下行の入力欄の前の印
