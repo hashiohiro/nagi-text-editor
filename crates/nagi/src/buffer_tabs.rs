@@ -63,7 +63,7 @@ impl Editor {
                     None => name.clone(),
                 };
                 // ` アイコン 名前 × ` の幅（アイコンは 2 列）
-                BufTab { doc: *doc, w: width(&label) + 6, label, x: 0, active: *active, dirty: *dirty, path: path.clone() }
+                BufTab { doc: *doc, w: width(&label) + 4 + crate::metrics::icon_cols(crate::metrics::Icon::Small), label, x: 0, active: *active, dirty: *dirty, path: path.clone() }
             })
             .collect();
         // 作業中のタブが入るまで左を詰める
@@ -233,7 +233,7 @@ pub(crate) mod draw {
                 p.out.push(Instance::fill(tx, y0, t.w as f32 * cell.w, cell.h - 1.0, RAISED_BG));
             }
             if t.active {
-                p.out.push(Instance::fill(tx, y0 + cell.h - 3.0, t.w as f32 * cell.w, 3.0, ACCENT_FG));
+                p.out.push(Instance::fill(tx, y0 + cell.h - crate::metrics::accent_line(), t.w as f32 * cell.w, crate::metrics::accent_line(), ACCENT_FG));
             }
             let fg = if t.active { FG_BRIGHT } else if hover.is_some() { FG } else { STATUS_FG };
             // ファイルの種類のアイコン（プロジェクトの木と同じ）
@@ -241,7 +241,7 @@ pub(crate) mod draw {
                 let row = crate::tree_panel::Row { path: path.clone(), name: file_name(path), depth: 0, dir: false };
                 crate::tree_panel::draw::draw_tree_icon(p, &crate::tree_panel::draw::tree_icon(&row, ed.nav.index.as_ref(), &ed.nav_root()), r.x + t.x + 1, y0);
             }
-            p.text(&t.label, r.x + t.x + 3, y0, fg);
+            p.text(&t.label, r.x + t.x + 1 + crate::metrics::icon_cols(crate::metrics::Icon::Small), y0, fg);
             // × は控えめに。載せたら明るく、変更があれば載せるまで ●
             let cx = r.x + t.close_col();
             let (mark, color) = match hover {

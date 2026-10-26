@@ -762,7 +762,7 @@ pub mod popup {
 
     /// 小窓（画面の真ん中より少し上。一覧の下にプレビュー）
     pub fn rect(cols: usize, rows: usize) -> Rect {
-        let w = (cols * 7 / 10).max(80).min(cols.saturating_sub(4));
+        let w = (cols * 7 / 10).max(crate::metrics::cols(80)).min(cols.saturating_sub(4));
         let h = (rows * 7 / 10).max(16).min(rows.saturating_sub(2));
         let y = (rows / 10).max(1).min(rows.saturating_sub(h));
         Rect { x: cols.saturating_sub(w) / 2, y, w, h }
@@ -907,9 +907,9 @@ pub(crate) mod draw {
             p.text(&label, c0, r as f32 * cell.h, if lit { FG_BRIGHT } else { STATUS_FG });
         }
         // 入力欄
-        { let px = crate::icons::small(cell.h); crate::icons::draw(p, "g_search", (b.x as f32 + 1.5) * cell.w - px / 2.0, crate::icons::centered(row_y(1), cell.h, px), px, None); }
+        { let px = crate::metrics::icon(crate::metrics::Icon::Small); crate::icons::draw(p, "g_search", (b.x as f32 + 1.5) * cell.w - px / 2.0, crate::metrics::centered(row_y(1), px), px, None); }
         let preedit = |active: bool| if active { ed.preedit.as_str() } else { "" };
-        field(p, &g.query.text, g.query.cursor, preedit(!g.editing_mask), b.x + 3, row_y(1), !g.editing_mask);
+        field(p, &g.query.text, g.query.cursor, preedit(!g.editing_mask), b.x + 1 + crate::metrics::icon_cols(crate::metrics::Icon::Small), row_y(1), !g.editing_mask);
         if g.editing_mask {
             // マスクを打っている間は 3 行目の札の代わりに欄
             p.out.push(Instance::fill(x0, row_y(2), wpx, cell.h, POPUP_BG));

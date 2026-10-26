@@ -36,8 +36,15 @@ pub struct Menu {
     pub dialog: bool,
 }
 
-/// 確かめるダイアログの幅の上限（列）
-const DIALOG_W: usize = 72;
+/// 確かめるダイアログの幅の上限（等幅の文字で 72 列ぶん。部品の文字の大きさに合わせる）
+fn dialog_w() -> usize {
+    crate::metrics::cols(72)
+}
+
+/// 確かめるダイアログの問いの左の余白（？のアイコンの分）
+fn dialog_indent() -> usize {
+    2 + crate::metrics::icon_cols(crate::metrics::Icon::Dialog)
+}
 
 impl Menu {
     pub fn new(row: usize, col: usize) -> Menu {
@@ -79,7 +86,7 @@ impl Menu {
     /// 確かめるダイアログの問いの行（幅で折り返す）
     pub fn dialog_lines(&self, w: usize) -> Vec<String> {
         // 部品の文字（等幅でない）は等幅の幅の 9 割ほどなので、その分多く入れる
-        let w = w * 115 / 100;
+        let w = crate::metrics::fit(w);
         let mut lines = vec![String::new()];
         let mut cur = 0;
         for ch in self.title.as_deref().unwrap_or("").chars() {
@@ -113,8 +120,8 @@ impl Menu {
         if self.dialog {
             let width = |s: &str| nagi_core::display_col(s, s.len(), false);
             let buttons: usize = self.items.iter().filter(|it| it.run.is_some()).map(|it| width(&it.label) + 5).sum::<usize>() + 2;
-            let w = (self.title.as_deref().map_or(0, width) + 8).max(buttons).max(48).min(DIALOG_W).min(cols.saturating_sub(4));
-            let h = self.dialog_lines(w.saturating_sub(8)).len() + 5;
+            let w = (self.title.as_deref().map_or(0, width) + dialog_indent() + 2).max(buttons).max(crate::metrics::cols(48)).min(dialog_w()).min(cols.saturating_sub(4));
+            let h = self.dialog_lines(w.saturating_sub(dialog_indent() + 2)).len() + 5;
             return Rect { x: cols.saturating_sub(w) / 2, y: (rows / 3).min(rows.saturating_sub(h)), w, h };
         }
         let width = |s: &str| nagi_core::display_col(s, s.len(), false);
@@ -162,7 +169,7 @@ impl Editor {
         m.cancel = cancel;
         // ボタンが横に並びきれば、確かめるダイアログの形にする
         let width = |s: &str| nagi_core::display_col(s, s.len(), false);
-        m.dialog = m.items.iter().filter(|it| it.run.is_some()).map(|it| width(&it.label) + 5).sum::<usize>() + 2 <= DIALOG_W.min(cols.saturating_sub(4));
+        m.dialog = m.items.iter().filter(|it| it.run.is_some()).map(|it| width(&it.label) + 5).sum::<usize>() + 2 <= dialog_w().min(cols.saturating_sub(4));
         self.open_menu(m);
     }
 
@@ -319,14 +326,14 @@ pub(crate) mod draw {
         let saved = p.cols;
         p.cols = b.x + b.w - 1;
         p.text(" 確認", b.x, y0, FG_BRIGHT);
-        let px = (cell.h * 1.1).round();
-        crate::icons::draw(p, "g_questionDialog", x0 + cell.w * 1.5, y0 + cell.h * 1.6, px, None);
-        for (k, l) in m.dialog_lines(b.w.saturating_sub(8)).iter().enumerate() {
-            p.text(l, b.x + 6, (b.y + 2 + k) as f32 * cell.h, FG);
+        let px = crate::metrics::icon(crate::metrics::Icon::Dialog);
+        crate::icons::draw(p, "g_questionDialog", x0 + cell.w * 1.5, y0 + cell.h * 2.0 - px * 0.3, px, None);
+        for (k, l) in m.dialog_lines(b.w.saturating_sub(dialog_indent() + 2)).iter().enumerate() {
+            p.text(l, b.x + dialog_indent(), (b.y + 2 + k) as f32 * cell.h, FG);
         }
         for (i, row, c0, c1) in m.dialog_buttons(b) {
             let on = i == m.sel;
-            p.out.push(Instance::rounded(c0 as f32 * cell.w, row as f32 * cell.h + 2.0, (c1 - c0) as f32 * cell.w, cell.h - 4.0, 5.0, if on { ACCENT_FG } else { RAISED_BG }));
+            p.out.push(Instance::rounded(c0 as f32 * cell.w, row as f32 * cell.h + crate::metrics::pad(), (c1 - c0) as f32 * cell.w, cell.h - 2.0 * crate::metrics::pad(), crate::metrics::radius(crate::metrics::Radius::Control), if on { ACCENT_FG } else { RAISED_BG }));
             let label = &m.items[i].label;
             let lw = p.width(label);
             p.text(label, c0 + (c1 - c0).saturating_sub(lw) / 2, row as f32 * cell.h, if on { FG_BRIGHT } else { FG });

@@ -92,7 +92,7 @@ pub struct BranchPopup {
 impl BranchPopup {
     /// 枠の (上の行, 左の列, 幅)
     pub fn frame(&self, cols: usize) -> (usize, usize, usize) {
-        let w = 56.min(cols.saturating_sub(4));
+        let w = crate::metrics::cols(56).min(cols.saturating_sub(4));
         match self.anchor {
             Some(c) => (1, c.min(cols.saturating_sub(w + 1)), w),
             None => (2, cols.saturating_sub(w) / 2, w),
@@ -675,20 +675,27 @@ pub(crate) mod draw {
                     // ▸ / ▾、フォルダのアイコン、名前と中の数
                     let d = b.depth.get(k).copied().unwrap_or(0);
                     let open = b.open.contains(key);
-                    let ui = std::mem::replace(&mut p.ui, false);
-                    p.text(&format!("{}{}", "  ".repeat(d + 1), if open { "▾" } else { "▸" }), x0, yy, STATUS_FG);
-                    p.ui = ui;
-                    let ic = x0 + 2 * d + 3;
+                    // 字下げ 1 段と ▸ ▾ の幅はアイコンの幅（プロジェクトの木と同じ。metrics.rs）
+                    let ind = crate::tree_panel::indent_cols();
+                    let px = crate::metrics::icon(crate::metrics::Icon::Small);
+                    let ax = x0 + 1 + d * ind;
+                    crate::icons::draw(p, if open { "g_chevronDown" } else { "g_chevronRight" }, ax as f32 * cell.w, crate::metrics::centered(yy, px), px, Some(STATUS_FG));
+                    let ic = ax + ind;
                     crate::tree_panel::draw::draw_tree_icon(p, &crate::tree_panel::draw::TreeIcon::Svg("n_folder"), ic, yy);
                     let name = key.rsplit(['/', ':']).next().unwrap_or(key);
-                    let c = p.text(name, ic + 2, yy, FG);
+                    let c = p.text(name, ic + crate::metrics::icon_cols(crate::metrics::Icon::Small), yy, FG);
                     p.text(&format!("  {}", b.folder_count(key)), c, yy, STATUS_FG);
                 }
                 Entry::Branch(i) => {
                     let br = &b.branches[*i];
                     let d = b.depth.get(k).copied().unwrap_or(0);
-                    let mark = if br.current { "●" } else { " " };
-                    let c = p.text(&format!("   {}{mark} ", "  ".repeat(d)), x0, yy, GIT_ADD);
+                    // 名前はフォルダの名前とそろえる（▸ ▾ とフォルダのアイコンの後）。今のブランチは名前の前に ●
+                    let ind = crate::tree_panel::indent_cols();
+                    let at = if d > 0 { x0 + 1 + d * ind + crate::metrics::icon_cols(crate::metrics::Icon::Small) } else { x0 + 1 + ind };
+                    if br.current {
+                        p.text("●", at.saturating_sub(2), yy, GIT_ADD);
+                    }
+                    let c = at;
                     // フォルダの中では / より後だけ
                     let label = if d > 0 { br.name.split('/').skip(d).collect::<Vec<_>>().join("/") } else { br.name.clone() };
                     let c = p.text(&label, c, yy, if br.current { rgb(0xe8e8e8) } else { FG });

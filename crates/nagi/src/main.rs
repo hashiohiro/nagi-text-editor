@@ -67,6 +67,7 @@ mod save_dialog;
 mod sql_complete;
 mod chrome;
 mod icons;
+mod metrics;
 mod input_dialog;
 mod search_bar;
 mod toggles;

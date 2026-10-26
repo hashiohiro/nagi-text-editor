@@ -584,7 +584,7 @@ pub(crate) mod draw {
             let mut r = 1;
             let row = |p: &mut Painter, r: usize, label: &str, focused: bool| {
                 if focused {
-                    p.out.push(Instance::fill(rx as f32 * cell.w - cell.w * 0.5, y(r), 2.0, cell.h, ACCENT_FG));
+                    p.out.push(Instance::fill(rx as f32 * cell.w - cell.w * 0.5, y(r), crate::metrics::accent_line(), cell.h, ACCENT_FG));
                 }
                 p.text(label, rx, y(r), if focused { FG } else { STATUS_FG });
             };

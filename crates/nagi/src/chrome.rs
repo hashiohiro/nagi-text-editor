@@ -14,30 +14,16 @@ use crate::tree_panel::{LeftTab, TABS};
 
 /// 上の帯の行の数
 pub const TOOLBAR_ROWS: usize = 1;
-/// 左右のアイコンの列の幅（列。行の高さに合わせて view.rs が set_metrics で決める）
-static STRIPE: AtomicUsize = AtomicUsize::new(3);
-/// 部品の文字の幅の、等幅の文字に対する倍率（×100。部品の文字を大きくしたとき）
-static UI_SCALE: AtomicUsize = AtomicUsize::new(100);
-
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-/// 左右のアイコンの列の幅（列）
+/// 左右のアイコンの列の幅（列。metrics.rs）
 pub fn stripe_w() -> usize {
-    STRIPE.load(Ordering::Relaxed)
+    crate::metrics::stripe_w()
 }
 
-/// 文字の大きさから枠の寸法を決める（セルの幅・高さと、部品の文字の大きさの比）。描くたびに呼ぶ
-pub fn set_metrics(cell_w: f32, cell_h: f32, ui_ratio: f32) {
-    // アイコンの列はアイコン（行の高さ）より少し広く
-    STRIPE.store(((cell_h * 1.5 / cell_w).round() as usize).clamp(3, 10), Ordering::Relaxed);
-    UI_SCALE.store((ui_ratio.max(1.0) * 100.0).round() as usize, Ordering::Relaxed);
-}
-
-/// 部品の文字で書いた `s` の幅（列）。部品の文字を本文より大きくしていれば、その分広く
+/// 部品の文字で書いた `s` の幅（列。metrics.rs）
 pub fn ui_width(s: &str) -> usize {
-    let w = nagi_core::display_col(s, s.len(), false);
-    (w * UI_SCALE.load(Ordering::Relaxed)).div_ceil(100)
+    crate::metrics::ui_width(s)
 }
+
 /// アイコン 1 つが使う行（アイコンの行と、間の 1 行）
 const SLOT: usize = 2;
 
@@ -191,13 +177,13 @@ impl Editor {
         let ws = self.toolbar_widgets();
         let (l, r): (Vec<Widget>, Vec<Widget>) = ws.into_iter().partition(|w| !w.right);
         for w in l {
-            let n = 2 + usize::from(w.icon.is_some()) * 2 + width(&w.text);
+            let n = 2 + if w.icon.is_some() { crate::metrics::icon_cols(crate::metrics::Icon::Small) } else { 0 } + width(&w.text);
             out.push((left, left + n, w));
             left += n + 1;
         }
         let mut rs = Vec::new();
         for w in r.into_iter().rev() {
-            let n = if w.text.is_empty() { 4 } else { 2 + usize::from(w.icon.is_some()) * 2 + width(&w.text) };
+            let n = if w.text.is_empty() { crate::metrics::icon_cols(crate::metrics::Icon::Large) + 2 } else { 2 + if w.icon.is_some() { crate::metrics::icon_cols(crate::metrics::Icon::Small) } else { 0 } + width(&w.text) };
             if right < left + n {
                 break;
             }
@@ -269,12 +255,12 @@ pub(crate) mod draw {
                 let y = row as f32 * cell.h;
                 let open = ed.tool_open(t);
                 // IntelliJ と同じく、出している欄のアイコンは角の丸い地の上に
-                let px = crate::icons::large(cell.h);
-                let pad = (cell.h * 0.25).round();
+                let px = crate::metrics::icon(crate::metrics::Icon::Large);
+                let pad = crate::metrics::pad() * 2.0;
                 let bx = x0 as f32 * cell.w + ((stripe_w() as f32 * cell.w - px) / 2.0).round();
-                let by = crate::icons::centered(y, cell.h, px);
+                let by = crate::metrics::centered(y, px);
                 if open {
-                    p.out.push(Instance::rounded(bx - pad, by - pad, px + 2.0 * pad, px + 2.0 * pad, 6.0, LIST_SEL_BG));
+                    p.out.push(Instance::rounded(bx - pad, by - pad, px + 2.0 * pad, px + 2.0 * pad, crate::metrics::radius(crate::metrics::Radius::Control), LIST_SEL_BG));
                 }
                 crate::icons::draw(p, icon_of(t), bx, by, px, None);
                 p.tab_hits.push((row, x0, x0 + stripe_w(), label));
@@ -294,19 +280,20 @@ pub(crate) mod draw {
                 let ini = if ini.chars().count() < 2 { name.chars().take(2).collect::<String>().to_uppercase() } else { ini };
                 const COLORS: [u32; 6] = [0x5c7bd9, 0x4f9e6c, 0xc4733d, 0x9a5fc4, 0xc2546f, 0x3f9ba8];
                 let hash = name.bytes().fold(7u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32));
-                let s = (cell.h * 0.78).round();
+                let s = crate::metrics::icon(crate::metrics::Icon::Small);
                 let (bx, by) = (c as f32 * cell.w, ((cell.h - s) / 2.0).round());
-                p.out.push(Instance::rounded(bx, by, s, s, 4.0, rgb(COLORS[hash as usize % COLORS.len()])));
-                let scale = 0.5;
+                p.out.push(Instance::rounded(bx, by, s, s, crate::metrics::radius(crate::metrics::Radius::Small), rgb(COLORS[hash as usize % COLORS.len()])));
+                // 字の高さは四角の 4 割ほど（四角の大きさは metrics.rs）
+                let scale = s * 0.42 / cell.h;
                 let tw = p.fonts.cell().w * scale * ini.chars().count() as f32;
                 p.small_text(&ini, bx + (s - tw) / 2.0, by + (s - cell.h * scale) / 2.0, scale, FG_BRIGHT);
-                c += 2;
+                c += crate::metrics::icon_cols(crate::metrics::Icon::Small);
             } else if let Some(name) = wd.icon {
                 // アイコンだけのボタン（▶・デバッグ・止める・検索・設定）は帯の高さいっぱいに（IntelliJ の帯のボタンと同じくらい）
-                let px = if wd.text.is_empty() { crate::icons::large(cell.h) } else { crate::icons::small(cell.h) };
+                let px = if wd.text.is_empty() { crate::metrics::icon(crate::metrics::Icon::Large) } else { crate::metrics::icon(crate::metrics::Icon::Small) };
                 let cx = if wd.text.is_empty() { (c0 + c1) as f32 / 2.0 * cell.w - px / 2.0 } else { c as f32 * cell.w };
-                crate::icons::draw(p, name, cx, crate::icons::centered(0.0, cell.h, px), px, None);
-                c += 2;
+                crate::icons::draw(p, name, cx, crate::metrics::centered(0.0, px), px, None);
+                c += crate::metrics::icon_cols(crate::metrics::Icon::Small);
             }
             if !wd.text.is_empty() {
                 let fg = if wd.hit == Hit::Projects { FG_BRIGHT } else { FG };

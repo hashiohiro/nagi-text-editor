@@ -64,6 +64,11 @@ pub enum LeftTab {
 /// タブ（1 行目にアイコンで並べる。名前は出しているタブの横に出す）
 pub const TABS: [(&str, LeftTab); 3] = [("プロジェクト", LeftTab::Project), ("コミット", LeftTab::Commit), ("実行", LeftTab::Run)];
 
+/// 木の字下げ 1 段の列の数（▸ ▾ のアイコンの幅。metrics.rs）
+pub fn indent_cols() -> usize {
+    crate::metrics::icon_cols(crate::metrics::Icon::Small).max(2)
+}
+
 impl TreePanel {
     fn rebuild(&mut self) {
         let sel = self.rows.get(self.selected).map(|r| r.path.clone());
@@ -477,7 +482,8 @@ impl crate::layout::View for TreeView {
             let h = r.h.saturating_sub(1);
             crate::list::wheel(&mut t.selected, &mut t.scroll, t.rows.len(), h, dy);
             if dx != 0 {
-                let widest = t.rows.iter().skip(t.scroll).take(h).map(|x| x.depth * 2 + 4 + nagi_core::display_col(&x.name, x.name.len(), false)).max().unwrap_or(0);
+                let ind = crate::tree_panel::indent_cols();
+                let widest = t.rows.iter().skip(t.scroll).take(h).map(|x| (x.depth + 1) * ind + crate::metrics::icon_cols(crate::metrics::Icon::Small) + nagi_core::display_col(&x.name, x.name.len(), false)).max().unwrap_or(0);
                 crate::list::hwheel(&mut t.left, widest + 1, r.w, dx);
             }
         }
@@ -565,8 +571,9 @@ pub(crate) mod draw {
             } else if selected {
                 p.out.push(Instance::fill(x, y, w, cell.h, MATCH_BG));
             }
-            let mark = if row.dir { if t.is_expanded(&row.path) { "▾ " } else { "▸ " } } else { "  " };
-            let icon_col = r.x + row.depth * 2 + 2;
+            // 字下げ 1 段と ▸ ▾ の幅は、アイコンの幅（metrics.rs）
+            let ind = crate::tree_panel::indent_cols();
+            let icon_col = r.x + (row.depth + 1) * ind;
             let state = git.get(&row.path).copied();
             let fg = match state {
                 _ if reversed => FG_BRIGHT,
@@ -579,16 +586,18 @@ pub(crate) mod draw {
             };
             // 横に送っていれば、字下げ・印・アイコン・名前を左端の分だけ左へ（左端より左は描かない）
             let left = t.left;
-            let label: String = format!("{}{mark}", "  ".repeat(row.depth)).chars().skip(left).collect();
-            // 字下げと ▸ ▾ はセルの位置で（アイコンと名前をそろえる）
-            let ui = std::mem::replace(&mut p.ui, false);
-            p.text(&label, r.x, y, if reversed { FG_BRIGHT } else { STATUS_FG });
-            p.ui = ui;
-            let icon_at = row.depth * 2 + 2;
+            // ▸ ▾ は IntelliJ の山形のアイコン
+            let arrow_at = row.depth * ind;
+            if row.dir && arrow_at >= left {
+                let name = if t.is_expanded(&row.path) { "g_chevronDown" } else { "g_chevronRight" };
+                let px = crate::metrics::icon(crate::metrics::Icon::Small);
+                crate::icons::draw(p, name, (r.x + arrow_at - left) as f32 * cell.w, crate::metrics::centered(y, px), px, None);
+            }
+            let icon_at = (row.depth + 1) * ind;
             if icon_at >= left && icon_col - left + 3 < r.x + r.w {
                 draw_tree_icon(p, &tree_icon(row, index, &t.root), icon_col - left, y);
             }
-            let name_at = icon_at + 2;
+            let name_at = icon_at + crate::metrics::icon_cols(crate::metrics::Icon::Small);
             let mut items = p.items(&row.name, fg);
             crate::view::skip_cols(&mut items, left.saturating_sub(name_at), &mut None);
             p.draw(&items, r.x + name_at.saturating_sub(left), y);
@@ -668,18 +677,19 @@ pub(crate) mod draw {
         let cell = p.fonts.cell();
         match icon {
             TreeIcon::Svg(name) => {
-                // 2 列の中に収める（部品の文字を大きくして行が高くなっても、名前に重ならない）
-                let px = crate::icons::small(cell.h).min(2.0 * cell.w);
-                let x = col as f32 * cell.w + ((2.0 * cell.w - px) / 2.0).max(0.0) - 2.0;
-                crate::icons::draw(p, name, x, crate::icons::centered(y, cell.h, px), px, None);
+                // アイコンの列（metrics::icon_cols）の左に寄せる。後ろの文字はその列の後から
+                let px = crate::metrics::icon(crate::metrics::Icon::Small);
+                let x = col as f32 * cell.w;
+                crate::icons::draw(p, name, x, crate::metrics::centered(y, px), px, None);
             }
             TreeIcon::Badge(label, bg, fg) => {
-                let s = (cell.h * 0.62).round().clamp(10.0, 26.0);
-                let x = col as f32 * cell.w + ((2.0 * cell.w - s) / 2.0).max(0.0) - 2.0;
+                // 名前の無いアイコンの代わりの札も、ふつうのアイコンと同じ大きさの割合で
+                let s = (crate::metrics::icon(crate::metrics::Icon::Small) * 0.8).round();
+                let x = col as f32 * cell.w + ((crate::metrics::icon(crate::metrics::Icon::Small) - s) / 2.0).round();
                 let y = y + ((cell.h - s) / 2.0).round();
                 p.out.push(Instance::fill(x, y, s, s, *bg));
                 let n = label.chars().count() as f32;
-                let scale = if n >= 2.0 { (s * 0.95 / (2.0 * cell.w)).min(0.5) } else { 0.62 };
+                let scale = if n >= 2.0 { (s * 0.95 / (n * cell.w)).min(s * 0.5 / cell.h) } else { s * 0.62 / cell.h };
                 let tw = cell.w * scale * n;
                 p.small_text(label, x + (s - tw) / 2.0, y + (s - cell.h * scale) / 2.0, scale, *fg);
             }

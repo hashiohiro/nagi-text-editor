@@ -475,26 +475,11 @@ pub(crate) mod draw {
         p.out.push(Instance::fill(x0, y0, wpx, r.h as f32 * cell.h, PANEL_BG));
         p.out.push(Instance::fill(x0, y0, wpx, 1.0, SEPARATOR));
         let focused = ed.bottom_focused();
-        // 左右の欄と同じく、タブはアイコンで並べ、出しているタブの名前を横に
-        let tabs: Vec<(TabIcon, &'static str, bool)> = ed
-            .bottom_tabs()
-            .into_iter()
-            .map(|(l, k)| {
-                let icon = match k {
-                    BottomKind::Git => TabIcon::Git,
-                    BottomKind::Grep => TabIcon::Search,
-                    BottomKind::Problems => TabIcon::Problems,
-                    BottomKind::Output => TabIcon::Output,
-                    BottomKind::Terminal => TabIcon::Terminal,
-                    BottomKind::Debug => TabIcon::Debug,
-                    BottomKind::Result => TabIcon::Result,
-                };
-                (icon, l, k == ed.bottom_kind)
-            })
-            .collect();
+        // 見出しは出しているタブの名前（タブを替えるのは左のアイコンの列）
+        let name = ed.bottom_tabs().into_iter().find(|t| t.1 == ed.bottom_kind).map_or("", |t| t.0);
         // 左端の 2 列は ▾ のボタン
         let bx = crate::bottom_panel::BTAB_X;
-        draw_icon_tabs(p, Rect { x: r.x + bx, y: r.y, w: r.w.saturating_sub(bx), h: 1 }, &tabs, focused, "");
+        draw_panel_title(p, Rect { x: r.x + bx, y: r.y, w: r.w.saturating_sub(bx), h: 1 }, name, focused, "");
         p.out.push(Instance::fill(x0, y0 + cell.h - 1.0, bx as f32 * cell.w, 1.0, SEPARATOR));
         let c = Rect { x: r.x, y: r.y + 1, w: r.w, h: r.h.saturating_sub(1) };
         let empty = |p: &mut Painter, s: &str| {

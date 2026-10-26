@@ -1006,7 +1006,7 @@ pub(crate) mod draw {
             let on = k == res.active;
             let end = p.text(&format!(" {l} "), x, y0, if on && focused { FG } else if on { rgb(0xc8c8c8) } else { STATUS_FG });
             if on {
-                p.out.push(Instance::fill(x as f32 * cell.w, y0 + cell.h - 2.0, (end - x) as f32 * cell.w, 2.0, if focused { GIT_MOD } else { STATUS_FG }));
+                p.out.push(Instance::fill(x as f32 * cell.w, y0 + cell.h - crate::metrics::accent_line(), (end - x) as f32 * cell.w, crate::metrics::accent_line(), if focused { GIT_MOD } else { STATUS_FG }));
             }
             x = end + 1;
         }

@@ -155,19 +155,19 @@ pub(crate) const PANEL_BG: [f32; 4] = rgb(0x2b2d30);
 pub(crate) const POPUP_BG: [f32; 4] = rgb(0x2b2d30);
 /// 小窓・ダイアログの枠の線
 pub(crate) const POPUP_BORDER: [f32; 4] = rgb(0x43454a);
-/// 小窓の角の丸み（px）
-pub(crate) const POPUP_RADIUS: f32 = 8.0;
 
 /// 小窓・ダイアログの地: 影、角の丸い枠と地（IntelliJ の New UI の小窓と同じ）
 pub(crate) fn popup_frame(p: &mut Painter, x: f32, y: f32, w: f32, h: f32) {
-    p.out.push(Instance::shadow(x, y, w, h, POPUP_RADIUS, 16.0, [0.0, 0.0, 0.0, 0.55]));
-    p.out.push(Instance::rounded(x - 1.0, y - 1.0, w + 2.0, h + 2.0, POPUP_RADIUS + 1.0, POPUP_BORDER));
-    p.out.push(Instance::rounded(x, y, w, h, POPUP_RADIUS, POPUP_BG));
+    let r = crate::metrics::radius(crate::metrics::Radius::Popup);
+    p.out.push(Instance::shadow(x, y, w, h, r, crate::metrics::shadow(), [0.0, 0.0, 0.0, 0.55]));
+    p.out.push(Instance::rounded(x - 1.0, y - 1.0, w + 2.0, h + 2.0, r + 1.0, POPUP_BORDER));
+    p.out.push(Instance::rounded(x, y, w, h, r, POPUP_BG));
 }
 
 /// 一覧の選んでいる行（左右に少し隙間を空けた、角の丸い地。IntelliJ の New UI と同じ）
 pub(crate) fn selection(p: &mut Painter, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) {
-    p.out.push(Instance::rounded(x + 4.0, y + 1.0, (w - 8.0).max(1.0), h - 2.0, 4.0, color));
+    let (pad, r) = (crate::metrics::pad() * 2.0, crate::metrics::radius(crate::metrics::Radius::Control));
+    p.out.push(Instance::rounded(x + pad, y + 1.0, (w - 2.0 * pad).max(1.0), h - 2.0, r, color));
 }
 
 /// 欄の区切りの 1px の線
@@ -251,6 +251,19 @@ pub(crate) struct Painter<'a> {
     pub(crate) ui: bool,
 }
 
+/// 部品の文字の中で、アイコンで描く印の字（icons.rs の名前）
+fn mark_icon(ch: char) -> Option<&'static str> {
+    Some(match ch {
+        '▾' | '▼' => "g_chevronDown",
+        '▸' | '►' => "g_chevronRight",
+        '＋' => "g_add",
+        '⟳' => "g_refresh",
+        '✓' | '✔' => "g_greenCheckmark",
+        '×' => "g_closeSmall",
+        _ => return None,
+    })
+}
+
 impl Painter<'_> {
     pub(crate) fn items<'s>(&self, s: &'s str, fg: [f32; 4]) -> Vec<Item<'s>> {
         s.graphemes(true).map(|g| Item { g: Cow::Borrowed(g), width: self.cell_width(g), fg, bg: None, underline: false }).collect()
@@ -315,6 +328,20 @@ impl Painter<'_> {
         for it in items {
             let ch = it.g.chars().next().unwrap_or(' ');
             let g = if ch == '\t' { None } else { self.fonts.ui.as_ref().and_then(|u| u.glyph(ch)) };
+            // 印の字（▾ ▸ ＋ ⟳ ✓ ×）は IntelliJ のアイコンで、どこでも同じ大きさに（metrics.rs）。色は文字の色
+            if let Some(name) = mark_icon(ch) {
+                let px = crate::metrics::icon(crate::metrics::Icon::Small);
+                let adv = g.map_or(0.0, |g| g.2).max(px);
+                if x + adv > limit {
+                    break;
+                }
+                if let Some(bg) = it.bg {
+                    self.out.push(Instance::fill(x.floor(), y, adv.ceil(), cell.h, bg));
+                }
+                crate::icons::draw(self, name, x + ((adv - px) / 2.0).round(), crate::metrics::centered(y, px), px, Some(it.fg));
+                x += adv;
+                continue;
+            }
             let adv = g.map_or(it.width as f32 * cell.w, |g| g.2);
             if x + adv > limit {
                 break;
@@ -379,36 +406,19 @@ impl Painter<'_> {
         // 部品の文字で描いているときは、その幅を列に切り上げる（右に寄せる・続けて描く位置がずれないように）
         if let (true, Some(ui)) = (self.ui, &self.fonts.ui) {
             let cell = self.fonts.cell();
-            return (ui.width(s, cell.w) / cell.w - 0.01).ceil().max(0.0) as usize;
+            let px = crate::metrics::icon(crate::metrics::Icon::Small);
+            let w: f32 = s
+                .chars()
+                .map(|c| {
+                    let adv = ui.glyph(c).map_or(cell.w, |g| g.2);
+                    if mark_icon(c).is_some() { adv.max(px) } else { adv }
+                })
+                .sum();
+            return (w / cell.w - 0.01).ceil().max(0.0) as usize;
         }
         nagi_text::graphemes(self.fonts, s).map(|(_, _, w)| w).sum()
     }
 
-    /// ステータスバーのメッセージ: 少し小さい字で (col, y) から（下に寄せる）。戻り値は描き終えた列（切り上げ）
-    pub(crate) fn msg_text(&mut self, s: &str, col: usize, y: f32, fg: [f32; 4]) -> usize {
-        const S: f32 = 0.82;
-        let cell = self.fonts.cell();
-        if let Some(t) = &mut self.texts {
-            t.push(((y / cell.h).round() as usize, col, s.to_string()));
-        }
-        let limit = self.cols as f32 * cell.w;
-        let mut x = col as f32 * cell.w;
-        let y = (y + cell.h * (1.0 - S) * 0.7).round();
-        for g in s.graphemes(true) {
-            let w = self.cell_width(g);
-            let adv = w as f32 * cell.w * S;
-            if x + adv > limit {
-                break;
-            }
-            if let Some(key) = self.fonts.glyph_for(g, w) {
-                if let Some(a) = self.r.glyph(self.fonts, key) {
-                    self.out.push(Instance { rect: [x + a.left * S, y + a.top * S, a.uv[2] * S, a.uv[3] * S], uv: a.uv, color: fg, kind: if a.color { 2 } else { 1 } });
-                }
-            }
-            x += adv;
-        }
-        (x / cell.w).ceil() as usize
-    }
 }
 
 /// 知らせの色（エラーは赤・警告は黄、ほかは `fg`）
@@ -422,7 +432,9 @@ pub(crate) fn msg_color(ed: &Editor, fg: [f32; 4]) -> [f32; 4] {
 
 /// ステータスバーの左: `small` ならメッセージとして少し小さい字で
 pub(crate) fn status_text(p: &mut Painter, s: &str, small: bool, y: f32, fg: [f32; 4]) -> usize {
-    if small { p.msg_text(s, 0, y, fg) } else { p.text(s, 0, y, fg) }
+    // 知らせ・進み具合も部品の文字の大きさで（前は等幅の字を 0.82 倍に縮めていた）
+    let _ = small;
+    p.text(s, 0, y, fg)
 }
 
 /// 英数字・記号（ASCII の印字可能文字）をまとめてアトラスへ載せる。初めて打った文字をその場で
@@ -674,11 +686,13 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
         }
         if pane.breaks.contains(&ln) {
             // 赤い丸（IntelliJ のブレークポイントと同じく行番号の上に）
-            let d = (cell.h * 0.55).round();
+            let d = (crate::metrics::icon(crate::metrics::Icon::Small) * 0.65).round();
             let cx = (rect.x + bw) as f32 * cell.w + cell.w * 2.5;
             p.out.push(Instance::rounded(cx - d / 2.0, y + (cell.h - d) / 2.0, d, d, d / 2.0, rgb(0xe55765)));
         } else if pane.exec == Some(ln) {
-            p.text("▶", rect.x + bw, y, DIAG_WARN);
+            // 止まっている行の印（▶ のアイコン。大きさは metrics.rs）
+            let px = crate::metrics::icon(crate::metrics::Icon::Small);
+            crate::icons::draw(p, "r_run", (rect.x + bw) as f32 * cell.w + cell.w * 0.5, crate::metrics::centered(y, px), px, Some(DIAG_WARN));
         }
         // SQL コンソール: カーソルのある文（Ctrl+Enter で流す範囲）に緑の線
         if stmt.is_some_and(|(s, e)| ln >= s && ln < e) {
@@ -919,7 +933,9 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     let (w, h) = r.size();
     let cols = (w as f32 / cell.w) as usize;
     let rows = ((h as f32 / cell.h) as usize).saturating_sub(ed.status_rows()).max(1);
-    crate::chrome::set_metrics(cell.w, cell.h, fonts.ui_ratio());
+    // 部品の寸法の元（metrics.rs）: 部品の文字の大きさ・セル
+    let em = fonts.ui.as_ref().map_or(cell.h * 0.75, |u| u.px());
+    crate::metrics::set(em, cell.w, cell.h, fonts.ui_ratio());
     ed.set_screen(cols, rows);
     // Markdown のプレビュー: 打った内容と幅に合わせて作り直し、カーソルの行へ送る
     ed.refresh_md_preview();
@@ -1252,13 +1268,9 @@ pub(crate) fn draw_toggle_buttons(p: &mut Painter, ed: &Editor, cols: usize, sta
         let cw = if b.wide() { 2.0 * cell.w } else { cell.w };
         p.out.push(Instance::fill(x, y, cw, cell.h, if hover { MATCH_BG } else { PANEL_BG }));
         let color = if hover { FG } else { STATUS_FG };
-        match b {
-            // 下の欄は、左右の « » に合わせて縦の二重の山形を線で描く（フォントに揃った字が無いため）
-            crate::toggles::Button::HideBottom => draw_double_chevron(p, x, y, false, color),
-            _ => {
-                p.text(b.glyph(), col, y, color);
-            }
-        }
+        // IntelliJ のツールウィンドウの「隠す」（—）のアイコン（大きさは metrics.rs）
+        let px = crate::metrics::icon(crate::metrics::Icon::Small);
+        crate::icons::draw(p, "g_hide", x + ((cw - px) / 2.0).round(), crate::metrics::centered(y, px), px, Some(color));
         if hover {
             let label = format!(" {} ", b.label(ed));
             let w = p.width(&label);
@@ -1270,67 +1282,17 @@ pub(crate) fn draw_toggle_buttons(p: &mut Painter, ed: &Editor, cols: usize, sta
     }
 }
 
-/// 縦の二重の山形（︽ ︾）をセル (x, y) に描く。`up` なら上向き
-pub(crate) fn draw_double_chevron(p: &mut Painter, x: f32, y: f32, up: bool, c: [f32; 4]) {
-    let cell = p.fonts.cell();
-    let px = (cell.h / 22.0).max(1.0).round();
-    // 山の半幅（ドット数）と、2 つの山の間
-    let half = ((cell.w * 0.32) / px).round().max(2.0) as i32;
-    let gap = px * (half as f32 * 0.8).round().max(2.0);
-    let total = half as f32 * px + gap + px * 2.0;
-    let cx = x + (cell.w / 2.0).floor();
-    let top = y + ((cell.h - total) / 2.0).round();
-    for k in 0..2 {
-        let base = top + k as f32 * gap;
-        for i in 0..=half {
-            // 上向きは頂点が上、下向きは頂点が下
-            let dy = if up { i } else { half - i } as f32 * px;
-            p.out.push(Instance::fill(cx - i as f32 * px - px, base + dy, px * 2.0, px * 2.0, c));
-            p.out.push(Instance::fill(cx + i as f32 * px - px, base + dy, px * 2.0, px * 2.0, c));
-        }
-    }
-}
 
-/// 左の欄の 1 行目: タブ（プロジェクト・コミット）。出しているタブは明るい字と下線
+/// 左の欄の 1 行目: 出している道具の名前
 pub(crate) fn draw_left_tabs(p: &mut Painter, r: Rect, active: crate::tree_panel::LeftTab, focused: bool, extra: &str) {
-    use crate::tree_panel::LeftTab;
-    let tabs: Vec<(TabIcon, &'static str, bool)> = crate::tree_panel::TABS
-        .iter()
-        .map(|(l, t)| {
-            let icon = match t {
-                LeftTab::Project => TabIcon::Project,
-                LeftTab::Commit => TabIcon::Commit,
-                LeftTab::Run => TabIcon::Run,
-            };
-            (icon, *l, *t == active)
-        })
-        .collect();
-    draw_icon_tabs(p, r, &tabs, focused, extra);
-}
-
-/// 左右の欄のタブのアイコン
-#[derive(Clone, Copy)]
-pub(crate) enum TabIcon {
-    Project,
-    Commit,
-    Run,
-    Database,
-    Maven,
-    Preview,
-    Git,
-    Search,
-    Problems,
-    Output,
-    Terminal,
-    Result,
-    Debug,
+    let name = crate::tree_panel::TABS.iter().find(|t| t.1 == active).map_or("", |t| t.0);
+    draw_panel_title(p, r, name, focused, extra);
 }
 
 /// 欄の 1 行目: 出している道具の名前（IntelliJ のツールウィンドウの見出しと同じ）。タブを替えるのは左右のアイコンの列（chrome.rs）
-pub(crate) fn draw_icon_tabs(p: &mut Painter, r: Rect, tabs: &[(TabIcon, &'static str, bool)], focused: bool, extra: &str) {
+pub(crate) fn draw_panel_title(p: &mut Painter, r: Rect, name: &str, focused: bool, extra: &str) {
     let cell = p.fonts.cell();
     let y = r.y as f32 * cell.h;
-    let name = tabs.iter().find(|t| t.2).map_or("", |t| t.1);
     let saved = p.cols;
     p.cols = (r.x + r.w).saturating_sub(3);
     let mut x = p.text(&format!(" {name}"), r.x, y, if focused { FG_BRIGHT } else { FG });
@@ -1572,7 +1534,7 @@ pub(crate) fn dialog_buttons<T: Copy + PartialEq>(p: &mut Painter, right: usize,
         let bw = p.width(label);
         bx = bx.saturating_sub(bw + 1);
         let main = b == primary;
-        p.out.push(Instance::rounded(bx as f32 * cell.w, y + 2.0, bw as f32 * cell.w, cell.h - 4.0, 5.0, if main { ACCENT_FG } else { RAISED_BG }));
+        p.out.push(Instance::rounded(bx as f32 * cell.w, y + crate::metrics::pad(), bw as f32 * cell.w, cell.h - 2.0 * crate::metrics::pad(), crate::metrics::radius(crate::metrics::Radius::Control), if main { ACCENT_FG } else { RAISED_BG }));
         p.text(label, bx, y, if main { FG_BRIGHT } else { FG });
         hits.push((row, bx, bx + bw, b));
     }

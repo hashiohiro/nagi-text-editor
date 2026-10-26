@@ -23,12 +23,14 @@ pub struct InputDialog {
     pub button: usize,
 }
 
-/// ダイアログの幅（列）
-const W: usize = 64;
+/// ダイアログの幅（列。等幅の文字で 64 列ぶん、部品の文字の大きさに合わせる）
+fn dialog_w() -> usize {
+    crate::metrics::cols(64)
+}
 
 /// ダイアログの矩形（画面の上の方の真ん中）
 pub fn rect(d: &InputDialog, cols: usize, rows: usize) -> Rect {
-    let w = W.min(cols.saturating_sub(4));
+    let w = dialog_w().min(cols.saturating_sub(4));
     let h = 7 + d.notes.len();
     Rect { x: cols.saturating_sub(w) / 2, y: (rows / 4).min(rows.saturating_sub(h)), w, h }
 }
@@ -183,7 +185,7 @@ pub(crate) mod draw {
         for (i, row, c0, c1) in buttons(r) {
             let label = if i == 0 { "OK" } else { "キャンセル" };
             let on = i == d.button;
-            p.out.push(Instance::rounded(c0 as f32 * cell.w, row as f32 * cell.h + 2.0, (c1 - c0) as f32 * cell.w, cell.h - 4.0, 5.0, if on { ACCENT_FG } else { RAISED_BG }));
+            p.out.push(Instance::rounded(c0 as f32 * cell.w, row as f32 * cell.h + crate::metrics::pad(), (c1 - c0) as f32 * cell.w, cell.h - 2.0 * crate::metrics::pad(), crate::metrics::radius(crate::metrics::Radius::Control), if on { ACCENT_FG } else { RAISED_BG }));
             let lw = p.width(label);
             p.text(label, c0 + (c1 - c0).saturating_sub(lw) / 2, row as f32 * cell.h, if on { FG_BRIGHT } else { FG });
         }

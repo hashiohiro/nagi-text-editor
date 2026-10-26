@@ -119,11 +119,11 @@ pub(crate) mod draw {
         let hits = ed.search_bar_hits();
         let at = |b: BarHit| hits.iter().find(|h| h.0 == b).copied();
         // 検索語（と置換後の語）
-        let px = crate::icons::small(cell.h);
-        crate::icons::draw(p, "g_search", x0 + cell.w * 0.5, crate::icons::centered(y0, cell.h, px), px, None);
+        let px = crate::metrics::icon(crate::metrics::Icon::Small);
+        crate::icons::draw(p, "g_search", x0 + cell.w * 0.5, crate::metrics::centered(y0, px), px, None);
         if let Some((_, row, _, c1)) = at(BarHit::Query) {
             p.cols = c1;
-            field(p, &ed.query.text, ed.query.cursor, if ed.replace_field == 0 { &ed.preedit } else { "" }, r.x + 3, row as f32 * cell.h, ed.replace_field == 0);
+            field(p, &ed.query.text, ed.query.cursor, if ed.replace_field == 0 { &ed.preedit } else { "" }, r.x + 1 + crate::metrics::icon_cols(crate::metrics::Icon::Small), row as f32 * cell.h, ed.replace_field == 0);
             // 件数（3/12）。見つからなければ赤く
             p.cols = r.x + r.w;
             let (count, found) = match (ed.search.current, ed.match_count()) {
@@ -136,7 +136,7 @@ pub(crate) mod draw {
         }
         if let Some((_, row, c0, c1)) = at(BarHit::Regex) {
             if ed.search.regex {
-                p.out.push(Instance::rounded(c0 as f32 * cell.w, row as f32 * cell.h + 2.0, (c1 - c0) as f32 * cell.w, cell.h - 4.0, 5.0, LIST_SEL_BG));
+                p.out.push(Instance::rounded(c0 as f32 * cell.w, row as f32 * cell.h + crate::metrics::pad(), (c1 - c0) as f32 * cell.w, cell.h - 2.0 * crate::metrics::pad(), crate::metrics::radius(crate::metrics::Radius::Control), LIST_SEL_BG));
             }
             p.text("[.*]", c0, row as f32 * cell.h, if ed.search.regex { FG_BRIGHT } else { STATUS_FG });
         }
@@ -148,11 +148,11 @@ pub(crate) mod draw {
         if let Some((_, row, _, c1)) = at(BarHit::Repl) {
             p.cols = c1;
             p.text("→", r.x + 1, row as f32 * cell.h, STATUS_FG);
-            field(p, &ed.repl.text, ed.repl.cursor, if ed.replace_field == 1 { &ed.preedit } else { "" }, r.x + 3, row as f32 * cell.h, ed.replace_field == 1);
+            field(p, &ed.repl.text, ed.repl.cursor, if ed.replace_field == 1 { &ed.preedit } else { "" }, r.x + 1 + crate::metrics::icon_cols(crate::metrics::Icon::Small), row as f32 * cell.h, ed.replace_field == 1);
             p.cols = r.x + r.w;
             for (b, s) in [(BarHit::ReplaceOne, "置換"), (BarHit::ReplaceAll, "すべて置換")] {
                 if let Some((_, row, c0, c1)) = at(b) {
-                    p.out.push(Instance::rounded(c0 as f32 * cell.w, row as f32 * cell.h + 2.0, (c1 - c0) as f32 * cell.w, cell.h - 4.0, 5.0, RAISED_BG));
+                    p.out.push(Instance::rounded(c0 as f32 * cell.w, row as f32 * cell.h + crate::metrics::pad(), (c1 - c0) as f32 * cell.w, cell.h - 2.0 * crate::metrics::pad(), crate::metrics::radius(crate::metrics::Radius::Control), RAISED_BG));
                     let lw = p.width(s);
                     p.text(s, c0 + (c1 - c0).saturating_sub(lw) / 2, row as f32 * cell.h, FG);
                 }

@@ -140,8 +140,8 @@ impl Notify {
 /// 吹き出しの位置（吹き出しの番号, 矩形, 折り返した行）。右下から上へ積む（新しいものが下）
 pub fn balloon_layout(ed: &Editor, rows: usize) -> Vec<(usize, crate::panes::Rect, Vec<String>)> {
     let a = ed.area();
-    let w = (a.w / 3).clamp(30, 60).min(a.w);
-    let inner = w.saturating_sub(5);
+    let w = (a.w / 3).clamp(crate::metrics::cols(30), crate::metrics::cols(60)).min(a.w);
+    let inner = w.saturating_sub(3 + crate::metrics::icon_cols(crate::metrics::Icon::Small));
     let mut out = Vec::new();
     let mut bottom = rows;
     for (i, b) in ed.notify.balloons.iter().enumerate().rev() {
@@ -160,7 +160,7 @@ pub fn balloon_layout(ed: &Editor, rows: usize) -> Vec<(usize, crate::panes::Rec
 /// 表示の幅 `w` で折り返す（`max` 行まで。あふれたら最後に …）
 fn wrap(text: &str, w: usize, max: usize) -> Vec<String> {
     // 部品の文字（等幅でない）は等幅の幅の 9 割ほどなので、その分多く入れる
-    let w = w * 115 / 100;
+    let w = crate::metrics::fit(w);
     let mut lines = vec![String::new()];
     let mut cur = 0;
     for ch in text.chars() {
@@ -226,11 +226,11 @@ pub(crate) mod draw {
                 Level::Warn => "g_warningDialog",
                 _ => "g_informationDialog",
             };
-            let px = crate::icons::small(cell.h);
-            crate::icons::draw(p, icon, x0 + cell.w, crate::icons::centered(y0 + cell.h, cell.h, px), px, None);
+            let px = crate::metrics::icon(crate::metrics::Icon::Small);
+            crate::icons::draw(p, icon, x0 + cell.w, crate::metrics::centered(y0 + cell.h, px), px, None);
             p.cols = r.x + r.w - 1;
             for (k, l) in lines.iter().enumerate() {
-                p.text(l, r.x + 3, (r.y + 1 + k) as f32 * cell.h, FG);
+                p.text(l, r.x + 1 + crate::metrics::icon_cols(crate::metrics::Icon::Small), (r.y + 1 + k) as f32 * cell.h, FG);
             }
         }
         p.cols = saved;

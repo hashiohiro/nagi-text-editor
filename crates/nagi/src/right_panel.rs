@@ -273,19 +273,9 @@ pub(crate) mod draw {
         p.out.push(Instance::fill(x0 - cell.w * 0.5, y0, 1.0, r.h as f32 * cell.h, LINE_NO));
         let focused = ed.right_focused();
         let tab = ed.right_visible().unwrap_or_default();
-        // 左の欄と同じく、タブはいつも全部をアイコンで並べる
-        let tabs: Vec<(TabIcon, &'static str, bool)> = crate::right_panel::RTABS
-            .iter()
-            .map(|(l, t)| {
-                let icon = match t {
-                    RightTab::Database => TabIcon::Database,
-                    RightTab::Maven => TabIcon::Maven,
-                    RightTab::Preview => TabIcon::Preview,
-                };
-                (icon, *l, *t == tab)
-            })
-            .collect();
-        draw_icon_tabs(p, r, &tabs, focused, "");
+        // 見出しは出しているタブの名前（タブを替えるのは右のアイコンの列）
+        let name = crate::right_panel::RTABS.iter().find(|t| t.1 == tab).map_or("", |t| t.0);
+        draw_panel_title(p, r, name, focused, "");
         let saved = p.cols;
         p.cols = r.x + r.w;
         if tab == RightTab::Preview {

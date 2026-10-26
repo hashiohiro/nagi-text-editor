@@ -176,7 +176,7 @@ pub(crate) mod draw {
                 p.out.push(Instance::fill(x0 + cell.w, y, wpx - 2.0 * cell.w, cell.h, CODE_BG));
             }
             if focused && k == pv.selected {
-                p.out.push(Instance::fill(x0, y, 2.0, cell.h, ACCENT_FG));
+                p.out.push(Instance::fill(x0, y, crate::metrics::accent_line(), cell.h, ACCENT_FG));
             }
             // 範囲ごとの色（無いところは地の色）
             let color = |st: Style| match st {

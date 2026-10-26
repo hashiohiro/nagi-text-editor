@@ -1080,8 +1080,8 @@ pub(crate) mod draw {
         // 1 行目: 題と絞り込みの欄、保存先
         let end = p.text(" 設定   ", x0, y(0), FG);
         // 虫眼鏡は線で描く（🔍 の字はカラー絵文字のフォントに落ちて重い）
-        { let px = crate::icons::small(cell.h); crate::icons::draw(p, "g_search", (end as f32 + 0.5) * cell.w - px / 2.0, crate::icons::centered(y(0), cell.h, px), px, None); }
-        let e = end + 2;
+        { let px = crate::metrics::icon(crate::metrics::Icon::Small); crate::icons::draw(p, "g_search", (end as f32 + 0.5) * cell.w - px / 2.0, crate::metrics::centered(y(0), px), px, None); }
+        let e = end + crate::metrics::icon_cols(crate::metrics::Icon::Small);
         let fend = if d.focus == SFocus::Filter {
             draw_vim_field(p, &d.filter, e, y(0), &ed.preedit)
         } else {
@@ -1125,7 +1125,7 @@ pub(crate) mod draw {
             let sel = k == d.selected;
             let focused = sel && matches!(d.focus, SFocus::Items | SFocus::Edit);
             if focused {
-                p.out.push(Instance::fill(rx as f32 * cell.w - cell.w * 0.5, y(r), 2.0, cell.h, ACCENT_FG));
+                p.out.push(Instance::fill(rx as f32 * cell.w - cell.w * 0.5, y(r), crate::metrics::accent_line(), cell.h, ACCENT_FG));
             }
             if sel {
                 p.out.push(Instance::fill(rx as f32 * cell.w, y(r), (x0 + w - rx - 1) as f32 * cell.w, cell.h, MATCH_BG));
@@ -1298,7 +1298,7 @@ pub(crate) mod draw {
             if sel {
                 p.out.push(Instance::fill(rx as f32 * cell.w, y(r), (right - rx - 1) as f32 * cell.w, cell.h, MATCH_BG));
                 if matches!(d.focus, SFocus::Items | SFocus::Edit) {
-                    p.out.push(Instance::fill(rx as f32 * cell.w - cell.w * 0.5, y(r), 2.0, cell.h, ACCENT_FG));
+                    p.out.push(Instance::fill(rx as f32 * cell.w - cell.w * 0.5, y(r), crate::metrics::accent_line(), cell.h, ACCENT_FG));
                 }
             }
             item_rows.push((y0 + r, k, vx));

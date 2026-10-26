@@ -776,7 +776,7 @@ pub(crate) mod draw {
             let on = target == Some(ts.active) && !ts.list.is_empty();
             let end = p.text(&label, x, y0, if on { FG } else { STATUS_FG });
             if on {
-                p.out.push(Instance::fill(x as f32 * cell.w, y0 + cell.h - 2.0, (end - x) as f32 * cell.w, 2.0, if focused { GIT_MOD } else { STATUS_FG }));
+                p.out.push(Instance::fill(x as f32 * cell.w, y0 + cell.h - crate::metrics::accent_line(), (end - x) as f32 * cell.w, crate::metrics::accent_line(), if focused { GIT_MOD } else { STATUS_FG }));
             }
             // 区切り: 罫線の文字は行の上下いっぱいに伸びて上のタブの線とつながるので、上下を空けた細い線にする
             let h = (cell.h * 0.5).round();

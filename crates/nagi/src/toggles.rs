@@ -12,17 +12,9 @@ pub enum Button {
 }
 
 impl Button {
-    pub fn glyph(self) -> &'static str {
-        match self {
-            Button::HideLeft => "«",
-            Button::HideBottom => "▾",
-            Button::HideRight => "»",
-        }
-    }
-
-    /// 2 セルの幅か
+    /// 2 セルの幅か（アイコンで描くので、どれも 2 セル）
     pub fn wide(self) -> bool {
-        false
+        true
     }
 
     /// マウスを載せたときに横に出す名前

@@ -599,10 +599,10 @@ pub(crate) mod draw {
         let h = (rows * 3 / 5).max(12).min(rows.saturating_sub(2));
         // 上の帯の部品から開いたときは、その下に（IntelliJ のプロジェクトの選び方と同じ）
         if let Some(c) = anchor {
-            let w = 64.min(cols.saturating_sub(4));
+            let w = crate::metrics::cols(64).min(cols.saturating_sub(4));
             return Rect { x: c.min(cols.saturating_sub(w + 1)), y: 1, w, h };
         }
-        let w = (cols * 3 / 5).max(70).min(cols.saturating_sub(4));
+        let w = (cols * 3 / 5).max(crate::metrics::cols(70)).min(cols.saturating_sub(4));
         let y = (rows / 8).max(1).min(rows.saturating_sub(h));
         Rect { x: cols.saturating_sub(w) / 2, y, w, h }
     }
@@ -648,13 +648,13 @@ pub(crate) mod draw {
             let on = *s == f.source;
             p.text(&format!(" {} ", if *s == Source::Everywhere { "すべて" } else { s.tab_label() }), b.x + c0, y0, if on { FG_BRIGHT } else { STATUS_FG });
             if on {
-                p.out.push(Instance::fill((b.x + c0) as f32 * cell.w, y0 + cell.h - 3.0, (c1 - c0) as f32 * cell.w, 3.0, ACCENT_FG));
+                p.out.push(Instance::fill((b.x + c0) as f32 * cell.w, y0 + cell.h - crate::metrics::accent_line(), (c1 - c0) as f32 * cell.w, crate::metrics::accent_line(), ACCENT_FG));
             }
         }
         // 入力欄（虫眼鏡のアイコンと、打った語）
         let fy = y0 + cell.h;
-        { let px = crate::icons::small(cell.h); crate::icons::draw(p, "g_search", (b.x as f32 + 1.5) * cell.w - px / 2.0, crate::icons::centered(fy, cell.h, px), px, None); }
-        draw_vim_line(p, &f.field, 0, b.x + 3, fy, preedit, true);
+        { let px = crate::metrics::icon(crate::metrics::Icon::Small); crate::icons::draw(p, "g_search", (b.x as f32 + 1.5) * cell.w - px / 2.0, crate::metrics::centered(fy, px), px, None); }
+        draw_vim_line(p, &f.field, 0, b.x + 1 + crate::metrics::icon_cols(crate::metrics::Icon::Small), fy, preedit, true);
         p.out.push(Instance::fill(x0, fy + cell.h + cell.h * 0.5, wpx, 1.0, SEPARATOR));
         // 候補（上が一番良い）
         let q = nagi_core::fuzzy::Query::new(&f.query.text);
@@ -709,7 +709,7 @@ pub(crate) mod draw {
             if let Some(icon) = &icon {
                 crate::tree_panel::draw::draw_tree_icon(p, icon, b.x + 1, y);
             }
-            p.draw(&items, b.x + 3, y);
+            p.draw(&items, b.x + 1 + crate::metrics::icon_cols(crate::metrics::Icon::Small), y);
         }
         // 下の案内と件数
         let by = (b.y + b.h - 1) as f32 * cell.h;

@@ -34,6 +34,10 @@ const ICONS: &[(&str, &str, &str)] = &[
     ("g_warningDialog", include_str!("../icons/g_warningDialog.svg"), include_str!("../icons/g_warningDialog_dark.svg")),
     ("g_errorDialog", include_str!("../icons/g_errorDialog.svg"), include_str!("../icons/g_errorDialog_dark.svg")),
     ("g_questionDialog", include_str!("../icons/g_questionDialog.svg"), include_str!("../icons/g_questionDialog_dark.svg")),
+    ("g_chevronRight", include_str!("../icons/g_chevronRight.svg"), include_str!("../icons/g_chevronRight_dark.svg")),
+    ("g_add", include_str!("../icons/g_add.svg"), include_str!("../icons/g_add_dark.svg")),
+    ("g_refresh", include_str!("../icons/g_refresh.svg"), include_str!("../icons/g_refresh_dark.svg")),
+    ("g_greenCheckmark", include_str!("../icons/g_greenCheckmark.svg"), include_str!("../icons/g_greenCheckmark_dark.svg")),
     ("g_moreVertical", include_str!("../icons/g_moreVertical.svg"), include_str!("../icons/g_moreVertical_dark.svg")),
     ("g_search", include_str!("../icons/g_search.svg"), include_str!("../icons/g_search_dark.svg")),
     ("g_settings", include_str!("../icons/g_settings.svg"), include_str!("../icons/g_settings_dark.svg")),
@@ -106,21 +110,6 @@ pub(crate) fn draw(p: &mut Painter, name: &str, x: f32, y: f32, px: f32, tint: O
     let (x, y) = (x.round(), y.round());
     let color = tint.unwrap_or([1.0, 1.0, 1.0, 1.0]);
     p.out.push(Instance { rect: [x, y, a.uv[2], a.uv[3]], uv: a.uv, color, kind: if a.color { 2 } else { 1 } });
-}
-
-/// 行の高さに対する、ふつうのアイコン（16）の大きさ（IntelliJ と同じく行より少し小さく）
-pub(crate) fn small(cell_h: f32) -> f32 {
-    (cell_h * 0.8).round()
-}
-
-/// ツールウィンドウの列・上の帯のアイコン（20）の大きさ
-pub(crate) fn large(cell_h: f32) -> f32 {
-    (cell_h * 1.0).round()
-}
-
-/// セルの行 `y` の中で、`px` のアイコンを縦の真ん中に置く y
-pub(crate) fn centered(y: f32, cell_h: f32, px: f32) -> f32 {
-    y + ((cell_h - px) / 2.0).round()
 }
 
 #[cfg(test)]
