@@ -33,6 +33,19 @@ pub enum Source {
     RunConfigs,
     /// 最近の編集箇所（RecentLocations）
     Locations,
+    /// どこでも検索（SearchEverywhere。Shift 2 回）: 型・シンボル・ファイル・コマンドをまとめて
+    Everywhere,
+}
+
+/// どこでも検索の候補を選んだときにすること（items と同じ並び）
+#[derive(Clone, Debug)]
+enum Every {
+    /// プロジェクトのファイル（items は根からの相対パス）
+    File,
+    /// 型・シンボルの定義
+    Loc(PathBuf, usize, usize),
+    /// コマンド（Ex の名前）
+    Cmd(String),
 }
 
 /// コマンドパレットの項目（説明, Ex コマンド）
@@ -50,6 +63,7 @@ impl Source {
             Source::Projects => "プロジェクト",
             Source::RunConfigs => "実行の構成",
             Source::Locations => "最近の編集箇所",
+            Source::Everywhere => "どこでも",
         }
     }
 }
@@ -88,6 +102,8 @@ pub struct Finder {
     docs: Vec<usize>,
     /// 場所の候補なら (パス, 行, 列)（items と同じ並び）
     locs: Vec<(PathBuf, usize, usize)>,
+    /// どこでも検索の候補の種類（items と同じ並び）
+    every: Vec<Every>,
     /// 当たった候補 (items の添字, 点数)。良い順
     pub hits: Vec<(u32, i32)>,
     /// 選んでいる候補（hits の添字。0 が一番良いもの）
@@ -188,6 +204,7 @@ impl Editor {
             items: Vec::new(),
             docs: Vec::new(),
             locs: Vec::new(),
+            every: Vec::new(),
             hits: Vec::new(),
             selected: 0,
             scroll: 0,
@@ -231,6 +248,30 @@ impl Editor {
                 }
             }
             Source::RunConfigs => f.items = self.run_list_items(),
+            Source::Everywhere => {
+                // 型を先に、次にシンボル（索引ができていれば）。同じ点数なら前のものが上に来る
+                if let Some(idx) = &self.nav.index {
+                    let iroot = idx.root.clone();
+                    let mut all: Vec<(String, PathBuf, usize, usize, nagi_syntax::defs::DefKind)> = idx.all().map(|(n, l)| (n.to_string(), iroot.join(&*l.path), l.line as usize, l.col as usize, l.kind)).collect();
+                    all.sort_by(|a, b| (!a.4.is_type(), a.0.len()).cmp(&(!b.4.is_type(), b.0.len())).then_with(|| a.0.cmp(&b.0)));
+                    for (n, p, l, c, k) in all {
+                        f.items.push(format!("{n}  {}  {}:{}", k.label(), display_path(&p, &root), l + 1));
+                        f.every.push(Every::Loc(p, l, c));
+                    }
+                }
+                // ファイル（覚えた一覧があればそれ、無ければ裏で集める）
+                match self.file_cache.get(&root) {
+                    Some(list) => {
+                        f.every.extend(list.iter().map(|_| Every::File));
+                        f.items.extend(list.iter().cloned());
+                    }
+                    None => f.walk = Some(nagi_workers::files::walk(&root, self.waker())),
+                }
+                for (cmd, help) in crate::commands::listed() {
+                    f.items.push(format!("{help}  :{cmd}"));
+                    f.every.push(Every::Cmd(cmd.to_string()));
+                }
+            }
             Source::Projects => {
                 let rx = nagi_core::task::spawn("projects", self.waker(), move |ctx| {
                     ctx.send(crate::project_open::recent_list());
@@ -258,7 +299,25 @@ impl Editor {
     pub fn poll_finder(&mut self) -> bool {
         let Some(f) = &mut self.finder else { return false };
         let mut changed = false;
-        if let Some(w) = &f.walk {
+        // どこでも検索: 集まったファイルを足すだけ（並べ替えると種類の並びとずれる）
+        if let (Some(w), Source::Everywhere) = (&f.walk, f.source) {
+            loop {
+                match w.rx.try_recv() {
+                    Ok(batch) => {
+                        f.every.extend(batch.iter().map(|_| Every::File));
+                        f.items.extend(batch);
+                        changed = true;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        f.walk = None;
+                        changed = true;
+                        break;
+                    }
+                }
+            }
+        }
+        if let (Some(w), false) = (&f.walk, f.source == Source::Everywhere) {
             loop {
                 match w.rx.try_recv() {
                     Ok(batch) => match &mut f.fresh {
@@ -390,7 +449,8 @@ impl Editor {
         self.set_state(State::Normal);
         let Some(&(i, _)) = f.hits.get(f.selected) else { return Effect::None };
         let i = i as usize;
-        if let (Some(v), false) = (split, matches!(f.source, Source::Commands | Source::Outline | Source::Projects | Source::RunConfigs)) {
+        let cmd_pick = matches!(f.every.get(i), Some(Every::Cmd(_)));
+        if let (Some(v), false) = (split, cmd_pick || matches!(f.source, Source::Commands | Source::Outline | Source::Projects | Source::RunConfigs)) {
             self.split(v);
         }
         match f.source {
@@ -417,6 +477,12 @@ impl Editor {
                 let (p, l, c) = f.locs[i].clone();
                 self.jump_to(&p, l, c);
             }
+            Source::Everywhere => match f.every.get(i).cloned() {
+                Some(Every::File) => self.edit_file(f.root.join(&f.items[i])),
+                Some(Every::Loc(p, l, c)) => self.jump_to(&p, l, c),
+                Some(Every::Cmd(c)) => return self.run_ex(&c),
+                None => {}
+            },
         }
         Effect::None
     }
@@ -576,6 +642,29 @@ mod tests {
         crate::layout::press(&mut e, s, 0, 5, |_| 1);
         assert!(e.finder.is_none());
         assert_eq!(e.state(), State::Normal);
+    }
+
+    /// どこでも検索（Shift 2 回）: ファイルとコマンドが 1 つの候補に並び、選んだものの種類どおりに開く・動かす
+    #[test]
+    fn search_everywhere() {
+        let dir = project("every");
+        let mut e = Editor::new(Buffer::open(&dir.join("README.md")).unwrap(), None);
+        e.buf.path = Some(dir.join("README.md"));
+        e.set_screen(100, 40);
+        keys(&mut e, ":SearchEverywhere<CR>");
+        assert_eq!(e.state(), State::Finder);
+        wait_walk(&mut e);
+        let f = e.finder.as_ref().unwrap();
+        assert_eq!(f.items.len(), f.every.len());
+        assert!(f.items.iter().any(|i| i == "src/view/panes.rs") && f.items.iter().any(|i| i.ends_with(":HideAll")));
+        keys(&mut e, "view/pan<CR>");
+        assert!(e.buf.path.as_ref().unwrap().ends_with("panes.rs"), "{:?}", e.buf.path);
+        // コマンドを選べば動かす
+        e.open_finder(Source::Everywhere);
+        wait_walk(&mut e);
+        keys(&mut e, ":vnew<CR>");
+        assert_eq!(e.state(), State::Normal);
+        assert_eq!(e.window_rects().len(), 2);
     }
 
     #[test]

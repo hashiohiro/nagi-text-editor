@@ -293,6 +293,9 @@ struct Frame {
     autoscroll_deadline: Option<Instant>,
     /// 押しっぱなしの移動のキー（OS の繰り返しより速く、自分で繰り返す）: (物理キー, 流すキー, 押した時刻, 次に流す時刻)
     held: Option<(winit::keyboard::PhysicalKey, Vec<VKey>, Instant, Instant)>,
+    /// Shift 2 回（IntelliJ の Search Everywhere）: Shift だけを押しているか、Shift だけを押して離した時刻
+    shift_alone: bool,
+    shift_up: Option<Instant>,
     /// ドラッグしている区切り
     sep_drag: Option<resize::Sep>,
     /// ターミナルの中で範囲を選んでいる（左ボタンを押したまま）
@@ -634,6 +637,13 @@ impl Frame {
     }
 
     fn on_key(&mut self, ev: KeyEvent, el: &ActiveEventLoop) {
+        if ev.logical_key == Key::Named(NamedKey::Shift) {
+            self.on_shift(ev.state == ElementState::Pressed, ev.repeat, el);
+            return;
+        }
+        if ev.state == ElementState::Pressed {
+            (self.shift_alone, self.shift_up) = (false, None);
+        }
         if ev.state != ElementState::Pressed {
             if self.held.as_ref().is_some_and(|h| h.0 == ev.physical_key) {
                 self.held = None;
@@ -801,6 +811,34 @@ impl Frame {
             );
         }
         self.stats.push(sample);
+    }
+
+    /// Shift だけを 2 回続けて押したら（間が短く、ほかのキーを挟まない）どこでも検索（IntelliJ と同じ。設定で切れる）
+    fn on_shift(&mut self, pressed: bool, repeat: bool, el: &ActiveEventLoop) {
+        const GAP: Duration = Duration::from_millis(400);
+        if repeat {
+            self.shift_alone = false;
+            return;
+        }
+        if !pressed {
+            self.shift_up = self.shift_alone.then(Instant::now);
+            self.shift_alone = false;
+            return;
+        }
+        let twice = self.shift_up.take().is_some_and(|t| t.elapsed() <= GAP);
+        self.shift_alone = !twice && !self.modifiers.control_key() && !self.modifiers.alt_key();
+        let Some(ed) = &mut self.ed else { return };
+        if !twice || !ed.preedit.is_empty() || !ed.settings.bool("keymap.double_shift") {
+            return;
+        }
+        self.sync_screen();
+        if let Some(eff) = self.ed.as_mut().and_then(|ed| ed.shortcut("SearchEverywhere")) {
+            self.held = None;
+            if !self.apply_effect(eff, el) {
+                self.draw();
+                self.sync_ime();
+            }
+        }
     }
 
     /// 1 打をマッピングに通してからエディタに流す。終了したら true
@@ -1945,6 +1983,8 @@ fn new_frame(opts: Opts, pending: Pending, proxy: winit::event_loop::EventLoopPr
         cursor_icon: winit::window::CursorIcon::Default,
         autoscroll_deadline: None,
         held: None,
+        shift_alone: false,
+        shift_up: None,
         stats: stats::Stats::default(),
         replay: Default::default(),
         replay_deadline: None,

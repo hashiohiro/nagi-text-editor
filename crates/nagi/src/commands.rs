@@ -147,6 +147,7 @@ pub static COMMANDS: &[Cmd] = &[
     cmd!(["Files"], "ファイルを開く（ファインダー）", Args::None, |e, c| e.open_finder(crate::finder::Source::Files)),
     cmd!(["Buffers"], "バッファを選ぶ（ファインダー）", Args::None, |e, c| e.open_finder(crate::finder::Source::Buffers)),
     cmd!(["Recent", "History"], "最近のファイル", Args::None, |e, c| e.open_finder(crate::finder::Source::Recent)),
+    cmd!(["SearchEverywhere", "Everywhere"], "どこでも検索（型・シンボル・ファイル・コマンドをまとめて。Shift 2 回）", Args::None, |e, c| e.open_finder(crate::finder::Source::Everywhere)),
     cmd!(["Commands", "Palette"], "コマンドパレット", Args::None, |e, c| e.open_finder(crate::finder::Source::Commands)),
     // 普通のエディタの編集（Vim を使わないときのキーマップ・右クリックのメニューから。plain.rs）
     cmd!(["Undo"], "元に戻す", Args::None, |e, c| e.plain_undo(false)),

@@ -136,6 +136,7 @@ pub static SCHEMA: &[Item] = &[
     item("completion.words", "入力補完", "ファイルの中の語を出す", B, "true", ""),
     // キーマップ
     item("keymap.settings", "キーマップ", "設定", K, "Ctrl+Alt+S", ""),
+    item("keymap.double_shift", "キーマップ", "Shift 2 回でどこでも検索", B, "true", "IntelliJ の Search Everywhere（型・シンボル・ファイル・コマンド）"),
     item("keymap.complete", "キーマップ", "入力補完", K, "Ctrl+Space", ""),
     item("keymap.run", "キーマップ", "実行", K, "Shift+F10", ""),
     item("keymap.run_choose", "キーマップ", "選んで実行", K, "Alt+Shift+F10", ""),
