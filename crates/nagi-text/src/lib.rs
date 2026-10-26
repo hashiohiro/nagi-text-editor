@@ -151,6 +151,8 @@ pub struct Fonts {
     pick_cache: FastMap<char, Option<(u16, u16)>>,
     ctx: ScaleContext,
     pub ambiguous_wide: bool,
+    /// 画面の部品（ツールバー・木・ダイアログなど）の文字（等幅でないフォント。IntelliJ の UI の文字と同じ）
+    pub ui: Option<UiFont>,
 }
 
 impl Fonts {
@@ -168,7 +170,7 @@ impl Fonts {
         for f in faces.iter_mut() {
             fit_face(f, px, cell);
         }
-        Self { px, line: 1.0, cell, faces, extra: HashMap::new(), pick_cache: FastMap::default(), ctx: ScaleContext::new(), ambiguous_wide: false }
+        Self { px, line: 1.0, cell, faces, extra: HashMap::new(), pick_cache: FastMap::default(), ctx: ScaleContext::new(), ambiguous_wide: false, ui: None }
     }
 
     pub fn cell(&self) -> CellSize {
@@ -188,6 +190,14 @@ impl Fonts {
         for f in self.faces.iter_mut() {
             fit_face(f, px, self.cell);
         }
+        if let Some(ui) = &mut self.ui {
+            ui.resize(px, self.cell.h);
+        }
+    }
+
+    /// 画面の部品の文字のフォントを使う（`chain` は前から探す。見つからない字はセルの文字で描く）
+    pub fn enable_ui(&mut self, chain: Vec<FontData>) {
+        self.ui = (!chain.is_empty()).then(|| UiFont::new(chain, self.px, self.cell.h));
     }
 
     /// 書記素のセル幅（1 か 2）
@@ -346,4 +356,73 @@ fn map_characters(text: &str, base_family: &str) -> Option<(String, Arc<FontByte
     let font = r.mapped_font?;
     let (data, index, _) = load_font(&font)?;
     Some((font.family_name(), data, index))
+}
+
+/// 画面の部品の文字のフォントの名前（前から探す）。Windows の UI と同じ
+pub const UI_FONTS: &[&str] = &["Segoe UI", "Yu Gothic UI", "Meiryo UI", "Segoe UI Symbol"];
+
+/// 部品の文字の大きさ（本文の文字に対する比）
+const UI_SCALE: f32 = 0.92;
+
+/// 等幅でない文字（画面の部品用）。字ごとに幅を持ち、行の高さの真ん中に置く
+pub struct UiFont {
+    faces: Vec<FontData>,
+    px: f32,
+    /// 行の上端からベースラインまで（px）
+    baseline: f32,
+    /// char → (face, グリフ ID, 送り幅 px)。どの face にも無ければ None
+    cache: std::cell::RefCell<FastMap<char, Option<(u16, u16, f32)>>>,
+    ctx: ScaleContext,
+}
+
+impl UiFont {
+    fn new(faces: Vec<FontData>, editor_px: f32, cell_h: f32) -> Self {
+        let mut u = UiFont { faces, px: 0.0, baseline: 0.0, cache: Default::default(), ctx: ScaleContext::new() };
+        u.resize(editor_px, cell_h);
+        u
+    }
+
+    fn font_ref(&self, i: usize) -> FontRef<'_> {
+        FontRef::from_index(&self.faces[i].data[..], self.faces[i].index as usize).unwrap()
+    }
+
+    fn resize(&mut self, editor_px: f32, cell_h: f32) {
+        self.px = (editor_px * UI_SCALE).round();
+        let m = self.font_ref(0).metrics(&[]).scale(self.px);
+        self.baseline = ((cell_h - (m.ascent + m.descent)) / 2.0 + m.ascent).round();
+        self.cache.borrow_mut().clear();
+    }
+
+    /// 文字の大きさ（px。アトラスの鍵に使う）
+    pub fn px(&self) -> f32 {
+        self.px
+    }
+
+    /// 字の (face, グリフ, 送り幅)。どの face にも無ければ None（セルの文字で描く）
+    pub fn glyph(&self, ch: char) -> Option<(u16, u16, f32)> {
+        if let Some(g) = self.cache.borrow().get(&ch) {
+            return *g;
+        }
+        let px = self.px;
+        let found = (0..self.faces.len()).find_map(|i| {
+            let f = self.font_ref(i);
+            let gid = f.charmap().map(ch);
+            (gid != 0).then(|| (i as u16, gid, f.glyph_metrics(&[]).scale(px).advance_width(gid)))
+        });
+        self.cache.borrow_mut().insert(ch, found);
+        found
+    }
+
+    /// 文字列の幅（px。無い字は `fallback` の幅で数える）
+    pub fn width(&self, s: &str, fallback: f32) -> f32 {
+        s.chars().map(|c| self.glyph(c).map_or(fallback, |g| g.2)).sum()
+    }
+
+    /// グリフを描く（`left`・`top` は字の送りの始まりと行の上端からの位置）
+    pub fn rasterize(&mut self, face: u16, glyph: u16) -> Option<GlyphImage> {
+        let font = FontRef::from_index(&self.faces[face as usize].data[..], self.faces[face as usize].index as usize)?;
+        let mut scaler = self.ctx.builder(font).size(self.px).hint(true).build();
+        let img = Render::new(&[Source::Outline]).format(Format::Alpha).render(&mut scaler, glyph)?;
+        Some(GlyphImage { width: img.placement.width, height: img.placement.height, left: img.placement.left, top: (self.baseline - img.placement.top as f32).round() as i32, color: false, data: img.data })
+    }
 }

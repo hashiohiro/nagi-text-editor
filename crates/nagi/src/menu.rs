@@ -78,6 +78,8 @@ impl Menu {
 
     /// 確かめるダイアログの問いの行（幅で折り返す）
     pub fn dialog_lines(&self, w: usize) -> Vec<String> {
+        // 部品の文字（等幅でない）は等幅の幅の 9 割ほどなので、その分多く入れる
+        let w = w * 115 / 100;
         let mut lines = vec![String::new()];
         let mut cur = 0;
         for ch in self.title.as_deref().unwrap_or("").chars() {
@@ -313,8 +315,7 @@ pub(crate) mod draw {
         let cell = p.fonts.cell();
         let b = m.rect(cols, rows);
         let (x0, y0, w, h) = (b.x as f32 * cell.w, b.y as f32 * cell.h, b.w as f32 * cell.w, b.h as f32 * cell.h);
-        p.out.push(Instance::fill(x0 - 1.0, y0 - 1.0, w + 2.0, h + 2.0, SEPARATOR));
-        p.out.push(Instance::fill(x0, y0, w, h, POPUP_BG));
+        popup_frame(p, x0, y0, w, h);
         let saved = p.cols;
         p.cols = b.x + b.w - 1;
         p.text(" 確認", b.x, y0, FG_BRIGHT);
@@ -325,7 +326,7 @@ pub(crate) mod draw {
         }
         for (i, row, c0, c1) in m.dialog_buttons(b) {
             let on = i == m.sel;
-            p.out.push(Instance::fill(c0 as f32 * cell.w, row as f32 * cell.h + 2.0, (c1 - c0) as f32 * cell.w, cell.h - 4.0, if on { ACCENT_FG } else { RAISED_BG }));
+            p.out.push(Instance::rounded(c0 as f32 * cell.w, row as f32 * cell.h + 2.0, (c1 - c0) as f32 * cell.w, cell.h - 4.0, 5.0, if on { ACCENT_FG } else { RAISED_BG }));
             let label = &m.items[i].label;
             let lw = p.width(label);
             p.text(label, c0 + (c1 - c0).saturating_sub(lw) / 2, row as f32 * cell.h, if on { FG_BRIGHT } else { FG });
@@ -341,8 +342,7 @@ pub(crate) mod draw {
         let cell = p.fonts.cell();
         let b = m.rect(cols, rows);
         let (x, y0) = (b.x as f32 * cell.w, b.y as f32 * cell.h);
-        p.out.push(Instance::fill(x - 1.0, y0 - 1.0, b.w as f32 * cell.w + 2.0, b.h as f32 * cell.h + 2.0, LINE_NO));
-        p.out.push(Instance::fill(x, y0, b.w as f32 * cell.w, b.h as f32 * cell.h, POPUP_BG));
+        popup_frame(p, x, y0, b.w as f32 * cell.w, b.h as f32 * cell.h);
         let saved = p.cols;
         p.cols = b.x + b.w;
         if let Some(t) = &m.title {
@@ -357,7 +357,7 @@ pub(crate) mod draw {
             }
             let sel = i == m.sel;
             if sel {
-                p.out.push(Instance::fill(x, y, b.w as f32 * cell.w, cell.h, LIST_SEL_BG));
+                selection(p, x, y, b.w as f32 * cell.w, cell.h, LIST_SEL_BG);
             }
             p.text(&format!("  {}", it.label), b.x, y, if sel { FG_BRIGHT } else { FG });
         }

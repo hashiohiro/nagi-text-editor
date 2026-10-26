@@ -561,7 +561,7 @@ pub(crate) mod draw {
             let selected = t.scroll + k == t.selected;
             let reversed = selected && focused;
             if reversed {
-                p.out.push(Instance::fill(x, y, w, cell.h, LIST_SEL_BG));
+                selection(p, x, y, w, cell.h, LIST_SEL_BG);
             } else if selected {
                 p.out.push(Instance::fill(x, y, w, cell.h, MATCH_BG));
             }
@@ -580,7 +580,10 @@ pub(crate) mod draw {
             // 横に送っていれば、字下げ・印・アイコン・名前を左端の分だけ左へ（左端より左は描かない）
             let left = t.left;
             let label: String = format!("{}{mark}", "  ".repeat(row.depth)).chars().skip(left).collect();
+            // 字下げと ▸ ▾ はセルの位置で（アイコンと名前をそろえる）
+            let ui = std::mem::replace(&mut p.ui, false);
             p.text(&label, r.x, y, if reversed { FG_BRIGHT } else { STATUS_FG });
+            p.ui = ui;
             let icon_at = row.depth * 2 + 2;
             if icon_at >= left && icon_col - left + 3 < r.x + r.w {
                 draw_tree_icon(p, &tree_icon(row, index, &t.root), icon_col - left, y);

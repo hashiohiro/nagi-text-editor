@@ -500,6 +500,8 @@ pub(crate) mod draw {
         let empty = |p: &mut Painter, s: &str| {
             p.text(s, c.x + 1, (c.y + 1) as f32 * cell.h, STATUS_FG);
         };
+        // 中身: 問題とデバッグは部品の文字、検索の結果・ログ・ターミナル・表は等幅（桁をそろえる）
+        let ui = std::mem::replace(&mut p.ui, matches!(ed.bottom_kind, BottomKind::Problems | BottomKind::Debug));
         match ed.bottom_kind {
             BottomKind::Result => draw_db_results(p, ed, c),
             BottomKind::Grep | BottomKind::Output => match &ed.grep {
@@ -515,6 +517,7 @@ pub(crate) mod draw {
             BottomKind::Terminal => draw_terminal(p, ed, c, focused),
             BottomKind::Debug => crate::debugger::draw::draw_debug(p, ed, c, focused),
         }
+        p.ui = ui;
     }
 
     /// 問題（診断）の一覧。ファイルごとにまとめ、エラーは赤、警告は黄

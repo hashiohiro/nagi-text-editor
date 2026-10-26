@@ -889,8 +889,7 @@ pub(crate) mod draw {
         let cell = p.fonts.cell();
         let b = popup::rect(cols, rows);
         let (x0, y0, wpx, hpx) = (b.x as f32 * cell.w, b.y as f32 * cell.h, b.w as f32 * cell.w, b.h as f32 * cell.h);
-        p.out.push(Instance::fill(x0 - 1.0, y0 - 1.0, wpx + 2.0, hpx + 2.0, SEPARATOR));
-        p.out.push(Instance::fill(x0, y0, wpx, hpx, POPUP_BG));
+        popup_frame(p, x0, y0, wpx, hpx);
         let saved = p.cols;
         p.cols = b.x + b.w;
         let row_y = |r: usize| (b.y + r) as f32 * cell.h;
@@ -918,7 +917,8 @@ pub(crate) mod draw {
             field(p, &g.mask.text, g.mask.cursor, preedit(true), c, row_y(2), true);
         }
         p.out.push(Instance::fill(x0, row_y(3) + cell.h * 0.5, wpx, 1.0, SEPARATOR));
-        // 候補（本文、右に場所）
+        // 候補（本文、右に場所）。本文とプレビューはコードなので等幅
+        let ui = std::mem::replace(&mut p.ui, false);
         let (list_h, prev_h) = popup::heights(b);
         let top = popup::top(g.selected, list_h);
         for k in 0..list_h {
@@ -926,7 +926,7 @@ pub(crate) mod draw {
             let y = row_y(popup::LIST_TOP + k);
             let sel = top + k == g.selected;
             if sel {
-                p.out.push(Instance::fill(x0 + 4.0, y, wpx - 8.0, cell.h, LIST_SEL_BG));
+                selection(p, x0 + 4.0, y, wpx - 8.0, cell.h, LIST_SEL_BG);
             }
             let place = format!("{}:{} ", h.path.rsplit('/').next().unwrap_or(&h.path), h.line);
             let pw = p.width(&place);
@@ -960,6 +960,7 @@ pub(crate) mod draw {
                 p.text(text, c, y, FG);
             }
         }
+        p.ui = ui;
         // 案内
         let hint = " Enter 開く  Ctrl+Enter 下の欄へ  ↑↓ 選ぶ  Alt+C・O・X・F・T 条件  Esc 閉じる";
         p.out.push(Instance::fill(x0, row_y(b.h - 1), wpx, 1.0, SEPARATOR));
@@ -1000,7 +1001,7 @@ pub(crate) mod draw {
             // 選んだ行は、パネルにいる（か検索語を打っている）ときは反転、そうでなければ控えめな地の色
             let reversed = selected && focused;
             if reversed {
-                p.out.push(Instance::fill(x, y, w, cell.h, LIST_SEL_BG));
+                selection(p, x, y, w, cell.h, LIST_SEL_BG);
             } else if selected {
                 p.out.push(Instance::fill(x, y, w, cell.h, MATCH_BG));
             }

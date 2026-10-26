@@ -240,6 +240,11 @@ struct Press {
 }
 
 /// 窓の題名: 「nagi — プロジェクト名 — プロジェクトの中のパス」（プロジェクトの外ならフルパス）
+/// 画面の部品の文字のフォント（Segoe UI・Yu Gothic UI…。入っているものだけ）
+fn ui_font_chain() -> Vec<nagi_text::FontData> {
+    nagi_text::UI_FONTS.iter().filter_map(|n| nagi_text::load_by_name(n)).collect()
+}
+
 fn title_for(path: Option<&std::path::Path>, root: Option<&std::path::Path>) -> String {
     let project = root.and_then(|r| r.file_name()).map(|n| n.to_string_lossy().into_owned());
     let file = path.map(|p| {
@@ -368,6 +373,7 @@ impl Frame {
         self.font_px = font_px(&st);
         let mut fonts = Fonts::new(chain, (self.font_px * self.scale).round() as f32);
         fonts.set_line_height(st.int("appearance.line_height") as f32 / 100.0);
+        fonts.enable_ui(ui_font_chain());
         self.font_names = font_names(&st);
         // 題名は最初の描画で（プロジェクトの根が決まってから）付ける
         window.set_title(&title_for(buf.path.as_deref(), None));
@@ -530,7 +536,9 @@ impl Frame {
         if names != self.font_names {
             let chain = load_font_chain(&names);
             if !chain.is_empty() {
-                self.fonts = Some(Fonts::new(chain, (px * self.scale).round() as f32));
+                let mut f = Fonts::new(chain, (px * self.scale).round() as f32);
+                f.enable_ui(ui_font_chain());
+                self.fonts = Some(f);
                 self.font_names = names;
             }
         }

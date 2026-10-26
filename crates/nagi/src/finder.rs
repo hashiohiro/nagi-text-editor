@@ -636,8 +636,7 @@ pub(crate) mod draw {
         let b = finder_box(cols, rows, f.anchor);
         let (x0, y0, wpx, hpx) = (b.x as f32 * cell.w, b.y as f32 * cell.h, b.w as f32 * cell.w, b.h as f32 * cell.h);
         // 影の代わりの枠と地
-        p.out.push(Instance::fill(x0 - 1.0, y0 - 1.0, wpx + 2.0, hpx + 2.0, SEPARATOR));
-        p.out.push(Instance::fill(x0, y0, wpx, hpx, POPUP_BG));
+        popup_frame(p, x0, y0, wpx, hpx);
         let saved = p.cols;
         p.cols = b.x + b.w;
         // タブ（選んでいるものは青い下線）
@@ -667,7 +666,7 @@ pub(crate) mod draw {
             let selected = f.scroll + k == f.selected;
             let hit: std::collections::HashSet<usize> = if q.is_empty() { Default::default() } else { q.positions(text).into_iter().collect() };
             if selected {
-                p.out.push(Instance::fill(x0 + 4.0, y, wpx - 8.0, cell.h, LIST_SEL_BG));
+                selection(p, x0 + 4.0, y, wpx - 8.0, cell.h, LIST_SEL_BG);
             }
             // 「名前  種類  場所」の 2 つ目からは薄く（IntelliJ の場所の灰色）
             let name_end = text.find("  ").unwrap_or(text.len());

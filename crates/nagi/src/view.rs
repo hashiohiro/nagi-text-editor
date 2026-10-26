@@ -138,6 +138,23 @@ pub(crate) const STATUS_FG: [f32; 4] = rgb(0x868a91);
 pub(crate) const PANEL_BG: [f32; 4] = rgb(0x2b2d30);
 /// 小窓・メニュー・ダイアログの地
 pub(crate) const POPUP_BG: [f32; 4] = rgb(0x2b2d30);
+/// 小窓・ダイアログの枠の線
+pub(crate) const POPUP_BORDER: [f32; 4] = rgb(0x43454a);
+/// 小窓の角の丸み（px）
+pub(crate) const POPUP_RADIUS: f32 = 8.0;
+
+/// 小窓・ダイアログの地: 影、角の丸い枠と地（IntelliJ の New UI の小窓と同じ）
+pub(crate) fn popup_frame(p: &mut Painter, x: f32, y: f32, w: f32, h: f32) {
+    p.out.push(Instance::shadow(x, y, w, h, POPUP_RADIUS, 16.0, [0.0, 0.0, 0.0, 0.55]));
+    p.out.push(Instance::rounded(x - 1.0, y - 1.0, w + 2.0, h + 2.0, POPUP_RADIUS + 1.0, POPUP_BORDER));
+    p.out.push(Instance::rounded(x, y, w, h, POPUP_RADIUS, POPUP_BG));
+}
+
+/// 一覧の選んでいる行（左右に少し隙間を空けた、角の丸い地。IntelliJ の New UI と同じ）
+pub(crate) fn selection(p: &mut Painter, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) {
+    p.out.push(Instance::rounded(x + 4.0, y + 1.0, (w - 8.0).max(1.0), h - 2.0, 4.0, color));
+}
+
 /// 欄の区切りの 1px の線
 pub(crate) const SEPARATOR: [f32; 4] = rgb(0x393b40);
 /// マウスを載せた・浮かせた地（タブ・ボタン・一覧の別の地）
@@ -215,6 +232,8 @@ pub(crate) struct Painter<'a> {
     pub(crate) end_y: f32,
     /// `--replay` の試験: draw で描いた文字（行, 列, 文字）。控えないときは None
     pub(crate) texts: Option<Vec<(usize, usize, String)>>,
+    /// 画面の部品の文字（等幅でないフォント。IntelliJ の UI と同じ）で描く。本文・ターミナル・入力欄は等幅のまま
+    pub(crate) ui: bool,
 }
 
 impl Painter<'_> {
@@ -229,6 +248,9 @@ impl Painter<'_> {
 
     /// 部品の並びを (col, y) から描く。戻り値は描き終えた列
     pub(crate) fn draw(&mut self, items: &[Item<'_>], col: usize, y: f32) -> usize {
+        if self.ui && self.wrap_w == 0 && self.fonts.ui.is_some() {
+            return self.draw_ui(items, col, y);
+        }
         let cell = self.fonts.cell();
         if let Some(t) = &mut self.texts {
             t.push(((y / cell.h).round() as usize, col, items.iter().map(|i| i.g.as_ref()).collect()));
@@ -267,6 +289,52 @@ impl Painter<'_> {
         c
     }
 
+    /// 等幅でない文字で描く（字ごとの送り幅。描き終えた位置を列に切り上げて返す。部品の割り付けはセルの列のまま）
+    fn draw_ui(&mut self, items: &[Item<'_>], col: usize, y: f32) -> usize {
+        let cell = self.fonts.cell();
+        if let Some(t) = &mut self.texts {
+            t.push(((y / cell.h).round() as usize, col, items.iter().map(|i| i.g.as_ref()).collect()));
+        }
+        let limit = self.cols as f32 * cell.w + 0.5;
+        let mut x = col as f32 * cell.w;
+        for it in items {
+            let ch = it.g.chars().next().unwrap_or(' ');
+            let g = if ch == '\t' { None } else { self.fonts.ui.as_ref().and_then(|u| u.glyph(ch)) };
+            let adv = g.map_or(it.width as f32 * cell.w, |g| g.2);
+            if x + adv > limit {
+                break;
+            }
+            if let Some(bg) = it.bg {
+                self.out.push(Instance::fill(x.floor(), y, adv.ceil(), cell.h, bg));
+            }
+            match g {
+                Some((face, gid, _)) if !ch.is_whitespace() => {
+                    let (r, fonts) = (&mut *self.r, &mut *self.fonts);
+                    let ui = fonts.ui.as_mut().unwrap();
+                    let key = nagi_text::GlyphKey { face: 0x8000 | face, glyph: gid, width: ui.px().min(255.0) as u8 };
+                    if let Some(a) = r.image(key, || ui.rasterize(face, gid)) {
+                        self.out.push(Instance { rect: [x.round() + a.left, y + a.top, a.uv[2], a.uv[3]], uv: a.uv, color: it.fg, kind: 1 });
+                    }
+                }
+                None => {
+                    // UI のフォントに無い字（記号・絵文字）はセルの文字で
+                    if let Some(key) = self.fonts.glyph_for(&it.g, it.width) {
+                        if let Some(a) = self.r.glyph(self.fonts, key) {
+                            self.out.push(Instance { rect: [x.round() + a.left, y + a.top, a.uv[2], a.uv[3]], uv: a.uv, color: it.fg, kind: if a.color { 2 } else { 1 } });
+                        }
+                    }
+                }
+                _ => {}
+            }
+            if it.underline {
+                self.out.push(Instance::fill(x, y + cell.h - self.underline, adv, self.underline, it.fg));
+            }
+            x += adv;
+        }
+        self.end_y = y;
+        (x / cell.w - 0.01).ceil().max(col as f32) as usize
+    }
+
     pub(crate) fn text(&mut self, s: &str, col: usize, y: f32, fg: [f32; 4]) -> usize {
         let items = self.items(s, fg);
         self.draw(&items, col, y)
@@ -293,6 +361,11 @@ impl Painter<'_> {
     }
 
     pub(crate) fn width(&self, s: &str) -> usize {
+        // 部品の文字で描いているときは、その幅を列に切り上げる（右に寄せる・続けて描く位置がずれないように）
+        if let (true, Some(ui)) = (self.ui, &self.fonts.ui) {
+            let cell = self.fonts.cell();
+            return (ui.width(s, cell.w) / cell.w - 0.01).ceil().max(0.0) as usize;
+        }
         nagi_text::graphemes(self.fonts, s).map(|(_, _, w)| w).sum()
     }
 
@@ -839,7 +912,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     ed.sync_terminal();
     let bar = (cell.w / 6.0).round().max(2.0);
     let underline = (cell.h / 16.0).round().max(1.0);
-    let mut p = Painter { out: Vec::with_capacity(cols * rows + 64), fonts, r, cols, bar, underline, caret_at: None, tab_hits: Vec::new(), wrap_w: 0, wrap_rows: 1, end_y: 0.0, texts: ed.record_texts.then(Vec::new) };
+    let mut p = Painter { out: Vec::with_capacity(cols * rows + 64), fonts, r, cols, bar, underline, caret_at: None, tab_hits: Vec::new(), wrap_w: 0, wrap_rows: 1, end_y: 0.0, texts: ed.record_texts.then(Vec::new), ui: false };
     if let (Some(r), Some(t)) = (ed.tree_rect(), &mut ed.tree) {
         crate::list::fit(t.selected, &mut t.scroll, r.h.saturating_sub(1));
     }
@@ -1025,6 +1098,8 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         (Some(_), _) => format!("?/…{re} "),
         _ => format!("0/0{re} "),
     };
+    // 状態の行は部品の文字で（入力欄は等幅）
+    p.ui = true;
     // 部品の状態行（component.rs の status）
     let panel_status = crate::component::focused(ed).and_then(|c| c.status(ed));
     match ed.state() {
@@ -1116,6 +1191,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             }
         }
     }
+    p.ui = false;
     // 状態行のボタン（⚙）は状態行を描いた後に
     draw_toggle_buttons(&mut p, ed, cols, true);
     // 画面を覆うダイアログ（layout.rs）
@@ -1127,8 +1203,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         let w = p.width(&text);
         let x = (*col).min(cols.saturating_sub(w + 1));
         let y = (row + 1) as f32 * cell.h + 2.0;
-        p.out.push(Instance::fill(x as f32 * cell.w - 1.0, y - 1.0, w as f32 * cell.w + 2.0, cell.h + 2.0, STATUS_FG));
-        p.out.push(Instance::fill(x as f32 * cell.w, y, w as f32 * cell.w, cell.h, POPUP_BG));
+        popup_frame(&mut p, x as f32 * cell.w, y, w as f32 * cell.w, cell.h);
         let saved = p.cols;
         p.cols = cols;
         p.text(&text, x, y, FG);
@@ -1170,8 +1245,7 @@ pub(crate) fn draw_toggle_buttons(p: &mut Painter, ed: &Editor, cols: usize, sta
             let w = p.width(&label);
             let lx = if col + 2 + w <= cols { col + 2 } else { col.saturating_sub(w + 1) };
             let (fx, fw) = (lx as f32 * cell.w, w as f32 * cell.w);
-            p.out.push(Instance::fill(fx - 1.0, y - 1.0, fw + 2.0, cell.h + 2.0, STATUS_FG));
-            p.out.push(Instance::fill(fx, y, fw, cell.h, POPUP_BG));
+            popup_frame(p, fx, y, fw, cell.h);
             p.text(&label, lx, y, FG);
         }
     }
@@ -1255,8 +1329,7 @@ pub(crate) fn draw_panel_box(p: &mut Painter, r: Rect, lines: &[String], hl: usi
     let h = lines.len();
     let top = (r.y + r.h).saturating_sub(h + 1);
     let (x, y, w) = (r.x as f32 * cell.w + 4.0, top as f32 * cell.h, (r.w as f32 - 0.5) * cell.w - 8.0);
-    p.out.push(Instance::fill(x - 1.0, y - 1.0, w + 2.0, h as f32 * cell.h + 2.0, STATUS_FG));
-    p.out.push(Instance::fill(x, y, w, h as f32 * cell.h, POPUP_BG));
+    popup_frame(p, x, y, w, h as f32 * cell.h);
     for (k, l) in lines.iter().enumerate() {
         let yy = y + k as f32 * cell.h;
         if k == hl && hl > 0 {
@@ -1340,7 +1413,7 @@ pub(crate) fn draw_grid(p: &mut Painter, g: &GridView, r: Rect) {
             let text = crate::result_grid::show(&v);
             let sel = k == g.row && c == g.col && g.focused;
             if sel {
-                p.out.push(Instance::fill((x - 1) as f32 * cell.w, y, (g.widths[c] + 2) as f32 * cell.w, cell.h, LIST_SEL_BG));
+                selection(p, (x - 1) as f32 * cell.w, y, (g.widths[c] + 2) as f32 * cell.w, cell.h, LIST_SEL_BG);
             } else if let Some(bg) = (g.cell_bg)(k, c) {
                 p.out.push(Instance::fill((x - 1) as f32 * cell.w, y, (g.widths[c] + 2) as f32 * cell.w, cell.h, bg));
             }
@@ -1466,8 +1539,7 @@ pub(crate) fn dialog_frame(p: &mut Painter, cols: usize, rows: usize, w: usize, 
     let (x0, y0) = ((cols - w) / 2, (rows - h) / 2);
     let (x, y) = ((x0 as f32 - 0.5) * cell.w, (y0 as f32 - 0.5) * cell.h);
     let (fw, fh) = ((w as f32 + 1.0) * cell.w, (h as f32 + 1.0) * cell.h);
-    p.out.push(Instance::fill(x, y, fw, fh, STATUS_FG));
-    p.out.push(Instance::fill(x + 1.0, y + 1.0, fw - 2.0, fh - 2.0, POPUP_BG));
+    popup_frame(p, x + 1.0, y + 1.0, fw - 2.0, fh - 2.0);
     (x0, y0)
 }
 
@@ -1481,8 +1553,8 @@ pub(crate) fn dialog_buttons<T: Copy + PartialEq>(p: &mut Painter, right: usize,
         let bw = p.width(label);
         bx = bx.saturating_sub(bw + 1);
         let main = b == primary;
-        p.out.push(Instance::fill(bx as f32 * cell.w, y, bw as f32 * cell.w, cell.h, if main { ACCENT_FG } else { MATCH_BG }));
-        p.text(label, bx, y, if main { BG } else { FG });
+        p.out.push(Instance::rounded(bx as f32 * cell.w, y + 2.0, bw as f32 * cell.w, cell.h - 4.0, 5.0, if main { ACCENT_FG } else { RAISED_BG }));
+        p.text(label, bx, y, if main { FG_BRIGHT } else { FG });
         hits.push((row, bx, bx + bw, b));
     }
     hits
@@ -1507,9 +1579,17 @@ pub(crate) fn clip_width(p: &Painter, s: &str, w: usize) -> String {
 /// 当たった文字の色（ハイライトのキーワードと同じ控えめな青）
 pub(crate) const FINDER_MATCH: [f32; 4] = ACCENT_FG;
 
+/// 入力欄は等幅の文字で（縦棒の位置をセルで決めるため）
+pub(crate) fn field(p: &mut Painter, text: &str, cursor: usize, preedit: &str, col: usize, y: f32, active: bool) -> usize {
+    let ui = std::mem::replace(&mut p.ui, false);
+    let r = field_mono(p, text, cursor, preedit, col, y, active);
+    p.ui = ui;
+    r
+}
+
 /// 最下行の入力欄（`:` `/` `?` `→`）。`active` なら縦棒カーソルと IME の変換中の文字列を出す
 /// 入力欄の文字（カーソルの位置に IME の変換中の文字を下線付きで入れ、縦棒を描く）。描いた最後の列を返す
-pub(crate) fn field(p: &mut Painter, text: &str, cursor: usize, preedit: &str, col: usize, y: f32, active: bool) -> usize {
+pub(crate) fn field_mono(p: &mut Painter, text: &str, cursor: usize, preedit: &str, col: usize, y: f32, active: bool) -> usize {
     let cursor = cursor.min(text.len());
     let mut items = p.items(&text[..cursor], FG);
     let caret = col + items.iter().map(|i| i.width).sum::<usize>();
@@ -1529,8 +1609,16 @@ pub(crate) fn field(p: &mut Painter, text: &str, cursor: usize, preedit: &str, c
     end
 }
 
-/// Vim 風の入力欄の 1 行（Insert は縦棒と IME の変換中の文字、ノーマルは四角のカーソル、Visual は選んだ所の地）
+/// 入力欄は等幅の文字で（縦棒の位置をセルで決めるため）
 pub(crate) fn draw_vim_line(p: &mut Painter, f: &crate::vim_field::VimField, l: usize, col: usize, y: f32, preedit: &str, active: bool) -> usize {
+    let ui = std::mem::replace(&mut p.ui, false);
+    let r = draw_vim_line_mono(p, f, l, col, y, preedit, active);
+    p.ui = ui;
+    r
+}
+
+/// Vim 風の入力欄の 1 行（Insert は縦棒と IME の変換中の文字、ノーマルは四角のカーソル、Visual は選んだ所の地）
+pub(crate) fn draw_vim_line_mono(p: &mut Painter, f: &crate::vim_field::VimField, l: usize, col: usize, y: f32, preedit: &str, active: bool) -> usize {
     let cell = p.fonts.cell();
     let text = f.ed.buf.line(l);
     let (cl, cb) = f.cursor();
@@ -1578,7 +1666,14 @@ pub(crate) fn draw_vim_field(p: &mut Painter, f: &crate::vim_field::VimField, co
     draw_vim_line(p, f, 0, col, y, preedit, true)
 }
 
+/// 入力欄は等幅の文字で（縦棒の位置をセルで決めるため）
 pub(crate) fn prompt_line(p: &mut Painter, lead: &str, text: &str, cursor: usize, preedit: &str, y: f32, active: bool) {
+    let ui = std::mem::replace(&mut p.ui, false);
+    prompt_line_mono(p, lead, text, cursor, preedit, y, active);
+    p.ui = ui;
+}
+
+pub(crate) fn prompt_line_mono(p: &mut Painter, lead: &str, text: &str, cursor: usize, preedit: &str, y: f32, active: bool) {
     let c = p.text(lead, 0, y, if active { FG } else { STATUS_FG });
     let mut items = p.items(&text[..cursor], FG);
     let caret = c + items.iter().map(|i| i.width).sum::<usize>();

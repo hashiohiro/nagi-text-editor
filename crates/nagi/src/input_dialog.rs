@@ -166,8 +166,7 @@ pub(crate) mod draw {
         let cell = p.fonts.cell();
         let r = rect(d, cols, rows);
         let (x0, y0, w, h) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w, r.h as f32 * cell.h);
-        p.out.push(Instance::fill(x0 - 1.0, y0 - 1.0, w + 2.0, h + 2.0, SEPARATOR));
-        p.out.push(Instance::fill(x0, y0, w, h, POPUP_BG));
+        popup_frame(p, x0, y0, w, h);
         let saved = p.cols;
         p.cols = r.x + r.w - 1;
         let y = |k: usize| (r.y + k) as f32 * cell.h;
@@ -184,7 +183,7 @@ pub(crate) mod draw {
         for (i, row, c0, c1) in buttons(r) {
             let label = if i == 0 { "OK" } else { "キャンセル" };
             let on = i == d.button;
-            p.out.push(Instance::fill(c0 as f32 * cell.w, row as f32 * cell.h + 2.0, (c1 - c0) as f32 * cell.w, cell.h - 4.0, if on { ACCENT_FG } else { RAISED_BG }));
+            p.out.push(Instance::rounded(c0 as f32 * cell.w, row as f32 * cell.h + 2.0, (c1 - c0) as f32 * cell.w, cell.h - 4.0, 5.0, if on { ACCENT_FG } else { RAISED_BG }));
             let lw = p.width(label);
             p.text(label, c0 + (c1 - c0).saturating_sub(lw) / 2, row as f32 * cell.h, if on { FG_BRIGHT } else { FG });
         }

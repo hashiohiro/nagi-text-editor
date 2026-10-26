@@ -276,7 +276,7 @@ pub(crate) mod draw {
             let selected = i == rp.selected;
             let reversed = selected && focused;
             if reversed {
-                p.out.push(Instance::fill(x0, y, wpx, cell.h, LIST_SEL_BG));
+                selection(p, x0, y, wpx, cell.h, LIST_SEL_BG);
             } else if selected {
                 p.out.push(Instance::fill(x0, y, wpx, cell.h, MATCH_BG));
             }

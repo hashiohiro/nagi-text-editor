@@ -248,7 +248,7 @@ pub(crate) mod draw {
                 let bx = x0 as f32 * cell.w + ((STRIPE_W as f32 * cell.w - px) / 2.0).round();
                 let by = crate::icons::centered(y, cell.h, px);
                 if open {
-                    rounded(p, bx - pad, by - pad, px + 2.0 * pad, px + 2.0 * pad, LIST_SEL_BG);
+                    p.out.push(Instance::rounded(bx - pad, by - pad, px + 2.0 * pad, px + 2.0 * pad, 6.0, LIST_SEL_BG));
                 }
                 crate::icons::draw(p, icon_of(t), bx, by, px, None);
                 p.tab_hits.push((row, x0, x0 + STRIPE_W, label));
@@ -286,15 +286,4 @@ pub(crate) mod draw {
         p.cols = saved;
     }
 
-    /// 角の丸い四角（角の 1 px を欠く）
-    pub(crate) fn rounded(p: &mut Painter, x: f32, y: f32, w: f32, h: f32, c: [f32; 4]) {
-        let r = 3.0;
-        p.out.push(Instance::fill(x + r, y, w - 2.0 * r, h, c));
-        p.out.push(Instance::fill(x, y + r, r, h - 2.0 * r, c));
-        p.out.push(Instance::fill(x + w - r, y + r, r, h - 2.0 * r, c));
-        p.out.push(Instance::fill(x + 1.0, y + 1.0, r - 1.0, r - 1.0, c));
-        p.out.push(Instance::fill(x + w - r, y + 1.0, r - 1.0, r - 1.0, c));
-        p.out.push(Instance::fill(x + 1.0, y + h - r, r - 1.0, r - 1.0, c));
-        p.out.push(Instance::fill(x + w - r, y + h - r, r - 1.0, r - 1.0, c));
-    }
 }

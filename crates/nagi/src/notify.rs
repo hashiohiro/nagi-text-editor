@@ -159,6 +159,8 @@ pub fn balloon_layout(ed: &Editor, rows: usize) -> Vec<(usize, crate::panes::Rec
 
 /// 表示の幅 `w` で折り返す（`max` 行まで。あふれたら最後に …）
 fn wrap(text: &str, w: usize, max: usize) -> Vec<String> {
+    // 部品の文字（等幅でない）は等幅の幅の 9 割ほどなので、その分多く入れる
+    let w = w * 115 / 100;
     let mut lines = vec![String::new()];
     let mut cur = 0;
     for ch in text.chars() {
@@ -218,8 +220,7 @@ pub(crate) mod draw {
         for (i, r, lines) in balloon_layout(ed, rows) {
             let b = &ed.notify.balloons[i];
             let (x0, y0, w, h) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w, r.h as f32 * cell.h);
-            p.out.push(Instance::fill(x0 - 1.0, y0 - 1.0, w + 2.0, h + 2.0, SEPARATOR));
-            p.out.push(Instance::fill(x0, y0, w, h, POPUP_BG));
+            popup_frame(p, x0, y0, w, h);
             let icon = match b.level {
                 Level::Error => "g_errorDialog",
                 Level::Warn => "g_warningDialog",

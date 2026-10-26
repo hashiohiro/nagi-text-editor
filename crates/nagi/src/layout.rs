@@ -61,6 +61,11 @@ pub trait View: Sync {
         false
     }
 
+    /// 等幅の文字で描くか（コード・表・ログなど、桁をそろえるもの）。既定は画面の部品の文字（等幅でない）
+    fn mono(&self) -> bool {
+        false
+    }
+
     /// 型の名前（試験で部品を見分ける。大きさ 0 の型は番地では見分けられない）
     #[cfg(test)]
     fn name(&self) -> &'static str {
@@ -115,7 +120,9 @@ pub fn layer(l: Layer) -> &'static [&'static dyn View] {
 pub fn draw(l: Layer, ed: &Editor, p: &mut Painter, s: Screen) {
     for v in layer(l) {
         if let Some(r) = v.rect(ed, s) {
+            p.ui = !v.mono();
             v.draw(ed, p, r, s);
+            p.ui = false;
         }
     }
 }

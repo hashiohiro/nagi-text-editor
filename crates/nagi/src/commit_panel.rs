@@ -641,7 +641,7 @@ pub(crate) mod draw {
                         let sel = *i == c.selected;
                         let reversed = sel && focused;
                         if reversed {
-                            p.out.push(Instance::fill(x0, y, wpx, cell.h, LIST_SEL_BG));
+                            selection(p, x0, y, wpx, cell.h, LIST_SEL_BG);
                         } else if sel {
                             p.out.push(Instance::fill(x0, y, wpx, cell.h, MATCH_BG));
                         }

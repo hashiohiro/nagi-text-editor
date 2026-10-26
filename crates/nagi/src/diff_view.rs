@@ -296,6 +296,10 @@ impl crate::component::Component for DiffComponent {
 pub struct DiffScreenView;
 
 impl crate::layout::View for DiffScreenView {
+    fn mono(&self) -> bool {
+        true
+    }
+
     fn rect(&self, ed: &crate::editor::Editor, s: crate::layout::Screen) -> Option<crate::panes::Rect> {
         let _ = s;
         ed.diff.as_ref()?;

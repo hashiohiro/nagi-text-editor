@@ -606,6 +606,10 @@ impl crate::component::Component for DbTableComponent {
 pub struct DbTableView;
 
 impl crate::layout::View for DbTableView {
+    fn mono(&self) -> bool {
+        true
+    }
+
     fn rect(&self, ed: &crate::editor::Editor, s: crate::layout::Screen) -> Option<crate::panes::Rect> {
         let _ = s;
         ed.db_table.as_ref()?;
@@ -802,8 +806,7 @@ pub(crate) mod draw {
             let bx = (r.x + r.w).saturating_sub(w + 2);
             let by = (r.y + r.h).saturating_sub(h + 1);
             let (x, y) = (bx as f32 * cell.w, by as f32 * cell.h);
-            p.out.push(Instance::fill(x - 1.0, y - 1.0, w as f32 * cell.w + 2.0, h as f32 * cell.h + 2.0, STATUS_FG));
-            p.out.push(Instance::fill(x, y, w as f32 * cell.w, h as f32 * cell.h, POPUP_BG));
+            popup_frame(p, x, y, w as f32 * cell.w, h as f32 * cell.h);
             let lim = p.cols;
             p.cols = bx + w;
             for (k, l) in lines.iter().take(h).enumerate() {

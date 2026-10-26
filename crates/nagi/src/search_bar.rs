@@ -136,7 +136,7 @@ pub(crate) mod draw {
         }
         if let Some((_, row, c0, c1)) = at(BarHit::Regex) {
             if ed.search.regex {
-                p.out.push(Instance::fill(c0 as f32 * cell.w, row as f32 * cell.h + 2.0, (c1 - c0) as f32 * cell.w, cell.h - 4.0, LIST_SEL_BG));
+                p.out.push(Instance::rounded(c0 as f32 * cell.w, row as f32 * cell.h + 2.0, (c1 - c0) as f32 * cell.w, cell.h - 4.0, 5.0, LIST_SEL_BG));
             }
             p.text("[.*]", c0, row as f32 * cell.h, if ed.search.regex { FG_BRIGHT } else { STATUS_FG });
         }
@@ -152,7 +152,7 @@ pub(crate) mod draw {
             p.cols = r.x + r.w;
             for (b, s) in [(BarHit::ReplaceOne, "置換"), (BarHit::ReplaceAll, "すべて置換")] {
                 if let Some((_, row, c0, c1)) = at(b) {
-                    p.out.push(Instance::fill(c0 as f32 * cell.w, row as f32 * cell.h + 2.0, (c1 - c0) as f32 * cell.w, cell.h - 4.0, RAISED_BG));
+                    p.out.push(Instance::rounded(c0 as f32 * cell.w, row as f32 * cell.h + 2.0, (c1 - c0) as f32 * cell.w, cell.h - 4.0, 5.0, RAISED_BG));
                     let lw = p.width(s);
                     p.text(s, c0 + (c1 - c0).saturating_sub(lw) / 2, row as f32 * cell.h, FG);
                 }

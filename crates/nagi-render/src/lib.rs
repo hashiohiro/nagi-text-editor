@@ -35,6 +35,16 @@ impl Instance {
     pub fn fill(x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) -> Self {
         Self { rect: [x, y, w, h], color, ..Default::default() }
     }
+
+    /// 角の丸い四角（縁はなめらかに）
+    pub fn rounded(x: f32, y: f32, w: f32, h: f32, radius: f32, color: [f32; 4]) -> Self {
+        Self { rect: [x, y, w, h], uv: [radius, 1.0, 0.0, 0.0], color, kind: 3 }
+    }
+
+    /// 四角の影（`blur` px でぼかし、少し下へずらす）
+    pub fn shadow(x: f32, y: f32, w: f32, h: f32, radius: f32, blur: f32, color: [f32; 4]) -> Self {
+        Self { rect: [x - blur, y - blur * 0.6, w + blur * 2.0, h + blur * 2.0], uv: [radius + blur, blur * 2.0, 0.0, 0.0], color, kind: 3 }
+    }
 }
 
 /// D3D11 デバイスと描画パイプライン。ウィンドウに依存しないので起動時に別スレッドで作れる。

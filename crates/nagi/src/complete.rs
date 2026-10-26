@@ -238,6 +238,10 @@ impl Editor {
 pub struct CompletionView;
 
 impl crate::layout::View for CompletionView {
+    fn mono(&self) -> bool {
+        true
+    }
+
     fn rect(&self, ed: &crate::editor::Editor, s: crate::layout::Screen) -> Option<crate::panes::Rect> {
         let _ = s;
         (ed.completion.is_some() && ed.state() == crate::editor::State::Insert).then_some(crate::panes::Rect { x: 0, y: 0, w: s.cols, h: s.rows })

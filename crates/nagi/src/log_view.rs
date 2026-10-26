@@ -1156,6 +1156,10 @@ impl crate::component::Component for LogComponent {
 pub struct LogScreenView;
 
 impl crate::layout::View for LogScreenView {
+    fn mono(&self) -> bool {
+        true
+    }
+
     fn rect(&self, ed: &crate::editor::Editor, s: crate::layout::Screen) -> Option<crate::panes::Rect> {
         let _ = s;
         if ed.diff.is_some() || !ed.log.as_ref().is_some_and(|l| !l.docked) {
@@ -1271,7 +1275,7 @@ pub(crate) mod draw {
             let focused = sel && !l.focus_files;
             let marked = row.commit.as_ref().is_some_and(|c| l.marked.contains(&c.hash));
             if focused {
-                p.out.push(Instance::fill(cx as f32 * cell.w, y, cw as f32 * cell.w, cell.h, LIST_SEL_BG));
+                selection(p, cx as f32 * cell.w, y, cw as f32 * cell.w, cell.h, LIST_SEL_BG);
             } else if marked {
                 p.out.push(Instance::fill(cx as f32 * cell.w, y, cw as f32 * cell.w, cell.h, MARKED_BG));
             } else if sel {
@@ -1349,7 +1353,7 @@ pub(crate) mod draw {
                 }
                 let sel = l.focus_files && k == l.file_sel;
                 if sel {
-                    p.out.push(Instance::fill(dx as f32 * cell.w, y, (r.x + r.w - dx) as f32 * cell.w, cell.h, LIST_SEL_BG));
+                    selection(p, dx as f32 * cell.w, y, (r.x + r.w - dx) as f32 * cell.w, cell.h, LIST_SEL_BG);
                 }
                 let sc = if sel {
                     BG

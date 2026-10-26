@@ -376,7 +376,7 @@ pub(crate) mod draw {
             let sel = k == selected;
             let reversed = sel && focused && ed.db.as_ref().is_none_or(|d| d.filter.is_none() || tab != RightTab::Database);
             if reversed {
-                p.out.push(Instance::fill(x0, y, wpx, cell.h, LIST_SEL_BG));
+                selection(p, x0, y, wpx, cell.h, LIST_SEL_BG);
             } else if sel {
                 p.out.push(Instance::fill(x0, y, wpx, cell.h, MATCH_BG));
             }
