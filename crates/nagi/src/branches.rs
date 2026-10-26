@@ -75,9 +75,20 @@ pub struct BranchPopup {
     pub naming: Option<(Naming, crate::vim_field::VimField)>,
     /// 削除の確認（名前, 強制か）
     rx: Option<nagi_core::task::Task<nagi_core::Result<Vec<Branch>>>>,
+    /// 上の帯のブランチを押して開いたときの列（その下に出す。無ければ画面の上の中央）
+    pub anchor: Option<usize>,
 }
 
 impl BranchPopup {
+    /// 枠の (上の行, 左の列, 幅)
+    pub fn frame(&self, cols: usize) -> (usize, usize, usize) {
+        let w = 56.min(cols.saturating_sub(4));
+        match self.anchor {
+            Some(c) => (1, c.min(cols.saturating_sub(w + 1)), w),
+            None => (2, cols.saturating_sub(w) / 2, w),
+        }
+    }
+
     pub fn current_name(&self) -> String {
         self.branches.iter().find(|b| b.current).map_or_else(|| "HEAD".into(), |b| b.name.clone())
     }
@@ -149,7 +160,7 @@ impl Editor {
                 .map(|b| parse_refs(&String::from_utf8_lossy(&b)));
             ctx.send(r);
         });
-        let mut p = BranchPopup { query: Prompt::default(), branches: Vec::new(), entries: Vec::new(), selected: 0, ops: None, naming: None, rx: Some(rx) };
+        let mut p = BranchPopup { query: Prompt::default(), branches: Vec::new(), entries: Vec::new(), selected: 0, ops: None, naming: None, rx: Some(rx), anchor: None };
         p.rebuild();
         self.branch_popup = Some(p);
         self.set_state(State::Branches);
@@ -409,8 +420,7 @@ impl Editor {
     pub(crate) fn branches_click(&mut self, row: usize, col: usize, rows: usize, cols: usize, clicks: u32) {
         let Some(p) = &mut self.branch_popup else { return };
         // 描き方（draw_branch_popup）と同じ割り付け: 枠は 2 行目から、1 行目は絞り込み、その下に一覧
-        let (top, w) = (2, 56.min(cols.saturating_sub(4)));
-        let x0 = cols.saturating_sub(w) / 2;
+        let (top, x0, w) = p.frame(cols);
         let list_h = p.entries.len().min(rows.saturating_sub(8)).max(1);
         if row < top || row > top + list_h || col < x0 || col >= x0 + w {
             self.close_branches();
@@ -510,11 +520,9 @@ pub(crate) mod draw {
     pub(crate) fn draw_branch_popup(p: &mut Painter, b: &crate::branches::BranchPopup, rows: usize, cols: usize, preedit: &str) {
         use crate::branches::Entry;
         let cell = p.fonts.cell();
-        let w = 56.min(cols.saturating_sub(4));
+        let (top, x0, w) = b.frame(cols);
         let list_h = b.entries.len().min(rows.saturating_sub(8)).max(1);
         let h = list_h + 1;
-        let x0 = (cols.saturating_sub(w)) / 2;
-        let top = 2;
         let (x, y) = (x0 as f32 * cell.w, top as f32 * cell.h);
         p.out.push(Instance::fill(x - 1.0, y - 1.0, w as f32 * cell.w + 2.0, h as f32 * cell.h + 2.0, STATUS_FG));
         p.out.push(Instance::fill(x, y, w as f32 * cell.w, h as f32 * cell.h, POPUP_BG));

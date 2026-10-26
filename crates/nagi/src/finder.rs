@@ -101,6 +101,8 @@ impl Finder {
 
 pub struct Finder {
     pub source: Source,
+    /// 上の帯の部品から開いたときの列（その下に出す）
+    pub anchor: Option<usize>,
     /// 絞り込みの語（field の中身の写し。IME の位置と絞り込みに使う）
     pub query: Prompt,
     /// 絞り込みの欄（Vim 風。Insert で始め、Esc でノーマル: j / k で候補を選ぶ、w や ciw で直す。もう一度 Esc で閉じる）
@@ -220,6 +222,7 @@ impl Editor {
         let root = std::path::absolute(&root).unwrap_or(root);
         let mut f = Finder {
             source,
+            anchor: None,
             query: Prompt::default(),
             field: crate::vim_field::VimField::new("", false),
             root: root.clone(),
@@ -445,8 +448,8 @@ impl Editor {
     /// ファインダーのクリック（画面の行・列と画面の大きさ）。候補を押すと選び、ダブルクリックで開く（Enter と同じ）。
     /// 上のタブを押すとその種類に替え（打った語は残す）、小窓の外を押したら閉じる（ほかの小窓と同じ）
     pub(crate) fn finder_click(&mut self, row: usize, col: usize, cols: usize, rows: usize, clicks: u32) {
-        let b = draw::finder_box(cols, rows);
         let Some(f) = &mut self.finder else { return };
+        let b = draw::finder_box(cols, rows, f.anchor);
         if !b.contains(row, col) {
             self.close_finder();
             return;
@@ -592,9 +595,14 @@ pub(crate) mod draw {
     pub(crate) const LIST_TOP: usize = 3;
 
     /// 小窓（IntelliJ の Search Everywhere と同じく、画面の上の方の真ん中）
-    pub(crate) fn finder_box(cols: usize, rows: usize) -> Rect {
-        let w = (cols * 3 / 5).max(70).min(cols.saturating_sub(4));
+    pub(crate) fn finder_box(cols: usize, rows: usize, anchor: Option<usize>) -> Rect {
         let h = (rows * 3 / 5).max(12).min(rows.saturating_sub(2));
+        // 上の帯の部品から開いたときは、その下に（IntelliJ のプロジェクトの選び方と同じ）
+        if let Some(c) = anchor {
+            let w = 64.min(cols.saturating_sub(4));
+            return Rect { x: c.min(cols.saturating_sub(w + 1)), y: 1, w, h };
+        }
+        let w = (cols * 3 / 5).max(70).min(cols.saturating_sub(4));
         let y = (rows / 8).max(1).min(rows.saturating_sub(h));
         Rect { x: cols.saturating_sub(w) / 2, y, w, h }
     }
@@ -625,7 +633,7 @@ pub(crate) mod draw {
     /// ファインダー: 枠のある小窓に、上にタブ（か種類の名前）、入力欄、上から良い順の候補、下に件数と案内
     pub(crate) fn draw_finder(p: &mut Painter, f: &crate::finder::Finder, rows: usize, cols: usize, preedit: &str) {
         let cell = p.fonts.cell();
-        let b = finder_box(cols, rows);
+        let b = finder_box(cols, rows, f.anchor);
         let (x0, y0, wpx, hpx) = (b.x as f32 * cell.w, b.y as f32 * cell.h, b.w as f32 * cell.w, b.h as f32 * cell.h);
         // 影の代わりの枠と地
         p.out.push(Instance::fill(x0 - 1.0, y0 - 1.0, wpx + 2.0, hpx + 2.0, SEPARATOR));
@@ -735,7 +743,7 @@ mod tests {
         let f = e.finder.as_ref().unwrap();
         let second = f.items[f.hits[1].0 as usize].clone();
         // 小窓の一覧の 1 行目が一番良い候補、その下が 2 番目
-        let b = draw::finder_box(100, 40);
+        let b = draw::finder_box(100, 40, None);
         let row = b.y + draw::LIST_TOP + 1;
         crate::layout::press(&mut e, s, row, b.x + 5, |_| 1);
         assert_eq!(e.finder.as_ref().unwrap().selected, 1, "押した行の候補を選ぶ");

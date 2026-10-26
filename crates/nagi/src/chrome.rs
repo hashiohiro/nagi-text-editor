@@ -152,6 +152,11 @@ impl Editor {
         v
     }
 
+    /// 上の帯の部品の始めの列（その下に小窓を出す）
+    pub(crate) fn toolbar_col(&self, hit: Hit) -> usize {
+        self.toolbar_layout().into_iter().find(|w| w.2.hit == hit).map_or(0, |w| w.0)
+    }
+
     /// 上の帯の部品の位置（始めの列, 終わりの列, 部品）
     fn toolbar_layout(&self) -> Vec<(usize, usize, Widget)> {
         let cols = self.screen.0;

@@ -1069,8 +1069,21 @@ impl Frame {
     fn press_chrome(&mut self, hit: chrome::Hit, row: usize, col: usize) {
         let Some(ed) = &mut self.ed else { return };
         match hit {
-            chrome::Hit::Projects => ed.open_launcher(),
-            chrome::Hit::Branches => ed.open_branches(),
+            // プロジェクト・ブランチは、その部品の下に小窓（IntelliJ と同じ）
+            chrome::Hit::Projects => {
+                let c = ed.toolbar_col(hit);
+                ed.open_finder(finder::Source::Projects);
+                if let Some(f) = &mut ed.finder {
+                    f.anchor = Some(c);
+                }
+            }
+            chrome::Hit::Branches => {
+                let c = ed.toolbar_col(hit);
+                ed.open_branches();
+                if let Some(b) = &mut ed.branch_popup {
+                    b.anchor = Some(c);
+                }
+            }
             chrome::Hit::RunMenu => ed.run_menu(row, col),
             chrome::Hit::Tool(t) => ed.toggle_tool(t),
             // コマンドの Effect は押した後に App が動かす（on_left の click_effect）
