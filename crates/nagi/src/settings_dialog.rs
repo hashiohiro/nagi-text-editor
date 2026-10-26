@@ -1080,7 +1080,7 @@ pub(crate) mod draw {
         // 1 行目: 題と絞り込みの欄、保存先
         let end = p.text(" 設定   ", x0, y(0), FG);
         // 虫眼鏡は線で描く（🔍 の字はカラー絵文字のフォントに落ちて重い）
-        draw_tab_icon(p, TabIcon::Search, (end as f32 + 0.5) * cell.w, y(0), STATUS_FG);
+        { let px = crate::icons::small(cell.h); crate::icons::draw(p, "g_search", (end as f32 + 0.5) * cell.w - px / 2.0, crate::icons::centered(y(0), cell.h, px), px, None); }
         let e = end + 2;
         let fend = if d.focus == SFocus::Filter {
             draw_vim_field(p, &d.filter, e, y(0), &ed.preedit)

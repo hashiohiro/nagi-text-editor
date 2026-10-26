@@ -11,7 +11,6 @@ use crate::panes::Rect;
 use crate::result_grid::BottomKind;
 use crate::right_panel::{RTABS, RightTab};
 use crate::tree_panel::{LeftTab, TABS};
-use crate::view::TabIcon;
 
 /// 上の帯の行の数
 pub const TOOLBAR_ROWS: usize = 1;
@@ -60,41 +59,29 @@ struct Widget {
     icon: Option<Icon>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Icon {
-    Tab(TabIconKind),
-    Run,
-    Stop,
-    Gear,
-}
-
-/// TabIcon は Copy だが PartialEq が無いので、ここで区別する名前
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum TabIconKind {
-    Git,
-    Debug,
-    Search,
-}
+/// 上の帯の部品のアイコン（icons.rs の名前）
+type Icon = &'static str;
 
 fn width(s: &str) -> usize {
     nagi_core::display_col(s, s.len(), false)
 }
 
-fn icon_of(t: Tool) -> TabIcon {
+/// 道具のアイコン（icons.rs の名前。IntelliJ のツールウィンドウのアイコン）
+fn icon_of(t: Tool) -> &'static str {
     match t {
-        Tool::Left(LeftTab::Project) => TabIcon::Project,
-        Tool::Left(LeftTab::Commit) => TabIcon::Commit,
-        Tool::Left(LeftTab::Run) => TabIcon::Run,
-        Tool::Bottom(BottomKind::Git) => TabIcon::Git,
-        Tool::Bottom(BottomKind::Grep) => TabIcon::Search,
-        Tool::Bottom(BottomKind::Problems) => TabIcon::Problems,
-        Tool::Bottom(BottomKind::Output) => TabIcon::Output,
-        Tool::Bottom(BottomKind::Terminal) => TabIcon::Terminal,
-        Tool::Bottom(BottomKind::Debug) => TabIcon::Debug,
-        Tool::Bottom(BottomKind::Result) => TabIcon::Result,
-        Tool::Right(RightTab::Database) => TabIcon::Database,
-        Tool::Right(RightTab::Maven) => TabIcon::Maven,
-        Tool::Right(RightTab::Preview) => TabIcon::Preview,
+        Tool::Left(LeftTab::Project) => "tw_project",
+        Tool::Left(LeftTab::Commit) => "tw_commit",
+        Tool::Left(LeftTab::Run) => "tw_run",
+        Tool::Bottom(BottomKind::Git) => "tw_vcs",
+        Tool::Bottom(BottomKind::Grep) => "tw_find",
+        Tool::Bottom(BottomKind::Problems) => "tw_problems",
+        Tool::Bottom(BottomKind::Output) => "tw_messages",
+        Tool::Bottom(BottomKind::Terminal) => "tw_terminal",
+        Tool::Bottom(BottomKind::Debug) => "tw_debug",
+        Tool::Bottom(BottomKind::Result) => "n_dataSchema",
+        Tool::Right(RightTab::Database) => "n_dataSchema",
+        Tool::Right(RightTab::Maven) => "tw_maven",
+        Tool::Right(RightTab::Preview) => "a_preview",
     }
 }
 
@@ -151,17 +138,17 @@ impl Editor {
         let name = root.file_name().map_or_else(|| root.display().to_string(), |n| n.to_string_lossy().into_owned());
         let mut v = vec![Widget { text: format!("{name} ▾"), hit: Hit::Projects, right: false, icon: None }];
         if let Some(b) = self.git_branch_label() {
-            v.push(Widget { text: format!("{b} ▾"), hit: Hit::Branches, right: false, icon: Some(Icon::Tab(TabIconKind::Git)) });
+            v.push(Widget { text: format!("{b} ▾"), hit: Hit::Branches, right: false, icon: Some("g_vcs") });
         }
         let run = self.run_selected.clone().unwrap_or_else(|| "構成".into());
         v.push(Widget { text: format!("{run} ▾"), hit: Hit::RunMenu, right: true, icon: None });
-        v.push(Widget { text: String::new(), hit: Hit::Cmd("Run"), right: true, icon: Some(Icon::Run) });
-        v.push(Widget { text: String::new(), hit: Hit::Cmd("Debug"), right: true, icon: Some(Icon::Tab(TabIconKind::Debug)) });
+        v.push(Widget { text: String::new(), hit: Hit::Cmd("Run"), right: true, icon: Some("r_run") });
+        v.push(Widget { text: String::new(), hit: Hit::Cmd("Debug"), right: true, icon: Some("r_debug") });
         if self.run_selected.as_ref().is_some_and(|r| self.run_is_running(r)) {
-            v.push(Widget { text: String::new(), hit: Hit::Cmd("RunStop"), right: true, icon: Some(Icon::Stop) });
+            v.push(Widget { text: String::new(), hit: Hit::Cmd("RunStop"), right: true, icon: Some("r_stop") });
         }
-        v.push(Widget { text: String::new(), hit: Hit::Cmd("SearchEverywhere"), right: true, icon: Some(Icon::Tab(TabIconKind::Search)) });
-        v.push(Widget { text: String::new(), hit: Hit::Cmd("Settings"), right: true, icon: Some(Icon::Gear) });
+        v.push(Widget { text: String::new(), hit: Hit::Cmd("SearchEverywhere"), right: true, icon: Some("g_search") });
+        v.push(Widget { text: String::new(), hit: Hit::Cmd("Settings"), right: true, icon: Some("g_settings") });
         v
     }
 
@@ -250,10 +237,15 @@ pub(crate) mod draw {
             for (row, label, t) in items {
                 let y = row as f32 * cell.h;
                 let open = ed.tool_open(t);
+                // IntelliJ と同じく、出している欄のアイコンは角の丸い地の上に
+                let px = crate::icons::large(cell.h);
+                let pad = (cell.h * 0.25).round();
+                let bx = x0 as f32 * cell.w + ((STRIPE_W as f32 * cell.w - px) / 2.0).round();
+                let by = crate::icons::centered(y, cell.h, px);
                 if open {
-                    p.out.push(Instance::fill(x0 as f32 * cell.w + 3.0, y - cell.h * 0.25, STRIPE_W as f32 * cell.w - 6.0, cell.h * 1.5, LIST_SEL_BG));
+                    rounded(p, bx - pad, by - pad, px + 2.0 * pad, px + 2.0 * pad, LIST_SEL_BG);
                 }
-                draw_tab_icon(p, icon_of(t), (x0 as f32 + STRIPE_W as f32 / 2.0) * cell.w, y, if open { FG_BRIGHT } else { STATUS_FG });
+                crate::icons::draw(p, icon_of(t), bx, by, px, None);
                 p.tab_hits.push((row, x0, x0 + STRIPE_W, label));
             }
         }
@@ -264,27 +256,11 @@ pub(crate) mod draw {
                 p.out.push(Instance::fill(c0 as f32 * cell.w, 2.0, (c1 - c0) as f32 * cell.w, cell.h - 5.0, RAISED_BG));
             }
             let mut c = c0 + 1;
-            match wd.icon {
-                Some(Icon::Tab(k)) => {
-                    let icon = match k {
-                        TabIconKind::Git => TabIcon::Git,
-                        TabIconKind::Debug => TabIcon::Debug,
-                        TabIconKind::Search => TabIcon::Search,
-                    };
-                    let color = if k == TabIconKind::Debug { rgb(0x5fb865) } else { FG };
-                    let cx = if wd.text.is_empty() { (c0 + c1) as f32 / 2.0 } else { c as f32 + 0.5 };
-                    draw_tab_icon(p, icon, cx * cell.w, 0.0, color);
-                    c += 2;
-                }
-                Some(Icon::Run) => {
-                    p.text("▶", (c0 + c1) / 2 - 1, 0.0, rgb(0x5fb865));
-                }
-                Some(Icon::Stop) => {
-                    let s = (cell.h * 0.4).round();
-                    p.out.push(Instance::fill(((c0 + c1) as f32 / 2.0) * cell.w - s / 2.0, (cell.h - s) / 2.0, s, s, DIAG_ERROR));
-                }
-                Some(Icon::Gear) => draw_gear(p, (c0 + c1) as f32 / 2.0 * cell.w - cell.w, 0.0, 2.0 * cell.w, FG),
-                None => {}
+            if let Some(name) = wd.icon {
+                let px = crate::icons::small(cell.h);
+                let cx = if wd.text.is_empty() { (c0 + c1) as f32 / 2.0 * cell.w - px / 2.0 } else { c as f32 * cell.w };
+                crate::icons::draw(p, name, cx, crate::icons::centered(0.0, cell.h, px), px, None);
+                c += 2;
             }
             if !wd.text.is_empty() {
                 let fg = if wd.hit == Hit::Projects { FG_BRIGHT } else { FG };
@@ -303,5 +279,17 @@ pub(crate) mod draw {
             }
         }
         p.cols = saved;
+    }
+
+    /// 角の丸い四角（角の 1 px を欠く）
+    pub(crate) fn rounded(p: &mut Painter, x: f32, y: f32, w: f32, h: f32, c: [f32; 4]) {
+        let r = 3.0;
+        p.out.push(Instance::fill(x + r, y, w - 2.0 * r, h, c));
+        p.out.push(Instance::fill(x, y + r, r, h - 2.0 * r, c));
+        p.out.push(Instance::fill(x + w - r, y + r, r, h - 2.0 * r, c));
+        p.out.push(Instance::fill(x + 1.0, y + 1.0, r - 1.0, r - 1.0, c));
+        p.out.push(Instance::fill(x + w - r, y + 1.0, r - 1.0, r - 1.0, c));
+        p.out.push(Instance::fill(x + 1.0, y + h - r, r - 1.0, r - 1.0, c));
+        p.out.push(Instance::fill(x + w - r, y + h - r, r - 1.0, r - 1.0, c));
     }
 }

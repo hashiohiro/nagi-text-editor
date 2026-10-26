@@ -22,6 +22,8 @@ winit.workspace = true
 unicode-segmentation.workspace = true
 # nagi-core と同じ版（:s :g の大文字小文字の指定のため直接使う）
 regex = "1.13.1"
+# IntelliJ の New UI のアイコン（icons/ の SVG。Apache 2.0）を描く。文字・画像の読み込みは使わない
+resvg = { version = "=0.45.1", default-features = false }
 windows = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_System_DataExchange",

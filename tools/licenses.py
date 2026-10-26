@@ -147,7 +147,9 @@ def main():
     if sys.argv[1] == "nagi":
         meta = metadata([])
         pkgs = shipped(meta, "nagi")
-        text = render("nagi - third-party licenses", pkgs)
+        # 埋め込んだ IntelliJ のアイコン（crates/nagi/icons。Apache-2.0）
+        icons = open(os.path.join(ROOT, "crates", "nagi", "icons", "NOTICE.txt"), encoding="utf-8").read().strip()
+        text = render("nagi - third-party licenses", pkgs, icons)
         dest = sys.argv[2]
     elif sys.argv[1] == "grammar":
         gid = sys.argv[2]

@@ -1,0 +1,9 @@
+IntelliJ Platform icons (New UI / "expui")
+License: Apache-2.0
+Source: https://github.com/JetBrains/intellij-community (platform/icons/src/expui, plugins/maven, plugins/terminal)
+
+Copyright 2000-2025 JetBrains s.r.o. and contributors.
+
+The SVG files in crates/nagi/icons are copied unchanged from the IntelliJ Community Edition repository and are
+embedded in nagi.exe. They are licensed under the Apache License, Version 2.0 (the full text appears above in this
+file, e.g. in the notices of the Apache-2.0 crates). Each SVG keeps its original copyright header.

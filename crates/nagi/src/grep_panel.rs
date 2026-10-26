@@ -908,7 +908,7 @@ pub(crate) mod draw {
             p.text(&label, c0, r as f32 * cell.h, if lit { FG_BRIGHT } else { STATUS_FG });
         }
         // 入力欄
-        draw_tab_icon(p, TabIcon::Search, (b.x as f32 + 1.5) * cell.w, row_y(1), STATUS_FG);
+        { let px = crate::icons::small(cell.h); crate::icons::draw(p, "g_search", (b.x as f32 + 1.5) * cell.w - px / 2.0, crate::icons::centered(row_y(1), cell.h, px), px, None); }
         let preedit = |active: bool| if active { ed.preedit.as_str() } else { "" };
         field(p, &g.query.text, g.query.cursor, preedit(!g.editing_mask), b.x + 3, row_y(1), !g.editing_mask);
         if g.editing_mask {

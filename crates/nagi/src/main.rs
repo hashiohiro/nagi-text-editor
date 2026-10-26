@@ -66,6 +66,7 @@ mod right_panel;
 mod save_dialog;
 mod sql_complete;
 mod chrome;
+mod icons;
 mod toggles;
 mod tree_panel;
 mod normal;

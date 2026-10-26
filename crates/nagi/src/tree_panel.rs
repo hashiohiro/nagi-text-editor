@@ -595,31 +595,28 @@ pub(crate) mod draw {
 
     /// 木のアイコン
     pub(crate) enum TreeIcon {
-        /// フォルダ（色）
-        Folder([f32; 4]),
-        /// 種類の分かるファイル（文字・地の色・文字の色）
+        /// IntelliJ のアイコン（icons.rs の名前）
+        Svg(&'static str),
+        /// IntelliJ にアイコンの無い種類のファイル（文字・地の色・文字の色）
         Badge(&'static str, [f32; 4], [f32; 4]),
-        /// ふつうのファイル（紙の形）
-        Page,
     }
 
-    /// 行のアイコン（IntelliJ と同じ考え方: フォルダはソース・テスト・除外で色を変え、ファイルは種類の文字と色）
     pub(crate) fn tree_icon(row: &crate::tree_panel::Row, index: Option<&nagi_workers::index::Index>, root: &std::path::Path) -> TreeIcon {
         let name = row.name.to_ascii_lowercase();
         if row.dir {
             let rel = row.path.strip_prefix(root).map(|r| r.to_string_lossy().replace('\\', "/").to_ascii_lowercase()).unwrap_or_default();
-            let color = if matches!(name.as_str(), "target" | "out" | "dist" | "build" | "node_modules" | "bin" | ".angular" | ".next") {
-                rgb(0xc98a4b)
+            let icon = if matches!(name.as_str(), "target" | "out" | "dist" | "build" | "node_modules" | "bin" | ".angular" | ".next") {
+                "n_excludeRoot"
             } else if rel.ends_with("src/test/java") || rel.ends_with("src/test/kotlin") || matches!(name.as_str(), "test" | "tests" | "__tests__" | "e2e" | "cypress" | "spec") {
-                rgb(0x62b543)
+                "n_testRoot"
             } else if rel.ends_with("src/main/java") || rel.ends_with("src/main/kotlin") || (name == "src" && !row.path.join("main").is_dir()) {
-                rgb(0x548af7)
+                "n_sourceRoot"
             } else if rel.ends_with("src/main/resources") || rel.ends_with("src/test/resources") {
-                rgb(0xd9a343)
+                "n_resourcesRoot"
             } else {
-                rgb(0x8c9aa6)
+                "n_folder"
             };
-            return TreeIcon::Folder(color);
+            return TreeIcon::Svg(icon);
         }
         let dark = BG;
         let white = rgb(0xffffff);
@@ -628,71 +625,59 @@ pub(crate) mod draw {
         match (name.as_str(), ext) {
             ("pom.xml", _) => b("m", 0xc71a36, false),
             ("package.json", _) => b("n", 0xcb3837, false),
-            ("dockerfile", _) => b("D", 0x2496ed, false),
-            (".gitignore" | ".gitattributes", _) => b("G", 0xf05033, false),
+            ("dockerfile", _) => TreeIcon::Svg("f_docker"),
+            (".gitignore" | ".gitattributes", _) => TreeIcon::Svg("f_gitignore"),
             (_, "java") => {
                 let rel = row.path.strip_prefix(root).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default();
                 match index.and_then(|i| i.file_type_kind(&rel)) {
-                    Some(nagi_syntax::defs::DefKind::Interface) => b("I", 0x62b543, true),
-                    Some(nagi_syntax::defs::DefKind::Enum) => b("E", 0xd9a343, true),
-                    Some(nagi_syntax::defs::DefKind::Class) => b("C", 0x3592c4, false),
-                    _ => b("J", 0xe76f00, false),
+                    Some(nagi_syntax::defs::DefKind::Interface) => TreeIcon::Svg("n_interface"),
+                    Some(nagi_syntax::defs::DefKind::Enum) => TreeIcon::Svg("n_enum"),
+                    Some(nagi_syntax::defs::DefKind::Class) => TreeIcon::Svg("n_class"),
+                    _ => TreeIcon::Svg("f_java"),
                 }
             }
             (_, "kt" | "kts") => b("K", 0xa97bff, false),
-            (_, "ts" | "mts" | "cts") => b("TS", 0x3178c6, false),
+            (_, "ts" | "mts" | "cts") => TreeIcon::Svg("f_typeScript"),
             (_, "tsx") => b("TS", 0x61dafb, true),
-            (_, "js" | "mjs" | "cjs") => b("JS", 0xf1e05a, true),
+            (_, "js" | "mjs" | "cjs") => TreeIcon::Svg("f_javaScript"),
             (_, "jsx") => b("JS", 0x61dafb, true),
-            (_, "html" | "htm") => b("<>", 0xe44d26, false),
-            (_, "css") => b("#", 0x3d8fd1, false),
+            (_, "html" | "htm") => TreeIcon::Svg("f_html"),
+            (_, "css") => TreeIcon::Svg("f_css"),
             (_, "scss" | "sass") => b("S", 0xcd6799, false),
-            (_, "json" | "jsonc") => b("{}", 0xcbcb41, true),
-            (_, "md" | "markdown") => b("M", 0x519aba, false),
-            (_, "xml" | "xsd" | "wsdl") => b("<>", 0xe37933, false),
-            (_, "yml" | "yaml") => b("Y", 0xcb171e, false),
-            (_, "properties" | "ini" | "toml" | "conf" | "cfg" | "env") => b("P", 0x8c9aa6, true),
-            (_, "sql") => b("Q", 0xe38c00, true),
+            (_, "json" | "jsonc") => TreeIcon::Svg("f_json"),
+            (_, "md" | "markdown") => TreeIcon::Svg("f_markdown"),
+            (_, "xml" | "xsd" | "wsdl") => TreeIcon::Svg("f_xml"),
+            (_, "yml" | "yaml") => TreeIcon::Svg("f_yaml"),
+            (_, "properties" | "ini" | "toml" | "conf" | "cfg" | "env") => TreeIcon::Svg("f_properties"),
+            (_, "sql") => TreeIcon::Svg("f_sql"),
             (_, "rs") => b("R", 0xdea584, true),
             (_, "py") => b("Py", 0x3572a5, false),
-            (_, "sh" | "bash" | "bat" | "cmd" | "ps1") => b(">", 0x89e051, true),
-            (_, "png" | "jpg" | "jpeg" | "gif" | "svg" | "ico" | "webp") => b("◩", 0x62b543, true),
+            (_, "sh" | "bash" | "bat" | "cmd" | "ps1") => TreeIcon::Svg("f_shell"),
+            (_, "png" | "jpg" | "jpeg" | "gif" | "svg" | "ico" | "webp") => TreeIcon::Svg("f_image"),
             (_, "vim") => b("V", 0x199f4b, false),
-            _ => TreeIcon::Page,
+            (_, "txt" | "log" | "csv") => TreeIcon::Svg("f_text"),
+            _ => TreeIcon::Svg("f_unknown"),
         }
     }
 
     /// アイコンを列 `col`・行の y に描く（2 列ぶん。中は 16px ほど）
     pub(crate) fn draw_tree_icon(p: &mut Painter, icon: &TreeIcon, col: usize, y: f32) {
         let cell = p.fonts.cell();
-        let s = (cell.h * 0.62).round().clamp(10.0, 26.0);
-        let x = col as f32 * cell.w + ((2.0 * cell.w - s) / 2.0).max(0.0) - 2.0;
-        let y = y + ((cell.h - s) / 2.0).round();
-        let px = (s / 16.0).max(1.0).round();
         match icon {
-            TreeIcon::Folder(c) => {
-                // つまみ（左上）と本体
-                p.out.push(Instance::fill(x, y + px, s * 0.45, px * 2.0, *c));
-                p.out.push(Instance::fill(x, y + px * 3.0, s, s - px * 4.0, *c));
+            TreeIcon::Svg(name) => {
+                let px = crate::icons::small(cell.h);
+                let x = col as f32 * cell.w + ((2.0 * cell.w - px) / 2.0).max(0.0) - 2.0;
+                crate::icons::draw(p, name, x, crate::icons::centered(y, cell.h, px), px, None);
             }
             TreeIcon::Badge(label, bg, fg) => {
+                let s = (cell.h * 0.62).round().clamp(10.0, 26.0);
+                let x = col as f32 * cell.w + ((2.0 * cell.w - s) / 2.0).max(0.0) - 2.0;
+                let y = y + ((cell.h - s) / 2.0).round();
                 p.out.push(Instance::fill(x, y, s, s, *bg));
                 let n = label.chars().count() as f32;
                 let scale = if n >= 2.0 { (s * 0.95 / (2.0 * cell.w)).min(0.5) } else { 0.62 };
                 let tw = cell.w * scale * n;
                 p.small_text(label, x + (s - tw) / 2.0, y + (s - cell.h * scale) / 2.0, scale, *fg);
-            }
-            TreeIcon::Page => {
-                // 紙の形（枠と、右上の折り返し）
-                let c = rgb(0x8c9aa6);
-                let (w, h) = (s * 0.75, s);
-                let x = x + (s - w) / 2.0;
-                p.out.push(Instance::fill(x, y, w - px * 3.0, px, c));
-                p.out.push(Instance::fill(x, y, px, h, c));
-                p.out.push(Instance::fill(x + w - px, y + px * 3.0, px, h - px * 3.0, c));
-                p.out.push(Instance::fill(x, y + h - px, w, px, c));
-                p.out.push(Instance::fill(x + w - px * 3.0, y, px, px * 3.0, c));
-                p.out.push(Instance::fill(x + w - px * 3.0, y + px * 3.0 - px, px * 3.0, px, c));
             }
         }
     }

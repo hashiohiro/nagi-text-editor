@@ -395,6 +395,16 @@ impl Renderer {
         self.atlas.get(&self.gpu.ctx, fonts, key)
     }
 
+    /// 字ではない画像（アイコン）をアトラスに用意して位置を返す。`key` で覚え、無ければ `make` で作って載せる
+    pub fn image(&mut self, key: GlyphKey, make: impl FnOnce() -> Option<nagi_text::GlyphImage>) -> Option<AtlasGlyph> {
+        if let Some(g) = self.atlas.map.get(&key) {
+            return *g;
+        }
+        let g = make().and_then(|img| self.atlas.upload(&self.gpu.ctx, &img));
+        self.atlas.map.insert(key, g);
+        g
+    }
+
     /// アトラスを空にする（文字の大きさが変わったとき）。テクスチャはそのまま上書きして使う
     pub fn clear_glyphs(&mut self) {
         let a = &mut self.atlas;

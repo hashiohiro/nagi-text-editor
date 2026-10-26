@@ -646,7 +646,7 @@ pub(crate) mod draw {
         }
         // 入力欄（虫眼鏡のアイコンと、打った語）
         let fy = y0 + cell.h;
-        draw_tab_icon(p, TabIcon::Search, (b.x as f32 + 1.5) * cell.w, fy, STATUS_FG);
+        { let px = crate::icons::small(cell.h); crate::icons::draw(p, "g_search", (b.x as f32 + 1.5) * cell.w - px / 2.0, crate::icons::centered(fy, cell.h, px), px, None); }
         draw_vim_line(p, &f.field, 0, b.x + 3, fy, preedit, true);
         p.out.push(Instance::fill(x0, fy + cell.h + cell.h * 0.5, wpx, 1.0, SEPARATOR));
         // 候補（上が一番良い）
