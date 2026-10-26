@@ -62,6 +62,9 @@ struct Widget {
 /// 上の帯の部品のアイコン（icons.rs の名前）
 type Icon = &'static str;
 
+/// プロジェクトの頭文字の四角（アイコンの代わり）
+const INITIALS: Icon = "<initials>";
+
 fn width(s: &str) -> usize {
     nagi_core::display_col(s, s.len(), false)
 }
@@ -136,7 +139,8 @@ impl Editor {
     fn toolbar_widgets(&self) -> Vec<Widget> {
         let root = self.nav_root();
         let name = root.file_name().map_or_else(|| root.display().to_string(), |n| n.to_string_lossy().into_owned());
-        let mut v = vec![Widget { text: format!("{name} ▾"), hit: Hit::Projects, right: false, icon: None }];
+        // プロジェクトは頭文字の色の四角を前に（IntelliJ の New UI と同じ）
+        let mut v = vec![Widget { text: format!("{name} ▾"), hit: Hit::Projects, right: false, icon: Some(INITIALS) }];
         if let Some(b) = self.git_branch_label() {
             v.push(Widget { text: format!("{b} ▾"), hit: Hit::Branches, right: false, icon: Some("g_vcs") });
         }
@@ -261,7 +265,21 @@ pub(crate) mod draw {
                 p.out.push(Instance::fill(c0 as f32 * cell.w, 2.0, (c1 - c0) as f32 * cell.w, cell.h - 5.0, RAISED_BG));
             }
             let mut c = c0 + 1;
-            if let Some(name) = wd.icon {
+            if wd.icon == Some(INITIALS) {
+                // 名前の頭 2 文字を、名前から決めた色の角の丸い四角に
+                let name = wd.text.trim_end_matches(" ▾");
+                let ini: String = name.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).take(2).filter_map(|w| w.chars().next()).collect::<String>().to_uppercase();
+                let ini = if ini.chars().count() < 2 { name.chars().take(2).collect::<String>().to_uppercase() } else { ini };
+                const COLORS: [u32; 6] = [0x5c7bd9, 0x4f9e6c, 0xc4733d, 0x9a5fc4, 0xc2546f, 0x3f9ba8];
+                let hash = name.bytes().fold(7u32, |h, b| h.wrapping_mul(31).wrapping_add(b as u32));
+                let s = (cell.h * 0.78).round();
+                let (bx, by) = (c as f32 * cell.w, ((cell.h - s) / 2.0).round());
+                p.out.push(Instance::rounded(bx, by, s, s, 4.0, rgb(COLORS[hash as usize % COLORS.len()])));
+                let scale = 0.5;
+                let tw = p.fonts.cell().w * scale * ini.chars().count() as f32;
+                p.small_text(&ini, bx + (s - tw) / 2.0, by + (s - cell.h * scale) / 2.0, scale, FG_BRIGHT);
+                c += 2;
+            } else if let Some(name) = wd.icon {
                 let px = crate::icons::small(cell.h);
                 let cx = if wd.text.is_empty() { (c0 + c1) as f32 / 2.0 * cell.w - px / 2.0 } else { c as f32 * cell.w };
                 crate::icons::draw(p, name, cx, crate::icons::centered(0.0, cell.h, px), px, None);

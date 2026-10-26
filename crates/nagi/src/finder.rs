@@ -681,7 +681,35 @@ pub(crate) mod draw {
                 ci += g.chars().count();
                 bi += g.len();
             }
-            p.draw(&items, b.x + 1, y);
+            // 候補の種類のアイコン（IntelliJ と同じ。ファイルは種類、型・メソッド・フィールドはその印）
+            let file_icon = |path: &str| {
+                let row = crate::tree_panel::Row { path: f.root.join(path), name: path.rsplit('/').next().unwrap_or(path).to_string(), depth: 0, dir: false };
+                crate::tree_panel::draw::tree_icon(&row, None, &f.root)
+            };
+            let kind_icon = |text: &str| -> Option<&'static str> {
+                Some(match text.split("  ").nth(1)? {
+                    "クラス" | "型" => "n_class",
+                    "インターフェース" => "n_interface",
+                    "enum" => "n_enum",
+                    "メソッド" | "関数" => "n_method",
+                    "フィールド" | "定数" | "変数" => "n_field",
+                    _ => return None,
+                })
+            };
+            let icon = match f.source {
+                Source::Files | Source::Recent | Source::Buffers => Some(file_icon(text)),
+                Source::Everywhere => match f.every.get(i as usize) {
+                    Some(Every::File) => Some(file_icon(text)),
+                    Some(Every::Loc(..)) => kind_icon(text).map(crate::tree_panel::draw::TreeIcon::Svg),
+                    _ => None,
+                },
+                Source::Types | Source::Symbols | Source::Outline | Source::Definitions => kind_icon(text).map(crate::tree_panel::draw::TreeIcon::Svg),
+                _ => None,
+            };
+            if let Some(icon) = &icon {
+                crate::tree_panel::draw::draw_tree_icon(p, icon, b.x + 1, y);
+            }
+            p.draw(&items, b.x + 3, y);
         }
         // 下の案内と件数
         let by = (b.y + b.h - 1) as f32 * cell.h;

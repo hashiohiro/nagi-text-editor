@@ -658,7 +658,10 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
             p.out.push(Instance::fill(rect.x as f32 * cell.w, y, rect.w as f32 * cell.w, cell.h * line_rows as f32, rgb(0x1f3a5f)));
         }
         if pane.breaks.contains(&ln) {
-            p.text("●", rect.x + bw, y, GIT_DEL);
+            // 赤い丸（IntelliJ のブレークポイントと同じく行番号の上に）
+            let d = (cell.h * 0.55).round();
+            let cx = (rect.x + bw) as f32 * cell.w + cell.w * 2.5;
+            p.out.push(Instance::rounded(cx - d / 2.0, y + (cell.h - d) / 2.0, d, d, d / 2.0, rgb(0xe55765)));
         } else if pane.exec == Some(ln) {
             p.text("▶", rect.x + bw, y, DIAG_WARN);
         }
