@@ -282,7 +282,34 @@ impl Editor {
         if let (Some(_), Some(t)) = (at, tag) {
             self.follow_multi(t, redo);
         }
+        if at.is_none() && self.follow_from_disk(redo) {
+            return Some(self.abs());
+        }
         at
+    }
+
+    /// 名前を変えたときに開いていなかったファイル（後から開いたもの）で、自分の履歴に戻すものが無いとき: 変えたときの記録から全部を戻す・進める
+    fn follow_from_disk(&mut self, redo: bool) -> bool {
+        if self.buf.dirty {
+            return false;
+        }
+        let Some(cur) = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()) else { return false };
+        let text = self.buf.text();
+        let found = self.multi_edits.iter().rev().find(|m| {
+            m.disk.iter().any(|(p, before, after)| {
+                // 戻した後は、名前を変えたファイルは前の名前にある
+                let p = match &m.moved {
+                    Some((from, to)) if redo && p == to => from,
+                    _ => p,
+                };
+                crate::buffers::same_path(p, &cur) && text == *(if redo { before } else { after })
+            })
+        });
+        let Some(tag) = found.map(|m| m.tag) else { return false };
+        self.follow_multi(tag, redo);
+        // 書き換えたファイルを読み直す（名前を変えたファイルなら新しいパスで）
+        self.reload();
+        true
     }
 
     fn follow_multi(&mut self, tag: u64, redo: bool) {
@@ -476,6 +503,17 @@ mod tests {
         assert!(e.buf.text().contains("Bar f = new Bar();"));
         assert!(std::fs::read_to_string(dir.join("p/Bar.java")).unwrap().contains("public class Bar"), "{}", e.notify.text);
         assert!(!dir.join("p/Foo.java").exists());
+        // 変えたときに開いていなかったファイルを後から開いても、その u・Ctrl-r で全部を戻す・進める
+        e.edit_file(dir.join("p/Bar.java"));
+        keys(&mut e, "u");
+        assert_eq!(e.buf.text(), foo0, "{}", e.notify.text);
+        assert!(e.buf.path.as_deref().is_some_and(|p| p.ends_with("Foo.java")), "{:?}", e.buf.path);
+        assert_eq!(std::fs::read_to_string(dir.join("p/Use.java")).unwrap(), use0);
+        assert!(!dir.join("p/Bar.java").exists());
+        keys(&mut e, "<C-r>");
+        assert!(e.buf.text().contains("public class Bar"), "{}", e.notify.text);
+        assert!(e.buf.path.as_deref().is_some_and(|p| p.ends_with("Bar.java")), "{:?}", e.buf.path);
+        assert!(std::fs::read_to_string(dir.join("p/Use.java")).unwrap().contains("Bar f = new Bar();"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
