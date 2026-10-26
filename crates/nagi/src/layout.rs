@@ -101,7 +101,7 @@ pub static PANELS: &[&dyn View] = &[
     &crate::menu::MenuView,
 ];
 
-pub static OVERLAYS: &[&dyn View] = &[&crate::run_dialog::RunDialogView, &crate::settings_dialog::SettingsView, &crate::launcher::LauncherView];
+pub static OVERLAYS: &[&dyn View] = &[&crate::run_dialog::RunDialogView, &crate::settings_dialog::SettingsView, &crate::launcher::LauncherView, &crate::input_dialog::InputView];
 
 pub fn layer(l: Layer) -> &'static [&'static dyn View] {
     match l {
@@ -176,6 +176,7 @@ mod tests {
             // 向いている部品（Component::click）が先に受け取り、その中で list::pick を通す
             ("CmdCompleteView", "クリックは CommandLineComponent::click が受け取る"),
             ("LauncherView", "クリックは LauncherComponent::click が受け取る"),
+            ("InputView", "クリックは InputComponent::click が受け取る"),
             ("RunDialogView", "クリックは RunDialogComponent::click が受け取る"),
             ("SettingsView", "クリックは SettingsComponent::click が受け取る"),
         ];

@@ -53,6 +53,8 @@ pub enum State {
     /// 設定の画面（settings_dialog.rs）
     Settings,
     Menu,
+    /// 1 つの入力欄のダイアログ（input_dialog.rs。名前の変更・行へ移動）
+    Input,
 }
 
 /// 見え方の状態を、持つもの（Vim の状態, 向いている部品）に分ける
@@ -77,6 +79,7 @@ pub fn split_state(s: State) -> (Mode, Option<Panel>) {
         State::RunDialog => (Mode::Normal, Some(Panel::RunDialog)),
         State::Settings => (Mode::Normal, Some(Panel::Settings)),
         State::Menu => (Mode::Normal, Some(Panel::Menu)),
+        State::Input => (Mode::Normal, Some(Panel::Input)),
     }
 }
 
@@ -113,6 +116,8 @@ pub enum Panel {
     Settings,
     /// 右クリックのメニュー（menu.rs）
     Menu,
+    /// 入力のダイアログ（input_dialog.rs）
+    Input,
 }
 
 /// リストモードでいるパネル
@@ -456,6 +461,8 @@ pub struct Editor {
     pub hover_button: Option<crate::toggles::Button>,
     /// マウスを載せている上の帯の部品（chrome.rs）
     pub hover_chrome: Option<crate::chrome::Hit>,
+    /// 入力のダイアログ（input_dialog.rs）
+    pub input: Option<crate::input_dialog::InputDialog>,
     /// 全文検索の小窓のプレビューに読んだファイル（パス, 行）
     pub grep_preview: std::cell::RefCell<Option<(std::path::PathBuf, std::sync::Arc<Vec<String>>)>>,
     /// 部品を左クリックしている間の修飾キー（Ctrl・Shift+クリックで一覧の複数を選ぶ）。押した間だけ App が入れる
@@ -589,6 +596,7 @@ impl Editor {
             Panel::RunDialog => State::RunDialog,
             Panel::Settings => State::Settings,
             Panel::Menu => State::Menu,
+            Panel::Input => State::Input,
         }
     }
 
@@ -728,6 +736,7 @@ impl Editor {
             bottom_hidden: false,
             hover_button: None,
             hover_chrome: None,
+            input: None,
             grep_preview: Default::default(),
             click_mods: Default::default(),
             hover_tab: None,
@@ -938,7 +947,7 @@ impl Editor {
 
     /// 入力欄（IME の確定先）があるモードか
     pub fn has_prompt(&self) -> bool {
-        matches!(self.state(), State::Command | State::Search | State::Replace | State::GrepPrompt)
+        matches!(self.state(), State::Command | State::Search | State::Replace | State::GrepPrompt | State::Input)
             || (self.state() == State::Finder && self.finder.as_ref().is_some_and(|f| f.field.is_insert()))
             || self.state() == State::Terminal
             || (self.state() == State::RunDialog && self.run_dialog.as_ref().is_some_and(|d| d.typing()))

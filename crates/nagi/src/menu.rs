@@ -32,11 +32,16 @@ pub struct Menu {
     back: State,
     /// Esc・外を押して閉じたときに行う項目（確認の「いいえ」）
     cancel: usize,
+    /// 確かめるダイアログ（問いと、下にボタンを横に並べる。IntelliJ の確認の窓と同じ形）
+    pub dialog: bool,
 }
+
+/// 確かめるダイアログの幅の上限（列）
+const DIALOG_W: usize = 72;
 
 impl Menu {
     pub fn new(row: usize, col: usize) -> Menu {
-        Menu { title: None, items: Vec::new(), sel: 0, row, col, back: State::Normal, cancel: usize::MAX }
+        Menu { title: None, items: Vec::new(), sel: 0, row, col, back: State::Normal, cancel: usize::MAX, dialog: false }
     }
 
     pub fn item(mut self, label: impl Into<String>, run: impl FnOnce(&mut Editor) + 'static) -> Menu {
@@ -71,8 +76,45 @@ impl Menu {
         self.items.get(i).is_some_and(|it| it.run.is_some())
     }
 
+    /// 確かめるダイアログの問いの行（幅で折り返す）
+    pub fn dialog_lines(&self, w: usize) -> Vec<String> {
+        let mut lines = vec![String::new()];
+        let mut cur = 0;
+        for ch in self.title.as_deref().unwrap_or("").chars() {
+            let cw = nagi_core::display_col(ch.encode_utf8(&mut [0; 4]), ch.len_utf8(), false);
+            if cur + cw > w {
+                lines.push(String::new());
+                cur = 0;
+            }
+            lines.last_mut().unwrap().push(ch);
+            cur += cw;
+        }
+        lines
+    }
+
+    /// ボタンの位置（項目の番号, 行, 始めの列, 終わりの列）。右下に左から項目の順
+    pub fn dialog_buttons(&self, r: Rect) -> Vec<(usize, usize, usize, usize)> {
+        let width = |s: &str| nagi_core::display_col(s, s.len(), false);
+        let row = r.y + r.h - 2;
+        let items: Vec<(usize, usize)> = self.items.iter().enumerate().filter(|(_, it)| it.run.is_some()).map(|(i, it)| (i, width(&it.label) + 4)).collect();
+        let total: usize = items.iter().map(|x| x.1 + 1).sum();
+        let mut x = (r.x + r.w).saturating_sub(total + 1);
+        items.into_iter().map(|(i, w)| {
+            let b = (i, row, x, x + w);
+            x += w + 1;
+            b
+        }).collect()
+    }
+
     /// 箱（枠の内側。画面 `cols`×`rows` に収める）
     pub fn rect(&self, cols: usize, rows: usize) -> Rect {
+        if self.dialog {
+            let width = |s: &str| nagi_core::display_col(s, s.len(), false);
+            let buttons: usize = self.items.iter().filter(|it| it.run.is_some()).map(|it| width(&it.label) + 5).sum::<usize>() + 2;
+            let w = (self.title.as_deref().map_or(0, width) + 8).max(buttons).max(48).min(DIALOG_W).min(cols.saturating_sub(4));
+            let h = self.dialog_lines(w.saturating_sub(8)).len() + 5;
+            return Rect { x: cols.saturating_sub(w) / 2, y: (rows / 3).min(rows.saturating_sub(h)), w, h };
+        }
         let width = |s: &str| nagi_core::display_col(s, s.len(), false);
         let w = self.items.iter().map(|it| width(&it.label)).chain(self.title.as_deref().map(width)).max().unwrap_or(0) + 4;
         let h = self.items.len() + self.head();
@@ -116,6 +158,9 @@ impl Editor {
         (m.row, m.col) = ((rows / 2).saturating_sub(2), cols.saturating_sub(w) / 2);
         m.title = Some(q);
         m.cancel = cancel;
+        // ボタンが横に並びきれば、確かめるダイアログの形にする
+        let width = |s: &str| nagi_core::display_col(s, s.len(), false);
+        m.dialog = m.items.iter().filter(|it| it.run.is_some()).map(|it| width(&it.label) + 5).sum::<usize>() + 2 <= DIALOG_W.min(cols.saturating_sub(4));
         self.open_menu(m);
     }
 
@@ -160,6 +205,12 @@ impl Editor {
             return;
         };
         let n = m.items.len();
+        // ダイアログはボタンが横に並ぶので ← → でも選ぶ
+        let key = match key {
+            Key::Right if m.dialog => Key::Down,
+            Key::Left if m.dialog => Key::Up,
+            k => k,
+        };
         let to = match key {
             Key::Char('j') | Key::Down | Key::Ctrl('n') | Key::Tab => Some((m.sel + 1).min(n.saturating_sub(1))),
             Key::Char('k') | Key::Up | Key::Ctrl('p') => Some(m.sel.saturating_sub(1)),
@@ -223,6 +274,15 @@ impl crate::layout::View for MenuView {
         let _ = r;
         let Some(m) = &ed.menu else { return crate::layout::Click::Pass };
         let b = m.rect(ed.screen.0, ed.screen.1);
+        if m.dialog {
+            // ボタンを押したらその項目。ダイアログの中のほかの所は何もしない
+            match m.dialog_buttons(b).into_iter().find(|x| x.1 == row && col >= x.2 && col < x.3) {
+                Some((i, ..)) => ed.menu_run(i),
+                None if !b.contains(row, col) => ed.cancel_menu(),
+                None => {}
+            }
+            return crate::layout::Click::Done;
+        }
         if b.contains(row, col) {
             // 題の行は何もしない
             let Some(i) = row.checked_sub(b.y + m.head()) else { return crate::layout::Click::Done };
@@ -248,7 +308,36 @@ pub(crate) mod draw {
     use super::*;
     use crate::view::*;
 
+    /// 確かめるダイアログ: 題の帯、？のアイコンと問い、右下にボタン（選んでいるものは青）
+    fn draw_dialog(p: &mut Painter, m: &Menu, cols: usize, rows: usize) {
+        let cell = p.fonts.cell();
+        let b = m.rect(cols, rows);
+        let (x0, y0, w, h) = (b.x as f32 * cell.w, b.y as f32 * cell.h, b.w as f32 * cell.w, b.h as f32 * cell.h);
+        p.out.push(Instance::fill(x0 - 1.0, y0 - 1.0, w + 2.0, h + 2.0, SEPARATOR));
+        p.out.push(Instance::fill(x0, y0, w, h, POPUP_BG));
+        let saved = p.cols;
+        p.cols = b.x + b.w - 1;
+        p.text(" 確認", b.x, y0, FG_BRIGHT);
+        let px = (cell.h * 1.1).round();
+        crate::icons::draw(p, "g_questionDialog", x0 + cell.w * 1.5, y0 + cell.h * 1.6, px, None);
+        for (k, l) in m.dialog_lines(b.w.saturating_sub(8)).iter().enumerate() {
+            p.text(l, b.x + 6, (b.y + 2 + k) as f32 * cell.h, FG);
+        }
+        for (i, row, c0, c1) in m.dialog_buttons(b) {
+            let on = i == m.sel;
+            p.out.push(Instance::fill(c0 as f32 * cell.w, row as f32 * cell.h + 2.0, (c1 - c0) as f32 * cell.w, cell.h - 4.0, if on { ACCENT_FG } else { RAISED_BG }));
+            let label = &m.items[i].label;
+            let lw = p.width(label);
+            p.text(label, c0 + (c1 - c0).saturating_sub(lw) / 2, row as f32 * cell.h, if on { FG_BRIGHT } else { FG });
+        }
+        p.cols = saved;
+    }
+
     pub(crate) fn draw_menu(p: &mut Painter, m: &Menu, cols: usize, rows: usize) {
+        if m.dialog {
+            draw_dialog(p, m, cols, rows);
+            return;
+        }
         let cell = p.fonts.cell();
         let b = m.rect(cols, rows);
         let (x, y0) = (b.x as f32 * cell.w, b.y as f32 * cell.h);

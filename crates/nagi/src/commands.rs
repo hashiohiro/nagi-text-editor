@@ -159,7 +159,7 @@ pub static COMMANDS: &[Cmd] = &[
     cmd!(["DuplicateLine"], "行の複製", Args::None, |e, c| e.plain_duplicate()),
     cmd!(["DeleteLine"], "行の削除", Args::None, |e, c| e.plain_delete_lines()),
     cmd!(["CommentLine"], "行コメントを付ける・外す", Args::None, |e, c| e.plain_comment()),
-    cmd!(["GotoLine"], "行へ移動（番号を打つ）", Args::None, |e, c| e.enter_command("")),
+    cmd!(["GotoLine"], "行へ移動（行:列 を打つダイアログ。Ctrl+G）", Args::None, |e, c| e.goto_line_dialog()),
     cmd!(["Grep", "grep", "Rg", "rg"], "全文検索", Args::Text, |e, c| e.open_grep(c.arg)),
     cmd!(["Tree", "Explore", "Ex", "NERDTreeToggle"], "ファイルツリー", Args::None, |e, c| e.toggle_tree()),
     cmd!(["TreeSync"], "プロジェクトの木を開いているファイルに合わせる・合わせない（切り替え）", Args::None, |e, c| {

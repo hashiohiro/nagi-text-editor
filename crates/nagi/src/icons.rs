@@ -33,6 +33,7 @@ const ICONS: &[(&str, &str, &str)] = &[
     ("g_informationDialog", include_str!("../icons/g_informationDialog.svg"), include_str!("../icons/g_informationDialog_dark.svg")),
     ("g_warningDialog", include_str!("../icons/g_warningDialog.svg"), include_str!("../icons/g_warningDialog_dark.svg")),
     ("g_errorDialog", include_str!("../icons/g_errorDialog.svg"), include_str!("../icons/g_errorDialog_dark.svg")),
+    ("g_questionDialog", include_str!("../icons/g_questionDialog.svg"), include_str!("../icons/g_questionDialog_dark.svg")),
     ("g_moreVertical", include_str!("../icons/g_moreVertical.svg"), include_str!("../icons/g_moreVertical_dark.svg")),
     ("g_search", include_str!("../icons/g_search.svg"), include_str!("../icons/g_search_dark.svg")),
     ("g_settings", include_str!("../icons/g_settings.svg"), include_str!("../icons/g_settings_dark.svg")),

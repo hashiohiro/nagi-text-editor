@@ -8,7 +8,7 @@
 
 use std::path::PathBuf;
 
-use crate::editor::{Editor, Prompt, State};
+use crate::editor::Editor;
 
 /// 名前に使える文字だけか（Java・Kotlin・TS・Python の識別子）
 fn valid_name(s: &str) -> bool {
@@ -27,10 +27,10 @@ impl Editor {
             return;
         };
         let new = arg.trim();
+        // 名前を書かなければ、今の名前を入れたダイアログ（IntelliJ の Rename と同じ）
         if new.is_empty() {
-            self.set_state(State::Command);
-            self.cmdline = Prompt::default();
-            self.cmdline.set(&format!("Rename {name}"));
+            let notes = vec!["型・メソッド・フィールドは、使われている所の一覧を確かめてから全部のファイルを変える".to_string(), "u（どのファイルでも）で全部を戻せる".to_string()];
+            self.open_input("名前の変更", format!("{name} の新しい名前:"), &name, notes, |e, t| e.rename_command(&t));
             return;
         }
         if !valid_name(new) {
@@ -399,6 +399,7 @@ pub struct MultiEdit {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::editor::State;
     use nagi_core::Buffer;
     use std::path::Path;
 
@@ -448,10 +449,13 @@ mod tests {
         assert_eq!(e.buf.text(), "class A {\n  int n;\n  void a() {\n    int count = 1;\n    count = count + this.n;\n  }\n  void b() {\n    int n = 2;\n  }\n}\n", "{}", e.notify.text);
         keys(&mut e, "u");
         assert!(e.buf.text().contains("    int n = 1;\n    n = n + this.n;"));
-        // 名前を書かなければ、コマンドの行に今の名前
+        // 名前を書かなければ、今の名前を入れたダイアログ。打ち直して Enter で変える
         e.rename_command("");
-        assert_eq!(e.state(), State::Command);
-        assert_eq!(e.cmdline.text, "Rename n");
+        assert_eq!(e.state(), crate::editor::State::Input);
+        assert_eq!(e.input.as_ref().unwrap().field.text, "n");
+        keys(&mut e, "<BS>k<CR>");
+        assert_eq!(e.state(), crate::editor::State::Normal);
+        assert!(e.buf.text().contains("    int k = 1;\n    k = k + this.n;"), "{}", e.buf.text());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

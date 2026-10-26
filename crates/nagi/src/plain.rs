@@ -704,9 +704,10 @@ mod tests {
         let h2 = hit.clone();
         e.ask("消しますか", move |_| h2.set(true));
         let m = e.menu.as_ref().unwrap();
-        let b = m.rect(e.screen.0, e.screen.1);
-        crate::layout::press(&mut e, s, b.y + 1, b.x + 2, |_| 1);
-        assert!(hit.get(), "1 行目（題の下）の「はい」を押した");
+        assert!(m.dialog, "ボタンの並ぶダイアログ");
+        let (_, row, c0, _) = m.dialog_buttons(m.rect(e.screen.0, e.screen.1))[0];
+        crate::layout::press(&mut e, s, row, c0 + 1, |_| 1);
+        assert!(hit.get(), "「はい」のボタンを押した");
         assert!(e.menu.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
