@@ -85,6 +85,41 @@ impl Editor {
         self.notify.info(format!("整形しています: {shown}"));
     }
 
+    /// import の整理（Ctrl+Alt+O・:OptimizeImports。nagi_lang::imports）。違う所だけを 1 回の編集で入れる（u で戻せる）
+    pub(crate) fn optimize_imports(&mut self) {
+        let path = self.buf.path.clone().unwrap_or_default();
+        let ext = path.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_default();
+        let Some(kind) = nagi_lang::imports::Kind::of_ext(&ext) else {
+            self.notify.info(format!("import の整理は Java・Kotlin・TypeScript・JavaScript・Python だけです（.{ext}）"));
+            return;
+        };
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let old = self.buf.text();
+        let nl = self.buf.newline();
+        match nagi_lang::imports::optimize(kind, &old.replace("\r\n", "\n"), &name) {
+            Err(e) => self.notify.warn(e),
+            Ok(None) => self.notify.info("整理する import はありません"),
+            Ok(Some((new, removed))) => {
+                let new = new.replace('\n', nl);
+                let Some((s, e, t)) = changed_span(&old, &new) else {
+                    self.notify.info("整理する import はありません");
+                    return;
+                };
+                let (line, byte) = (self.cursor.line, self.cursor.byte);
+                // 上の import の行が減った分、カーソルも上へ
+                let shift = old[..e].matches('\n').count() as isize - old[..s].matches('\n').count() as isize - t.matches('\n').count() as isize;
+                let line = if old[..s].matches('\n').count() < line { (line as isize - shift).max(0) as usize } else { line };
+                self.hist.begin();
+                self.edit(s, e, &t);
+                self.hist.close();
+                self.cursor.line = line.min(self.buf.line_count().saturating_sub(1));
+                self.cursor.byte = byte.min(self.buf.line(self.cursor.line).len());
+                self.clamp_normal();
+                self.notify.info(if removed > 0 { format!("import を整理しました（{removed} 件外した。u で戻せる）") } else { "import を並べ直しました（u で戻せる）".into() });
+            }
+        }
+    }
+
     /// 整形が終わっていれば入れる。変わったら true
     pub(crate) fn poll_format(&mut self) -> bool {
         let Some(job) = &self.format_job else { return false };
@@ -160,6 +195,24 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         assert!(e.notify.text.contains("nagi-no-such-formatter が見つかりません"), "{}", e.notify.text);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Ctrl+Alt+O: 使っていない import を外す。CRLF のファイルも、u で戻せる
+    #[test]
+    fn optimizes_imports() {
+        let dir = std::env::temp_dir().join(format!("nagi-imports-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("A.java");
+        std::fs::write(&f, "import java.util.Map;\r\nimport java.util.List;\r\n\r\nclass A {\r\n  List<String> xs;\r\n}\r\n").unwrap();
+        let mut e = Editor::new(nagi_core::Buffer::open(&f).unwrap(), None);
+        e.cursor.line = 4;
+        e.optimize_imports();
+        assert_eq!(e.buf.text(), "import java.util.List;\r\n\r\nclass A {\r\n  List<String> xs;\r\n}\r\n", "{}", e.notify.text);
+        assert!(e.notify.text.contains("1 件"), "{}", e.notify.text);
+        assert_eq!(e.cursor.line, 3, "カーソルは同じ行に残る");
+        e.key(nagi_vim::Key::Char('u'));
+        assert!(e.buf.text().starts_with("import java.util.Map;"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

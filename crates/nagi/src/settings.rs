@@ -180,6 +180,7 @@ pub static SCHEMA: &[Item] = &[
     item("keymap.method_next", "キーマップ", "次のメソッドへ", K, "Alt+Down", ""),
     item("keymap.method_prev", "キーマップ", "前のメソッドへ", K, "Alt+Up", ""),
     item("keymap.reformat", "キーマップ", "整形", K, "Ctrl+Alt+L", ""),
+    item("keymap.optimize_imports", "キーマップ", "import の整理", K, "Ctrl+Alt+O", ""),
     item("keymap.switcher", "キーマップ", "バッファを選ぶ", K, "Ctrl+Tab", "IntelliJ の Switcher"),
     item("keymap.close_tab", "キーマップ", "ファイルを閉じる", K, "Ctrl+F4", ""),
     item("keymap.next_tab", "キーマップ", "次のファイル（タブ）", K, "Alt+Right", ""),

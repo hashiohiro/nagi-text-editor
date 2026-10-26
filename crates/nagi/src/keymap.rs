@@ -78,7 +78,7 @@ pub enum Action {
 /// 操作（設定のキー, 操作）。既定は IntelliJ（Windows）の既定のキーマップと同じ。ただし定義へは F12、
 /// デバッグは Visual Studio と同じ（F5 続ける・F9 ブレークポイント・F10 次へ・F11 中へ・Shift+F11 外へ・Shift+F5 止める）。
 /// ここは Vim のキー操作を使うときも効くので、Vim と重ならないもの（F キー・Alt・Ctrl+Alt・Ctrl+Shift）だけ
-pub const ACTIONS: [(&str, Action); 52] = [
+pub const ACTIONS: [(&str, Action); 53] = [
     ("keymap.settings", Action::Cmd("Settings")),
     ("keymap.complete", Action::Key(Key::Ctrl(' '))),
     ("keymap.run", Action::Cmd("Run")),
@@ -123,6 +123,7 @@ pub const ACTIONS: [(&str, Action); 52] = [
     ("keymap.method_next", Action::Cmd("MethodNext")),
     ("keymap.method_prev", Action::Cmd("MethodPrev")),
     ("keymap.reformat", Action::Cmd("Format")),
+    ("keymap.optimize_imports", Action::Cmd("OptimizeImports")),
     ("keymap.switcher", Action::Cmd("Buffers")),
     ("keymap.close_tab", Action::Cmd("bd")),
     ("keymap.next_tab", Action::Cmd("bn")),
@@ -155,7 +156,7 @@ pub const PLAIN_ACTIONS: [(&str, Action); 17] = [
 ];
 
 /// 本文（エディタ）にいるときだけ効く操作。下の欄の表の F2（値を直す）、ターミナルの Alt+←→ などはその欄のものにする
-const BODY_ONLY: [&str; 18] = [
+const BODY_ONLY: [&str; 19] = [
     "keymap.run_test",
     "keymap.debug_test",
     "keymap.goto_impl",
@@ -168,6 +169,7 @@ const BODY_ONLY: [&str; 18] = [
     "keymap.method_next",
     "keymap.method_prev",
     "keymap.reformat",
+    "keymap.optimize_imports",
     "keymap.close_tab",
     "keymap.next_tab",
     "keymap.prev_tab",

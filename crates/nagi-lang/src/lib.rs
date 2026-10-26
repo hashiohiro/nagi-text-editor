@@ -10,6 +10,7 @@
 
 pub mod angular;
 pub mod eco;
+pub mod imports;
 pub mod java;
 pub mod kotlin;
 pub mod lang;

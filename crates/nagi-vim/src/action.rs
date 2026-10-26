@@ -9,7 +9,7 @@ pub static IDEA_ACTIONS: &[(&[&str], Option<&str>, &str)] = &[
     // 検索・置換・ファインダー（M2, M4）
     (&["Find"], Some("search.buffer"), "ファイル内検索"),
     (&["Replace"], Some("replace.buffer"), "ファイル内置換"),
-    (&["SearchEverywhere"], Some("finder.everything"), "すべてを検索"),
+    (&["SearchEverywhere"], Some("finder.everything"), "どこでも検索（型・シンボル・ファイル・コマンド）"),
     (&["FindInPath"], Some("search.project"), "プロジェクト全文検索"),
     (&["GotoAction"], Some("palette"), "コマンドパレット"),
     (&["GotoFile"], Some("finder.files"), "ファイルを開く"),
@@ -53,6 +53,7 @@ pub static IDEA_ACTIONS: &[(&[&str], Option<&str>, &str)] = &[
     (&["HideAllWindows"], Some("tool.hide_all"), "ツールウィンドウをすべて隠す"),
     // 整形・実行（外部コマンド。M4）
     (&["ReformatCode"], Some("format"), "整形（外部フォーマッタ）"),
+    (&["OptimizeImports"], Some("imports.optimize"), "import の整理（使っていないものを外す・並べる）"),
     (&["Run"], Some("job.run"), "実行（設定したコマンド）"),
     (&["RunContextTest"], Some("job.test"), "カーソル位置のテストを実行"),
     (&["Stop"], Some("job.stop"), "実行中のコマンドを止める"),
@@ -67,7 +68,6 @@ pub static IDEA_ACTIONS: &[(&[&str], Option<&str>, &str)] = &[
     (&["Git.Branches"], Some("git.branches"), "ブランチ"),
     (&["Git.Fetch"], Some("git.fetch"), "フェッチ"),
     // Nagi に相当する機能が無い（LSP・IDE 固有）
-    (&["OptimizeImports"], None, "import の整理（LSP なしのため対象外）"),
     (&["QuickJavaDoc"], None, "ドキュメント表示（LSP なしのため対象外）"),
     (&["ShowIntentionActions"], None, "インテンション（LSP なしのため対象外）"),
     (&["Generate", "NewClass", "OverrideMethods", "GenerateConstructor", "GenerateGetter", "GenerateSetter", "GenerateGetterAndSetter", "GenerateEquals", "GenerateTestMethod"], None, "コード生成（IntelliJ 固有のため対象外）"),
