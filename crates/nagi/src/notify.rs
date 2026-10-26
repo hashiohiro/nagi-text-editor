@@ -22,7 +22,22 @@ pub struct Notify {
     mode: bool,
     /// (時刻, 重さ, 文)。古いものから
     history: VecDeque<(String, Level, String)>,
+    /// 今の文は吹き出しに出したもの（状態の行には出さない）
+    balloon: bool,
+    /// 右下に出している吹き出し（IntelliJ の通知と同じ。古いものから）
+    pub balloons: Vec<Balloon>,
 }
+
+/// 右下の吹き出し 1 つ
+pub struct Balloon {
+    pub level: Level,
+    pub text: String,
+    /// 消える時刻
+    pub until: std::time::Instant,
+}
+
+/// 同時に出す吹き出しの数
+const BALLOONS: usize = 4;
 
 impl Notify {
     /// 重さを選んで知らせる（結果に応じて重さが変わるとき）
@@ -37,9 +52,40 @@ impl Notify {
                 log::write(level, &text);
             }
         }
+        // 吹き出しに出す（同じ文は出し直すだけ）。エラーほど長く残す
+        if !text.is_empty() {
+            let secs = match level {
+                Level::Error => 15,
+                Level::Warn => 8,
+                _ => 4,
+            };
+            self.balloons.retain(|b| b.text != text);
+            self.balloons.push(Balloon { level, text: text.clone(), until: std::time::Instant::now() + std::time::Duration::from_secs(secs) });
+            if self.balloons.len() > BALLOONS {
+                self.balloons.remove(0);
+            }
+        }
         self.level = Some(level);
         self.text = text;
         self.mode = false;
+        self.balloon = true;
+    }
+
+    /// 状態の行に出す文（吹き出しに出したものは出さない。進み具合・入力欄のモードだけ）
+    pub fn status_text(&self) -> &str {
+        if self.balloon { "" } else { &self.text }
+    }
+
+    /// 次に吹き出しが消える時刻
+    pub fn balloon_deadline(&self) -> Option<std::time::Instant> {
+        self.balloons.iter().map(|b| b.until).min()
+    }
+
+    /// 時刻を過ぎた吹き出しを消す。消したら true
+    pub fn expire(&mut self, now: std::time::Instant) -> bool {
+        let n = self.balloons.len();
+        self.balloons.retain(|b| b.until > now);
+        n != self.balloons.len()
     }
 
     /// 知らせる（ふつう）
@@ -62,6 +108,7 @@ impl Notify {
         self.text.clear();
         self.level = None;
         self.mode = false;
+        self.balloon = false;
     }
 
     /// 履歴に残さずに出す（途中の進み具合など、すぐ書き換わるもの）
@@ -69,6 +116,7 @@ impl Notify {
         self.text = text.into();
         self.level = Some(Level::Info);
         self.mode = false;
+        self.balloon = false;
     }
 
     /// 入力欄のモードを出す（履歴に残さない。押して別の所へ移ったら clear_mode で消す）
@@ -86,6 +134,105 @@ impl Notify {
 
     pub fn history(&self) -> impl Iterator<Item = &(String, Level, String)> {
         self.history.iter()
+    }
+}
+
+/// 吹き出しの位置（吹き出しの番号, 矩形, 折り返した行）。右下から上へ積む（新しいものが下）
+pub fn balloon_layout(ed: &Editor, rows: usize) -> Vec<(usize, crate::panes::Rect, Vec<String>)> {
+    let a = ed.area();
+    let w = (a.w / 3).clamp(30, 60).min(a.w);
+    let inner = w.saturating_sub(5);
+    let mut out = Vec::new();
+    let mut bottom = rows;
+    for (i, b) in ed.notify.balloons.iter().enumerate().rev() {
+        let lines = wrap(&b.text, inner, 4);
+        let h = lines.len() + 2;
+        if bottom < a.y + h + 1 {
+            break;
+        }
+        let r = crate::panes::Rect { x: a.x + a.w - w - 1, y: bottom - h, w, h };
+        bottom = r.y.saturating_sub(1);
+        out.push((i, r, lines));
+    }
+    out
+}
+
+/// 表示の幅 `w` で折り返す（`max` 行まで。あふれたら最後に …）
+fn wrap(text: &str, w: usize, max: usize) -> Vec<String> {
+    let mut lines = vec![String::new()];
+    let mut cur = 0;
+    for ch in text.chars() {
+        let cw = nagi_core::display_col(ch.encode_utf8(&mut [0; 4]), ch.len_utf8(), false);
+        if cur + cw > w.max(1) {
+            if lines.len() == max {
+                let last = lines.last_mut().unwrap();
+                last.pop();
+                last.push('…');
+                return lines;
+            }
+            lines.push(String::new());
+            cur = 0;
+        }
+        lines.last_mut().unwrap().push(ch);
+        cur += cw;
+    }
+    lines
+}
+
+/// 右下の吹き出し（layout.rs の View）
+pub struct BalloonView;
+
+impl crate::layout::View for BalloonView {
+    fn rect(&self, ed: &Editor, s: crate::layout::Screen) -> Option<crate::panes::Rect> {
+        let v = balloon_layout(ed, s.rows);
+        let top = v.iter().map(|b| b.1.y).min()?;
+        let (x, w) = (v[0].1.x, v[0].1.w);
+        Some(crate::panes::Rect { x, y: top, w, h: s.rows - top })
+    }
+
+    fn draw(&self, ed: &Editor, p: &mut crate::view::Painter, r: crate::panes::Rect, s: crate::layout::Screen) {
+        let _ = r;
+        draw::draw_balloons(p, ed, s.rows);
+    }
+
+    /// 押した吹き出しを閉じる（吹き出しの間の行は下へ通す）
+    fn click(&self, ed: &mut Editor, r: crate::panes::Rect, row: usize, col: usize, clicks: u32) -> crate::layout::Click {
+        let _ = (r, clicks);
+        match balloon_layout(ed, ed.screen.1).into_iter().find(|b| b.1.contains(row, col)) {
+            Some((i, ..)) => {
+                ed.notify.balloons.remove(i);
+                crate::layout::Click::Done
+            }
+            None => crate::layout::Click::Pass,
+        }
+    }
+}
+
+pub(crate) mod draw {
+    use super::*;
+    use crate::view::*;
+
+    pub(crate) fn draw_balloons(p: &mut Painter, ed: &Editor, rows: usize) {
+        let cell = p.fonts.cell();
+        let saved = p.cols;
+        for (i, r, lines) in balloon_layout(ed, rows) {
+            let b = &ed.notify.balloons[i];
+            let (x0, y0, w, h) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w, r.h as f32 * cell.h);
+            p.out.push(Instance::fill(x0 - 1.0, y0 - 1.0, w + 2.0, h + 2.0, SEPARATOR));
+            p.out.push(Instance::fill(x0, y0, w, h, POPUP_BG));
+            let icon = match b.level {
+                Level::Error => "g_errorDialog",
+                Level::Warn => "g_warningDialog",
+                _ => "g_informationDialog",
+            };
+            let px = crate::icons::small(cell.h);
+            crate::icons::draw(p, icon, x0 + cell.w, crate::icons::centered(y0 + cell.h, cell.h, px), px, None);
+            p.cols = r.x + r.w - 1;
+            for (k, l) in lines.iter().enumerate() {
+                p.text(l, r.x + 3, (r.y + 1 + k) as f32 * cell.h, FG);
+            }
+        }
+        p.cols = saved;
     }
 }
 

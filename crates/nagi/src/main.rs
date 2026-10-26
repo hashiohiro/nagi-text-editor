@@ -1490,6 +1490,10 @@ impl Frame {
                 }
                 self.draw();
             }
+            // 時刻を過ぎた知らせの吹き出しを消す
+            if self.ed.as_mut().is_some_and(|e| e.notify.expire(now)) {
+                self.draw();
+            }
             // ヤンクした範囲の光を消す
             if self.ed.as_mut().is_some_and(|e| e.yank_flash.is_some_and(|f| now >= f.2) && e.yank_flash.take().is_some()) {
                 self.draw();
@@ -1527,7 +1531,8 @@ impl Frame {
         let auto = self.ed.as_ref().and_then(|e| e.auto_complete_at);
         let flash = self.ed.as_ref().and_then(|e| e.yank_flash.map(|f| f.2));
         let save_at = self.ed.as_ref().and_then(|e| e.autosave_deadline());
-        let deadline = [self.map_deadline, self.snap_deadline, self.autoscroll_deadline, self.replay_deadline, self.held.as_ref().map(|h| h.3), auto, flash, save_at].into_iter().flatten().min();
+        let balloon = self.ed.as_ref().and_then(|e| e.notify.balloon_deadline());
+        let deadline = [self.map_deadline, self.snap_deadline, self.autoscroll_deadline, self.replay_deadline, self.held.as_ref().map(|h| h.3), auto, flash, save_at, balloon].into_iter().flatten().min();
         let _ = el;
         self.flow = if self.scroll_anim.is_some() {
             ControlFlow::Poll

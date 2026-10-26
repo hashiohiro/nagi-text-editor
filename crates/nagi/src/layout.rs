@@ -97,6 +97,7 @@ pub static PANELS: &[&dyn View] = &[
     &crate::blame::BlamePopupView,
     &crate::complete::CompletionView,
     &crate::cmdline_complete::CmdCompleteView,
+    &crate::notify::BalloonView,
     &crate::menu::MenuView,
 ];
 
