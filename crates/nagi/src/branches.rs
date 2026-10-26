@@ -517,7 +517,7 @@ pub(crate) mod draw {
         let top = 2;
         let (x, y) = (x0 as f32 * cell.w, top as f32 * cell.h);
         p.out.push(Instance::fill(x - 1.0, y - 1.0, w as f32 * cell.w + 2.0, h as f32 * cell.h + 2.0, STATUS_FG));
-        p.out.push(Instance::fill(x, y, w as f32 * cell.w, h as f32 * cell.h, rgb(0x141414)));
+        p.out.push(Instance::fill(x, y, w as f32 * cell.w, h as f32 * cell.h, POPUP_BG));
         let saved = p.cols;
         p.cols = x0 + w;
         // 上の欄: 名前を打っているときはその欄、そうでなければ絞り込み
@@ -542,7 +542,7 @@ pub(crate) mod draw {
             let yy = y + (1 + k - scroll) as f32 * cell.h;
             let sel = k == b.selected && b.naming.is_none();
             if sel {
-                p.out.push(Instance::fill(x, yy, w as f32 * cell.w, cell.h, rgb(0x2c4a70)));
+                p.out.push(Instance::fill(x, yy, w as f32 * cell.w, cell.h, LIST_SEL_BG));
             }
             match e {
                 Entry::NewBranch => {
@@ -579,13 +579,13 @@ pub(crate) mod draw {
             let oy = top + 1 + b.selected.saturating_sub(scroll);
             let (fx, fy) = (ox as f32 * cell.w, oy as f32 * cell.h);
             p.out.push(Instance::fill(fx - 1.0, fy - 1.0, ow as f32 * cell.w + 2.0, labels.len() as f32 * cell.h + 2.0, STATUS_FG));
-            p.out.push(Instance::fill(fx, fy, ow as f32 * cell.w, labels.len() as f32 * cell.h, rgb(0x1c1c1c)));
+            p.out.push(Instance::fill(fx, fy, ow as f32 * cell.w, labels.len() as f32 * cell.h, RAISED_BG));
             let saved = p.cols;
             p.cols = ox + ow;
             for (k, l) in labels.iter().enumerate() {
                 let yy = fy + k as f32 * cell.h;
                 if k == *osel {
-                    p.out.push(Instance::fill(fx, yy, ow as f32 * cell.w, cell.h, rgb(0x2c4a70)));
+                    p.out.push(Instance::fill(fx, yy, ow as f32 * cell.w, cell.h, LIST_SEL_BG));
                 }
                 p.text(l, ox, yy, FG);
             }

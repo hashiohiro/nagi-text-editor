@@ -764,7 +764,7 @@ pub(crate) mod draw {
         }
         let cell = p.fonts.cell();
         let (x, y0, w) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
-        p.out.push(Instance::fill(x, y0, w, r.h as f32 * cell.h, BG));
+        p.out.push(Instance::fill(x, y0, w, r.h as f32 * cell.h, PANEL_BG));
         p.out.push(Instance::fill(x, y0, w, 1.0, LINE_NO));
         let head = match (&g.error, &g.title) {
             (Some(e), _) => format!("正規表現の誤り: {}   ", e.lines().last().unwrap_or("")),
@@ -789,11 +789,11 @@ pub(crate) mod draw {
             // 選んだ行は、パネルにいる（か検索語を打っている）ときは反転、そうでなければ控えめな地の色
             let reversed = selected && focused;
             if reversed {
-                p.out.push(Instance::fill(x, y, w, cell.h, FG));
+                p.out.push(Instance::fill(x, y, w, cell.h, LIST_SEL_BG));
             } else if selected {
                 p.out.push(Instance::fill(x, y, w, cell.h, MATCH_BG));
             }
-            let (fg, dim, accent) = if reversed { (BG, BG, BG) } else { (FG, STATUS_FG, FINDER_MATCH) };
+            let (fg, dim, accent) = if reversed { (FG_BRIGHT, FG_BRIGHT, FG_BRIGHT) } else { (FG, STATUS_FG, FINDER_MATCH) };
             // ファイルを持たない行（コマンドの出力）は本文だけ
             let mut items = Vec::new();
             let num = format!(":{}: ", h.line);

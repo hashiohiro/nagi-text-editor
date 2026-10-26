@@ -285,7 +285,7 @@ pub(crate) mod draw {
             hits.push((top + k, col, col + width, first + k));
             let y = (top + k) as f32 * cell.h;
             let selected = c.sel == Some(first + k);
-            let (bg, fg, dim) = if selected { (FG, BG, BG) } else { (MATCH_BG, FG, STATUS_FG) };
+            let (bg, fg, dim) = if selected { (LIST_SEL_BG, FG_BRIGHT, FG_BRIGHT) } else { (MATCH_BG, FG, STATUS_FG) };
             p.out.push(Instance::fill(col as f32 * cell.w, y, width as f32 * cell.w, cell.h, bg));
             let end = p.text(&format!(" {name}"), col, y, fg);
             if !desc.is_empty() {

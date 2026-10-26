@@ -724,9 +724,9 @@ pub(crate) mod draw {
             }
             let sel = k == l.selected;
             if sel {
-                p.out.push(Instance::fill(cx as f32 * cell.w - 4.0, y(r), cw as f32 * cell.w + 8.0, 2.0 * cell.h, FG));
+                p.out.push(Instance::fill(cx as f32 * cell.w - 4.0, y(r), cw as f32 * cell.w + 8.0, 2.0 * cell.h, LIST_SEL_BG));
             }
-            let col = |c: [f32; 4]| if sel { BG } else { c };
+            let col = |c: [f32; 4]| if sel { FG_BRIGHT } else { c };
             let when = if e.missing { "見つかりません".to_string() } else { crate::launcher::ago(e.when) };
             let from = e.from.trim_end_matches("Idea").to_string();
             let right = format!("{from}   {when}");
@@ -764,7 +764,7 @@ pub(crate) mod draw {
             if left >= 8 {
                 let ex = clip_width(p, &ex, left);
                 let exw = p.width(&ex);
-                p.text(&ex, cr.saturating_sub(exw + 1), y(r + 1), col(if sel { BG } else { STATUS_FG }));
+                p.text(&ex, cr.saturating_sub(exw + 1), y(r + 1), col(if sel { FG_BRIGHT } else { STATUS_FG }));
             }
             map.push((r, k));
             map.push((r + 1, k));

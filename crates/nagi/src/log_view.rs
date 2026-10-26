@@ -1271,7 +1271,7 @@ pub(crate) mod draw {
             let focused = sel && !l.focus_files;
             let marked = row.commit.as_ref().is_some_and(|c| l.marked.contains(&c.hash));
             if focused {
-                p.out.push(Instance::fill(cx as f32 * cell.w, y, cw as f32 * cell.w, cell.h, FG));
+                p.out.push(Instance::fill(cx as f32 * cell.w, y, cw as f32 * cell.w, cell.h, LIST_SEL_BG));
             } else if marked {
                 p.out.push(Instance::fill(cx as f32 * cell.w, y, cw as f32 * cell.w, cell.h, MARKED_BG));
             } else if sel {
@@ -1281,7 +1281,7 @@ pub(crate) mod draw {
             let graph = crate::log_view::pretty_graph(&row.graph);
             let mut items: Vec<Item> = Vec::new();
             for (j, (_, g)) in graph.grapheme_indices(true).enumerate() {
-                let color = if focused { BG } else { LANES[(j / 2) % LANES.len()] };
+                let color = if focused { FG_BRIGHT } else { LANES[(j / 2) % LANES.len()] };
                 items.push(Item { g: Cow::Owned(g.to_string()), width: p.cell_width(g), fg: color, bg: None, underline: false });
             }
             let Some(cm) = &row.commit else {
@@ -1290,7 +1290,7 @@ pub(crate) mod draw {
                 continue;
             };
             {
-                let (fg, dim, refc) = if focused { (BG, BG, BG) } else { (FG, STATUS_FG, rgb(0xd7af87)) };
+                let (fg, dim, refc) = if focused { (FG_BRIGHT, FG_BRIGHT, FG_BRIGHT) } else { (FG, STATUS_FG, rgb(0xd7af87)) };
                 // 作者と日時は表示の幅で揃える（全角は 2 セル）
                 let pad = |p: &Painter, s: &str, w: usize| {
                     let t: String = s.chars().scan(0, |acc, ch| {
@@ -1349,7 +1349,7 @@ pub(crate) mod draw {
                 }
                 let sel = l.focus_files && k == l.file_sel;
                 if sel {
-                    p.out.push(Instance::fill(dx as f32 * cell.w, y, (r.x + r.w - dx) as f32 * cell.w, cell.h, FG));
+                    p.out.push(Instance::fill(dx as f32 * cell.w, y, (r.x + r.w - dx) as f32 * cell.w, cell.h, LIST_SEL_BG));
                 }
                 let sc = if sel {
                     BG
@@ -1362,7 +1362,7 @@ pub(crate) mod draw {
                     }
                 };
                 let c = p.text(&format!("{st}"), dx + 1, y, sc);
-                p.text(&format!("  {path}"), c, y, if sel { BG } else { FG });
+                p.text(&format!("  {path}"), c, y, if sel { FG_BRIGHT } else { FG });
                 y += cell.h;
             }
         } else if !l.rows.is_empty() {

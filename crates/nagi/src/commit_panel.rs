@@ -596,7 +596,7 @@ pub(crate) mod draw {
         use nagi_workers::git::FileState;
         let cell = p.fonts.cell();
         let (x0, y0, wpx) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
-        p.out.push(Instance::fill(x0, y0, wpx, r.h as f32 * cell.h, BG));
+        p.out.push(Instance::fill(x0, y0, wpx, r.h as f32 * cell.h, PANEL_BG));
         p.out.push(Instance::fill(((r.x + r.w) as f32 + 0.5) * cell.w, y0, 1.0, r.h as f32 * cell.h, LINE_NO));
         let focused = ed.state() == State::List && ed.list_side == crate::editor::Side::Commit;
         let editing = ed.state() == State::CommitMsg;
@@ -641,11 +641,11 @@ pub(crate) mod draw {
                         let sel = *i == c.selected;
                         let reversed = sel && focused;
                         if reversed {
-                            p.out.push(Instance::fill(x0, y, wpx, cell.h, FG));
+                            p.out.push(Instance::fill(x0, y, wpx, cell.h, LIST_SEL_BG));
                         } else if sel {
                             p.out.push(Instance::fill(x0, y, wpx, cell.h, MATCH_BG));
                         }
-                        let (fg, dim) = if reversed { (BG, BG) } else { (FG, STATUS_FG) };
+                        let (fg, dim) = if reversed { (FG_BRIGHT, FG_BRIGHT) } else { (FG, STATUS_FG) };
                         let state_color = if reversed {
                             BG
                         } else {

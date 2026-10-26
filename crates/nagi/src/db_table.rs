@@ -762,7 +762,7 @@ pub(crate) mod draw {
         // 2 行目: 絞り込み
         let fy = y0 + cell.h;
         draw_filter_row(p, r, fy, &te.where_, &te.order, te.filter_edit.as_ref(), "", &ed.preedit);
-        p.out.push(Instance::fill(x0, fy + cell.h - 1.0, wpx, 1.0, rgb(0x2a2a2a)));
+        p.out.push(Instance::fill(x0, fy + cell.h - 1.0, wpx, 1.0, SEPARATOR));
         let marks: Vec<char> = te.cols.iter().map(|n| te.colinfo.iter().find(|c| &c.name == n).map_or(' ', |c| if c.pk { 'K' } else if !c.fk.is_empty() { 'F' } else { ' ' })).collect();
         let value = |d: usize, c: usize| te.value(d, c);
         let row_style = |d: usize| match te.at(d) {
@@ -803,7 +803,7 @@ pub(crate) mod draw {
             let by = (r.y + r.h).saturating_sub(h + 1);
             let (x, y) = (bx as f32 * cell.w, by as f32 * cell.h);
             p.out.push(Instance::fill(x - 1.0, y - 1.0, w as f32 * cell.w + 2.0, h as f32 * cell.h + 2.0, STATUS_FG));
-            p.out.push(Instance::fill(x, y, w as f32 * cell.w, h as f32 * cell.h, rgb(0x141414)));
+            p.out.push(Instance::fill(x, y, w as f32 * cell.w, h as f32 * cell.h, POPUP_BG));
             let lim = p.cols;
             p.cols = bx + w;
             for (k, l) in lines.iter().take(h).enumerate() {

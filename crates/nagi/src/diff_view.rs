@@ -382,7 +382,7 @@ pub(crate) mod draw {
         p.out.push(Instance::fill(x0, y0 + cell.h - 1.0, r.w as f32 * cell.w, 1.0, LINE_NO));
         let body = r.h.saturating_sub(1);
         let mod_bg = rgb(0x17202e);
-        let fill_bg = rgb(0x141414);
+        let fill_bg = POPUP_BG;
         for (k, row) in d.rows.iter().enumerate().skip(d.top).take(body) {
             let y = y0 + (1 + k - d.top) as f32 * cell.h;
             let (lbg, rbg) = match row.kind {

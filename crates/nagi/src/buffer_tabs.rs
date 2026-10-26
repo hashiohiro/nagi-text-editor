@@ -219,14 +219,14 @@ pub(crate) mod draw {
         let cell = p.fonts.cell();
         let (x0, wpx) = (r.x as f32 * cell.w, r.w as f32 * cell.w);
         p.out.push(Instance::fill(x0, 0.0, wpx, cell.h, BG));
-        p.out.push(Instance::fill(x0, cell.h - 1.0, wpx, 1.0, rgb(0x2a2a2a)));
+        p.out.push(Instance::fill(x0, cell.h - 1.0, wpx, 1.0, SEPARATOR));
         let saved = p.cols;
         p.cols = r.x + r.w;
         for t in ed.buffer_tabs(r.w) {
             let hover = ed.hover_buftab.filter(|h| h.0 == t.doc);
             let tx = (r.x + t.x) as f32 * cell.w;
             if t.active {
-                p.out.push(Instance::fill(tx, 0.0, t.w as f32 * cell.w, cell.h - 1.0, rgb(0x1c1c1c)));
+                p.out.push(Instance::fill(tx, 0.0, t.w as f32 * cell.w, cell.h - 1.0, RAISED_BG));
                 p.out.push(Instance::fill(tx, cell.h - 2.0, t.w as f32 * cell.w, 2.0, ACCENT_FG));
             }
             let fg = if t.active || hover.is_some() { FG } else { STATUS_FG };

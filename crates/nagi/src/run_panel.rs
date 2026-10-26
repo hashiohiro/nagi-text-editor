@@ -246,7 +246,7 @@ pub(crate) mod draw {
     pub(crate) fn draw_run_panel(p: &mut Painter, ed: &Editor, rp: &RunPanel, r: Rect) {
         let cell = p.fonts.cell();
         let (x0, y0, wpx) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
-        p.out.push(Instance::fill(x0, y0, wpx, r.h as f32 * cell.h, BG));
+        p.out.push(Instance::fill(x0, y0, wpx, r.h as f32 * cell.h, PANEL_BG));
         p.out.push(Instance::fill(((r.x + r.w) as f32 + 0.5) * cell.w, y0, 1.0, r.h as f32 * cell.h, LINE_NO));
         let focused = ed.state() == State::List && ed.list_side == Side::Run;
         let saved = p.cols;
@@ -265,7 +265,7 @@ pub(crate) mod draw {
             };
             p.text(&format!(" {label} "), r.x + x, y, color);
         }
-        p.out.push(Instance::fill(x0, y + cell.h - 1.0, wpx, 1.0, rgb(0x2a2a2a)));
+        p.out.push(Instance::fill(x0, y + cell.h - 1.0, wpx, 1.0, SEPARATOR));
         // 一覧
         for k in 0..r.h.saturating_sub(HEAD) {
             let i = rp.scroll + k;
@@ -276,24 +276,24 @@ pub(crate) mod draw {
             let selected = i == rp.selected;
             let reversed = selected && focused;
             if reversed {
-                p.out.push(Instance::fill(x0, y, wpx, cell.h, FG));
+                p.out.push(Instance::fill(x0, y, wpx, cell.h, LIST_SEL_BG));
             } else if selected {
                 p.out.push(Instance::fill(x0, y, wpx, cell.h, MATCH_BG));
             }
             let Some(c) = rp.items.get(i) else {
-                p.text(" ＋ 構成を追加・編集…", r.x, y, if reversed { BG } else { STATUS_FG });
+                p.text(" ＋ 構成を追加・編集…", r.x, y, if reversed { FG_BRIGHT } else { STATUS_FG });
                 continue;
             };
             let on = ed.run_is_running(&c.name);
             let mark = if on { " ● " } else { "   " };
-            let x = p.text(mark, r.x, y, if reversed { BG } else { GIT_ADD });
-            let x = p.text(&c.name, x, y, if reversed { BG } else { FG });
+            let x = p.text(mark, r.x, y, if reversed { FG_BRIGHT } else { GIT_ADD });
+            let x = p.text(&c.name, x, y, if reversed { FG_BRIGHT } else { FG });
             let from = match c.from {
                 "nagi" => "  run.conf",
                 "file" => "  今のファイル",
                 _ => "",
             };
-            p.text(&format!("  {}{from}", c.kind_label()), x, y, if reversed { BG } else { STATUS_FG });
+            p.text(&format!("  {}{from}", c.kind_label()), x, y, if reversed { FG_BRIGHT } else { STATUS_FG });
         }
         if rp.items.is_empty() {
             let y = (r.y + HEAD + 2) as f32 * cell.h;

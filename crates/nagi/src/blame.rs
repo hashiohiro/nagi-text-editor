@@ -235,7 +235,7 @@ pub(crate) mod draw {
         let w = w.min(rect.w.saturating_sub(crate::blame::BLAME_W + 3));
         let (x, y) = (x0 as f32 * cell.w, top as f32 * cell.h);
         p.out.push(Instance::fill(x - 1.0, y - 1.0, w as f32 * cell.w + 2.0, h as f32 * cell.h + 2.0, STATUS_FG));
-        p.out.push(Instance::fill(x, y, w as f32 * cell.w, h as f32 * cell.h, rgb(0x141414)));
+        p.out.push(Instance::fill(x, y, w as f32 * cell.w, h as f32 * cell.h, POPUP_BG));
         let saved = p.cols;
         p.cols = x0 + w;
         for (k, l) in lines.iter().enumerate() {

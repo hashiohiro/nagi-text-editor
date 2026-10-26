@@ -479,7 +479,7 @@ pub(crate) mod draw {
         use crate::result_grid::BottomKind;
         let cell = p.fonts.cell();
         let (x0, y0, wpx) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
-        p.out.push(Instance::fill(x0, y0, wpx, r.h as f32 * cell.h, BG));
+        p.out.push(Instance::fill(x0, y0, wpx, r.h as f32 * cell.h, PANEL_BG));
         p.out.push(Instance::fill(x0, y0, wpx, 1.0, LINE_NO));
         let focused = ed.bottom_focused();
         // 左右の欄と同じく、タブはアイコンで並べ、出しているタブの名前を横に

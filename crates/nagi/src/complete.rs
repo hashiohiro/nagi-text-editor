@@ -293,7 +293,7 @@ pub(crate) mod draw {
         for (k, item) in c.items.iter().skip(first).take(n).enumerate() {
             let y = (top + k) as f32 * cell.h;
             let selected = c.sel == Some(first + k);
-            let (bg, fg) = if selected { (FG, BG) } else { (MATCH_BG, FG) };
+            let (bg, fg) = if selected { (LIST_SEL_BG, FG_BRIGHT) } else { (MATCH_BG, FG) };
             p.out.push(Instance::fill(col as f32 * cell.w, y, width as f32 * cell.w, cell.h, bg));
             match c.notes.get(first + k) {
                 Some((mark, note)) => {
@@ -307,10 +307,10 @@ pub(crate) mod draw {
                         _ => fg,
                     };
                     let x = p.text(" ", col, y, fg);
-                    let x = p.text(mark.encode_utf8(&mut b), x, y, if selected { BG } else { mc });
+                    let x = p.text(mark.encode_utf8(&mut b), x, y, if selected { FG_BRIGHT } else { mc });
                     p.text(&format!(" {item}"), x, y, fg);
                     let nw = p.width(note);
-                    p.text(note, (col + width).saturating_sub(nw + 1), y, if selected { BG } else { STATUS_FG });
+                    p.text(note, (col + width).saturating_sub(nw + 1), y, if selected { FG_BRIGHT } else { STATUS_FG });
                 }
                 None => {
                     p.text(&format!(" {item}"), col, y, fg);

@@ -236,7 +236,7 @@ pub(crate) mod draw {
     pub(crate) fn draw_read_view(p: &mut Painter, g: &crate::grep_panel::GrepPanel, v: &crate::read_view::ReadView, r: Rect, focused: bool) {
         let cell = p.fonts.cell();
         let (x, y0, w) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
-        p.out.push(Instance::fill(x, y0, w, r.h as f32 * cell.h, BG));
+        p.out.push(Instance::fill(x, y0, w, r.h as f32 * cell.h, PANEL_BG));
         p.out.push(Instance::fill(x, y0, w, 1.0, LINE_NO));
         let ed = &v.ed;
         let saved = p.cols;
@@ -290,7 +290,7 @@ pub(crate) mod draw {
                 let (fg, bg) = if cur == Some(b) {
                     (BG, Some(if sel { CURSOR_IN_SELECTION } else { CURSOR }))
                 } else if sel {
-                    (BG, Some(FG))
+                    (FG, Some(SEL_BG))
                 } else {
                     (base, None)
                 };
@@ -304,7 +304,7 @@ pub(crate) mod draw {
             if cur.is_some_and(|c| c >= text.len()) && width >= ed.left {
                 p.out.push(Instance::fill(end as f32 * cell.w, y, cell.w, cell.h, if vis.is_some() { CURSOR_IN_SELECTION } else { CURSOR }));
             } else if vis.is_some() && text.is_empty() {
-                p.out.push(Instance::fill(end as f32 * cell.w, y, cell.w, cell.h, FG));
+                p.out.push(Instance::fill(end as f32 * cell.w, y, cell.w, cell.h, SEL_BG));
             }
         }
     }

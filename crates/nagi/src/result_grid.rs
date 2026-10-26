@@ -990,7 +990,7 @@ pub(crate) mod draw {
         let res = &ed.db_results;
         let cell = p.fonts.cell();
         let (x0, y0, wpx) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
-        p.out.push(Instance::fill(x0, y0, wpx, r.h as f32 * cell.h, BG));
+        p.out.push(Instance::fill(x0, y0, wpx, r.h as f32 * cell.h, PANEL_BG));
         p.out.push(Instance::fill(x0, y0, wpx, 1.0, LINE_NO));
         let focused = ed.state() == State::List && ed.list_side == crate::editor::Side::Bottom;
         let saved = p.cols;
@@ -1006,7 +1006,7 @@ pub(crate) mod draw {
             }
             x = end + 1;
         }
-        p.out.push(Instance::fill(x0, y0 + cell.h - 1.0, wpx, 1.0, rgb(0x2a2a2a)));
+        p.out.push(Instance::fill(x0, y0 + cell.h - 1.0, wpx, 1.0, SEPARATOR));
         p.cols = r.x + r.w;
         match res.active_tab() {
             None => {

@@ -497,7 +497,7 @@ pub(crate) mod draw {
         let top = if below + h_rows <= rows { below } else { (rect.y + h.new.start.saturating_sub(ed.top)).saturating_sub(h_rows) };
         let (x, y0) = (x0 as f32 * cell.w, top as f32 * cell.h);
         p.out.push(Instance::fill(x - 1.0, y0 - 1.0, w as f32 * cell.w + 2.0, h_rows as f32 * cell.h + 2.0, LINE_NO));
-        p.out.push(Instance::fill(x, y0, w as f32 * cell.w, h_rows as f32 * cell.h, rgb(0x141414)));
+        p.out.push(Instance::fill(x, y0, w as f32 * cell.w, h_rows as f32 * cell.h, POPUP_BG));
         let saved = p.cols;
         p.cols = x0 + w;
         let total = ed.git.popup.map(|i| i + 1).unwrap_or(0);

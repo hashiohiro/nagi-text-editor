@@ -1089,7 +1089,7 @@ pub(crate) mod draw {
         let scope = if d.project_scope { " 保存先: このプロジェクト（p で切り替え） " } else { " 保存先: 全体（p で切り替え） " };
         let sw = p.width(scope);
         let sx = (x0 + w).saturating_sub(sw + 1).max(fend + 2);
-        p.out.push(Instance::fill(sx as f32 * cell.w, y(0), sw as f32 * cell.w, cell.h, if d.project_scope { rgb(0x2c4a70) } else { MATCH_BG }));
+        p.out.push(Instance::fill(sx as f32 * cell.w, y(0), sw as f32 * cell.w, cell.h, if d.project_scope { LIST_SEL_BG } else { MATCH_BG }));
         p.text(scope, sx, y(0), FG);
         buttons.push((y0, sx, sx + sw, SButton::Scope));
         // 左: 分類
@@ -1103,7 +1103,7 @@ pub(crate) mod draw {
             if sel {
                 p.out.push(Instance::fill(x0 as f32 * cell.w, y(r), lw as f32 * cell.w, cell.h, if d.focus == SFocus::Cats { FG } else { MATCH_BG }));
             }
-            p.text(&format!(" {c}"), x0, y(r), if sel && d.focus == SFocus::Cats { BG } else if filtering { STATUS_FG } else { FG });
+            p.text(&format!(" {c}"), x0, y(r), if sel && d.focus == SFocus::Cats { FG_BRIGHT } else if filtering { STATUS_FG } else { FG });
             cat_rows.push((y0 + r, x0, x0 + lw, i));
         }
         p.out.push(Instance::fill((x0 + lw) as f32 * cell.w + cell.w * 0.5, y(1), 1.0, (h - 3) as f32 * cell.h, LINE_NO));
@@ -1234,7 +1234,7 @@ pub(crate) mod draw {
             let top_row = if below { irow + 1 } else { irow.saturating_sub(total) };
             let cy = |r: usize| (top_row + r) as f32 * cell.h;
             p.out.push(Instance::fill(ivx as f32 * cell.w - 1.0, cy(0) - 1.0, cw as f32 * cell.w + 2.0, total as f32 * cell.h + 2.0, ACCENT_FG));
-            p.out.push(Instance::fill(ivx as f32 * cell.w, cy(0), cw as f32 * cell.w, total as f32 * cell.h, rgb(0x1c1c1c)));
+            p.out.push(Instance::fill(ivx as f32 * cell.w, cy(0), cw as f32 * cell.w, total as f32 * cell.h, RAISED_BG));
             p.cols = ivx + cw;
             let e = p.text("🔍 ", ivx, cy(0), FG);
             if c.filter.text().is_empty() && c.filter.is_insert() {

@@ -565,7 +565,7 @@ pub(crate) mod draw {
         use nagi_workers::git::FileState;
         let cell = p.fonts.cell();
         let (x, y0, w) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
-        p.out.push(Instance::fill(x, y0, w, r.h as f32 * cell.h, BG));
+        p.out.push(Instance::fill(x, y0, w, r.h as f32 * cell.h, PANEL_BG));
         p.out.push(Instance::fill(((r.x + r.w) as f32 + 0.5) * cell.w, y0, 1.0, r.h as f32 * cell.h, LINE_NO));
         let saved = p.cols;
         p.cols = r.x + r.w;
@@ -579,7 +579,7 @@ pub(crate) mod draw {
             let selected = t.scroll + k == t.selected;
             let reversed = selected && focused;
             if reversed {
-                p.out.push(Instance::fill(x, y, w, cell.h, FG));
+                p.out.push(Instance::fill(x, y, w, cell.h, LIST_SEL_BG));
             } else if selected {
                 p.out.push(Instance::fill(x, y, w, cell.h, MATCH_BG));
             }
@@ -587,7 +587,7 @@ pub(crate) mod draw {
             let icon_col = r.x + row.depth * 2 + 2;
             let state = git.get(&row.path).copied();
             let fg = match state {
-                _ if reversed => BG,
+                _ if reversed => FG_BRIGHT,
                 Some(FileState::Added) => GIT_ADD,
                 Some(FileState::Modified | FileState::Renamed) => GIT_MOD,
                 Some(FileState::Untracked) => GIT_DEL,
@@ -598,7 +598,7 @@ pub(crate) mod draw {
             // 横に送っていれば、字下げ・印・アイコン・名前を左端の分だけ左へ（左端より左は描かない）
             let left = t.left;
             let label: String = format!("{}{mark}", "  ".repeat(row.depth)).chars().skip(left).collect();
-            p.text(&label, r.x, y, if reversed { BG } else { STATUS_FG });
+            p.text(&label, r.x, y, if reversed { FG_BRIGHT } else { STATUS_FG });
             let icon_at = row.depth * 2 + 2;
             if icon_at >= left && icon_col - left + 3 < r.x + r.w {
                 draw_tree_icon(p, &tree_icon(row, index, &t.root), icon_col - left, y);

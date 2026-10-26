@@ -819,21 +819,20 @@ pub(crate) mod draw {
                     if c.is_wide_continuation() {
                         continue;
                     }
-                    let (mut fg, mut bg) = (term_color(c.fgcolor(), FG), term_color(c.bgcolor(), BG));
+                    let (mut fg, mut bg) = (term_color(c.fgcolor(), FG), term_color(c.bgcolor(), PANEL_BG));
                     if c.inverse() {
                         std::mem::swap(&mut fg, &mut bg);
                     }
-                    // マウスで選んでいる範囲は反転
+                    // マウスで選んでいる範囲は選択の地
                     if ts.selected(row as i64 - back, col) {
-                        fg = BG;
-                        bg = FG;
+                        bg = SEL_BG;
                     }
                     if c.dim() {
                         fg = [fg[0] * 0.6, fg[1] * 0.6, fg[2] * 0.6, fg[3]];
                     }
                     let text = if c.has_contents() { c.contents().to_string() } else { " ".to_string() };
                     let width = if c.is_wide() { 2 } else { 1 };
-                    let bg = (bg != BG).then_some(bg);
+                    let bg = (bg != PANEL_BG).then_some(bg);
                     items.push(Item { g: Cow::Owned(text), width, fg, bg, underline: c.underline() || link_cells.contains(&(row, col)) });
                 }
                 p.draw(&items, x0, y);

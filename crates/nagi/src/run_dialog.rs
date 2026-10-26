@@ -562,9 +562,9 @@ pub(crate) mod draw {
             let r = 2 + k - top;
             let sel = k == d.selected;
             if sel {
-                p.out.push(Instance::fill(x0 as f32 * cell.w, y(r), lw as f32 * cell.w, cell.h, if list_focused { FG } else { MATCH_BG }));
+                p.out.push(Instance::fill(x0 as f32 * cell.w, y(r), lw as f32 * cell.w, cell.h, if list_focused { LIST_SEL_BG } else { MATCH_BG }));
             }
-            let (fg, dim) = if sel && list_focused { (BG, BG) } else { (FG, STATUS_FG) };
+            let (fg, dim) = if sel && list_focused { (FG_BRIGHT, FG_BRIGHT) } else { (FG, STATUS_FG) };
             let mark = if Some(&c.name) == ed.run_selected.as_ref() { "● " } else { "  " };
             let end = p.text(&format!(" {mark}{}", c.name), x0, y(r), fg);
             let tag = if c.from == "IntelliJ" { format!("{}・IJ", c.kind_label()) } else { c.kind_label() };

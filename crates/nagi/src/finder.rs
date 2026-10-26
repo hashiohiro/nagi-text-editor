@@ -559,7 +559,7 @@ pub(crate) mod draw {
         let h = finder_height(rows);
         let top = rows - h;
         // 下の本文を隠し、上端に 1px の線を引く
-        p.out.push(Instance::fill(0.0, top as f32 * cell.h, cols as f32 * cell.w, h as f32 * cell.h, BG));
+        p.out.push(Instance::fill(0.0, top as f32 * cell.h, cols as f32 * cell.w, h as f32 * cell.h, POPUP_BG));
         p.out.push(Instance::fill(0.0, top as f32 * cell.h, cols as f32 * cell.w, 1.0, LINE_NO));
         let q = nagi_core::fuzzy::Query::new(&f.query.text);
         for k in 0..h {
@@ -569,9 +569,9 @@ pub(crate) mod draw {
             let selected = f.scroll + k == f.selected;
             let hit: std::collections::HashSet<usize> = if q.is_empty() { Default::default() } else { q.positions(text).into_iter().collect() };
             if selected {
-                p.out.push(Instance::fill(0.0, y, cols as f32 * cell.w, cell.h, FG));
+                p.out.push(Instance::fill(0.0, y, cols as f32 * cell.w, cell.h, LIST_SEL_BG));
             }
-            let (fg, accent) = if selected { (BG, BG) } else { (FG, FINDER_MATCH) };
+            let (fg, accent) = if selected { (FG_BRIGHT, FG_BRIGHT) } else { (FG, FINDER_MATCH) };
             let mut items = p.items(if selected { "> " } else { "  " }, fg);
             let mut ci = 0;
             for g in text.graphemes(true) {

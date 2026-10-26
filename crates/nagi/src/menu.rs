@@ -253,7 +253,7 @@ pub(crate) mod draw {
         let b = m.rect(cols, rows);
         let (x, y0) = (b.x as f32 * cell.w, b.y as f32 * cell.h);
         p.out.push(Instance::fill(x - 1.0, y0 - 1.0, b.w as f32 * cell.w + 2.0, b.h as f32 * cell.h + 2.0, LINE_NO));
-        p.out.push(Instance::fill(x, y0, b.w as f32 * cell.w, b.h as f32 * cell.h, rgb(0x141414)));
+        p.out.push(Instance::fill(x, y0, b.w as f32 * cell.w, b.h as f32 * cell.h, POPUP_BG));
         let saved = p.cols;
         p.cols = b.x + b.w;
         if let Some(t) = &m.title {
@@ -268,9 +268,9 @@ pub(crate) mod draw {
             }
             let sel = i == m.sel;
             if sel {
-                p.out.push(Instance::fill(x, y, b.w as f32 * cell.w, cell.h, FG));
+                p.out.push(Instance::fill(x, y, b.w as f32 * cell.w, cell.h, LIST_SEL_BG));
             }
-            p.text(&format!("  {}", it.label), b.x, y, if sel { BG } else { FG });
+            p.text(&format!("  {}", it.label), b.x, y, if sel { FG_BRIGHT } else { FG });
         }
         p.cols = saved;
     }

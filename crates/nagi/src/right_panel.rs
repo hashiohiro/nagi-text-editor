@@ -285,7 +285,7 @@ pub(crate) mod draw {
         use crate::right_panel::RightTab;
         let cell = p.fonts.cell();
         let (x0, y0, wpx) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
-        p.out.push(Instance::fill(x0, y0, wpx, r.h as f32 * cell.h, BG));
+        p.out.push(Instance::fill(x0, y0, wpx, r.h as f32 * cell.h, PANEL_BG));
         p.out.push(Instance::fill(x0 - cell.w * 0.5, y0, 1.0, r.h as f32 * cell.h, LINE_NO));
         let focused = ed.right_focused();
         let tab = ed.right_visible().unwrap_or_default();
@@ -351,7 +351,7 @@ pub(crate) mod draw {
                         p.text(&d.filter_text, c, fy, FG);
                     }
                 }
-                p.out.push(Instance::fill(x0, fy + cell.h - 1.0, wpx, 1.0, rgb(0x2a2a2a)));
+                p.out.push(Instance::fill(x0, fy + cell.h - 1.0, wpx, 1.0, SEPARATOR));
                 top = 2;
                 if d.sources.is_empty() {
                     p.text(" 接続先がありません。a（＋）で足す", r.x, y0 + 2.0 * cell.h, STATUS_FG);
@@ -392,26 +392,26 @@ pub(crate) mod draw {
             let sel = k == selected;
             let reversed = sel && focused && ed.db.as_ref().is_none_or(|d| d.filter.is_none() || tab != RightTab::Database);
             if reversed {
-                p.out.push(Instance::fill(x0, y, wpx, cell.h, FG));
+                p.out.push(Instance::fill(x0, y, wpx, cell.h, LIST_SEL_BG));
             } else if sel {
                 p.out.push(Instance::fill(x0, y, wpx, cell.h, MATCH_BG));
             }
-            let mut c = p.text(&format!(" {}{fold}", "  ".repeat(*depth)), r.x, y, if reversed { BG } else { STATUS_FG });
+            let mut c = p.text(&format!(" {}{fold}", "  ".repeat(*depth)), r.x, y, if reversed { FG_BRIGHT } else { STATUS_FG });
             if *icon != ' ' {
                 let mut b = [0u8; 4];
-                c = p.text(icon.encode_utf8(&mut b), c, y, if reversed { BG } else { *icolor });
+                c = p.text(icon.encode_utf8(&mut b), c, y, if reversed { FG_BRIGHT } else { *icolor });
                 c = p.text(" ", c, y, FG);
             }
-            let c = p.text(text, c, y, if reversed { BG } else { *color });
+            let c = p.text(text, c, y, if reversed { FG_BRIGHT } else { *color });
             if !note.is_empty() {
-                p.text(&format!("  {note}"), c, y, if reversed { BG } else { LINE_NO });
+                p.text(&format!("  {note}"), c, y, if reversed { FG_BRIGHT } else { LINE_NO });
             }
         }
         // 下の行: パスワード・接続先のフォーム・ドライバーの準備
         if let (RightTab::Database, Some(d)) = (tab, &ed.db) {
             if let Some((i, prompt)) = &d.password {
                 let y = y0 + (r.h - 1) as f32 * cell.h;
-                p.out.push(Instance::fill(x0, y, wpx, cell.h, rgb(0x1c1c1c)));
+                p.out.push(Instance::fill(x0, y, wpx, cell.h, RAISED_BG));
                 let user = &d.sources[*i].user;
                 let c = p.text(&format!(" {user} のパスワード: "), r.x, y, STATUS_FG);
                 let before = prompt.text[..prompt.cursor.min(prompt.text.len())].chars().count();

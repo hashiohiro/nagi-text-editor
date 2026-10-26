@@ -16,8 +16,8 @@ pub(crate) const fn rgb(hex: u32) -> [f32; 4] {
     [((hex >> 16) & 0xff) as f32 / 255.0, ((hex >> 8) & 0xff) as f32 / 255.0, (hex & 0xff) as f32 / 255.0, 1.0]
 }
 
-// 見た目はターミナルの Vim と同じにする（architecture.md §9 の原則）。地は単色、強調は反転だけ。
-pub const BG: [f32; 4] = rgb(0x0c0c0c);
+// 見た目は IntelliJ IDEA の New UI（ダーク）に合わせる。本文の地とツールウィンドウの地を分け、選択・カーソルの行は地の色で示す
+pub const BG: [f32; 4] = rgb(0x1e1f22);
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 // 部品の中でほかの部品の描き方を使うもの（下の欄が検索・ログ・ターミナルを、右の欄がプレビューを描く）
@@ -29,19 +29,18 @@ pub(crate) use crate::read_view::draw::draw_read_view;
 pub(crate) use crate::result_grid::draw::draw_db_results;
 pub(crate) use crate::terminal::draw::draw_terminal;
 
-/// 配色（設定の「配色」: 0 ダーク・1 ブラック・2 ダークグレー・3 ライト）と強調の色（0xRRGGBB）。設定を適用したときに入れる
+/// 配色（設定の「配色」: 0 IntelliJ ダーク・1 Darcula・2 IntelliJ ライト）と強調の色（0xRRGGBB）。設定を適用したときに入れる
 pub(crate) static THEME: AtomicU8 = AtomicU8::new(0);
 pub(crate) static ACCENT: AtomicU32 = AtomicU32::new(DEFAULT_ACCENT);
-pub(crate) const DEFAULT_ACCENT: u32 = 0x87afd7;
+pub(crate) const DEFAULT_ACCENT: u32 = 0x3574f0;
 /// 欄のタブの名前をいつも出すか（設定の「欄のタブの名前」）
 pub(crate) static TAB_NAMES: AtomicBool = AtomicBool::new(false);
 
 /// 設定の外観（配色・強調の色・タブの名前）を描き方に入れる
 pub fn set_appearance(theme: &str, accent: &str, tab_names_always: bool) {
     let t = match theme {
-        "black" => 1,
-        "dim" => 2,
-        "light" => 3,
+        "darcula" => 1,
+        "light" => 2,
         _ => 0,
     };
     THEME.store(t, Ordering::Relaxed);
@@ -50,7 +49,53 @@ pub fn set_appearance(theme: &str, accent: &str, tab_names_always: bool) {
     TAB_NAMES.store(tab_names_always, Ordering::Relaxed);
 }
 
-/// 描いた色を配色で置き換える（ダークの色を基準に、灰色は明るさを、色のあるものは濃さを変える）
+/// 配色ごとの置き換え（IntelliJ ダークの色 → その配色の色。IntelliJ の Darcula と Light の色）
+const DARCULA: &[(u32, u32)] = &[
+    (0x1e1f22, 0x2b2b2b),
+    (0x2b2d30, 0x3c3f41),
+    (0xbcbec4, 0xa9b7c6),
+    (0xdfe1e5, 0xbbbbbb),
+    (0x4b5059, 0x606366),
+    (0xa1a3ab, 0xa4a3a3),
+    (0x26282e, 0x323232),
+    (0x393b40, 0x4b4d4f),
+    (0x43454a, 0x515658),
+    (0x2e436e, 0x2f65ca),
+    (0xcf8e6d, 0xcc7832),
+    (0x6aab73, 0x6a8759),
+    (0x2aacb8, 0x6897bb),
+    (0x7a7e85, 0x808080),
+    (0x56a8f5, 0xffc66d),
+    (0xc77dbb, 0x9876aa),
+    (0xb3ae60, 0xbbb529),
+];
+const LIGHT: &[(u32, u32)] = &[
+    (0x1e1f22, 0xffffff),
+    (0x2b2d30, 0xf7f8fa),
+    (0xbcbec4, 0x080808),
+    (0xdfe1e5, 0x000000),
+    (0xced0d6, 0x000000),
+    (0x4b5059, 0xaeb3c2),
+    (0xa1a3ab, 0x767a8a),
+    (0x868a91, 0x6c707e),
+    (0x6f737a, 0x818594),
+    (0x26282e, 0xf5f8fe),
+    (0x214283, 0xa6d2ff),
+    (0x393b40, 0xdfe1e5),
+    (0x43454a, 0xc9ccd6),
+    (0x2e436e, 0xd5e1ff),
+    (0x2d543f, 0xedebfc),
+    (0x2d6099, 0x9fc5ff),
+    (0xcf8e6d, 0x0033b3),
+    (0x6aab73, 0x067d17),
+    (0x2aacb8, 0x1750eb),
+    (0x7a7e85, 0x8c8c8c),
+    (0x56a8f5, 0x00627a),
+    (0xc77dbb, 0x871094),
+    (0xb3ae60, 0x9e880d),
+];
+
+/// 描いた色を配色で置き換える（表にある色はその色に。無い灰色は明るさを、色のあるものは濃さを変える）
 pub fn theme_color(c: [f32; 4]) -> [f32; 4] {
     let default_accent = rgb(DEFAULT_ACCENT);
     let near = |a: f32, b: f32| (a - b).abs() < 0.002;
@@ -59,57 +104,88 @@ pub fn theme_color(c: [f32; 4]) -> [f32; 4] {
         a[3] = c[3];
         return a;
     }
+    let theme = THEME.load(Ordering::Relaxed);
+    let table = match theme {
+        1 => DARCULA,
+        2 => LIGHT,
+        _ => return c,
+    };
+    let hex = ((c[0] * 255.0).round() as u32) << 16 | ((c[1] * 255.0).round() as u32) << 8 | (c[2] * 255.0).round() as u32;
+    if let Some(&(_, to)) = table.iter().find(|(from, _)| *from == hex) {
+        let mut t = rgb(to);
+        t[3] = c[3];
+        return t;
+    }
     let gray = near(c[0], c[1]) && near(c[1], c[2]);
     let map = |f: &dyn Fn(f32) -> f32| [f(c[0]), f(c[1]), f(c[2]), c[3]];
-    match THEME.load(Ordering::Relaxed) {
-        // ブラック: 暗い灰色をもっと暗く（地は真っ黒）
-        1 if gray && c[0] < 0.3 => map(&|v| ((v - 0.047) * 1.15).max(0.0)),
-        // ダークグレー: 暗い灰色を持ち上げる（地は #1e1e1e ほど）
-        2 if gray && c[0] < 0.35 => map(&|v| 0.118 + v * 0.75),
+    match theme {
+        // Darcula: 少し明るい地に合わせて、暗い灰色を持ち上げる
+        1 if gray && c[0] < 0.35 => map(&|v| 0.06 + v * 0.95),
         // ライト: 灰色は明るさを反転、色のあるものは濃くする（白地で読めるように）
-        3 if gray => map(&|v| (1.0 - v * 0.92).clamp(0.0, 1.0)),
-        3 => map(&|v| v * 0.6),
+        2 if gray => map(&|v| (1.0 - v * 0.92).clamp(0.0, 1.0)),
+        2 => map(&|v| v * 0.6),
         _ => c,
     }
 }
-pub(crate) const FG: [f32; 4] = rgb(0xcccccc);
-pub(crate) const LINE_NO: [f32; 4] = rgb(0x4e4e4e);
-pub(crate) const TILDE: [f32; 4] = rgb(0x3a3a3a);
-pub(crate) const CURSOR: [f32; 4] = rgb(0xcccccc);
-/// Visual で選んだ行末（空行など）にあるカーソル。選択の反転とも地の色とも見分けられる灰色
-pub(crate) const CURSOR_IN_SELECTION: [f32; 4] = rgb(0x6c6c6c);
-pub(crate) const STATUS_FG: [f32; 4] = rgb(0x8a8a8a);
-/// git の変更マーカー（足した行・変えた行・消した位置）と、差分の地の色
-pub(crate) const GIT_ADD: [f32; 4] = rgb(0x87af87);
-pub(crate) const GIT_MOD: [f32; 4] = rgb(0x87afd7);
-pub(crate) const GIT_DEL: [f32; 4] = rgb(0xd75f5f);
-pub(crate) const DIFF_ADD_BG: [f32; 4] = rgb(0x16261a);
-pub(crate) const DIFF_DEL_BG: [f32; 4] = rgb(0x2c1a1a);
+pub(crate) const FG: [f32; 4] = rgb(0xbcbec4);
+/// 見出し・選んでいるものの文字（本文より明るい）
+pub(crate) const FG_BRIGHT: [f32; 4] = rgb(0xdfe1e5);
+pub(crate) const LINE_NO: [f32; 4] = rgb(0x4b5059);
+/// カーソルの行の行番号
+pub(crate) const LINE_NO_CUR: [f32; 4] = rgb(0xa1a3ab);
+pub(crate) const CURSOR: [f32; 4] = rgb(0xced0d6);
+/// Visual で選んだ行末（空行など）にあるカーソル。選択の地とも本文の地とも見分けられる灰色
+pub(crate) const CURSOR_IN_SELECTION: [f32; 4] = rgb(0x6f737a);
+pub(crate) const STATUS_FG: [f32; 4] = rgb(0x868a91);
+/// ツールウィンドウ・上の帯・状態の行の地（本文の地より明るい）
+pub(crate) const PANEL_BG: [f32; 4] = rgb(0x2b2d30);
+/// 小窓・メニュー・ダイアログの地
+pub(crate) const POPUP_BG: [f32; 4] = rgb(0x2b2d30);
+/// 欄の区切りの 1px の線
+pub(crate) const SEPARATOR: [f32; 4] = rgb(0x393b40);
+/// マウスを載せた・浮かせた地（タブ・ボタン・一覧の別の地）
+pub(crate) const RAISED_BG: [f32; 4] = rgb(0x393b40);
+/// 一覧で選んでいる行の地（IntelliJ の選んでいる行の青）
+pub(crate) const LIST_SEL_BG: [f32; 4] = rgb(0x2e436e);
+/// 本文で選んだ範囲の地
+pub(crate) const SEL_BG: [f32; 4] = rgb(0x214283);
+/// 検索の一致・今の一致の地
+pub(crate) const SEARCH_BG: [f32; 4] = rgb(0x2d543f);
+pub(crate) const SEARCH_CUR_BG: [f32; 4] = rgb(0x2d6099);
+// git の差分の色（行番号の左の細い帯・差分の画面）
+pub(crate) const GIT_ADD: [f32; 4] = rgb(0x549159);
+pub(crate) const GIT_MOD: [f32; 4] = rgb(0x375fad);
+pub(crate) const GIT_DEL: [f32; 4] = rgb(0xdb5c5c);
+pub(crate) const DIFF_ADD_BG: [f32; 4] = rgb(0x253627);
+pub(crate) const DIFF_DEL_BG: [f32; 4] = rgb(0x402929);
 pub(crate) const DIFF_WORD_BG: [f32; 4] = rgb(0x2c4a70);
 pub(crate) const DIFF_WORD_DEL_BG: [f32; 4] = rgb(0x6a2a2a);
-/// 診断のある行の行番号（エラーと警告）
-pub(crate) const DIAG_ERROR: [f32; 4] = rgb(0xd75f5f);
-pub(crate) const DIAG_WARN: [f32; 4] = rgb(0xd7af5f);
-/// 検索の一致（今いるもの以外）の背景
-pub(crate) const MATCH_BG: [f32; 4] = rgb(0x3a3a3a);
-/// カーソルの行（設定の cursorline）・ヤンクした範囲の光
-pub(crate) const CURSOR_LINE_BG: [f32; 4] = rgb(0x262626);
+// 診断（IntelliJ のエラー・警告の色）
+pub(crate) const DIAG_ERROR: [f32; 4] = rgb(0xf75464);
+pub(crate) const DIAG_WARN: [f32; 4] = rgb(0xf2c55c);
+/// 目立たない地（折りたたみ・blame の区切りなど）
+pub(crate) const MATCH_BG: [f32; 4] = rgb(0x393b40);
+/// カーソルの行の地
+pub(crate) const CURSOR_LINE_BG: [f32; 4] = rgb(0x26282e);
 pub(crate) const YANK_BG: [f32; 4] = rgb(0x5f5f87);
-/// 強調の色（選んでいる欄・決めるボタン。配色の設定で描いた後に置き換わる）
+/// 強調の色（設定。選んでいるタブの下線・ボタン）
 pub(crate) const ACCENT_FG: [f32; 4] = rgb(DEFAULT_ACCENT);
 
-/// ハイライトの色（ターミナルの 256 色に近い、控えめな数色）
+/// ハイライトの色（IntelliJ の New UI のダークの配色）
 pub(crate) fn hl_color(h: nagi_syntax::Hl) -> [f32; 4] {
     use nagi_syntax::Hl;
     match h {
-        Hl::Keyword => rgb(0x87afd7),
-        Hl::String => rgb(0xafaf87),
-        Hl::Comment => rgb(0x6c6c6c),
-        Hl::Type | Hl::Attribute => rgb(0xd7af87),
-        Hl::Number | Hl::Escape => rgb(0xd7875f),
-        Hl::Function => rgb(0xdcdcaa),
-        Hl::Variable => rgb(0x9fcfe0),
-        Hl::Property => rgb(0xb294bb),
+        Hl::Keyword => rgb(0xcf8e6d),
+        Hl::String => rgb(0x6aab73),
+        Hl::Comment => rgb(0x7a7e85),
+        // 型の名前は本文と同じ色（IntelliJ と同じ）
+        Hl::Type => FG,
+        Hl::Attribute => rgb(0xb3ae60),
+        Hl::Number => rgb(0x2aacb8),
+        Hl::Escape => rgb(0xcf8e6d),
+        Hl::Function => rgb(0x56a8f5),
+        Hl::Variable => FG,
+        Hl::Property => rgb(0xc77dbb),
     }
 }
 
@@ -462,8 +538,7 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
         next += 1;
         let y = (rect.y as f32 + vrow as f32 - frac) * cell.h;
         let Some(&ln) = shown.get(i) else {
-            // ファイル末尾より後ろは Vim と同じく ~
-            p.text("~", rect.x, y, TILDE);
+            // ファイル末尾より後ろは何も出さない（IntelliJ と同じ）
             vrow += 1;
             continue;
         };
@@ -481,6 +556,7 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
         let num_color = match pane.diags.get(&ln) {
             Some(true) => DIAG_ERROR,
             Some(false) => DIAG_WARN,
+            None if pane.active && ln == pane.cursor.line => LINE_NO_CUR,
             None => LINE_NO,
         };
         // blame の欄（コミットが変わる行だけ文字。新しいほど明るい）
@@ -501,7 +577,7 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
                 p.text(&format!("{:>5} ", ln.abs_diff(pane.cursor.line)), rect.x + bw, y, num_color);
             }
             "relative" => {
-                p.text(&format!("{:<5} ", ln + 1), rect.x + bw, y, if num_color == LINE_NO { STATUS_FG } else { num_color });
+                p.text(&format!("{:<5} ", ln + 1), rect.x + bw, y, if num_color == LINE_NO { LINE_NO_CUR } else { num_color });
             }
             _ => {
                 p.text(&format!("{:>5} ", ln + 1), rect.x + bw, y, num_color);
@@ -628,35 +704,32 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
             if let Some(&(ms, me)) = line_matches.get(mi) {
                 if a >= ms && a < me {
                     if pane.active && Some((ms, me)) == ed.search.current && matches!(ed.state(), State::Search) {
-                        it.bg = Some(it.fg);
-                        it.fg = BG;
+                        it.bg = Some(SEARCH_CUR_BG);
                     } else {
-                        it.bg = Some(MATCH_BG);
+                        it.bg = Some(SEARCH_BG);
                     }
                 }
             }
             if let Some((vs, ve, lw)) = visual {
                 if if lw { line_selected } else { a >= vs && a < ve } {
-                    it.bg = Some(it.fg);
-                    it.fg = BG;
+                    it.bg = Some(SEL_BG);
                 }
             }
             if block_span.is_some_and(|(s, e)| b >= s && b < e) {
-                it.bg = Some(it.fg);
-                it.fg = BG;
+                it.bg = Some(SEL_BG);
             }
             if is_cursor_line && b == pane.cursor.byte {
                 cursor_item = Some(items.len());
             }
             items.push(it);
         }
-        // Visual で改行まで選んでいる行は、Vim と同じく行末を 1 セル反転して見せる（空行が選ばれていると分かるように）
+        // Visual で改行まで選んでいる行は、行末を 1 セル塗って見せる（空行が選ばれていると分かるように）
         let mut eol_selected = false;
         if let Some((vs, ve, lw)) = visual {
             let eol = abs + line.len();
             eol_selected = if lw { line_selected } else { eol >= vs && eol < ve };
             if eol_selected && !(is_cursor_line && pane.cursor.byte >= line.len()) {
-                items.push(Item { g: Cow::Borrowed(" "), width: 1, fg: BG, bg: Some(FG), underline: false });
+                items.push(Item { g: Cow::Borrowed(" "), width: 1, fg: FG, bg: Some(SEL_BG), underline: false });
             }
         }
         // 横に送って、カーソルが左に隠れた（行末のカーソルも、行が左端より短ければ隠れている）
@@ -693,7 +766,7 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
             // ブロックカーソル（文字を反転）。空行や行末では 1 セルの塗り
             // 選択の中では灰色で塗る（選んでいると分かり、カーソルの位置も見分けられる。前は反転を戻していて、末端の文字が選ばれていないように見えた）
             match cursor_item {
-                Some(i) if (visual.is_some() || block.is_some()) && items[i].fg == BG && items[i].bg.is_some() => {
+                Some(i) if (visual.is_some() || block.is_some()) && items[i].bg == Some(SEL_BG) => {
                     items[i].bg = Some(CURSOR_IN_SELECTION);
                     p.draw(&items, rect.x + gutter, y);
                 }
@@ -895,7 +968,8 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     let scols = cols.saturating_sub(2);
     let y = rows as f32 * cell.h;
     // はみ出した本文の最終行（スムーズスクロール中）を最下行の地で隠す
-    p.out.push(Instance::fill(0.0, y, w as f32, h as f32 - y, BG));
+    p.out.push(Instance::fill(0.0, y, w as f32, h as f32 - y, PANEL_BG));
+    p.out.push(Instance::fill(0.0, y, w as f32, 1.0, SEPARATOR));
     let name = ed.buf.path.as_ref().map_or("[No Name]".to_string(), |p| p.display().to_string());
     let keys = format!("{}{}", ed.pending_keys.iter().map(|k| k.label()).collect::<String>(), ed.showcmd);
     // 選んでいる実行の構成（Shift+F10 で動かすもの）
@@ -1060,7 +1134,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         let x = (*col).min(cols.saturating_sub(w + 1));
         let y = (row + 1) as f32 * cell.h + 2.0;
         p.out.push(Instance::fill(x as f32 * cell.w - 1.0, y - 1.0, w as f32 * cell.w + 2.0, cell.h + 2.0, STATUS_FG));
-        p.out.push(Instance::fill(x as f32 * cell.w, y, w as f32 * cell.w, cell.h, rgb(0x141414)));
+        p.out.push(Instance::fill(x as f32 * cell.w, y, w as f32 * cell.w, cell.h, POPUP_BG));
         let saved = p.cols;
         p.cols = cols;
         p.text(&text, x, y, FG);
@@ -1170,7 +1244,7 @@ pub(crate) fn draw_toggle_buttons(p: &mut Painter, ed: &Editor, cols: usize, sta
             let lx = if col + 2 + w <= cols { col + 2 } else { col.saturating_sub(w + 1) };
             let (fx, fw) = (lx as f32 * cell.w, w as f32 * cell.w);
             p.out.push(Instance::fill(fx - 1.0, y - 1.0, fw + 2.0, cell.h + 2.0, STATUS_FG));
-            p.out.push(Instance::fill(fx, y, fw, cell.h, rgb(0x141414)));
+            p.out.push(Instance::fill(fx, y, fw, cell.h, POPUP_BG));
             p.text(&label, lx, y, FG);
         }
     }
@@ -1423,7 +1497,7 @@ pub(crate) fn draw_panel_box(p: &mut Painter, r: Rect, lines: &[String], hl: usi
     let top = (r.y + r.h).saturating_sub(h + 1);
     let (x, y, w) = (r.x as f32 * cell.w + 4.0, top as f32 * cell.h, (r.w as f32 - 0.5) * cell.w - 8.0);
     p.out.push(Instance::fill(x - 1.0, y - 1.0, w + 2.0, h as f32 * cell.h + 2.0, STATUS_FG));
-    p.out.push(Instance::fill(x, y, w, h as f32 * cell.h, rgb(0x141414)));
+    p.out.push(Instance::fill(x, y, w, h as f32 * cell.h, POPUP_BG));
     for (k, l) in lines.iter().enumerate() {
         let yy = y + k as f32 * cell.h;
         if k == hl && hl > 0 {
@@ -1507,17 +1581,17 @@ pub(crate) fn draw_grid(p: &mut Painter, g: &GridView, r: Rect) {
             let text = crate::result_grid::show(&v);
             let sel = k == g.row && c == g.col && g.focused;
             if sel {
-                p.out.push(Instance::fill((x - 1) as f32 * cell.w, y, (g.widths[c] + 2) as f32 * cell.w, cell.h, FG));
+                p.out.push(Instance::fill((x - 1) as f32 * cell.w, y, (g.widths[c] + 2) as f32 * cell.w, cell.h, LIST_SEL_BG));
             } else if let Some(bg) = (g.cell_bg)(k, c) {
                 p.out.push(Instance::fill((x - 1) as f32 * cell.w, y, (g.widths[c] + 2) as f32 * cell.w, cell.h, bg));
             }
             let lim = p.cols;
             p.cols = (x + g.widths[c]).min(r.x + r.w);
-            let fg = if sel { BG } else if v.is_none() { LINE_NO } else if bg == Some(DIFF_DEL_BG) { rgb(0x8a6a6a) } else { FG };
+            let fg = if sel { FG_BRIGHT } else if v.is_none() { LINE_NO } else if bg == Some(DIFF_DEL_BG) { rgb(0x8a6a6a) } else { FG };
             p.text(&text, x, y, fg);
             p.cols = lim;
             let sx = (x + g.widths[c] + 1) as f32 * cell.w + cell.w * 0.5;
-            p.out.push(Instance::fill(sx, y, 1.0, cell.h, rgb(0x2a2a2a)));
+            p.out.push(Instance::fill(sx, y, 1.0, cell.h, SEPARATOR));
         }
     }
     p.cols = saved;
@@ -1537,7 +1611,7 @@ pub(crate) fn draw_filter_row(p: &mut Painter, r: Rect, y: f32, where_: &str, or
     let cell = p.fonts.cell();
     let mut c = p.text(" WHERE ", r.x, y, FINDER_MATCH);
     let w_box = 36;
-    p.out.push(Instance::fill(c as f32 * cell.w, y + 1.0, w_box as f32 * cell.w, cell.h - 2.0, rgb(0x141414)));
+    p.out.push(Instance::fill(c as f32 * cell.w, y + 1.0, w_box as f32 * cell.w, cell.h - 2.0, POPUP_BG));
     match editing.filter(|e| e.0 == Field::Where) {
         Some((_, f)) => {
             draw_vim_field(p, f, c + 1, y, preedit);
@@ -1548,7 +1622,7 @@ pub(crate) fn draw_filter_row(p: &mut Painter, r: Rect, y: f32, where_: &str, or
     }
     c += w_box + 2;
     let c2 = p.text("ORDER BY ", c, y, FINDER_MATCH);
-    p.out.push(Instance::fill(c2 as f32 * cell.w, y + 1.0, 28.0 * cell.w, cell.h - 2.0, rgb(0x141414)));
+    p.out.push(Instance::fill(c2 as f32 * cell.w, y + 1.0, 28.0 * cell.w, cell.h - 2.0, POPUP_BG));
     match editing.filter(|e| e.0 == Field::Order) {
         Some((_, f)) => {
             draw_vim_field(p, f, c2 + 1, y, preedit);
@@ -1634,7 +1708,7 @@ pub(crate) fn dialog_frame(p: &mut Painter, cols: usize, rows: usize, w: usize, 
     let (x, y) = ((x0 as f32 - 0.5) * cell.w, (y0 as f32 - 0.5) * cell.h);
     let (fw, fh) = ((w as f32 + 1.0) * cell.w, (h as f32 + 1.0) * cell.h);
     p.out.push(Instance::fill(x, y, fw, fh, STATUS_FG));
-    p.out.push(Instance::fill(x + 1.0, y + 1.0, fw - 2.0, fh - 2.0, rgb(0x141414)));
+    p.out.push(Instance::fill(x + 1.0, y + 1.0, fw - 2.0, fh - 2.0, POPUP_BG));
     (x0, y0)
 }
 
@@ -1719,8 +1793,8 @@ pub(crate) fn draw_vim_line(p: &mut Painter, f: &crate::vim_field::VimField, l: 
             p.text(&text[..s], col, y, FG);
             // 行末まで選んでいれば 1 セル余分に塗る
             let w = (x2 - x1).max(1);
-            p.out.push(Instance::fill(x1 as f32 * cell.w, y, w as f32 * cell.w, cell.h, FG));
-            p.text(&text[s..e], x1, y, BG);
+            p.out.push(Instance::fill(x1 as f32 * cell.w, y, w as f32 * cell.w, cell.h, SEL_BG));
+            p.text(&text[s..e], x1, y, FG);
             p.text(&text[e..], x2, y, FG);
         }
         None => {
