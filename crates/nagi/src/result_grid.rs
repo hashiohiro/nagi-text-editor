@@ -853,7 +853,7 @@ impl Editor {
     pub(crate) fn result_click(&mut self, row: usize, col: usize, clicks: u32) {
         self.list_side = Side::Bottom;
         self.set_state(State::List);
-        // 値を打っている間: 別のセルを押したら、打った値を決めてからそのセルへ（ダブルクリックならそのまま直し始める）。ほかは選び直さない
+        // 値を打っている間: 別のセルを押したら、打った値を決めてからそのセルへ移って直し始める。同じセルなら何もしない
         if self.db_results.value_edit.is_some() {
             let other = self.db_results.active_tab().is_some_and(|t| {
                 let head = if t.filterable { 4 } else { 3 };
@@ -919,14 +919,18 @@ impl Editor {
         if row < head {
             return;
         }
-        // 行と列（ダブルクリックで値を直す）
+        // 行と列。直せる結果（テーブルの主キーが分かるもの）なら、セルを押したら 1 回で直し始める（Insert）
         let len = t.rows.len();
         let pick = crate::list::pick_row(&mut t.row, t.scroll, row, head, len, clicks);
-        if let Some(c) = grid_col_at(t.hscroll, &t.widths, col) {
+        let cell = grid_col_at(t.hscroll, &t.widths, col);
+        if let Some(c) = cell {
             t.col = c;
         }
-        if let Some(crate::list::Pick::Accept(_)) = pick {
-            self.result_begin_edit(false);
+        match pick {
+            // ダブルクリックは直せないときにわけを知らせる
+            Some(crate::list::Pick::Accept(_)) => self.result_begin_edit(false),
+            Some(_) if cell.is_some() && self.result_plan().is_ok() => self.result_begin_edit(false),
+            _ => {}
         }
     }
 }

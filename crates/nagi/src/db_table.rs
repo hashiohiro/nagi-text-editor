@@ -625,7 +625,7 @@ impl crate::layout::View for DbTableView {
     }
 
     fn click(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, clicks: u32) -> crate::layout::Click {
-        // 窓を覆って出ているテーブル: 押したらテーブルへ向き、押したセルを選ぶ（ダブルクリックで直す。Enter と同じ）。下の本文へは通さない
+        // 窓を覆って出ているテーブル: 押したらテーブルへ向き、押したセルをそのまま直し始める（Insert。Enter と同じ）。下の本文へは通さない
         ed.set_state(crate::editor::State::DbTable);
         let Some(te) = &mut ed.db_table else { return crate::layout::Click::Done };
         // 送る前の確認の間は、選び直さない
@@ -667,7 +667,7 @@ impl crate::layout::View for DbTableView {
             return crate::layout::Click::Done;
         }
         let len = te.len();
-        // 値を打っている間: 別のセルを押したら、打った値を決めてからそのセルへ（ダブルクリックならそのまま直し始める）。ほかは選び直さない
+        // 値を打っている間: 別のセルを押したら、打った値を決めてからそのセルへ移って直し始める。同じセルなら何もしない
         if te.editing.is_some() {
             let hit = crate::list::row_at(te.scroll, row - r.y, 4, len).zip(crate::result_grid::grid_col_at(te.hscroll, &te.widths, col - r.x));
             if !hit.is_some_and(|h| h != (te.row, te.col)) {
@@ -677,12 +677,14 @@ impl crate::layout::View for DbTableView {
         }
         let Some(te) = &mut ed.db_table else { return crate::layout::Click::Done };
         let pick = crate::list::pick_row(&mut te.row, te.scroll, row - r.y, 4, len, clicks);
+        let cell = crate::result_grid::grid_col_at(te.hscroll, &te.widths, col - r.x);
         if pick.is_some() {
-            if let Some(c) = crate::result_grid::grid_col_at(te.hscroll, &te.widths, col - r.x) {
+            if let Some(c) = cell {
                 te.col = c;
             }
         }
-        if let Some(crate::list::Pick::Accept(_)) = pick {
+        // セル（値の列）を押したら 1 回で直し始める（行番号の欄を押したときは選ぶだけ）
+        if pick.is_some() && cell.is_some() {
             ed.db_table_key(nagi_vim::Key::Enter);
         }
         crate::layout::Click::Done
@@ -858,13 +860,10 @@ mod tests {
         crate::layout::press(&mut e, s, ay + 5, name_x, |_| 1);
         let te = e.db_table.as_ref().unwrap();
         assert_eq!((te.row, te.col), (1, 1));
-        assert!(te.editing.is_none(), "1 回では直さない");
-        crate::layout::press(&mut e, s, ay + 5, name_x, |_| 2);
-        assert!(e.db_table.as_ref().unwrap().editing.is_some(), "ダブルクリックで直し始める");
-        // 打っている間に別の行・列をダブルクリック: 打った値を決めて、押したセルを直し始める
+        assert_eq!(te.editing.as_ref().map(|f| f.mode_label()), Some("INSERT"), "1 回で直し始める（Insert）");
+        // 打っている間に別の行・列を押す: 打った値を決めて、押したセルを直し始める
         keys(&mut e, "<Esc>ccz");
         crate::layout::press(&mut e, s, ay + 4, x + 8, |_| 1);
-        crate::layout::press(&mut e, s, ay + 4, x + 8, |_| 2);
         let te = e.db_table.as_ref().unwrap();
         assert_eq!(te.value(1, 1).as_deref(), Some("z"));
         assert_eq!((te.row, te.col), (0, 0));
