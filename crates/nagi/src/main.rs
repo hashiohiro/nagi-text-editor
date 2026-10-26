@@ -116,7 +116,7 @@ use winit::window::{Window, WindowId};
 
 /// 論理ピクセルでのフォントサイズ（表示スケールを掛けて使う）
 /// 文字の大きさの既定（px。設定の「文字の大きさ」が 0 のとき）
-const FONT_PX: f64 = 14.0;
+const FONT_PX: f64 = 16.0;
 
 /// 設定の文字の大きさ（pt）を px に（0 なら既定）
 fn font_px(s: &settings::Settings) -> f64 {

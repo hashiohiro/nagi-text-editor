@@ -361,8 +361,8 @@ fn map_characters(text: &str, base_family: &str) -> Option<(String, Arc<FontByte
 /// 画面の部品の文字のフォントの名前（前から探す）。Windows の UI と同じ
 pub const UI_FONTS: &[&str] = &["Segoe UI", "Yu Gothic UI", "Meiryo UI", "Segoe UI Symbol"];
 
-/// 部品の文字の大きさ（本文の文字に対する比）
-const UI_SCALE: f32 = 0.92;
+/// 部品の文字の大きさ（本文の文字に対する比。IntelliJ と同じく同じ大きさ）
+const UI_SCALE: f32 = 1.0;
 
 /// 等幅でない文字（画面の部品用）。字ごとに幅を持ち、行の高さの真ん中に置く
 pub struct UiFont {

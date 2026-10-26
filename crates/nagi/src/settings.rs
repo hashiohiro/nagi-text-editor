@@ -65,7 +65,7 @@ pub static SCHEMA: &[Item] = &[
     // 外観
     item("appearance.font", "外観", "フォント（英数字）", SKind::Font, "Cascadia Mono", "Enter で一覧から選ぶ（等幅のものを先に）"),
     item("appearance.font_ja", "外観", "フォント（日本語）", SKind::Font, "BIZ UDGothic", "英数字のフォントに無い字に使う。Enter で一覧から選ぶ"),
-    item("appearance.font_size", "外観", "文字の大きさ（pt）", SKind::Int(0, 48), "0", "0 なら既定"),
+    item("appearance.font_size", "外観", "文字の大きさ（pt）", SKind::Int(0, 48), "0", "0 なら既定（12pt）。画面の部品の文字も同じ大きさ"),
     item("appearance.line_height", "外観", "行の高さ（%）", SKind::Int(80, 200), "100", "文字の高さに対する行の高さ"),
     item("appearance.ambiguous_wide", "外観", "曖昧な幅の文字を全角で", B, "false", "○ → ① ※ など、幅の決まっていない文字を 2 文字ぶんで出す（日本語のフォントに合わせるならオン）"),
     item("appearance.theme", "外観", "配色", SKind::Choice(&[("dark", "IntelliJ ダーク（既定）"), ("darcula", "Darcula"), ("light", "IntelliJ ライト")]), "dark", ""),

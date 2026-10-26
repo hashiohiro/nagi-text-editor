@@ -280,7 +280,8 @@ pub(crate) mod draw {
                 p.small_text(&ini, bx + (s - tw) / 2.0, by + (s - cell.h * scale) / 2.0, scale, FG_BRIGHT);
                 c += 2;
             } else if let Some(name) = wd.icon {
-                let px = crate::icons::small(cell.h);
+                // アイコンだけのボタン（▶・デバッグ・止める・検索・設定）は帯の高さいっぱいに（IntelliJ の帯のボタンと同じくらい）
+                let px = if wd.text.is_empty() { crate::icons::large(cell.h) } else { crate::icons::small(cell.h) };
                 let cx = if wd.text.is_empty() { (c0 + c1) as f32 / 2.0 * cell.w - px / 2.0 } else { c as f32 * cell.w };
                 crate::icons::draw(p, name, cx, crate::icons::centered(0.0, cell.h, px), px, None);
                 c += 2;
