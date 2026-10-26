@@ -69,7 +69,7 @@ pub static SCHEMA: &[Item] = &[
     item("appearance.ui_font_size", "外観", "画面の部品の文字の大きさ（pt）", SKind::Int(0, 48), "0", "ツールバー・木・タブ・メニュー・ダイアログなど。0 ならソースコードと同じ。大きくすると行の高さも合わせて広がる"),
     item("appearance.line_height", "外観", "行の高さ（%）", SKind::Int(80, 200), "100", "文字の高さに対する行の高さ"),
     item("appearance.ambiguous_wide", "外観", "曖昧な幅の文字を全角で", B, "false", "○ → ① ※ など、幅の決まっていない文字を 2 文字ぶんで出す（日本語のフォントに合わせるならオン）"),
-    item("appearance.theme", "外観", "配色", SKind::Choice(&[("dark", "IntelliJ ダーク（既定）"), ("darcula", "Darcula"), ("light", "IntelliJ ライト")]), "dark", ""),
+    item("appearance.theme", "外観", "配色", SKind::Choice(&[("dark", "IntelliJ ダーク（既定）"), ("darcula", "Darcula"), ("light", "IntelliJ ライト"), ("black", "ブラック（ターミナル風）")]), "dark", ""),
     item("appearance.accent", "外観", "強調の色", T, "#3574f0", "選んでいるタブの下線・ボタンなど（#rrggbb）"),
     item("appearance.remember_panels", "外観", "欄の大きさを覚える", B, "true", "ドラッグで変えた左・右・下の欄の大きさを次の起動でも使う"),
     item("appearance.status_run", "外観", "状態の行: 実行の構成", B, "false", "上の帯にもある"),

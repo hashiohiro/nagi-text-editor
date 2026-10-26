@@ -29,7 +29,7 @@ pub(crate) use crate::read_view::draw::draw_read_view;
 pub(crate) use crate::result_grid::draw::draw_db_results;
 pub(crate) use crate::terminal::draw::draw_terminal;
 
-/// 配色（設定の「配色」: 0 IntelliJ ダーク・1 Darcula・2 IntelliJ ライト）と強調の色（0xRRGGBB）。設定を適用したときに入れる
+/// 配色（設定の「配色」: 0 IntelliJ ダーク・1 Darcula・2 IntelliJ ライト・3 ブラック）と強調の色（0xRRGGBB）。設定を適用したときに入れる
 pub(crate) static THEME: AtomicU8 = AtomicU8::new(0);
 pub(crate) static ACCENT: AtomicU32 = AtomicU32::new(DEFAULT_ACCENT);
 pub(crate) const DEFAULT_ACCENT: u32 = 0x3574f0;
@@ -39,6 +39,7 @@ pub fn set_appearance(theme: &str, accent: &str) {
     let t = match theme {
         "darcula" => 1,
         "light" => 2,
+        "black" => 3,
         _ => 0,
     };
     THEME.store(t, Ordering::Relaxed);
@@ -65,6 +66,17 @@ const DARCULA: &[(u32, u32)] = &[
     (0x56a8f5, 0xffc66d),
     (0xc77dbb, 0x9876aa),
     (0xb3ae60, 0xbbb529),
+];
+/// ブラック（ターミナルのように地は真っ黒。欄・小窓もほぼ黒で、区切りの線で分ける）
+const BLACK: &[(u32, u32)] = &[
+    (0x1e1f22, 0x000000),
+    (0x2b2d30, 0x0a0a0a),
+    (0x26282e, 0x161616),
+    (0x393b40, 0x2a2a2a),
+    (0x43454a, 0x3a3a3a),
+    (0x4b5059, 0x5a5a5a),
+    (0x2e436e, 0x1f3a66),
+    (0x214283, 0x264f78),
 ];
 const LIGHT: &[(u32, u32)] = &[
     (0x1e1f22, 0xffffff),
@@ -105,6 +117,7 @@ pub fn theme_color(c: [f32; 4]) -> [f32; 4] {
     let table = match theme {
         1 => DARCULA,
         2 => LIGHT,
+        3 => BLACK,
         _ => return c,
     };
     let hex = ((c[0] * 255.0).round() as u32) << 16 | ((c[1] * 255.0).round() as u32) << 8 | (c[2] * 255.0).round() as u32;
@@ -121,6 +134,8 @@ pub fn theme_color(c: [f32; 4]) -> [f32; 4] {
         // ライト: 灰色は明るさを反転、色のあるものは濃くする（白地で読めるように）
         2 if gray => map(&|v| (1.0 - v * 0.92).clamp(0.0, 1.0)),
         2 => map(&|v| v * 0.6),
+        // ブラック: 暗い灰色をもっと暗く
+        3 if gray && c[0] < 0.3 => map(&|v| ((v - 0.12) * 1.1).max(0.0)),
         _ => c,
     }
 }
