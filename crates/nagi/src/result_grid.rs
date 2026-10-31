@@ -439,6 +439,173 @@ impl DbResults {
     }
 }
 
+/// クエリの結果のキーで、外に及ぶこと（Editor が行う。ADR 0018 の §5）
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ResultAction {
+    None,
+    /// 打った値を決める（true ならその後、右の列へ）
+    CommitEdit(bool),
+    /// そのタブを問い合わせ直す（タブの番号）
+    Requery(u64),
+    /// 値を直し始める（true なら空にしてから）
+    BeginEdit(bool),
+    SetNull,
+    Undo,
+    Send,
+    /// 未送信の変更を捨ててそのタブを閉じるか確かめる（タブの番号, 変更の数）
+    AskDiscard(u64, usize),
+    /// コピーする（文字, 何をコピーしたか）
+    Copy(String, &'static str),
+    /// 書き出しのコマンドを打たせる
+    Export,
+    HideBottom,
+    ToText,
+    Command,
+}
+
+impl DbResults {
+    /// クエリの結果のキー（`half` は半画面の行数）。値と絞り込みの入力（`svc` で動かす）・タブ・ログ・表の移動・並べ替えと絞り込みの指定は
+    /// ここで行い、外に及ぶことを返す
+    pub fn key(&mut self, key: Key, half: usize, svc: &mut crate::editor::Services) -> ResultAction {
+        // 値の入力中（Vim 風。Enter か Tab で決める、ノーマルの Esc でやめる）
+        if let Some(f) = &mut self.value_edit {
+            match if key == Key::Tab { FieldOut::Submit } else { f.feed(key, svc) } {
+                FieldOut::Cancel => self.value_edit = None,
+                FieldOut::Submit => return ResultAction::CommitEdit(key == Key::Tab),
+                _ => {}
+            }
+            return ResultAction::None;
+        }
+        // 絞り込みの欄の入力中（Vim 風。Enter で決める、ノーマルの Esc でやめる）。値を直すキー（i・c・x・u・Enter）より先に受ける
+        if let Some((_, f)) = &mut self.editing {
+            match f.feed(key, svc) {
+                FieldOut::Cancel => self.editing = None,
+                FieldOut::Submit => {
+                    let (field, f) = self.editing.take().unwrap();
+                    let text = f.text();
+                    if let Some(t) = self.active_tab_mut() {
+                        match field {
+                            Field::Where => t.where_ = text,
+                            Field::Order => t.order = text,
+                        }
+                        t.offset = 0;
+                        t.total = None;
+                        t.running = true;
+                        return ResultAction::Requery(t.id);
+                    }
+                }
+                _ => {}
+            }
+            return ResultAction::None;
+        }
+        // 値を直す操作（結果のタブで）
+        let dirty = self.active_tab().is_some_and(|t| !t.edits.is_empty());
+        if self.active > 0 {
+            match key {
+                Key::F(2) | Key::Enter | Key::Char('i') => return ResultAction::BeginEdit(false),
+                Key::Char('c') => return ResultAction::BeginEdit(true),
+                Key::Char('x') => return ResultAction::SetNull,
+                Key::Char('u') | Key::Ctrl('z') => return ResultAction::Undo,
+                Key::Ctrl('m') => return ResultAction::Send,
+                // 読み直すと直した値が消えるので、送るか戻すまで止める
+                Key::Char('f' | 'F' | 's' | '>' | '<' | 'R') if dirty => {
+                    svc.notify.info("未送信の変更があります（Ctrl+Enter で送るか、u・Ctrl+Z で戻す）");
+                    return ResultAction::None;
+                }
+                Key::Char('q') if dirty => {
+                    let (n, id) = self.active_tab().map_or((0, 0), |t| (t.changes(), t.id));
+                    return ResultAction::AskDiscard(id, n);
+                }
+                _ => {}
+            }
+        }
+        let pending = std::mem::take(&mut self.pending_g);
+        match key {
+            Key::Char(']') | Key::Ctrl('n') => self.active = (self.active + 1) % (self.tabs.len() + 1),
+            Key::Char('[') | Key::Ctrl('p') => self.active = (self.active + self.tabs.len()) % (self.tabs.len() + 1),
+            Key::Esc | Key::Ctrl('w') => return ResultAction::ToText,
+            Key::Char(':') => return ResultAction::Command,
+            Key::Char('q') => {
+                if self.active == 0 {
+                    return ResultAction::HideBottom;
+                }
+                self.tabs.remove(self.active - 1);
+                self.active = self.active.min(self.tabs.len());
+            }
+            k if self.active == 0 => match k {
+                Key::Char('j') | Key::Down => self.log_scroll = self.log_scroll.saturating_sub(1),
+                Key::Char('k') | Key::Up => self.log_scroll = (self.log_scroll + 1).min(self.log.len().saturating_sub(1)),
+                Key::Char('G') => self.log_scroll = 0,
+                _ => {}
+            },
+            k => {
+                let Some(t) = self.active_tab_mut() else { return ResultAction::None };
+                let last_row = t.rows.len().saturating_sub(1);
+                let last_col = t.cols.len().saturating_sub(1);
+                let moved = nagi_ui::list::step(k, t.row, last_row + 1, half * 2);
+                match k {
+                    Key::Char('l') | Key::Right | Key::Tab => t.col = (t.col + 1).min(last_col),
+                    Key::Char('h') | Key::Left => t.col = t.col.saturating_sub(1),
+                    // 表では Home・End は列の端へ
+                    Key::Char('0') | Key::Home => t.col = 0,
+                    Key::Char('$') | Key::End => t.col = last_col,
+                    _ if moved.is_some() => t.row = moved.unwrap_or(t.row),
+                    Key::Char('g') if pending => t.row = 0,
+                    Key::Char('y') if pending => return ResultAction::Copy(t.to_tsv(), "表"),
+                    Key::Char('g') => self.pending_g = true,
+                    Key::Char('y') => {
+                        if let Some(v) = t.rows.get(t.row).and_then(|x| x.get(t.col)) {
+                            return ResultAction::Copy(v.clone().unwrap_or_default(), "値");
+                        }
+                    }
+                    Key::Char('Y') => {
+                        if let Some(x) = t.rows.get(t.row) {
+                            return ResultAction::Copy(x.iter().map(|v| v.clone().unwrap_or_default()).collect::<Vec<_>>().join("\t"), "行");
+                        }
+                    }
+                    Key::Char('f') | Key::Char('F') if t.filterable => {
+                        let field = if k == Key::Char('f') { Field::Where } else { Field::Order };
+                        let f = VimField::new(if field == Field::Where { &t.where_ } else { &t.order }, false);
+                        self.editing = Some((field, f));
+                    }
+                    Key::Char('s') if t.filterable && !t.cols.is_empty() => {
+                        let c = t.dialect.ident(&t.cols[t.col]);
+                        t.order = if t.order == format!("{c} ASC") {
+                            format!("{c} DESC")
+                        } else if t.order == format!("{c} DESC") {
+                            String::new()
+                        } else {
+                            format!("{c} ASC")
+                        };
+                        t.offset = 0;
+                        t.running = true;
+                        return ResultAction::Requery(t.id);
+                    }
+                    Key::Char('>') if t.filterable && t.more => {
+                        t.offset += MAX_ROWS;
+                        t.row = 0;
+                        t.running = true;
+                        return ResultAction::Requery(t.id);
+                    }
+                    Key::Char('<') if t.filterable && t.offset > 0 => {
+                        t.offset = t.offset.saturating_sub(MAX_ROWS);
+                        t.row = 0;
+                        t.running = true;
+                        return ResultAction::Requery(t.id);
+                    }
+                    Key::Char('R') if t.filterable => {
+                        t.running = true;
+                        return ResultAction::Requery(t.id);
+                    }
+                    Key::Char('E') => return ResultAction::Export,
+                    _ => {}
+                }
+            }
+        }
+        ResultAction::None
+    }
+}
+
 impl Editor {
     /// 結果のパネルを出す（全文検索の結果とは入れ替え）
     pub(crate) fn show_results(&mut self) {
@@ -688,188 +855,36 @@ impl Editor {
     /// 結果のパネルにいる間のキー
     pub(crate) fn result_key(&mut self, key: Key) -> crate::editor::Effect {
         let half = (self.panel_rect().map_or(10, |r| r.h) / 2).max(1);
-        // 値の入力中（Vim 風。Enter か Tab で決める、ノーマルの Esc でやめる）
-        if self.panels.db_results.value_edit.is_some() {
-            let out = if key == Key::Tab { FieldOut::Submit } else { self.feed_field(key, |e| e.panels.db_results.value_edit.as_mut()) };
-            let r = &mut self.panels.db_results;
-            match out {
-                FieldOut::Cancel => r.value_edit = None,
-                FieldOut::Submit => {
-                    self.result_commit_edit();
-                    if let Some(t) = self.panels.db_results.active_tab_mut().filter(|_| key == Key::Tab) {
-                        t.col = (t.col + 1).min(t.cols.len().saturating_sub(1));
-                    }
+        // 結果の中で済むことは DbResults::key が行い、外に及ぶことを返す（ADR 0018 の §5）
+        match self.panels.db_results.key(key, half, &mut self.svc) {
+            ResultAction::None => {}
+            ResultAction::CommitEdit(next) => {
+                self.result_commit_edit();
+                if let Some(t) = self.panels.db_results.active_tab_mut().filter(|_| next) {
+                    t.col = (t.col + 1).min(t.cols.len().saturating_sub(1));
                 }
-                _ => {}
             }
-            return crate::editor::Effect::None;
-        }
-        // 絞り込みの欄の入力中（Vim 風。Enter で決める、ノーマルの Esc でやめる）。値を直すキー（i・c・x・u・Enter）より先に受ける
-        if self.panels.db_results.editing.is_some() {
-            let out = self.feed_field(key, |e| e.panels.db_results.editing.as_mut().map(|x| &mut x.1));
-            let r = &mut self.panels.db_results;
-            match out {
-                FieldOut::Cancel => r.editing = None,
-                FieldOut::Submit => {
-                    let (field, f) = r.editing.take().unwrap();
-                    let text = f.text();
-                    if let Some(t) = r.active_tab_mut() {
-                        match field {
-                            Field::Where => t.where_ = text,
-                            Field::Order => t.order = text,
-                        }
-                        t.offset = 0;
-                        t.total = None;
-                        t.running = true;
-                        let id = t.id;
-                        self.db_requery(id);
-                    }
-                }
-                _ => {}
-            }
-            return crate::editor::Effect::None;
-        }
-        // 値を直す操作（結果のタブで）
-        let dirty = self.panels.db_results.active_tab().is_some_and(|t| !t.edits.is_empty());
-        if self.panels.db_results.active > 0 {
-            match key {
-                Key::F(2) | Key::Enter | Key::Char('i') => {
-                    self.result_begin_edit(false);
-                    return crate::editor::Effect::None;
-                }
-                Key::Char('c') => {
-                    self.result_begin_edit(true);
-                    return crate::editor::Effect::None;
-                }
-                Key::Char('x') => {
-                    self.result_set_null();
-                    return crate::editor::Effect::None;
-                }
-                Key::Char('u') | Key::Ctrl('z') => {
-                    self.result_undo();
-                    return crate::editor::Effect::None;
-                }
-                Key::Ctrl('m') => {
-                    self.result_send();
-                    return crate::editor::Effect::None;
-                }
-                // 読み直すと直した値が消えるので、送るか戻すまで止める
-                Key::Char('f' | 'F' | 's' | '>' | '<' | 'R') if dirty => {
-                    self.svc.notify.info("未送信の変更があります（Ctrl+Enter で送るか、u・Ctrl+Z で戻す）");
-                    return crate::editor::Effect::None;
-                }
-                Key::Char('q') if dirty => {
-                    let n = self.panels.db_results.active_tab().map_or(0, |t| t.changes());
-                    let id = self.panels.db_results.active_tab().map_or(0, |t| t.id);
-                    self.ask_or(format!("未送信の変更が {n} 件あります。捨てて閉じますか"), move |e| {
-                        let r = &mut e.panels.db_results;
-                        r.tabs.retain(|t| t.id != id);
-                        r.active = r.active.min(r.tabs.len());
-                    }, |_| {});
-                    return crate::editor::Effect::None;
-                }
-                _ => {}
-            }
-        }
-        let r = &mut self.panels.db_results;
-        let pending = std::mem::take(&mut r.pending_g);
-        match key {
-            Key::Char(']') | Key::Ctrl('n') => r.active = (r.active + 1) % (r.tabs.len() + 1),
-            Key::Char('[') | Key::Ctrl('p') => r.active = (r.active + r.tabs.len()) % (r.tabs.len() + 1),
-            Key::Esc | Key::Ctrl('w') => self.set_state(State::Normal),
-            Key::Char(':') => {
-                self.enter_command("");
-            }
-            Key::Char('q') => {
-                if r.active == 0 {
-                    self.hide_bottom();
-                } else {
-                    r.tabs.remove(r.active - 1);
+            ResultAction::Requery(id) => self.db_requery(id),
+            ResultAction::BeginEdit(clear) => self.result_begin_edit(clear),
+            ResultAction::SetNull => self.result_set_null(),
+            ResultAction::Undo => self.result_undo(),
+            ResultAction::Send => self.result_send(),
+            ResultAction::AskDiscard(id, n) => {
+                self.ask_or(format!("未送信の変更が {n} 件あります。捨てて閉じますか"), move |e| {
+                    let r = &mut e.panels.db_results;
+                    r.tabs.retain(|t| t.id != id);
                     r.active = r.active.min(r.tabs.len());
-                }
+                }, |_| {});
             }
-            k if r.active == 0 => match k {
-                Key::Char('j') | Key::Down => r.log_scroll = r.log_scroll.saturating_sub(1),
-                Key::Char('k') | Key::Up => r.log_scroll = (r.log_scroll + 1).min(r.log.len().saturating_sub(1)),
-                Key::Char('G') => r.log_scroll = 0,
-                _ => {}
-            },
-            k => {
-                let Some(t) = r.active_tab_mut() else { return crate::editor::Effect::None };
-                let last_row = t.rows.len().saturating_sub(1);
-                let last_col = t.cols.len().saturating_sub(1);
-                let moved = nagi_ui::list::step(k, t.row, last_row + 1, half * 2);
-                match k {
-                    Key::Char('l') | Key::Right | Key::Tab => t.col = (t.col + 1).min(last_col),
-                    Key::Char('h') | Key::Left => t.col = t.col.saturating_sub(1),
-                    // 表では Home・End は列の端へ
-                    Key::Char('0') | Key::Home => t.col = 0,
-                    Key::Char('$') | Key::End => t.col = last_col,
-                    _ if moved.is_some() => t.row = moved.unwrap_or(t.row),
-                    Key::Char('g') if pending => t.row = 0,
-                    Key::Char('y') if pending => {
-                        let s = t.to_tsv();
-                        self.copy_text(s, "表");
-                    }
-                    Key::Char('g') => r.pending_g = true,
-                    Key::Char('y') => {
-                        if let Some(v) = t.rows.get(t.row).and_then(|x| x.get(t.col)) {
-                            let s = v.clone().unwrap_or_default();
-                            self.copy_text(s, "値");
-                        }
-                    }
-                    Key::Char('Y') => {
-                        if let Some(x) = t.rows.get(t.row) {
-                            let s = x.iter().map(|v| v.clone().unwrap_or_default()).collect::<Vec<_>>().join("\t");
-                            self.copy_text(s, "行");
-                        }
-                    }
-                    Key::Char('f') | Key::Char('F') if t.filterable => {
-                        let field = if k == Key::Char('f') { Field::Where } else { Field::Order };
-                        let f = VimField::new(if field == Field::Where { &t.where_ } else { &t.order }, false);
-                        r.editing = Some((field, f));
-                    }
-                    Key::Char('s') if t.filterable && !t.cols.is_empty() => {
-                        let c = t.dialect.ident(&t.cols[t.col]);
-                        t.order = if t.order == format!("{c} ASC") {
-                            format!("{c} DESC")
-                        } else if t.order == format!("{c} DESC") {
-                            String::new()
-                        } else {
-                            format!("{c} ASC")
-                        };
-                        t.offset = 0;
-                        t.running = true;
-                        let id = t.id;
-                        self.db_requery(id);
-                    }
-                    Key::Char('>') if t.filterable && t.more => {
-                        t.offset += MAX_ROWS;
-                        t.row = 0;
-                        t.running = true;
-                        let id = t.id;
-                        self.db_requery(id);
-                    }
-                    Key::Char('<') if t.filterable && t.offset > 0 => {
-                        t.offset = t.offset.saturating_sub(MAX_ROWS);
-                        t.row = 0;
-                        t.running = true;
-                        let id = t.id;
-                        self.db_requery(id);
-                    }
-                    Key::Char('R') if t.filterable => {
-                        t.running = true;
-                        let id = t.id;
-                        self.db_requery(id);
-                    }
-                    Key::Char('E') => {
-                        self.enter_command("");
-                        self.cmdline.set("DbExport ");
-                        self.update_cmd_complete();
-                    }
-                    _ => {}
-                }
+            ResultAction::Copy(text, what) => self.copy_text(text, what),
+            ResultAction::Export => {
+                self.enter_command("");
+                self.cmdline.set("DbExport ");
+                self.update_cmd_complete();
             }
+            ResultAction::HideBottom => self.hide_bottom(),
+            ResultAction::ToText => self.set_state(State::Normal),
+            ResultAction::Command => self.enter_command(""),
         }
         crate::editor::Effect::None
     }
