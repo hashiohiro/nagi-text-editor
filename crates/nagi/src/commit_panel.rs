@@ -250,10 +250,22 @@ impl Editor {
     /// 送るコミットを調べて確認を出す（上流が無ければ origin に同じ名前で作る）
     fn prepare_push(&mut self) {
         let Some(root) = self.git.root.clone() else { return };
+        // 上流と送るコミットは裏で調べる（ADR 0018 の §4）
+        self.job(
+            "git-push-check",
+            move || {
+                let up = nagi_workers::git::git(&root, &["rev-parse", "--abbrev-ref", "@{u}"]).ok().map(|b| String::from_utf8_lossy(&b).trim().to_string());
+                let range = if up.is_some() { "@{u}..HEAD".to_string() } else { "HEAD".to_string() };
+                let log = nagi_workers::git::git(&root, &["log", "--format=%h %s", "-n", "50", &range]).map(|b| String::from_utf8_lossy(&b).lines().map(String::from).collect::<Vec<_>>()).unwrap_or_default();
+                (up, log)
+            },
+            |e, (up, log)| e.ask_push(up, log),
+        );
+    }
+
+    /// 送るコミット（`log`）と上流（`up`。無ければ origin に作る）を見せて、送るか確かめる
+    fn ask_push(&mut self, up: Option<String>, log: Vec<String>) {
         let branch = self.git.status.as_ref().map(|s| s.branch.clone()).unwrap_or_default();
-        let up = nagi_workers::git::git(&root, &["rev-parse", "--abbrev-ref", "@{u}"]).ok().map(|b| String::from_utf8_lossy(&b).trim().to_string());
-        let range = if up.is_some() { "@{u}..HEAD".to_string() } else { "HEAD".to_string() };
-        let log = nagi_workers::git::git(&root, &["log", "--format=%h %s", "-n", "50", &range]).map(|b| String::from_utf8_lossy(&b).lines().map(String::from).collect::<Vec<_>>()).unwrap_or_default();
         let dest = match &up {
             Some(u) => format!("{branch} → {u}"),
             None => format!("{branch} → origin/{branch}（新しく作る）"),

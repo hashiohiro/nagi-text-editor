@@ -356,18 +356,6 @@ impl Editor {
         self.git_job = Some((label.to_string(), args.to_vec(), rx));
     }
 
-    /// git をその場で動かして結果を知らせる（チェックアウトなど、手元だけで済むもの）
-    pub(crate) fn git_now(&mut self, args: &[&str], ok: String) -> bool {
-        let Some(root) = self.git.root.clone() else { return false };
-        let r = nagi_workers::git::git(&root, args);
-        match &r {
-            Ok(_) => self.notify.info(ok),
-            Err(e) => self.notify.error(format!("git: {}", nagi_workers::git::reason(&e))),
-        }
-        self.refresh_git();
-        r.is_ok()
-    }
-
     fn checkout_branch(&mut self, b: &Branch) {
         if b.current {
             self.notify.info(format!("{} はもうチェックアウトしています", b.name));
@@ -392,7 +380,7 @@ impl Editor {
         self.git_guarded_args(&args, ok, then);
     }
 
-    /// git_guarded の、引数を渡して git を動かすだけのもの
+    /// git_guarded の、引数を渡して git を動かすだけのもの（裏で動かし、終わったら知らせて `then`）
     pub(crate) fn git_guarded_args(&mut self, args: &[&str], ok: String, then: impl FnOnce(&mut Editor, bool) + 'static) {
         let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
         self.git_guarded(move |root| nagi_workers::git::git(root, &args.iter().map(String::as_str).collect::<Vec<_>>()).map(|_| ok.clone()), then);
@@ -436,20 +424,19 @@ impl Editor {
     /// ブランチを消す（マージしていなければ、もう一度確かめてから強制的に）
     fn delete_branch(&mut self, name: String, force: bool) {
         let flag = if force { "-D" } else { "-d" };
-        let root = self.git.root.clone();
-        let r = root.map(|r| nagi_workers::git::git(&r, &["branch", flag, &name]));
-        match r {
-            Some(Ok(_)) => {
-                self.notify.info(format!("ブランチ {name} を消しました"));
-                self.open_branches();
+        let Some(root) = self.git.root.clone() else { return };
+        let n = name.clone();
+        self.job("git", move || nagi_workers::git::git(&root, &["branch", flag, &n]), move |e, r| match r {
+            Ok(_) => {
+                e.notify.info(format!("ブランチ {name} を消しました"));
+                e.open_branches();
             }
-            Some(Err(e)) if !force && e.to_string().contains("not fully merged") => {
+            Err(err) if !force && err.to_string().contains("not fully merged") => {
                 let n = name.clone();
-                self.ask(format!("{name} はマージしていません。それでも消しますか"), move |e| e.delete_branch(n, true));
+                e.ask(format!("{name} はマージしていません。それでも消しますか"), move |e| e.delete_branch(n, true));
             }
-            Some(Err(e)) => self.notify.error(format!("git: {}", nagi_workers::git::reason(&e))),
-            None => {}
-        }
+            Err(err) => e.notify.error(format!("git: {}", nagi_workers::git::reason(&err))),
+        });
     }
 
     /// ポップアップのキー
@@ -479,11 +466,7 @@ impl Editor {
                             }
                             self.git_guarded_args(&args, format!("ブランチ {name} を作ってチェックアウトしました"), close_if_ok);
                         }
-                        Naming::Rename(old) => {
-                            if self.git_now(&["branch", "-m", &old, &name], format!("{old} を {name} に変えました")) {
-                                self.close_branches();
-                            }
-                        }
+                        Naming::Rename(old) => self.git_guarded_args(&["branch", "-m", &old, &name], format!("{old} を {name} に変えました"), close_if_ok),
                     }
                 }
                 _ => {}
@@ -792,6 +775,8 @@ mod tests {
         for key in nagi_vim::parse_keys(k, " ") {
             e.key(key);
         }
+        // git の操作は裏で動くので、終わるまで待つ
+        e.wait_jobs();
     }
 
     fn wait(e: &mut Editor) {
@@ -884,6 +869,7 @@ mod tests {
         assert_eq!(e.branch_popup.as_ref().unwrap().selected, k);
         assert_eq!(g(&["branch", "--show-current"]), "main", "1 回では何もしない");
         crate::layout::press(&mut e, s, 3 + k, x, |_| 2);
+        e.wait_jobs();
         assert_eq!(g(&["branch", "--show-current"]), "topic", "{}", e.notify.text);
         // 外を押すと閉じる
         e.open_branches();

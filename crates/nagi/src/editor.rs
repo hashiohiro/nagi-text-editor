@@ -480,6 +480,8 @@ pub struct Editor {
     pub branch_popup: Option<crate::branches::BranchPopup>,
     /// 裏で動かしているフェッチ・pull（見出し, 引数（止まったらもう一度動かす）, 結果）
     pub git_job: Option<(String, Vec<String>, nagi_core::task::Task<nagi_core::Result<String>>)>,
+    /// 裏の仕事と、終わったら呼ぶ受け取り（ADR 0018 の §4。`job` で始める）
+    pub jobs: nagi_core::task::Jobs<Editor>,
     /// 履歴の画面（開いている間だけ）
     pub log: Option<crate::log_view::LogView>,
     /// blame（出している間だけ）
@@ -537,7 +539,10 @@ impl Editor {
     /// 裏の処理から届いたものを全部受け取る（UI が起こされたとき）。どれかが変われば true。
     /// 裏の処理を足したら、その受け取りをここに 1 行足す（ADR 0016 の 1）
     pub fn poll_background(&mut self) -> bool {
-        let mut changed = false;
+        // 終わった仕事の受け取り（受け取りの中で始めた仕事は self.jobs に入るので、残りと合わせる）
+        let mut jobs = std::mem::take(&mut self.jobs);
+        let mut changed = jobs.poll(self);
+        self.jobs.merge(jobs);
         if self.poll_load() {
             crate::clock::mark_once("file: full buffer swapped in");
             changed = true;
@@ -637,6 +642,25 @@ impl Editor {
     }
 
     /// UI を起こす関数（裏の処理に渡す。UI の無い試験では何もしない）
+    /// `name` の仕事を裏で動かし、終わったら UI スレッドで `done` に結果を渡す（同じ名前の前の仕事は取り消す。ADR 0018 の §4）
+    pub(crate) fn job<R: Send + 'static>(&mut self, name: &str, work: impl FnOnce() -> R + Send + 'static, done: impl FnOnce(&mut Editor, R) + 'static) {
+        let waker = self.waker();
+        self.jobs.run(name, waker, work, done);
+    }
+
+    /// 試験: 裏の仕事が全部終わって受け取りを呼び終えるまで待つ（10 秒まで）
+    #[cfg(test)]
+    pub(crate) fn wait_jobs(&mut self) {
+        for _ in 0..2000 {
+            self.poll_background();
+            if self.jobs.is_empty() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("裏の仕事が終わらない");
+    }
+
     pub(crate) fn waker(&self) -> nagi_core::task::Waker {
         self.waker.clone().unwrap_or_else(nagi_core::task::no_waker)
     }
@@ -783,6 +807,7 @@ impl Editor {
             right_hidden: false,
             right_pending_w: false,
             git_job: None,
+            jobs: Default::default(),
             diff: None,
             diff_return: None,
             diff_pending: None,

@@ -887,20 +887,21 @@ impl Editor {
                 self.run_git_job("push ", &["push", remote, &refspec]);
             }
             Confirm::DeleteBranch(b, force) => {
-                let r = match git::git(&root, &["branch", if *force { "-D" } else { "-d" }, b]) {
-                    // マージされていなければ、もう一度確かめてから -D
-                    Err(e) if !force && e.to_string().contains("not fully merged") => {
-                        self.log_ask(Confirm::DeleteBranch(b.clone(), true));
-                        return;
+                let (b, force) = (b.clone(), *force);
+                let name = b.clone();
+                self.job("git", move || git::git(&root, &["branch", if force { "-D" } else { "-d" }, &name]), move |e, r| {
+                    match r {
+                        // マージされていなければ、もう一度確かめてから -D
+                        Err(err) if !force && err.to_string().contains("not fully merged") => {
+                            e.log_ask(Confirm::DeleteBranch(b, true));
+                            return;
+                        }
+                        Ok(_) => e.notify.info(format!("ブランチ {b} を消しました")),
+                        Err(err) => e.notify.error(format!("git: {}", git::reason(&err))),
                     }
-                    r => r,
-                };
-                match r {
-                    Ok(_) => self.notify.info(format!("ブランチ {b} を消しました")),
-                    Err(e) => self.notify.error(format!("git: {}", git::reason(&e))),
-                }
-                self.refresh_git();
-                self.reload_log();
+                    e.refresh_git();
+                    e.reload_log();
+                });
             }
             _ => self.git_guarded(move |root| log_op(root, &c), |e, _| e.reload_log()),
         }
@@ -1043,9 +1044,11 @@ impl Editor {
             m = m.item("この版に戻す…", move |e| {
                 let q = format!("{p} を {s} の版に戻しますか（作業中の変更は消える）");
                 e.ask(q, move |e| {
-                    if e.git_now(&["checkout", &x, "--", &p], format!("{p} を {s} の版に戻しました")) {
-                        e.reload_log();
-                    }
+                    e.git_guarded_args(&["checkout", &x, "--", &p], format!("{p} を {s} の版に戻しました"), |e, ok| {
+                        if ok {
+                            e.reload_log();
+                        }
+                    });
                 })
             });
             let p = path.clone();
@@ -1249,17 +1252,12 @@ impl Editor {
 
     /// `:Greword ハッシュ 新しいメッセージ`
     pub(crate) fn git_reword(&mut self, arg: &str) {
-        let Some(root) = self.git.root.clone() else { return };
         let Some((h, msg)) = arg.trim().split_once(' ') else {
             self.notify.info("ハッシュと新しいメッセージを書いてください");
             return;
         };
-        match nagi_workers::git::reword(&root, h, msg.trim()) {
-            Ok(()) => self.notify.info("メッセージを直しました"),
-            Err(e) => self.notify.error(format!("git: {}", nagi_workers::git::reason(&e))),
-        }
-        self.refresh_git();
-        self.reload_log();
+        let (h, msg) = (h.to_string(), msg.trim().to_string());
+        self.git_guarded(move |root| nagi_workers::git::reword(root, &h, &msg).map(|_| "メッセージを直しました".into()), |e, _| e.reload_log());
     }
 
     /// `:Gtag 名前 [ハッシュ]`
@@ -1271,9 +1269,11 @@ impl Editor {
         };
         let mut args = vec!["tag", name];
         args.extend(it.next());
-        if self.git_now(&args, format!("タグ {name} を付けました")) {
-            self.reload_log();
-        }
+        self.git_guarded_args(&args, format!("タグ {name} を付けました"), |e, ok| {
+            if ok {
+                e.reload_log();
+            }
+        });
     }
 
     /// `:Grename 今の名前 新しい名前`
@@ -1283,9 +1283,11 @@ impl Editor {
             self.notify.info("今の名前と新しい名前を書いてください");
             return;
         };
-        if self.git_now(&["branch", "-m", old, new], format!("{old} を {new} に変えました")) {
-            self.reload_log();
-        }
+        self.git_guarded_args(&["branch", "-m", old, new], format!("{old} を {new} に変えました"), |e, ok| {
+            if ok {
+                e.reload_log();
+            }
+        });
     }
 
     pub(crate) fn close_log(&mut self) {
@@ -1303,25 +1305,34 @@ impl Editor {
         let h = d.hash.clone();
         // 2 つのコミットを比べているときは古い方と、でなければ（1 つ目の）親と
         let parent = d.base.clone().or_else(|| d.parents.split(' ').next().filter(|p| !p.is_empty()).map(String::from));
-        let old = parent.as_deref().and_then(|p| nagi_workers::git::blob_at(&root, p, &path)).unwrap_or_default();
-        let new = nagi_workers::git::blob_at(&root, &h, &path).unwrap_or_default();
-        let short = &h[..7.min(h.len())];
+        let short = h[..7.min(h.len())].to_string();
         let left = match &d.base {
             Some(b) => b[..7.min(b.len())].to_string(),
             None => format!("{short}^"),
         };
-        self.show_diff(format!("{left}  {path}"), format!("{short}  {path}"), &old, &new, None);
-        self.diff_return = Some(State::Log);
+        // 2 つの版の中身は裏で読む（ADR 0018 の §4）
+        let p = path.clone();
+        let read = move || {
+            let old = parent.as_deref().and_then(|x| nagi_workers::git::blob_at(&root, x, &p)).unwrap_or_default();
+            (old, nagi_workers::git::blob_at(&root, &h, &p).unwrap_or_default())
+        };
+        self.job("git-blob", read, move |e, (old, new)| {
+            e.show_diff(format!("{left}  {path}"), format!("{short}  {path}"), &old, &new, None);
+            e.diff_return = Some(State::Log);
+        });
     }
 
     /// コミット `h` の版の `path` と、作業中のファイルを比べる（右が作業中）
     fn log_compare_worktree(&mut self, h: &str, path: &str) {
         let Some(root) = self.git.root.clone() else { return };
-        let old = nagi_workers::git::blob_at(&root, h, path).unwrap_or_default();
-        let new = std::fs::read_to_string(root.join(path)).unwrap_or_default();
-        let short = &h[..7.min(h.len())];
-        self.show_diff(format!("{short}  {path}"), format!("作業中  {path}"), &old, &new, None);
-        self.diff_return = Some(State::Log);
+        let (h, path) = (h.to_string(), path.to_string());
+        let short = h[..7.min(h.len())].to_string();
+        let p = path.clone();
+        let read = move || (nagi_workers::git::blob_at(&root, &h, &p).unwrap_or_default(), std::fs::read_to_string(root.join(&p)).unwrap_or_default());
+        self.job("git-blob", read, move |e, (old, new)| {
+            e.show_diff(format!("{short}  {path}"), format!("作業中  {path}"), &old, &new, None);
+            e.diff_return = Some(State::Log);
+        });
     }
 
     /// 作業ツリーの `path` を開く（無ければ知らせる）
@@ -1345,7 +1356,6 @@ impl Editor {
 
     /// `:Gbranch 名前 [起点]`: ブランチを作ってチェックアウトする
     pub(crate) fn git_new_branch(&mut self, arg: &str) {
-        let Some(root) = self.git.root.clone() else { return };
         let mut it = arg.split_whitespace();
         let Some(name) = it.next() else {
             self.notify.info("ブランチの名前を書いてください");
@@ -1355,13 +1365,8 @@ impl Editor {
         if let Some(start) = it.next() {
             args.push(start);
         }
-        match nagi_workers::git::git(&root, &args) {
-            Ok(_) => self.notify.info(format!("ブランチ {name} を作ってチェックアウトしました")),
-            Err(e) => self.notify.error(format!("git: {}", nagi_workers::git::reason(&e))),
-        }
-        self.refresh_git();
         // 履歴を出していれば読み直す（新しいブランチが見える）
-        self.reload_log();
+        self.git_guarded_args(&args, format!("ブランチ {name} を作ってチェックアウトしました"), |e, _| e.reload_log());
     }
 }
 
@@ -1965,6 +1970,7 @@ mod tests {
         assert!(e.log_context(3, 2, w, (5, 2)));
         let i = e.menu.as_ref().unwrap().items.iter().position(|it| it.label == "チェックアウト").unwrap();
         e.menu_run(i);
+        e.wait_jobs();
         assert_eq!(g(&["rev-parse", "--abbrev-ref", "HEAD"]), "topic", "{}", e.notify.text);
         wait(&mut e);
         // 本文を押すとエディタへ（どのペインからでも）
@@ -1987,11 +1993,13 @@ mod tests {
         assert_eq!(e.state(), State::Menu);
         assert!(e.menu.as_ref().unwrap().title.as_deref().is_some_and(|t| t.contains("消しますか")));
         e.key(Key::Char('y'));
+        e.wait_jobs();
         assert_eq!(e.state(), State::Log, "答えたら履歴へ戻る");
         assert_eq!(g(&["log", "--format=%s"]), "add c\nadd a", "{}", e.notify.text);
         // メッセージを編集（:Greword）
         let head = g(&["rev-parse", "--short", "HEAD"]);
         e.git_reword(&format!("{head} add c!"));
+        e.wait_jobs();
         assert_eq!(g(&["log", "-1", "--format=%s"]), "add c!");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2089,6 +2097,7 @@ mod tests {
         e.menu_run(i);
         assert!(e.menu.as_ref().unwrap().title.as_deref().is_some_and(|t| t.contains("2 件のコミット")));
         e.key(Key::Char('y'));
+        e.wait_jobs();
         assert_eq!(g(&["log", "--format=%s", "side"]), "add c\nadd b\nadd d\nadd a", "{}", e.notify.text);
         let _ = std::fs::remove_dir_all(&dir);
     }

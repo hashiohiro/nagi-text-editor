@@ -3,12 +3,17 @@
 //! 退避・破棄するのは止めたファイルだけ（ほかの作業中の変更には触らない）
 
 use std::cell::Cell;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use nagi_workers::git::{self, Blocked};
 
 use crate::editor::Editor;
+
+/// もう一度行える git の操作（裏のスレッドで動かす。成功したら知らせる文）
+type GitOp = dyn Fn(&Path) -> nagi_core::Result<String> + Send + Sync;
+type Then = Box<dyn FnOnce(&mut Editor, bool)>;
 
 /// 止めたファイルをどうするか
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -18,29 +23,40 @@ pub(crate) enum Resolve {
 }
 
 impl Editor {
-    /// git の操作を行って知らせ、状態を読み直してから `then`（成功したか）。上書きされるので止まったら、どうするか確かめてからもう一度
-    /// （中止したら `then` は呼ばない）
-    pub(crate) fn git_guarded(&mut self, op: impl Fn(&Path) -> nagi_core::Result<String> + 'static, then: impl FnOnce(&mut Editor, bool) + 'static) {
+    /// git の操作を裏で行い（UI スレッドでは git を動かさない。ADR 0018 の §4）、終わったら知らせて状態を読み直してから `then`（成功したか）。
+    /// 上書きされるので止まったら、どうするか確かめてからもう一度裏で行う（中止したら `then` は呼ばない）
+    pub(crate) fn git_guarded(&mut self, op: impl Fn(&Path) -> nagi_core::Result<String> + Send + Sync + 'static, then: impl FnOnce(&mut Editor, bool) + 'static) {
         let Some(root) = self.git.root.clone() else { return };
-        let r = op(&root);
-        let Some(b) = r.as_ref().err().and_then(git::blocked) else {
-            self.git_finish(r.map(|m| (m, None)), then);
+        let op: Arc<GitOp> = Arc::new(op);
+        let (o, r) = (op.clone(), root.clone());
+        self.notify.progress("git を動かしています…");
+        self.job("git", move || o(&r), move |e, res| e.git_settle(root, op, res, Box::new(then)));
+    }
+
+    /// 裏で行った git の操作の結果を受け取る（上書きで止まったら、確かめてからもう一度）
+    fn git_settle(&mut self, root: PathBuf, op: Arc<GitOp>, res: nagi_core::Result<String>, then: Then) {
+        let Some(b) = res.as_ref().err().and_then(git::blocked) else {
+            self.git_finish(res.map(|m| (m, None)), then);
             return;
         };
         self.refresh_git();
         let then = Cell::new(Some(then));
         self.ask_blocked(b, move |e, b, how| {
-            let r = match how {
-                Resolve::Discard => git::discard(&root, b).and_then(|_| op(&root)).map(|m| (m, None)),
-                Resolve::Stash => git::with_stash(&root, b, || op(&root)),
-            };
-            if let Some(t) = then.take() {
-                e.git_finish(r, t);
-            }
+            let Some(t) = then.take() else { return };
+            let (op, root, b) = (op.clone(), root.clone(), b.clone());
+            e.notify.progress("git を動かしています…");
+            e.job(
+                "git",
+                move || match how {
+                    Resolve::Discard => git::discard(&root, &b).and_then(|_| op(&root)).map(|m| (m, None)),
+                    Resolve::Stash => git::with_stash(&root, &b, || op(&root)),
+                },
+                move |e, r| e.git_finish(r, t),
+            );
         });
     }
 
-    fn git_finish(&mut self, r: nagi_core::Result<(String, Option<String>)>, then: impl FnOnce(&mut Editor, bool)) {
+    fn git_finish(&mut self, r: nagi_core::Result<(String, Option<String>)>, then: Then) {
         let ok = r.is_ok();
         match r {
             Ok((m, None)) => self.notify.info(m),
@@ -115,6 +131,7 @@ mod tests {
         let done = Rc::new(Cell::new(false));
         let d = done.clone();
         e.git_guarded(|r| git::git(r, &["checkout", "-q", "side"]).map(|_| "チェックアウトしました".into()), move |_, ok| d.set(ok));
+        e.wait_jobs();
         done
     }
 
@@ -125,6 +142,7 @@ mod tests {
     fn pick(e: &mut Editor, label: &str) {
         let i = e.menu.as_ref().expect("確かめる窓が出る").items.iter().position(|it| it.label.starts_with(label)).unwrap();
         e.menu_run(i);
+        e.wait_jobs();
     }
 
     #[test]

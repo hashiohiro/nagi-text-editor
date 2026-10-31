@@ -123,14 +123,18 @@ impl Editor {
     /// 作業中のファイル `rel` と HEAD の差分を開く（コミットのパネルの d、:Gdiff）
     pub(crate) fn open_file_diff(&mut self, root: &Path, rel: &str) {
         let path = root.join(rel);
-        let old = nagi_workers::git::head_blob(root, rel).unwrap_or_default();
         // 開いているバッファがあればその中身（保存前の変更も見せる）、無ければファイル
         let new = match self.find_doc(&path) {
             Some(d) if d == self.cur_doc => self.buf.text(),
             Some(d) => self.parked_doc(d).map(|x| x.buf.text()).unwrap_or_default(),
             None => std::fs::read_to_string(&path).unwrap_or_default(),
         };
-        self.show_diff(format!("HEAD  {rel}"), format!("作業中のファイル  {rel}"), &old, &new, Some((root.to_path_buf(), rel.to_string(), path)));
+        // HEAD の版は裏で読む（ADR 0018 の §4）
+        let (root, rel) = (root.to_path_buf(), rel.to_string());
+        let (r2, rel2) = (root.clone(), rel.clone());
+        self.job("git-blob", move || nagi_workers::git::head_blob(&r2, &rel2).unwrap_or_default(), move |e, old| {
+            e.show_diff(format!("HEAD  {rel}"), format!("作業中のファイル  {rel}"), &old, &new, Some((root, rel.clone(), path)));
+        });
     }
 
     /// 今のファイルの差分（`:Gdiff`）
@@ -243,11 +247,14 @@ impl Editor {
             let n: Vec<&str> = new_lines.iter().map(String::as_str).collect();
             let new_file = d.old_text.is_empty();
             let patch = nagi_workers::git::hunk_patch(&rel, h.old.start, &o, h.new.start, &n, new_file);
-            match nagi_workers::git::apply_cached(&root, &patch) {
-                Ok(()) => self.notify.info("変更をステージしました"),
-                Err(e) => self.notify.error(format!("ステージできません: {}", e.first_line())),
-            }
-            self.refresh_status();
+            // index に当てるのは裏で（ADR 0018 の §4）
+            self.job("git-stage", move || nagi_workers::git::apply_cached(&root, &patch), |e, r| {
+                match r {
+                    Ok(()) => e.notify.info("変更をステージしました"),
+                    Err(err) => e.notify.error(format!("ステージできません: {}", err.first_line())),
+                }
+                e.refresh_status();
+            });
             return;
         }
         // 戻す: ファイルをバッファで開いて、その範囲を HEAD の行に置き換える（u で取り消せる）
@@ -266,9 +273,11 @@ impl Editor {
         drop(keep);
         // 差分を作り直して開き直す
         let new = self.buf.text();
-        let old = self.git.root.as_ref().and_then(|r| nagi_workers::git::head_blob(r, &rel)).unwrap_or_default();
-        self.show_diff(format!("HEAD  {rel}"), format!("作業中のファイル  {rel}"), &old, &new, Some((root, rel, path)));
-        self.diff_return = ret;
+        let (r2, rel2) = (root.clone(), rel.clone());
+        self.job("git-blob", move || nagi_workers::git::head_blob(&r2, &rel2).unwrap_or_default(), move |e, old| {
+            e.show_diff(format!("HEAD  {rel}"), format!("作業中のファイル  {rel}"), &old, &new, Some((root, rel.clone(), path)));
+            e.diff_return = ret;
+        });
     }
 }
 

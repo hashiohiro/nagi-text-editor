@@ -151,10 +151,133 @@ pub fn detach(name: &str, f: impl FnOnce() + Send + 'static) {
     let _ = std::thread::Builder::new().name(name.into()).spawn(f);
 }
 
+/// 裏の仕事と、終わったら UI スレッドで呼ぶ受け取り（ADR 0018 の §4）。受け口をフィールドに持って poll で受け取る代わりに使う。
+///
+/// ```ignore
+/// ed.jobs.run("git-checkout", waker, move || git::git(&root, &args), |ed: &mut Editor, r| ed.notify(…));
+/// // UI スレッドで（Editor::poll_background）
+/// let mut jobs = std::mem::take(&mut ed.jobs);
+/// jobs.poll(ed);   // 終わった仕事の受け取りを呼ぶ（受け取りの中で新しく run した仕事は ed.jobs に入る）
+/// ed.jobs.merge(jobs);
+/// ```
+///
+/// 同じ名前の仕事を始めると、前の仕事は取り消す（Task を捨てる。受け取りも呼ばない）。
+pub struct Jobs<C> {
+    list: Vec<Box<dyn Pending<C>>>,
+}
+
+impl<C> Default for Jobs<C> {
+    fn default() -> Self {
+        Jobs { list: Vec::new() }
+    }
+}
+
+trait Pending<C> {
+    fn name(&self) -> &str;
+    /// 終わっていれば受け取りを返す（何も届かずに終わったら何もしない受け取り）。まだなら自分を返す
+    fn finish(self: Box<Self>) -> Result<Box<dyn FnOnce(&mut C)>, Box<dyn Pending<C>>>;
+}
+
+struct One<C, R> {
+    name: String,
+    task: Task<R>,
+    done: Box<dyn FnOnce(&mut C, R)>,
+}
+
+impl<C: 'static, R: 'static> Pending<C> for One<C, R> {
+    fn name(&self) -> &str {
+        &self.name
+    }
+
+    fn finish(self: Box<Self>) -> Result<Box<dyn FnOnce(&mut C)>, Box<dyn Pending<C>>> {
+        match self.task.try_recv() {
+            Ok(r) => {
+                let done = self.done;
+                Ok(Box::new(move |c: &mut C| done(c, r)))
+            }
+            Err(TryRecvError::Disconnected) => Ok(Box::new(|_: &mut C| {})),
+            Err(TryRecvError::Empty) => Err(self),
+        }
+    }
+}
+
+impl<C: 'static> Jobs<C> {
+    /// `name` のスレッドで `work` を動かし、終わったら UI スレッドで `done` に結果を渡す（同じ名前の前の仕事は取り消す）
+    pub fn run<R: Send + 'static>(&mut self, name: &str, waker: Waker, work: impl FnOnce() -> R + Send + 'static, done: impl FnOnce(&mut C, R) + 'static) {
+        self.list.retain(|j| j.name() != name);
+        let task = spawn(name, waker, move |ctx| {
+            ctx.send(work());
+        });
+        self.list.push(Box::new(One { name: name.to_string(), task, done: Box::new(done) }));
+    }
+
+    /// 終わった仕事の受け取りを呼ぶ。呼んだら true（描き直す）
+    pub fn poll(&mut self, c: &mut C) -> bool {
+        let mut called = false;
+        for j in std::mem::take(&mut self.list) {
+            match j.finish() {
+                Ok(done) => {
+                    done(c);
+                    called = true;
+                }
+                Err(j) => self.list.push(j),
+            }
+        }
+        called
+    }
+
+    /// 受け取りの中で始めた仕事（`other`）を足す。同じ名前のものは新しい方を残す
+    pub fn merge(&mut self, other: Jobs<C>) {
+        let newer: Vec<String> = self.list.iter().map(|j| j.name().to_string()).collect();
+        self.list.extend(other.list.into_iter().filter(|j| !newer.iter().any(|n| n == j.name())));
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.list.is_empty()
+    }
+
+    /// その名前の仕事が動いているか
+    pub fn running(&self, name: &str) -> bool {
+        self.list.iter().any(|j| j.name() == name)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::time::Duration;
+
+    #[test]
+    fn jobs_call_back_on_ui_thread() {
+        #[derive(Default)]
+        struct Ui {
+            got: Vec<i32>,
+            jobs: Jobs<Ui>,
+        }
+        let mut ui = Ui::default();
+        ui.jobs.run("a", no_waker(), || 1, |u: &mut Ui, r| u.got.push(r));
+        // 同じ名前で始め直すと前の仕事は呼ばない
+        ui.jobs.run("b", no_waker(), || 2, |u: &mut Ui, r| {
+            u.got.push(r);
+            // 受け取りの中で次の仕事
+            u.jobs.run("c", no_waker(), || 3, |u: &mut Ui, r| u.got.push(r));
+        });
+        ui.jobs.run("b", no_waker(), || 20, |u: &mut Ui, r| {
+            u.got.push(r);
+            u.jobs.run("c", no_waker(), || 30, |u: &mut Ui, r| u.got.push(r));
+        });
+        for _ in 0..500 {
+            let mut jobs = std::mem::take(&mut ui.jobs);
+            jobs.poll(&mut ui);
+            ui.jobs.merge(jobs);
+            if ui.jobs.is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        ui.got.sort();
+        assert_eq!(ui.got, [1, 20, 30]);
+    }
 
     #[test]
     fn sends_and_cancels() {

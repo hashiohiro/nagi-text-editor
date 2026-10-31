@@ -431,12 +431,16 @@ impl Editor {
         let o: Vec<&str> = old.iter().map(String::as_str).collect();
         let n: Vec<&str> = new.iter().map(String::as_str).collect();
         let patch = nagi_workers::git::hunk_patch(&rel, h.old.start, &o, h.new.start, &n, new_file);
-        match nagi_workers::git::apply_cached(&root, &patch) {
-            Ok(()) => self.notify.info(format!("変更をステージしました（{} 行）", h.new.len().max(h.old.len()))),
-            Err(e) => self.notify.error(format!("ステージできません: {}", e.first_line())),
-        }
+        let lines = h.new.len().max(h.old.len());
         self.git.popup = None;
-        self.refresh_status();
+        // index に当てるのは裏で（ADR 0018 の §4）
+        self.job("git-stage", move || nagi_workers::git::apply_cached(&root, &patch), move |e, r| {
+            match r {
+                Ok(()) => e.notify.info(format!("変更をステージしました（{lines} 行）")),
+                Err(err) => e.notify.error(format!("ステージできません: {}", err.first_line())),
+            }
+            e.refresh_status();
+        });
     }
 }
 
@@ -534,6 +538,8 @@ mod tests {
         for key in nagi_vim::parse_keys(k, " ") {
             e.key(key);
         }
+        // git の操作は裏で動くので、終わるまで待つ
+        e.wait_jobs();
     }
 
     fn settle(e: &mut Editor) {
