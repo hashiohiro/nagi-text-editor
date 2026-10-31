@@ -158,7 +158,7 @@ impl Editor {
             }
         }
         if kept > 0 {
-            self.notify.info(format!("保存していない {kept} 個のタブは残しました（× で 1 つずつ閉じられます）"));
+            self.svc.notify.info(format!("保存していない {kept} 個のタブは残しました（× で 1 つずつ閉じられます）"));
         }
     }
 }

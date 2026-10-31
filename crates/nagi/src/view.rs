@@ -423,9 +423,9 @@ impl Painter<'_> {
 
 /// 知らせの色（エラーは赤・警告は黄、ほかは `fg`）
 pub(crate) fn msg_color(ed: &Editor, fg: [f32; 4]) -> [f32; 4] {
-    match ed.notify.level {
-        Some(nagi_core::log::Level::Error) if !ed.notify.status_text().is_empty() => DIAG_ERROR,
-        Some(nagi_core::log::Level::Warn) if !ed.notify.status_text().is_empty() => DIAG_WARN,
+    match ed.svc.notify.level {
+        Some(nagi_core::log::Level::Error) if !ed.svc.notify.status_text().is_empty() => DIAG_ERROR,
+        Some(nagi_core::log::Level::Warn) if !ed.svc.notify.status_text().is_empty() => DIAG_WARN,
         _ => fg,
     }
 }
@@ -1140,8 +1140,8 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     match ed.state() {
         _ if panel_status.is_some() => {
             let st = panel_status.as_ref().unwrap();
-            let notified = !ed.notify.status_text().is_empty();
-            let left = if notified { ed.notify.status_text() } else { st.name.as_str() };
+            let notified = !ed.svc.notify.status_text().is_empty();
+            let left = if notified { ed.svc.notify.status_text() } else { st.name.as_str() };
             let color = if notified { msg_color(ed, FG) } else if st.warn { DIAG_WARN } else { FG };
             let end = status_text(&mut p, left, notified, y, color);
             // Vim を使わないときは矢印・Enter・右クリックで書いた説明
@@ -1183,8 +1183,8 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             p.text(&c, pc, y2, STATUS_FG);
         }
         _ => {
-            let left = if !ed.notify.status_text().is_empty() {
-                ed.notify.status_text().to_string()
+            let left = if !ed.svc.notify.status_text().is_empty() {
+                ed.svc.notify.status_text().to_string()
             } else {
                 let mode = match ed.state() {
                     // Vim を使わないときはモードが無い（打てる状態・選んでいる状態を出さない）
@@ -1206,7 +1206,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
                 Some(d) if left.is_empty() && ed.idle() => (format!("{}: {}", if d.error { "error" } else { "warning" }, d.msg), if d.error { DIAG_ERROR } else { DIAG_WARN }),
                 _ => (left, msg_color(ed, FG)),
             };
-            let end = status_text(&mut p, &left, !ed.notify.status_text().is_empty(), y, color);
+            let end = status_text(&mut p, &left, !ed.svc.notify.status_text().is_empty(), y, color);
             // 長いメッセージと重なるときは位置表示を出さない（メッセージを優先する）
             let pc = scols.saturating_sub(p.width(&ruler));
             if end + 2 <= pc {

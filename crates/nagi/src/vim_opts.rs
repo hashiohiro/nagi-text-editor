@@ -353,7 +353,7 @@ impl crate::editor::Editor {
                 Some(Ok(Some(s))) => shown.push(s),
                 Some(Ok(None)) => {}
                 Some(Err(e)) => {
-                    self.notify.error(e);
+                    self.svc.notify.error(e);
                     return;
                 }
                 None => rest.push(tok),
@@ -361,7 +361,7 @@ impl crate::editor::Editor {
         }
         if rest.is_empty() && !arg.trim().is_empty() {
             if !shown.is_empty() {
-                self.notify.info(shown.join("  "));
+                self.svc.notify.info(shown.join("  "));
             }
             return;
         }
@@ -374,9 +374,9 @@ impl crate::editor::Editor {
             self.apply_settings(Some(&old));
         }
         match r {
-            Ok(Some(m)) => self.notify.info(m),
+            Ok(Some(m)) => self.svc.notify.info(m),
             Ok(None) => {}
-            Err(e) => self.notify.error(e),
+            Err(e) => self.svc.notify.error(e),
         }
     }
 }

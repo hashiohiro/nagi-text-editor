@@ -115,11 +115,11 @@ impl Editor {
 
     /// 今のバッファの blame を裏で作る
     pub(crate) fn load_blame(&mut self) {
-        if self.git.root.is_none() {
+        if self.svc.git.root.is_none() {
             self.start_git();
         }
-        let (Some(root), Some(path)) = (self.git.root.clone(), self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok())) else {
-            self.notify.info("git のリポジトリのファイルではありません");
+        let (Some(root), Some(path)) = (self.svc.git.root.clone(), self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok())) else {
+            self.svc.notify.info("git のリポジトリのファイルではありません");
             return;
         };
         let Ok(rel) = path.strip_prefix(&root) else { return };
@@ -146,7 +146,7 @@ impl Editor {
                 b.commits = commits;
             }
             Err(e) => {
-                self.notify.info(format!("blame: {}", e.first_line()));
+                self.svc.notify.info(format!("blame: {}", e.first_line()));
                 self.blame = None;
             }
         }
@@ -196,7 +196,7 @@ pub struct BlamePopupView;
 impl crate::layout::View for BlamePopupView {
     fn rect(&self, ed: &crate::editor::Editor, s: crate::layout::Screen) -> Option<crate::panes::Rect> {
         let _ = s;
-        (ed.git.popup.is_none() && ed.blame_active() && ed.idle()).then_some(crate::panes::Rect { x: 0, y: 0, w: s.cols, h: s.rows })
+        (ed.svc.git.popup.is_none() && ed.blame_active() && ed.idle()).then_some(crate::panes::Rect { x: 0, y: 0, w: s.cols, h: s.rows })
     }
 
     fn draw(&self, ed: &crate::editor::Editor, p: &mut crate::view::Painter, r: crate::panes::Rect, s: crate::layout::Screen) {

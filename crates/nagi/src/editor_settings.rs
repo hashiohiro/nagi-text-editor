@@ -360,7 +360,7 @@ impl Editor {
         self.buf.mixed_newlines = false;
         self.cursor.line = line.min(self.buf.line_count().saturating_sub(1));
         self.cursor.byte = byte.min(self.buf.line(self.cursor.line).len());
-        self.notify.info(format!("改行を {} にしました（保存で書く）", if crlf { "CRLF" } else { "LF" }));
+        self.svc.notify.info(format!("改行を {} にしました（保存で書く）", if crlf { "CRLF" } else { "LF" }));
     }
 
     /// 今のファイルの文字コードを変える（保存で変わる）
@@ -370,22 +370,22 @@ impl Editor {
             self.buf.bom = bom;
             self.buf.dirty = true;
         }
-        self.notify.info(format!("文字コードを {}{} にしました（保存で書く）", nagi_core::encoding::label(enc), if bom { "（BOM 付き）" } else { "" }));
+        self.svc.notify.info(format!("文字コードを {}{} にしました（保存で書く）", nagi_core::encoding::label(enc), if bom { "（BOM 付き）" } else { "" }));
     }
 
     /// 文字コードを決めて読み直す（:e ++enc=。変更があれば ! が要る）
     pub(crate) fn reload_as(&mut self, enc: &'static nagi_core::encoding::Encoding, force: bool) {
         if self.buf.dirty && !force {
-            self.notify.error("E37: 変更が保存されていません（:e! ++enc= で捨てて読み直す）");
+            self.svc.notify.error("E37: 変更が保存されていません（:e! ++enc= で捨てて読み直す）");
             return;
         }
         let Some(path) = self.buf.path.clone() else { return };
         match Buffer::open_as(&path, Some(enc)) {
             Ok(b) => {
                 self.reload_with(b);
-                self.notify.info(format!("{} で読み直しました", nagi_core::encoding::label(enc)));
+                self.svc.notify.info(format!("{} で読み直しました", nagi_core::encoding::label(enc)));
             }
-            Err(e) => self.notify.error(format!("{}: {e}", path.display())),
+            Err(e) => self.svc.notify.error(format!("{}: {e}", path.display())),
         }
     }
 
@@ -554,7 +554,7 @@ mod tests {
         let mut e = Editor::new(Buffer::open(&f).unwrap(), None);
         assert_eq!(e.encoding_label(), "Shift_JIS CRLF");
         e.ex_set("fenc? ff?");
-        assert_eq!(e.notify.text, "fileencoding=shift_jis  fileformat=dos");
+        assert_eq!(e.svc.notify.text, "fileencoding=shift_jis  fileformat=dos");
         e.insert_text("あ");
         e.buf.save().unwrap();
         assert_eq!(std::fs::read(&f).unwrap(), SHIFT_JIS.encode("あ日本語\r\n二行目\r\n").0.as_ref());
@@ -627,7 +627,7 @@ mod tests {
         for k in nagi_vim::parse_keys("/line 1<CR>", " ") {
             e.key(k);
         }
-        assert!(e.notify.text.contains("E385"), "{}", e.notify.text);
+        assert!(e.svc.notify.text.contains("E385"), "{}", e.svc.notify.text);
         // ideajoin
         let mut e = Editor::new(Buffer::from_str("// a\n// b\nx = \"p\" +\n    \"q\";\n"), None);
         e.ex_set("ideajoin");

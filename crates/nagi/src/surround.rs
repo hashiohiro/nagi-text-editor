@@ -44,7 +44,7 @@ impl Editor {
     /// [s, e) を c で囲む（行単位なら行の字下げの後から行末まで）
     pub(crate) fn surround_add(&mut self, s: usize, e: usize, lw: bool, c: char) {
         let Some((open, close)) = pair(c) else {
-            self.notify.error(format!("{c} では囲めません"));
+            self.svc.notify.error(format!("{c} では囲めません"));
             return;
         };
         let (s, e) = if lw {
@@ -83,13 +83,13 @@ impl Editor {
     pub(crate) fn surround_change(&mut self, a: char, b: char) {
         match pair(b) {
             Some(p) => self.surround_replace(a, Some(p)),
-            None => self.notify.error(format!("{b} では囲めません")),
+            None => self.svc.notify.error(format!("{b} では囲めません")),
         }
     }
 
     fn surround_replace(&mut self, c: char, with: Option<(&str, &str)>) {
         let Some((a, b)) = self.surrounding(c) else {
-            self.notify.error(format!("{c} の囲みが見つかりません"));
+            self.svc.notify.error(format!("{c} の囲みが見つかりません"));
             return;
         };
         // 開き括弧で指したら、内側の空白も外す（vim-surround と同じ）
@@ -107,7 +107,7 @@ impl Editor {
     /// 行 a..=b の行コメントを付ける・外す（commentary の gc）。行コメントの分からない種類のファイルなら false
     pub(crate) fn comment_lines(&mut self, a: usize, b: usize) -> bool {
         let Some(mark) = crate::plain::comment_mark(self.buf.path.as_deref()) else {
-            self.notify.info("この種類のファイルの行コメントが分かりません");
+            self.svc.notify.info("この種類のファイルの行コメントが分かりません");
             return false;
         };
         let lines: Vec<String> = (a..=b).map(|l| self.buf.line(l)).collect();

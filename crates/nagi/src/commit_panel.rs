@@ -104,11 +104,11 @@ fn run_git<F: FnOnce() -> nagi_core::Result<String> + Send + 'static>(waker: Opt
 impl Editor {
     /// `:Git`（CheckinProject / ChangesView）: コミットのパネルを開いて移る
     pub(crate) fn open_commit_panel(&mut self) {
-        if self.git.root.is_none() {
+        if self.svc.git.root.is_none() {
             self.start_git();
         }
-        if self.git.root.is_none() {
-            self.notify.info("git のリポジトリではありません");
+        if self.svc.git.root.is_none() {
+            self.svc.notify.info("git のリポジトリではありません");
             return;
         }
         self.left_tab = crate::tree_panel::LeftTab::Commit;
@@ -142,7 +142,7 @@ impl Editor {
 
     /// status の変更を一覧に入れる（チェックは前の状態を引き継ぐ。新しいものは、追跡しているファイルならチェック）
     pub(crate) fn sync_commit_items(&mut self) {
-        let (Some(p), Some(st)) = (&mut self.commit, &self.git.status) else { return };
+        let (Some(p), Some(st)) = (&mut self.commit, &self.svc.git.status) else { return };
         let old: std::collections::HashMap<String, bool> = p.items.iter().map(|i| (i.change.path.clone(), i.checked)).collect();
         let mut tracked: Vec<&Change> = st.changes.iter().filter(|c| c.state != FileState::Untracked).collect();
         let mut untracked: Vec<&Change> = st.changes.iter().filter(|c| c.state == FileState::Untracked).collect();
@@ -167,40 +167,40 @@ impl Editor {
             (Job::Commit { push }, Ok(out)) => {
                 p.msg = crate::vim_field::VimField::new("", true);
                 p.amend = false;
-                self.notify.info(format!("コミットしました: {}", out.trim()));
+                self.svc.notify.info(format!("コミットしました: {}", out.trim()));
                 self.refresh_git();
                 if push {
                     self.prepare_push();
                 }
             }
             (Job::Push, Ok(out)) => {
-                self.notify.info(format!("プッシュしました{}", if out.trim().is_empty() { String::new() } else { format!(": {}", out.trim().lines().last().unwrap_or("")) }));
+                self.svc.notify.info(format!("プッシュしました{}", if out.trim().is_empty() { String::new() } else { format!(": {}", out.trim().lines().last().unwrap_or("")) }));
                 self.refresh_status();
             }
             (Job::Revert, Ok(_)) => {
-                self.notify.info("変更を戻しました");
+                self.svc.notify.info("変更を戻しました");
                 self.refresh_git();
             }
-            (_, Err(e)) => self.notify.error(format!("git: {}", nagi_workers::git::reason(&e))),
+            (_, Err(e)) => self.svc.notify.error(format!("git: {}", nagi_workers::git::reason(&e))),
         }
         true
     }
 
     /// コミット（`push` ならその後に送る前の確認を出す）
     pub(crate) fn commit(&mut self, push: bool) {
-        let Some(root) = self.git.root.clone() else { return };
+        let Some(root) = self.svc.git.root.clone() else { return };
         let Some(p) = &mut self.commit else { return };
         if p.running.is_some() {
             return;
         }
         let msg = p.msg.text().trim().to_string();
         if msg.is_empty() && !p.amend {
-            self.notify.info("コミットのメッセージを書いてください（c で欄へ）");
+            self.svc.notify.info("コミットのメッセージを書いてください（c で欄へ）");
             return;
         }
         let paths: Vec<String> = p.checked().iter().flat_map(|c| [Some(c.path.clone()), c.orig.clone()]).flatten().collect();
         if paths.is_empty() && !p.amend {
-            self.notify.info("コミットするファイルを選んでください（Space）");
+            self.svc.notify.info("コミットするファイルを選んでください（Space）");
             return;
         }
         let amend = p.amend;
@@ -249,7 +249,7 @@ impl Editor {
 
     /// 送るコミットを調べて確認を出す（上流が無ければ origin に同じ名前で作る）
     fn prepare_push(&mut self) {
-        let Some(root) = self.git.root.clone() else { return };
+        let Some(root) = self.svc.git.root.clone() else { return };
         // 上流と送るコミットは裏で調べる（ADR 0018 の §4）
         self.job(
             "git-push-check",
@@ -265,7 +265,7 @@ impl Editor {
 
     /// 送るコミット（`log`）と上流（`up`。無ければ origin に作る）を見せて、送るか確かめる
     fn ask_push(&mut self, up: Option<String>, log: Vec<String>) {
-        let branch = self.git.status.as_ref().map(|s| s.branch.clone()).unwrap_or_default();
+        let branch = self.svc.git.status.as_ref().map(|s| s.branch.clone()).unwrap_or_default();
         let dest = match &up {
             Some(u) => format!("{branch} → {u}"),
             None => format!("{branch} → origin/{branch}（新しく作る）"),
@@ -279,16 +279,16 @@ impl Editor {
             if let Some(p) = &mut e.commit {
                 p.confirm_push = None;
             }
-            e.notify.info("プッシュをやめました");
+            e.svc.notify.info("プッシュをやめました");
         });
     }
 
     fn push(&mut self) {
-        let Some(root) = self.git.root.clone() else { return };
+        let Some(root) = self.svc.git.root.clone() else { return };
         let Some(p) = &mut self.commit else { return };
         let new_upstream = p.confirm_push.as_ref().is_some_and(|(d, _)| d.contains("新しく作る"));
         p.confirm_push = None;
-        let branch = self.git.status.as_ref().map(|s| s.branch.clone()).unwrap_or_default();
+        let branch = self.svc.git.status.as_ref().map(|s| s.branch.clone()).unwrap_or_default();
         p.busy_label = Some("プッシュしています…".into());
         let rx = run_git(self.waker.clone(), move || {
             let out = if new_upstream { nagi_workers::git::git(&root, &["push", "-u", "origin", &branch]) } else { nagi_workers::git::git(&root, &["push"]) }?;
@@ -298,12 +298,12 @@ impl Editor {
     }
 
     fn revert_item(&mut self, i: usize) {
-        let Some(root) = self.git.root.clone() else { return };
+        let Some(root) = self.svc.git.root.clone() else { return };
         let Some(p) = &mut self.commit else { return };
         let Some(it) = p.items.get(i) else { return };
         let c = it.change.clone();
         if c.state == FileState::Untracked {
-            self.notify.warn("未追跡のファイルは戻せません（消すなら D）");
+            self.svc.notify.warn("未追跡のファイルは戻せません（消すなら D）");
             return;
         }
         let rx = run_git(self.waker.clone(), move || {
@@ -327,7 +327,7 @@ impl Editor {
 
     /// 未追跡のファイルを消す（チェックしたもの。無ければカーソルの行）。消したら戻せないので、聞いてから
     fn ask_delete_untracked(&mut self) {
-        let Some(root) = self.git.root.clone() else { return };
+        let Some(root) = self.svc.git.root.clone() else { return };
         let Some(p) = &self.commit else { return };
         let untracked = |it: &&Item| it.change.state == FileState::Untracked;
         let mut paths: Vec<String> = p.items.iter().filter(untracked).filter(|it| it.checked).map(|it| it.change.path.clone()).collect();
@@ -336,7 +336,7 @@ impl Editor {
         }
         let q = match paths.len() {
             0 => {
-                self.notify.warn("消せるのは未追跡のファイルだけです（追跡しているファイルは u で戻す）");
+                self.svc.notify.warn("消せるのは未追跡のファイルだけです（追跡しているファイルは u で戻す）");
                 return;
             }
             1 => format!("{} を消しますか（元に戻せません）", paths[0]),
@@ -348,8 +348,8 @@ impl Editor {
     fn delete_untracked(&mut self, root: &std::path::Path, paths: &[String]) {
         let failed: Vec<String> = paths.iter().filter_map(|p| std::fs::remove_file(root.join(p)).err().map(|e| format!("{p}: {e}"))).collect();
         match failed.first() {
-            None => self.notify.info(format!("未追跡のファイル {} 件を消しました", paths.len())),
-            Some(f) => self.notify.error(format!("{} 件のうち {} 件を消せませんでした（{f}）", paths.len(), failed.len())),
+            None => self.svc.notify.info(format!("未追跡のファイル {} 件を消しました", paths.len())),
+            Some(f) => self.svc.notify.error(format!("{} 件のうち {} 件を消せませんでした（{f}）", paths.len(), failed.len())),
         }
         self.refresh_git();
     }
@@ -429,7 +429,7 @@ impl Editor {
             Key::Char('u') => {
                 // 未追跡は戻せない（聞く前に知らせる）
                 if p.items.get(p.selected).is_some_and(|it| it.change.state == FileState::Untracked) {
-                    self.notify.warn("未追跡のファイルは戻せません（消すなら D）");
+                    self.svc.notify.warn("未追跡のファイルは戻せません（消すなら D）");
                 } else if !p.items.is_empty() {
                     let i = p.selected;
                     let q = format!("{} の変更を戻しますか", p.items[i].change.path);
@@ -441,9 +441,9 @@ impl Editor {
                 self.refresh_git();
             }
             Key::Enter | Key::Char('o') => {
-                let (Some(root), Some(it)) = (self.git.root.clone(), p.items.get(p.selected)) else { return Effect::None };
+                let (Some(root), Some(it)) = (self.svc.git.root.clone(), p.items.get(p.selected)) else { return Effect::None };
                 if it.change.state == FileState::Deleted {
-                    self.notify.warn("消したファイルは開けません");
+                    self.svc.notify.warn("消したファイルは開けません");
                     return Effect::None;
                 }
                 let path: PathBuf = root.join(&it.change.path);
@@ -452,7 +452,7 @@ impl Editor {
                 self.set_state(if stay { State::List } else { State::Normal });
             }
             Key::Char('d') => {
-                let (Some(root), Some(it)) = (self.git.root.clone(), p.items.get(p.selected)) else { return Effect::None };
+                let (Some(root), Some(it)) = (self.svc.git.root.clone(), p.items.get(p.selected)) else { return Effect::None };
                 let rel = it.change.path.clone();
                 self.open_file_diff(&root, &rel);
             }
@@ -738,7 +738,7 @@ mod tests {
             e.poll_git();
             e.poll_commit();
             let busy = e.commit.as_ref().is_some_and(|p| p.running.is_some()) || e.git_status_pending();
-            if !busy && e.git.status.is_some() {
+            if !busy && e.svc.git.status.is_some() {
                 if std::env::var_os("NAGI_GIT_TIMING").is_some() {
                     eprintln!("wait {:?}", start.elapsed());
                 }
@@ -746,7 +746,7 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        panic!("git が終わらない: running={} pending={} status={}", e.commit.as_ref().is_some_and(|p| p.running.is_some()), e.git_status_pending(), e.git.status.is_some());
+        panic!("git が終わらない: running={} pending={} status={}", e.commit.as_ref().is_some_and(|p| p.running.is_some()), e.git_status_pending(), e.svc.git.status.is_some());
     }
 
     #[test]
@@ -783,7 +783,7 @@ mod tests {
         keys(&mut e, "<C-m>");
         wait(&mut e);
         wait(&mut e);
-        assert!(e.notify.text.starts_with("コミットしました"), "{}", e.notify.text);
+        assert!(e.svc.notify.text.starts_with("コミットしました"), "{}", e.svc.notify.text);
         assert_eq!(g(&["log", "-1", "--format=%B"]).trim(), "fix a\n\nbody");
         let files = g(&["show", "--name-only", "--format=", "HEAD"]);
         assert_eq!(files.trim(), "a.txt\nnew.txt");
@@ -828,7 +828,7 @@ mod tests {
         // 追跡しているファイルの上では消さない
         keys(&mut e, "D");
         assert!(e.menu.is_none());
-        assert!(dir.join("a.txt").exists(), "{}", e.notify.text);
+        assert!(dir.join("a.txt").exists(), "{}", e.svc.notify.text);
         // カーソルの行（x）だけ。いいえなら消さない
         keys(&mut e, "j");
         keys(&mut e, "D");
@@ -838,7 +838,7 @@ mod tests {
         keys(&mut e, "D");
         keys(&mut e, "y");
         wait(&mut e);
-        assert!(!dir.join("x.txt").exists() && dir.join("y.txt").exists(), "{}", e.notify.text);
+        assert!(!dir.join("x.txt").exists() && dir.join("y.txt").exists(), "{}", e.svc.notify.text);
         // チェックした y・z をまとめて（a はチェックしていても消さない）
         let p = e.commit.as_mut().unwrap();
         p.items.iter_mut().for_each(|i| i.checked = true);
@@ -877,7 +877,7 @@ mod tests {
         keys(&mut e, "cmv<Esc><Esc><C-m>");
         wait(&mut e);
         wait(&mut e);
-        assert!(e.notify.text.starts_with("コミットしました"), "{}", e.notify.text);
+        assert!(e.svc.notify.text.starts_with("コミットしました"), "{}", e.svc.notify.text);
         let files = g(&["show", "--name-status", "--format=", "HEAD"]);
         assert!(files.contains("D\tb.txt") && files.contains("c.txt\tc2.txt"), "{files}");
         assert!(e.commit.as_ref().unwrap().items.is_empty());

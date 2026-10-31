@@ -113,7 +113,7 @@ impl Editor {
         let cands = self.sql_candidates(&prefix, qualifier.as_deref());
         if cands.is_empty() {
             if !auto {
-                self.notify.info("-- 補完の候補はありません（列を読んでいるところなら、もう一度 Ctrl+Space）");
+                self.svc.notify.info("-- 補完の候補はありません（列を読んでいるところなら、もう一度 Ctrl+Space）");
             }
             return;
         }
@@ -197,7 +197,7 @@ impl Editor {
             }
         }
         if items.is_empty() {
-            self.notify.info("-- 補完の候補はありません");
+            self.svc.notify.info("-- 補完の候補はありません");
             return;
         }
         self.completion = Some(Completion { start, original: prefix, items, sel: Some(0), notes: Vec::new(), smart: None, drawn: Default::default() });

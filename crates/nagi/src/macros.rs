@@ -30,7 +30,7 @@ impl Editor {
             match self.last_macro {
                 Some(r) => r,
                 None => {
-                    self.notify.error("E748: 直前に再生したマクロがありません");
+                    self.svc.notify.error("E748: 直前に再生したマクロがありません");
                     return Effect::None;
                 }
             }
@@ -38,11 +38,11 @@ impl Editor {
             reg
         };
         if reg == ':' {
-            self.notify.info("未実装: @:（直前の Ex コマンドの繰り返し）");
+            self.svc.notify.info("未実装: @:（直前の Ex コマンドの繰り返し）");
             return Effect::None;
         }
         if self.macro_depth >= MAX_DEPTH {
-            self.notify.error("E169: マクロの入れ子が深すぎます");
+            self.svc.notify.error("E169: マクロの入れ子が深すぎます");
             return Effect::None;
         }
         self.last_macro = Some(reg);

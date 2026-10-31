@@ -261,7 +261,7 @@ mod tests {
         e.open_tree();
         e.set_state(State::Normal);
         // 差分の小窓（画面全体を持つが受け取らない）が出ていても、木の行は木が受け取る
-        e.git.popup = Some(0);
+        e.svc.git.popup = Some(0);
         let s = Screen { rows: 40, cols: 120 };
         let at = |name: &str| PANELS.iter().position(|v| v.name().ends_with(name)).unwrap();
         let tree = at("::TreeView");

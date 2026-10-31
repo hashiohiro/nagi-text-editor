@@ -26,10 +26,10 @@ impl Editor {
     /// git の操作を裏で行い（UI スレッドでは git を動かさない。ADR 0018 の §4）、終わったら知らせて状態を読み直してから `then`（成功したか）。
     /// 上書きされるので止まったら、どうするか確かめてからもう一度裏で行う（中止したら `then` は呼ばない）
     pub(crate) fn git_guarded(&mut self, op: impl Fn(&Path) -> nagi_core::Result<String> + Send + Sync + 'static, then: impl FnOnce(&mut Editor, bool) + 'static) {
-        let Some(root) = self.git.root.clone() else { return };
+        let Some(root) = self.svc.git.root.clone() else { return };
         let op: Arc<GitOp> = Arc::new(op);
         let (o, r) = (op.clone(), root.clone());
-        self.notify.progress("git を動かしています…");
+        self.svc.notify.progress("git を動かしています…");
         self.job("git", move || o(&r), move |e, res| e.git_settle(root, op, res, Box::new(then)));
     }
 
@@ -44,7 +44,7 @@ impl Editor {
         self.ask_blocked(b, move |e, b, how| {
             let Some(t) = then.take() else { return };
             let (op, root, b) = (op.clone(), root.clone(), b.clone());
-            e.notify.progress("git を動かしています…");
+            e.svc.notify.progress("git を動かしています…");
             e.job(
                 "git",
                 move || match how {
@@ -59,9 +59,9 @@ impl Editor {
     fn git_finish(&mut self, r: nagi_core::Result<(String, Option<String>)>, then: Then) {
         let ok = r.is_ok();
         match r {
-            Ok((m, None)) => self.notify.info(m),
-            Ok((m, Some(w))) => self.notify.warn(format!("{m}。{w}")),
-            Err(e) => self.notify.error(format!("git: {}", git::reason(&e))),
+            Ok((m, None)) => self.svc.notify.info(m),
+            Ok((m, Some(w))) => self.svc.notify.warn(format!("{m}。{w}")),
+            Err(e) => self.svc.notify.error(format!("git: {}", git::reason(&e))),
         }
         self.refresh_git();
         then(self, ok);
@@ -90,7 +90,7 @@ impl Editor {
             m = m.item_key("破棄して続ける（D）", 'd', move |e| g(e, &x, Resolve::Discard));
         }
         let cancel = m.items.len();
-        m = m.item_key("中止（C）", 'c', |e| e.notify.info("やめました"));
+        m = m.item_key("中止（C）", 'c', |e| e.svc.notify.info("やめました"));
         self.ask_menu(format!("{what}{list}"), m, cancel);
     }
 }
@@ -123,7 +123,7 @@ mod tests {
         // 止めたファイルでない変更は、どちらを選んでも残る
         std::fs::write(dir.join("other"), "keep\n").unwrap();
         let mut e = Editor::new(nagi_core::Buffer::from_str(""), None);
-        e.git.root = Some(dir.clone());
+        e.svc.git.root = Some(dir.clone());
         (dir, e)
     }
 
@@ -173,7 +173,7 @@ mod tests {
         let (dir, mut e) = repo("discard");
         let done = checkout(&mut e);
         pick(&mut e, "破棄して続ける");
-        assert!(done.get(), "{}", e.notify.text);
+        assert!(done.get(), "{}", e.svc.notify.text);
         assert_eq!(head(&dir), "side");
         assert_eq!(std::fs::read_to_string(dir.join("a")).unwrap(), "S\n2\n3\n");
         assert_eq!(std::fs::read_to_string(dir.join("new")).unwrap(), "side\n");
@@ -187,7 +187,7 @@ mod tests {
         let done = checkout(&mut e);
         pick(&mut e, "退避して続ける");
         // a の変更は side の変更とぶつからないので、チェックアウトの後に戻る
-        assert!(done.get(), "{}", e.notify.text);
+        assert!(done.get(), "{}", e.svc.notify.text);
         assert_eq!(head(&dir), "side");
         assert_eq!(std::fs::read_to_string(dir.join("a")).unwrap(), "S\n2\nD\n");
         assert!(git::git(&dir, &["stash", "list"]).unwrap().is_empty());
@@ -200,9 +200,9 @@ mod tests {
         let done = checkout(&mut e);
         pick(&mut e, "退避して続ける");
         // 未追跡の new は side にもあるので戻せない。チェックアウトはして、退避は残す
-        assert!(done.get(), "{}", e.notify.text);
+        assert!(done.get(), "{}", e.svc.notify.text);
         assert_eq!(head(&dir), "side");
-        assert!(e.notify.text.contains("stash@{0}"), "{}", e.notify.text);
+        assert!(e.svc.notify.text.contains("stash@{0}"), "{}", e.svc.notify.text);
         assert!(!git::git(&dir, &["stash", "list"]).unwrap().is_empty());
     }
 
@@ -229,14 +229,14 @@ mod tests {
                 }
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
-            panic!("pull が終わらない: {}", e.notify.text);
+            panic!("pull が終わらない: {}", e.svc.notify.text);
         };
         // 手元のリポジトリの side を取り込む（利用者の pull.rebase に左右されないように --no-rebase）
         e.run_git_job("pull ", &["pull", "--no-edit", "--no-rebase", ".", "side"]);
         wait(&mut e, &|e| e.menu.is_some());
         pick(&mut e, "破棄して続ける");
         wait(&mut e, &|e| e.git_job.is_none());
-        assert_eq!(e.notify.text, "pull しました");
+        assert_eq!(e.svc.notify.text, "pull しました");
         assert_eq!(std::fs::read_to_string(dir.join("a")).unwrap(), "S\n2\n3\n");
         assert_eq!(std::fs::read_to_string(dir.join("other")).unwrap(), "keep\n");
     }

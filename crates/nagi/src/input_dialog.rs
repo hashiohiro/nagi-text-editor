@@ -60,7 +60,7 @@ impl Editor {
         self.open_input("行へ移動", "行 [:列]", &here, vec![format!("全 {total} 行")], |e, t| {
             let mut it = t.trim().split(':');
             let Some(line) = it.next().and_then(|s| s.trim().parse::<usize>().ok()).filter(|l| *l > 0) else {
-                e.notify.warn(format!("行の番号ではありません: {t}"));
+                e.svc.notify.warn(format!("行の番号ではありません: {t}"));
                 return;
             };
             let col = it.next().and_then(|s| s.trim().parse::<usize>().ok()).unwrap_or(1).max(1);

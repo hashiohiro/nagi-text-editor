@@ -498,7 +498,7 @@ pub(crate) mod draw {
             },
             BottomKind::Problems => draw_problems(p, ed, c, focused),
             BottomKind::Git => match &ed.log {
-                Some(l) if l.docked => draw_log_view(p, l, c, ed.log_cols_for(c.w), ed.log_right_cols(), &ed.preedit, ed.git.status.as_ref().map(|s| (s.branch.as_str(), s.ahead as usize, s.behind as usize))),
+                Some(l) if l.docked => draw_log_view(p, l, c, ed.log_cols_for(c.w), ed.log_right_cols(), &ed.preedit, ed.svc.git.status.as_ref().map(|s| (s.branch.as_str(), s.ahead as usize, s.behind as usize))),
                 _ => empty(p, "git のリポジトリではありません"),
             },
             BottomKind::Terminal => draw_terminal(p, ed, c, focused),
@@ -604,7 +604,7 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        assert_eq!((m.cursor.line, m.state()), (0, State::Normal), "{}", m.notify.text);
+        assert_eq!((m.cursor.line, m.state()), (0, State::Normal), "{}", m.svc.notify.text);
         assert_eq!(m.bottom_kind, BottomKind::Output);
         assert_eq!(m.problem_rows().len(), 3, "問題のタブにも出る");
     }

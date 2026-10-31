@@ -234,7 +234,7 @@ impl Editor {
             }
             None => {
                 let names: Vec<String> = available_shells().into_iter().map(|s| s.0).collect();
-                self.notify.warn(format!("シェルが見つかりません: {arg}（使えるもの: {}）", names.join("・")));
+                self.svc.notify.warn(format!("シェルが見つかりません: {arg}（使えるもの: {}）", names.join("・")));
             }
         }
     }
@@ -264,7 +264,7 @@ impl Editor {
                 true
             }
             Err(e) => {
-                self.notify.error(format!("{name} を起動できません（{cmd}）: {e}"));
+                self.svc.notify.error(format!("{name} を起動できません（{cmd}）: {e}"));
                 false
             }
         }
@@ -414,7 +414,7 @@ impl Editor {
             None => crate::clipboard::set(&text),
         }
         self.terminals.sel = None;
-        self.notify.info(format!("コピーしました（{} 文字）", text.chars().count()));
+        self.svc.notify.info(format!("コピーしました（{} 文字）", text.chars().count()));
         true
     }
 
@@ -469,7 +469,7 @@ impl Editor {
         let url = at.and_then(|cell| self.terminals.current().and_then(|t| t.term.with_screen(|s| link_at(s, cell))));
         if let Some(url) = url {
             crate::run_configs::open_url(&url);
-            self.notify.info(format!("開きました: {url}"));
+            self.svc.notify.info(format!("開きました: {url}"));
         }
     }
 
@@ -956,12 +956,12 @@ mod tests {
         assert!(e.terminal_press(r.y + row, r.x + 1 + 6));
         e.terminal_drag(r.y + row, r.x + 1 + 12);
         e.terminal_release();
-        assert!(!e.notify.text.contains("開きました"), "{}", e.notify.text);
+        assert!(!e.svc.notify.text.contains("開きました"), "{}", e.svc.notify.text);
         e.terminals.sel = None;
         // クリックだけなら開く
         assert!(e.terminal_press(r.y + row, r.x + 1 + 10));
         e.terminal_release();
-        assert_eq!(e.notify.text, "開きました: https://example.com/nagi-ok");
+        assert_eq!(e.svc.notify.text, "開きました: https://example.com/nagi-ok");
         e.close_terminal();
     }
 
@@ -1082,7 +1082,7 @@ Start-Sleep 30
         e.set_screen(120, 40);
         e.toggle_bottom_tab(BottomKind::Terminal);
         assert_eq!(e.state(), State::Terminal);
-        assert_eq!(e.terminals.list.len(), 1, "{}", e.notify.text);
+        assert_eq!(e.terminals.list.len(), 1, "{}", e.svc.notify.text);
         for k in nagi_vim::parse_keys("echo nagi-tab-ok<CR>", " ") {
             e.key(k);
         }

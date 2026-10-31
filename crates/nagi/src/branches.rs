@@ -265,11 +265,11 @@ fn close_if_ok(e: &mut Editor, ok: bool) {
 impl Editor {
     /// `:Gbranches`（Git.Branches）
     pub(crate) fn open_branches(&mut self) {
-        if self.git.root.is_none() {
+        if self.svc.git.root.is_none() {
             self.start_git();
         }
-        let Some(root) = self.git.root.clone() else {
-            self.notify.info("git のリポジトリではありません");
+        let Some(root) = self.svc.git.root.clone() else {
+            self.svc.notify.info("git のリポジトリではありません");
             return;
         };
         let rx = nagi_core::task::spawn("git-refs", self.waker(), move |ctx| {
@@ -303,7 +303,7 @@ impl Editor {
                     p.branches = b;
                     p.rebuild();
                 }
-                Err(e) => self.notify.error(format!("git: {}", nagi_workers::git::reason(&e))),
+                Err(e) => self.svc.notify.error(format!("git: {}", nagi_workers::git::reason(&e))),
             }
             changed = true;
         }
@@ -319,11 +319,11 @@ impl Editor {
         let (label, args) = (label.clone(), args.clone());
         self.git_job = None;
         match r {
-            Ok(w) if w.is_empty() => self.notify.info(format!("{label}しました")),
-            Ok(w) => self.notify.warn(format!("{label}しました。{w}")),
+            Ok(w) if w.is_empty() => self.svc.notify.info(format!("{label}しました")),
+            Ok(w) => self.svc.notify.warn(format!("{label}しました。{w}")),
             Err(e) => match git::blocked(&e).or_else(|| git::dirty_refused(&e).then(git::Blocked::default)) {
                 Some(b) => self.ask_blocked(b, move |e, b, how| e.spawn_git_job(&label, &args, Some((b.clone(), how)))),
-                None => self.notify.error(format!("{label}できません: {}", git::reason(&e))),
+                None => self.svc.notify.error(format!("{label}できません: {}", git::reason(&e))),
             },
         }
         self.refresh_git();
@@ -340,7 +340,7 @@ impl Editor {
     fn spawn_git_job(&mut self, label: &str, args: &[String], fix: Option<(nagi_workers::git::Blocked, crate::git_guard::Resolve)>) {
         use crate::git_guard::Resolve;
         use nagi_workers::git;
-        let Some(root) = self.git.root.clone() else { return };
+        let Some(root) = self.svc.git.root.clone() else { return };
         let a = args.to_vec();
         let rx = nagi_core::task::spawn("git-net", self.waker(), move |ctx| {
             let a: Vec<&str> = a.iter().map(String::as_str).collect();
@@ -352,13 +352,13 @@ impl Editor {
             };
             ctx.send(r);
         });
-        self.notify.info(format!("{label}しています…"));
+        self.svc.notify.info(format!("{label}しています…"));
         self.git_job = Some((label.to_string(), args.to_vec(), rx));
     }
 
     fn checkout_branch(&mut self, b: &Branch) {
         if b.current {
-            self.notify.info(format!("{} はもうチェックアウトしています", b.name));
+            self.svc.notify.info(format!("{} はもうチェックアウトしています", b.name));
             return;
         }
         let local = b.name.split_once('/').map_or(b.name.as_str(), |(_, n)| n).to_string();
@@ -424,18 +424,18 @@ impl Editor {
     /// ブランチを消す（マージしていなければ、もう一度確かめてから強制的に）
     fn delete_branch(&mut self, name: String, force: bool) {
         let flag = if force { "-D" } else { "-d" };
-        let Some(root) = self.git.root.clone() else { return };
+        let Some(root) = self.svc.git.root.clone() else { return };
         let n = name.clone();
         self.job("git", move || nagi_workers::git::git(&root, &["branch", flag, &n]), move |e, r| match r {
             Ok(_) => {
-                e.notify.info(format!("ブランチ {name} を消しました"));
+                e.svc.notify.info(format!("ブランチ {name} を消しました"));
                 e.open_branches();
             }
             Err(err) if !force && err.to_string().contains("not fully merged") => {
                 let n = name.clone();
                 e.ask(format!("{name} はマージしていません。それでも消しますか"), move |e| e.delete_branch(n, true));
             }
-            Err(err) => e.notify.error(format!("git: {}", nagi_workers::git::reason(&err))),
+            Err(err) => e.svc.notify.error(format!("git: {}", nagi_workers::git::reason(&err))),
         });
     }
 
@@ -832,7 +832,7 @@ mod tests {
             keys(&mut e, "<Down>");
         }
         keys(&mut e, "<CR>y");
-        assert!(e.notify.text.contains("消しました"), "{}", e.notify.text);
+        assert!(e.svc.notify.text.contains("消しました"), "{}", e.svc.notify.text);
         assert!(!g(&["branch"]).contains("coupon"));
     }
 
@@ -870,7 +870,7 @@ mod tests {
         assert_eq!(g(&["branch", "--show-current"]), "main", "1 回では何もしない");
         crate::layout::press(&mut e, s, 3 + k, x, |_| 2);
         e.wait_jobs();
-        assert_eq!(g(&["branch", "--show-current"]), "topic", "{}", e.notify.text);
+        assert_eq!(g(&["branch", "--show-current"]), "topic", "{}", e.svc.notify.text);
         // 外を押すと閉じる
         e.open_branches();
         wait(&mut e);

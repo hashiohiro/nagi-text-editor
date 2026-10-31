@@ -317,7 +317,7 @@ impl Editor {
         f.refilter();
         self.finder = Some(f);
         self.set_state(State::Finder);
-        self.notify.clear();
+        self.svc.notify.clear();
     }
 
     /// 裏で集めている候補を受け取る。変わったら true（描き直す）

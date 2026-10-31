@@ -1,6 +1,6 @@
 //! 利用者への知らせ（ADR 0016 の 2）。
 //!
-//! 状態の行に出す文は `self.notify.info(…)`・`warn`・`error` で出す。出したものは履歴に残り（`:messages`）、
+//! 状態の行に出す文は `self.svc.notify.info(…)`・`warn`・`error` で出す。出したものは履歴に残り（`:messages`）、
 //! warn と error はログ（nagi.log）にも書く。Notify は Editor の 1 つのフィールドなので、パネルを借りている途中でも呼べる。
 
 use std::collections::VecDeque;
@@ -144,7 +144,7 @@ pub fn balloon_layout(ed: &Editor, rows: usize) -> Vec<(usize, crate::panes::Rec
     let inner = w.saturating_sub(3 + crate::metrics::icon_cols(crate::metrics::Icon::Small));
     let mut out = Vec::new();
     let mut bottom = rows;
-    for (i, b) in ed.notify.balloons.iter().enumerate().rev() {
+    for (i, b) in ed.svc.notify.balloons.iter().enumerate().rev() {
         let lines = wrap(&b.text, inner, 4);
         let h = lines.len() + 2;
         if bottom < a.y + h + 1 {
@@ -203,7 +203,7 @@ impl crate::layout::View for BalloonView {
         let _ = (r, clicks);
         match balloon_layout(ed, ed.screen.1).into_iter().find(|b| b.1.contains(row, col)) {
             Some((i, ..)) => {
-                ed.notify.balloons.remove(i);
+                ed.svc.notify.balloons.remove(i);
                 crate::layout::Click::Done
             }
             None => crate::layout::Click::Pass,
@@ -219,7 +219,7 @@ pub(crate) mod draw {
         let cell = p.fonts.cell();
         let saved = p.cols;
         for (i, r, lines) in balloon_layout(ed, rows) {
-            let b = &ed.notify.balloons[i];
+            let b = &ed.svc.notify.balloons[i];
             let (x0, y0, w, h) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w, r.h as f32 * cell.h);
             popup_frame(p, x0, y0, w, h);
             let icon = match b.level {
@@ -242,6 +242,7 @@ impl Editor {
     /// `:messages`: 知らせの履歴を結果の欄に出す（新しいものが下）
     pub(crate) fn show_messages(&mut self) {
         let lines: Vec<String> = self
+            .svc
             .notify
             .history()
             .map(|(t, l, m)| {
@@ -264,7 +265,7 @@ impl Editor {
         }
         self.sync_output_view();
         let log = log::default_path().map_or(String::new(), |p| p.display().to_string());
-        self.notify.progress(format!("知らせ {n} 件（ログ: {log}）"));
+        self.svc.notify.progress(format!("知らせ {n} 件（ログ: {log}）"));
     }
 }
 
@@ -277,13 +278,13 @@ mod tests {
     fn levels_and_history() {
         let mut e = Editor::new(Buffer::from_str(""), None);
         e.set_screen(120, 40);
-        e.notify.info("ひとつめ");
-        e.notify.error("ふたつめはできません");
-        assert_eq!(e.notify.text, "ふたつめはできません");
-        assert_eq!(e.notify.level, Some(Level::Error));
-        e.notify.progress("進み具合");
-        e.notify.clear();
-        assert!(e.notify.text.is_empty());
+        e.svc.notify.info("ひとつめ");
+        e.svc.notify.error("ふたつめはできません");
+        assert_eq!(e.svc.notify.text, "ふたつめはできません");
+        assert_eq!(e.svc.notify.level, Some(Level::Error));
+        e.svc.notify.progress("進み具合");
+        e.svc.notify.clear();
+        assert!(e.svc.notify.text.is_empty());
         e.show_messages();
         let g = e.grep.as_ref().unwrap();
         assert_eq!(g.hits.len(), 2, "進み具合は履歴に残さない");

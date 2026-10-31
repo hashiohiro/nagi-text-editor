@@ -75,7 +75,7 @@ impl Editor {
                 Some(p) => {
                     self.global_marks.insert(c, (p, self.cursor));
                 }
-                None => self.notify.error("E20: 名前の無いバッファには大文字のマークを付けられません"),
+                None => self.svc.notify.error("E20: 名前の無いバッファには大文字のマークを付けられません"),
             }
         } else {
             self.marks.named.insert(c, self.cursor);
@@ -105,7 +105,7 @@ impl Editor {
             _ => None,
         };
         if pos.is_none() {
-            self.notify.error(format!("E20: マークは設定されていません: {c}"));
+            self.svc.notify.error(format!("E20: マークは設定されていません: {c}"));
         }
         let mut pos = pos?;
         let last = self.buf.line_count().saturating_sub(1);
@@ -176,7 +176,7 @@ impl Editor {
             .collect();
         g.sort();
         items.extend(g);
-        self.notify.info(if items.is_empty() { "マークはありません".to_string() } else { items.join("  ") });
+        self.svc.notify.info(if items.is_empty() { "マークはありません".to_string() } else { items.join("  ") });
     }
 
     /// `:delm {文字}` / `:delm!`
@@ -240,6 +240,6 @@ mod tests {
         keys(&mut e, "'A");
         assert_eq!((e.buf.line(0).as_str(), e.cursor.line), ("a1", 1), "大文字のマークで a へ");
         keys(&mut e, ":marks<CR>");
-        assert!(e.notify.text.contains("A:a.txt:2"), "{}", e.notify.text);
+        assert!(e.svc.notify.text.contains("A:a.txt:2"), "{}", e.svc.notify.text);
     }
 }

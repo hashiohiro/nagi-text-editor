@@ -120,7 +120,7 @@ pub static COMMANDS: &[Cmd] = &[
         e.new_empty_buffer()
     }),
     cmd!(["only", "on"], "ほかの窓を閉じる", Args::None, |e, c| e.only_window()),
-    cmd!(["close", "clo"], "窓を閉じる", Args::None, |e, c| if e.is_split() { e.close_window(e.cur_win) } else { e.notify.error("E444: 最後のウィンドウは閉じられません") }),
+    cmd!(["close", "clo"], "窓を閉じる", Args::None, |e, c| if e.is_split() { e.close_window(e.cur_win) } else { e.svc.notify.error("E444: 最後のウィンドウは閉じられません") }),
     // 範囲を取るもの（Editor::ex_ranged が受け取る。ここは候補と説明）
     cmd_effect!(["s", "substitute"], "置換（:s/検索/置換/フラグ）", Args::Text, |e, c| ranged(e, c)),
     cmd_effect!(["g", "global"], "当たる行ごとに実行（:g/検索/コマンド）", Args::Text, |e, c| ranged(e, c)),
@@ -138,7 +138,7 @@ pub static COMMANDS: &[Cmd] = &[
     cmd!(["delmarks", "delm"], "マークを消す", Args::Text, |e, c| e.delete_marks(c.arg, c.bang)),
     cmd!(["earlier", "ea"], "時間をさかのぼって戻す", Args::Text, |e, c| e.undo_time(false, c.arg.parse().unwrap_or(1))),
     cmd!(["later", "lat"], "時間を進める", Args::Text, |e, c| e.undo_time(true, c.arg.parse().unwrap_or(1))),
-    cmd!(["echo"], "", Args::Text, |e, c| e.notify.info(c.arg.trim_matches(['"', '\'']).to_string())),
+    cmd!(["echo"], "", Args::Text, |e, c| e.svc.notify.info(c.arg.trim_matches(['"', '\'']).to_string())),
     // ideavimrc の `O`: `:call append(expand('.'), '')`（現在行の下に空行を足す）
     cmd!(["call"], "", Args::Text, |e, c| if c.arg.starts_with("append(") { e.append_blank_line() } else { unknown(e, c.line) }),
     cmd!(["action"], "", Args::Text, |e, c| e.action(c.arg)),
@@ -164,7 +164,7 @@ pub static COMMANDS: &[Cmd] = &[
     cmd!(["Tree", "Explore", "Ex", "NERDTreeToggle"], "ファイルツリー", Args::None, |e, c| e.toggle_tree()),
     cmd!(["TreeSync"], "プロジェクトの木を開いているファイルに合わせる・合わせない（切り替え）", Args::None, |e, c| {
         e.tree_sync = !e.tree_sync;
-        e.notify.info(if e.tree_sync { "木を開いているファイルに合わせます" } else { "木を開いているファイルに合わせません" });
+        e.svc.notify.info(if e.tree_sync { "木を開いているファイルに合わせます" } else { "木を開いているファイルに合わせません" });
         e.sync_tree()
     }),
     cmd!(["Symbols"], "シンボル検索（Ctrl+Alt+Shift+N）", Args::None, |e, c| e.symbol_search(false)),
@@ -396,7 +396,7 @@ pub fn args_of(name: &str) -> Args {
 }
 
 fn unknown(e: &mut Editor, line: &str) {
-    e.notify.error(format!("E492: エディタのコマンドではありません: {line}"));
+    e.svc.notify.error(format!("E492: エディタのコマンドではありません: {line}"));
 }
 
 fn ranged(e: &mut Editor, c: &Call) -> Effect {
@@ -430,7 +430,7 @@ fn quit(e: &mut Editor, c: &Call, all: bool) -> Effect {
     }
     if !all {
         if e.buf.dirty && !c.bang {
-            e.notify.error(format!("E37: 変更が保存されていません（:{}! で破棄して閉じる）", c.name));
+            e.svc.notify.error(format!("E37: 変更が保存されていません（:{}! で破棄して閉じる）", c.name));
         } else {
             e.delete_buffer("", true);
         }
@@ -438,11 +438,11 @@ fn quit(e: &mut Editor, c: &Call, all: bool) -> Effect {
     }
     if !c.bang {
         if e.buf.dirty {
-            e.notify.error(format!("E37: 変更が保存されていません（:{}! で破棄して終了）", c.name));
+            e.svc.notify.error(format!("E37: 変更が保存されていません（:{}! で破棄して終了）", c.name));
             return NONE;
         }
         if let Some(&i) = e.dirty_docs().first() {
-            e.notify.error(format!("E162: バッファ {} の変更が保存されていません（:qa! で破棄して終了）", i + 1));
+            e.svc.notify.error(format!("E162: バッファ {} の変更が保存されていません（:qa! で破棄して終了）", i + 1));
             return NONE;
         }
     }
@@ -475,14 +475,14 @@ fn edit(e: &mut Editor, c: &Call) {
     if let Some(name) = c.arg.strip_prefix("++enc=").or_else(|| c.arg.strip_prefix("++encoding=")) {
         match nagi_core::encoding::by_name(name) {
             Some(enc) => e.reload_as(enc, c.bang),
-            None => e.notify.error(format!("E474: 知らない文字コード: {name}")),
+            None => e.svc.notify.error(format!("E474: 知らない文字コード: {name}")),
         }
         return;
     }
     if c.bang {
         e.reload();
     } else if c.arg.is_empty() {
-        e.notify.error("E32: ファイル名がありません");
+        e.svc.notify.error("E32: ファイル名がありません");
     } else if e.resolve(c.arg).is_dir() {
         e.open_project(PathBuf::from(c.arg));
     } else {
@@ -508,7 +508,7 @@ pub fn run(e: &mut Editor, line: &str) -> Effect {
         return NONE;
     }
     if name.starts_with('!') {
-        e.notify.info(format!("未実装: 外部コマンド（{line}）"));
+        e.svc.notify.info(format!("未実装: 外部コマンド（{line}）"));
         return NONE;
     }
     match find(name) {

@@ -55,8 +55,8 @@ impl Editor {
     /// 作業ツリーの根を決めて、status と今のファイルの HEAD の版を取りに行く（App が表示の後に呼ぶ）
     pub fn start_git(&mut self) {
         let base = self.buf.path.as_deref().map(abs).or_else(|| Some(self.cwd.clone()));
-        self.git.root = base.as_deref().and_then(nagi_workers::git::repo_root).map(|r| abs(&r));
-        if self.git.root.is_some() {
+        self.svc.git.root = base.as_deref().and_then(nagi_workers::git::repo_root).map(|r| abs(&r));
+        if self.svc.git.root.is_some() {
             self.watch_git_dir();
             self.refresh_git();
         }
@@ -65,7 +65,7 @@ impl Editor {
     /// .git のフォルダ（HEAD・index・ORIG_HEAD などの直下のファイル）を見張る。コミット・チェックアウト・リセットで変わる。
     /// ワークツリーの .git はファイル（`gitdir: …`）なので、その先を見張る
     fn watch_git_dir(&mut self) {
-        let Some(root) = &self.git.root else { return };
+        let Some(root) = &self.svc.git.root else { return };
         let dot = root.join(".git");
         let dir = if dot.is_dir() {
             dot
@@ -73,21 +73,21 @@ impl Editor {
             let Some(d) = std::fs::read_to_string(&dot).ok().and_then(|s| s.trim().strip_prefix("gitdir:").map(|d| root.join(d.trim()))) else { return };
             d
         };
-        if self.git.git_dir.as_ref() != Some(&dir) {
+        if self.svc.git.git_dir.as_ref() != Some(&dir) {
             self.watch_listing(&dir);
-            self.git.git_dir = Some(dir);
+            self.svc.git.git_dir = Some(dir);
         }
     }
 
     /// 見張っている .git の中身が変わった（`d` がそのフォルダなら読み直して true）
     pub(crate) fn on_git_dir_change(&mut self, d: &Path) -> bool {
         let n = |p: &Path| abs(p).to_string_lossy().to_lowercase();
-        if !self.git.git_dir.as_deref().is_some_and(|g| n(g) == n(d)) {
+        if !self.svc.git.git_dir.as_deref().is_some_and(|g| n(g) == n(d)) {
             return false;
         }
         // 取っている途中なら、届いてからもう一度（1 回のコミットで知らせが何度も来る）
-        if self.git.status_rx.is_some() {
-            self.git.stale = true;
+        if self.svc.git.status_rx.is_some() {
+            self.svc.git.stale = true;
         } else {
             self.refresh_git();
         }
@@ -96,20 +96,20 @@ impl Editor {
 
     /// status を取り直し、HEAD の版を捨てて取り直す（コミットやチェックアウトの後）
     pub(crate) fn refresh_git(&mut self) {
-        self.git.heads.clear();
-        self.git.hunks.clear();
-        self.git.pending.clear();
+        self.svc.git.heads.clear();
+        self.svc.git.hunks.clear();
+        self.svc.git.pending.clear();
         self.refresh_status();
     }
 
     /// status を取りに行っている途中か（試験で待つため）
     #[cfg(test)]
     pub(crate) fn git_status_pending(&self) -> bool {
-        self.git.status_rx.is_some()
+        self.svc.git.status_rx.is_some()
     }
 
     pub(crate) fn refresh_status(&mut self) {
-        let Some(root) = self.git.root.clone() else { return };
+        let Some(root) = self.svc.git.root.clone() else { return };
         let r2 = root.clone();
         let rx = nagi_core::task::spawn("git-status", self.waker(), move |ctx| {
             ctx.send(nagi_workers::git::status(&root));
@@ -131,52 +131,52 @@ impl Editor {
                 ctx.send(dirs);
             }
         });
-        self.git.status_rx = Some(rx);
-        self.git.tracked_rx = Some(trx);
+        self.svc.git.status_rx = Some(rx);
+        self.svc.git.tracked_rx = Some(trx);
     }
 
     fn request_head(&mut self, path: &Path) {
-        let Some(root) = self.git.root.clone() else { return };
+        let Some(root) = self.svc.git.root.clone() else { return };
         let path = abs(path);
-        if self.git.heads.contains_key(&path) || !self.git.pending.insert(path.clone()) {
+        if self.svc.git.heads.contains_key(&path) || !self.svc.git.pending.insert(path.clone()) {
             return;
         }
         let Ok(rel) = path.strip_prefix(&root) else { return };
         let rel = rel.to_string_lossy().replace('\\', "/");
-        let tx = self.git.head_chan.get_or_insert_with(nagi_core::task::manual).0.clone();
+        let tx = self.svc.git.head_chan.get_or_insert_with(nagi_core::task::manual).0.clone();
         nagi_core::task::spawn_to("git-head", tx, self.waker(), move || (path, nagi_workers::git::head_blob(&root, &rel)));
     }
 
     /// 裏で取った status と HEAD の版を受け取る。変わったら true
     pub fn poll_git(&mut self) -> bool {
         let mut changed = false;
-        if let Some(rx) = &self.git.status_rx {
+        if let Some(rx) = &self.svc.git.status_rx {
             if let Ok(r) = rx.try_recv() {
-                self.git.status_rx = None;
+                self.svc.git.status_rx = None;
                 if let Ok(s) = r {
-                    self.git.status = Some(s);
+                    self.svc.git.status = Some(s);
                     // 状態が変わったので差分も計算し直す（追加したファイルは全体が新しい行）
-                    self.git.hunks.clear();
+                    self.svc.git.hunks.clear();
                     self.sync_commit_items();
                 }
-                if std::mem::take(&mut self.git.stale) {
+                if std::mem::take(&mut self.svc.git.stale) {
                     self.refresh_git();
                 }
                 changed = true;
             }
         }
-        if let Some(rx) = &self.git.tracked_rx {
+        if let Some(rx) = &self.svc.git.tracked_rx {
             if let Ok(d) = rx.try_recv() {
-                self.git.tracked_dirs = Some(d);
-                self.git.tracked_rx = None;
+                self.svc.git.tracked_dirs = Some(d);
+                self.svc.git.tracked_rx = None;
                 changed = true;
             }
         }
-        if let Some((_, rx)) = &self.git.head_chan {
+        if let Some((_, rx)) = &self.svc.git.head_chan {
             while let Ok((p, blob)) = rx.try_recv() {
-                self.git.pending.remove(&p);
-                self.git.heads.insert(p.clone(), blob.map(Arc::new));
-                self.git.hunks.remove(&p);
+                self.svc.git.pending.remove(&p);
+                self.svc.git.heads.insert(p.clone(), blob.map(Arc::new));
+                self.svc.git.hunks.remove(&p);
                 changed = true;
             }
         }
@@ -187,7 +187,7 @@ impl Editor {
     /// 管理されている変更を含めば Modified（青）
     pub(crate) fn tree_git_states(&self) -> HashMap<PathBuf, FileState> {
         let mut out = HashMap::new();
-        let (Some(root), Some(st)) = (self.git.root.as_ref(), self.git.status.as_ref()) else { return out };
+        let (Some(root), Some(st)) = (self.svc.git.root.as_ref(), self.svc.git.status.as_ref()) else { return out };
         let sep = std::path::MAIN_SEPARATOR_STR;
         for c in &st.changes {
             let p = root.join(c.path.replace('/', sep));
@@ -195,7 +195,7 @@ impl Editor {
             let rel_dirs: Vec<&str> = c.path.match_indices('/').map(|(i, _)| &c.path[..i]).collect();
             for d in rel_dirs {
                 let dp = root.join(d.replace('/', sep));
-                let untracked_dir = self.git.tracked_dirs.as_ref().is_some_and(|t| !t.contains(d));
+                let untracked_dir = self.svc.git.tracked_dirs.as_ref().is_some_and(|t| !t.contains(d));
                 if untracked_dir {
                     out.insert(dp, FileState::Untracked);
                 } else if c.state != FileState::Untracked {
@@ -208,16 +208,16 @@ impl Editor {
     }
 
     fn file_state(&self, path: &Path) -> Option<FileState> {
-        let (root, st) = (self.git.root.as_ref()?, self.git.status.as_ref()?);
+        let (root, st) = (self.svc.git.root.as_ref()?, self.svc.git.status.as_ref()?);
         let rel = path.strip_prefix(root).ok()?.to_string_lossy().replace('\\', "/");
         st.changes.iter().find(|c| c.path == rel).map(|c| c.state)
     }
 
     /// バッファの差分（HEAD と比べる）。版が変わったときだけ計算し直す
     fn hunks_of(&mut self, path: &Path, buf: &nagi_core::Buffer) -> Option<Vec<Hunk>> {
-        self.git.root.as_ref()?;
+        self.svc.git.root.as_ref()?;
         let path = abs(path);
-        if let Some((v, h)) = self.git.hunks.get(&path) {
+        if let Some((v, h)) = self.svc.git.hunks.get(&path) {
             if *v == buf.version {
                 return Some(h.clone());
             }
@@ -225,7 +225,7 @@ impl Editor {
         if buf.len_bytes() > MAX_DIFF_BYTES {
             return None;
         }
-        let head = match self.git.heads.get(&path) {
+        let head = match self.svc.git.heads.get(&path) {
             Some(h) => h.clone(),
             None => {
                 self.request_head(&path);
@@ -240,7 +240,7 @@ impl Editor {
             None if self.file_state(&path) == Some(FileState::Added) => vec![Hunk { old: 0..0, new: 0..new.len(), kind: HunkKind::Add }],
             None => Vec::new(),
         };
-        self.git.hunks.insert(path, (buf.version, hunks.clone()));
+        self.svc.git.hunks.insert(path, (buf.version, hunks.clone()));
         Some(hunks)
     }
 
@@ -255,7 +255,7 @@ impl Editor {
 
     /// 描く前に、見えている窓のバッファの差分を計算しておく
     pub(crate) fn prepare_git(&mut self) {
-        if self.git.root.is_none() {
+        if self.svc.git.root.is_none() {
             return;
         }
         self.current_hunks();
@@ -274,7 +274,7 @@ impl Editor {
     pub fn git_markers(&self, path: Option<&Path>) -> HashMap<usize, Marker> {
         let mut out = HashMap::new();
         let Some(p) = path.map(abs) else { return out };
-        let Some((_, hunks)) = self.git.hunks.get(&p) else { return out };
+        let Some((_, hunks)) = self.svc.git.hunks.get(&p) else { return out };
         for h in hunks {
             match h.kind {
                 HunkKind::Add => h.new.clone().for_each(|l| {
@@ -293,7 +293,7 @@ impl Editor {
 
     /// 状態行に出すブランチ（`main ↑1 ↓2`）と変更の数
     pub fn git_branch_label(&self) -> Option<String> {
-        let st = self.git.status.as_ref()?;
+        let st = self.svc.git.status.as_ref()?;
         let mut s = if st.branch == "(detached)" { "（HEAD 切り離し）".to_string() } else { st.branch.clone() };
         if st.ahead > 0 {
             s.push_str(&format!(" ↑{}", st.ahead));
@@ -308,7 +308,7 @@ impl Editor {
     pub(crate) fn hunk_jump(&mut self, next: bool, count: usize) {
         let hunks = self.current_hunks();
         if hunks.is_empty() {
-            self.notify.info("変更はありません");
+            self.svc.notify.info("変更はありません");
             return;
         }
         let line = self.cursor.line;
@@ -331,11 +331,11 @@ impl Editor {
                 self.cursor.line = t;
                 self.with_motion(|m, c| m.first_non_blank(c));
                 // ポップアップを開いていれば、移った先の変更を見せる
-                if self.git.popup.is_some() {
-                    self.git.popup = self.hunk_at_cursor(&hunks);
+                if self.svc.git.popup.is_some() {
+                    self.svc.git.popup = self.hunk_at_cursor(&hunks);
                 }
             }
-            None => self.notify.info(if next { "これより後に変更はありません" } else { "これより前に変更はありません" }),
+            None => self.svc.notify.info(if next { "これより後に変更はありません" } else { "これより前に変更はありません" }),
         }
     }
 
@@ -348,25 +348,25 @@ impl Editor {
     pub(crate) fn open_hunk_popup(&mut self) {
         let hunks = self.current_hunks();
         match self.hunk_at_cursor(&hunks) {
-            Some(i) => self.git.popup = Some(i),
-            None => self.notify.info("カーソルの行に変更はありません"),
+            Some(i) => self.svc.git.popup = Some(i),
+            None => self.svc.notify.info("カーソルの行に変更はありません"),
         }
     }
 
     /// ポップアップを開いている間のキー。扱ったら true（ほかのキーはポップアップを閉じてから普通に処理する）
     pub(crate) fn hunk_popup_key(&mut self, key: nagi_vim::Key) -> bool {
         use nagi_vim::Key;
-        if self.git.popup.is_none() || !self.pending_keys.is_empty() {
+        if self.svc.git.popup.is_none() || !self.pending_keys.is_empty() {
             return false;
         }
         match key {
             Key::Char('u') => self.revert_hunk(),
             Key::Char('s') => self.stage_hunk(),
-            Key::Esc => self.git.popup = None,
+            Key::Esc => self.svc.git.popup = None,
             // ]c [c は開いたまま次の変更へ
             Key::Char(']') | Key::Char('[') => return false,
             _ => {
-                self.git.popup = None;
+                self.svc.git.popup = None;
                 return false;
             }
         }
@@ -375,11 +375,11 @@ impl Editor {
 
     /// ポップアップに出す (古い行, 新しい行, まとまりの始まりの行) を作業中のバッファについて
     pub fn popup_lines(&self) -> Option<(Vec<String>, Vec<String>, Hunk)> {
-        let i = self.git.popup?;
+        let i = self.svc.git.popup?;
         let p = abs(self.buf.path.as_deref()?);
-        let (_, hunks) = self.git.hunks.get(&p)?;
+        let (_, hunks) = self.svc.git.hunks.get(&p)?;
         let h = hunks.get(i)?.clone();
-        let head = self.git.heads.get(&p)?.clone();
+        let head = self.svc.git.heads.get(&p)?.clone();
         let old: Vec<String> = head.as_deref().map(|t| split_lines(t)[h.old.clone()].iter().map(|s| s.to_string()).collect()).unwrap_or_default();
         let new: Vec<String> = h.new.clone().map(|l| self.buf.line(l)).collect();
         Some((old, new, h))
@@ -388,12 +388,12 @@ impl Editor {
     /// カーソルの変更を HEAD の版に戻す（バッファを書き換えるので u で戻せる）
     pub(crate) fn revert_hunk(&mut self) {
         let hunks = self.current_hunks();
-        let Some(i) = self.git.popup.or_else(|| self.hunk_at_cursor(&hunks)) else {
-            self.notify.info("カーソルの行に変更はありません");
+        let Some(i) = self.svc.git.popup.or_else(|| self.hunk_at_cursor(&hunks)) else {
+            self.svc.notify.info("カーソルの行に変更はありません");
             return;
         };
         let Some((old, _, h)) = ({
-            self.git.popup = Some(i);
+            self.svc.git.popup = Some(i);
             self.popup_lines()
         }) else {
             return;
@@ -412,32 +412,32 @@ impl Editor {
         self.hist.close();
         self.cursor.line = h.new.start.min(self.buf.line_count().saturating_sub(1));
         self.with_motion(|m, c| m.first_non_blank(c));
-        self.git.popup = None;
-        self.notify.info("変更を戻しました（u で取り消し）");
+        self.svc.git.popup = None;
+        self.svc.notify.info("変更を戻しました（u で取り消し）");
     }
 
     /// カーソルの変更だけをステージする（index にパッチを当てる）
     pub(crate) fn stage_hunk(&mut self) {
         let hunks = self.current_hunks();
-        let Some(i) = self.git.popup.or_else(|| self.hunk_at_cursor(&hunks)) else {
-            self.notify.info("カーソルの行に変更はありません");
+        let Some(i) = self.svc.git.popup.or_else(|| self.hunk_at_cursor(&hunks)) else {
+            self.svc.notify.info("カーソルの行に変更はありません");
             return;
         };
-        self.git.popup = Some(i);
-        let (Some((old, new, h)), Some(root), Some(path)) = (self.popup_lines(), self.git.root.clone(), self.buf.path.as_deref().map(abs)) else { return };
+        self.svc.git.popup = Some(i);
+        let (Some((old, new, h)), Some(root), Some(path)) = (self.popup_lines(), self.svc.git.root.clone(), self.buf.path.as_deref().map(abs)) else { return };
         let Ok(rel) = path.strip_prefix(&root) else { return };
         let rel = rel.to_string_lossy().replace('\\', "/");
-        let new_file = self.git.heads.get(&path).is_some_and(Option::is_none);
+        let new_file = self.svc.git.heads.get(&path).is_some_and(Option::is_none);
         let o: Vec<&str> = old.iter().map(String::as_str).collect();
         let n: Vec<&str> = new.iter().map(String::as_str).collect();
         let patch = nagi_workers::git::hunk_patch(&rel, h.old.start, &o, h.new.start, &n, new_file);
         let lines = h.new.len().max(h.old.len());
-        self.git.popup = None;
+        self.svc.git.popup = None;
         // index に当てるのは裏で（ADR 0018 の §4）
         self.job("git-stage", move || nagi_workers::git::apply_cached(&root, &patch), move |e, r| {
             match r {
-                Ok(()) => e.notify.info(format!("変更をステージしました（{lines} 行）")),
-                Err(err) => e.notify.error(format!("ステージできません: {}", err.first_line())),
+                Ok(()) => e.svc.notify.info(format!("変更をステージしました（{lines} 行）")),
+                Err(err) => e.svc.notify.error(format!("ステージできません: {}", err.first_line())),
             }
             e.refresh_status();
         });
@@ -452,7 +452,7 @@ pub struct HunkPopupView;
 impl crate::layout::View for HunkPopupView {
     fn rect(&self, ed: &crate::editor::Editor, s: crate::layout::Screen) -> Option<crate::panes::Rect> {
         let _ = s;
-        (ed.git.popup.is_some() && ed.idle()).then_some(crate::panes::Rect { x: 0, y: 0, w: s.cols, h: s.rows })
+        (ed.svc.git.popup.is_some() && ed.idle()).then_some(crate::panes::Rect { x: 0, y: 0, w: s.cols, h: s.rows })
     }
 
     fn draw(&self, ed: &crate::editor::Editor, p: &mut crate::view::Painter, r: crate::panes::Rect, s: crate::layout::Screen) {
@@ -470,7 +470,7 @@ impl crate::layout::View for HunkPopupView {
             .sep()
             .item("この変更をステージ", |e| e.stage_hunk())
             .item("この変更を戻す", |e| e.revert_hunk())
-            .item("閉じる", |e| e.git.popup = None);
+            .item("閉じる", |e| e.svc.git.popup = None);
         ed.open_menu(m);
         true
     }
@@ -504,7 +504,7 @@ pub(crate) mod draw {
         popup_frame(p, x, y0, w as f32 * cell.w, h_rows as f32 * cell.h);
         let saved = p.cols;
         p.cols = x0 + w;
-        let total = ed.git.popup.map(|i| i + 1).unwrap_or(0);
+        let total = ed.svc.git.popup.map(|i| i + 1).unwrap_or(0);
         let kind = match h.kind {
             nagi_core::linediff::HunkKind::Add => format!("{} 行を足した", new.len()),
             nagi_core::linediff::HunkKind::Del => format!("{} 行を消した", old.len()),
@@ -547,7 +547,7 @@ mod tests {
         for _ in 0..2000 {
             e.poll_git();
             e.prepare_git();
-            if e.git.status.is_some() && e.git.pending.is_empty() && e.git.status_rx.is_none() {
+            if e.svc.git.status.is_some() && e.svc.git.pending.is_empty() && e.svc.git.status_rx.is_none() {
                 return;
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
@@ -590,7 +590,7 @@ mod tests {
         let (old, new, _) = e.popup_lines().unwrap();
         assert_eq!((old, new), (vec!["2".to_string()], vec!["TWO".to_string()]));
         keys(&mut e, "s");
-        assert!(e.notify.text.starts_with("変更をステージしました"), "{}", e.notify.text);
+        assert!(e.svc.notify.text.starts_with("変更をステージしました"), "{}", e.svc.notify.text);
         assert!(String::from_utf8_lossy(&g(&["diff", "--cached"])).contains("+TWO"));
         // 足した行を戻す（バッファから消える）
         keys(&mut e, "5G");
@@ -607,10 +607,10 @@ mod tests {
         use nagi_workers::git::{Change, Status};
         let mut e = Editor::new(nagi_core::Buffer::from_str(""), None);
         let root = std::env::temp_dir().join("nagi-tree-git");
-        e.git.root = Some(root.clone());
+        e.svc.git.root = Some(root.clone());
         let ch = |p: &str, state| Change { path: p.into(), state, staged: false, unstaged: true, orig: None };
-        e.git.status = Some(Status { changes: vec![ch("src/a/x.rs", FileState::Modified), ch("src/new.rs", FileState::Added), ch("tmp/junk.txt", FileState::Untracked)], ..Default::default() });
-        e.git.tracked_dirs = Some(["src".to_string(), "src/a".to_string(), "docs".to_string()].into());
+        e.svc.git.status = Some(Status { changes: vec![ch("src/a/x.rs", FileState::Modified), ch("src/new.rs", FileState::Added), ch("tmp/junk.txt", FileState::Untracked)], ..Default::default() });
+        e.svc.git.tracked_dirs = Some(["src".to_string(), "src/a".to_string(), "docs".to_string()].into());
         let s = e.tree_git_states();
         let j = |p: &str| root.join(p.replace('/', std::path::MAIN_SEPARATOR_STR));
         assert_eq!(s.get(&j("src/a/x.rs")), Some(&FileState::Modified));

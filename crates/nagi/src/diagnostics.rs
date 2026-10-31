@@ -270,7 +270,7 @@ impl Editor {
             match detect_command(&root, file.as_deref()) {
                 Some(c) => c,
                 None => {
-                    self.notify.warn("コマンドが決められません（:Make の後にコマンドを書いてください）");
+                    self.svc.notify.warn("コマンドが決められません（:Make の後にコマンドを書いてください）");
                     return;
                 }
             }
@@ -304,7 +304,7 @@ impl Editor {
                 }
                 self.make = Some(MakeState { job, cmd: cmd.to_string(), root: root.to_path_buf(), output, status: None, pending: Pending::default() });
             }
-            Err(e) => self.notify.error(format!("コマンドを起動できません: {e}")),
+            Err(e) => self.svc.notify.error(format!("コマンドを起動できません: {e}")),
         }
     }
 
@@ -362,7 +362,7 @@ impl Editor {
             }
             // 重さは見つけたものに合わせる（エラーがあれば error、警告だけなら warn）
             let level = if e > 0 { nagi_core::log::Level::Error } else if w > 0 { nagi_core::log::Level::Warn } else { nagi_core::log::Level::Info };
-            self.notify.put(level, match (e + w, code) {
+            self.svc.notify.put(level, match (e + w, code) {
                 _ if status.is_some() => format!("{}（エラー {e} 件、警告 {w} 件）", status.unwrap_or_default()),
                 (0, Some(0)) => format!("診断: 問題はありません（{cmd}）"),
                 (0, c) => format!("診断: 診断の形の出力はありませんでした（終了コード {}）", c.map_or("-".into(), |c| c.to_string())),
@@ -386,7 +386,7 @@ impl Editor {
                     self.set_abs(p);
                     self.clamp_normal();
                 }
-                None => self.notify.error("構文エラーはありません"),
+                None => self.svc.notify.error("構文エラーはありません"),
             }
             return;
         }
@@ -403,7 +403,7 @@ impl Editor {
         };
         if let Some(d) = pick.map(|d| (*d).clone()) {
             self.jump_to(&d.path, d.line, d.col);
-            self.notify.info(format!("{}: {}", if d.error { "error" } else { "warning" }, d.msg));
+            self.svc.notify.info(format!("{}: {}", if d.error { "error" } else { "warning" }, d.msg));
         }
     }
 
@@ -513,14 +513,14 @@ mod tests {
         assert!(e.make.is_none(), "終わらない");
         assert_eq!(e.diags.len(), 2);
         assert_eq!(e.grep.as_ref().unwrap().hits.len(), 2);
-        assert!(e.notify.text.contains("エラー 1 件、警告 1 件"), "{}", e.notify.text);
+        assert!(e.svc.notify.text.contains("エラー 1 件、警告 1 件"), "{}", e.svc.notify.text);
         // ]e: 次の診断（2 行目の警告）、もう一度で 3 行目のエラー
         e.next_error(true);
         assert_eq!((e.cursor.line, e.cursor.byte), (1, 0));
-        assert!(e.notify.text.starts_with("warning"));
+        assert!(e.svc.notify.text.starts_with("warning"));
         e.next_error(true);
         assert_eq!((e.cursor.line, e.cursor.byte), (2, 3));
-        e.notify.clear();
+        e.svc.notify.clear();
         assert_eq!(e.diag_at_cursor().map(|d| d.msg.as_str()), Some("boom"));
         assert_eq!(e.diag_lines(e.buf.path.as_deref()).len(), 2);
     }

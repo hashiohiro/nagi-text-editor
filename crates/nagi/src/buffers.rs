@@ -214,7 +214,7 @@ impl Editor {
                 b
             }
             Err(e) => {
-                self.notify.error(format!("{}: {e}", path.display()));
+                self.svc.notify.error(format!("{}: {e}", path.display()));
                 return;
             }
         };
@@ -231,7 +231,7 @@ impl Editor {
         }
         crate::finder::remember_recent(&path);
         self.watch_file(&path);
-        self.notify.info(message);
+        self.svc.notify.info(message);
         self.note_mixed_newlines();
     }
 
@@ -245,7 +245,7 @@ impl Editor {
         let Some(path) = self.buf.path.clone() else { return };
         match Buffer::open(&path) {
             Ok(b) => self.reload_with(b),
-            Err(e) => self.notify.error(format!("{}: {e}", path.display())),
+            Err(e) => self.svc.notify.error(format!("{}: {e}", path.display())),
         }
     }
 
@@ -262,7 +262,7 @@ impl Editor {
     /// 開いたファイルの改行が混ざっていれば知らせる
     pub(crate) fn note_mixed_newlines(&mut self) {
         if self.buf.mixed_newlines {
-            self.notify.info("このファイルは CRLF と LF が混ざっています。状態の行の「混在」を押すか :set ff=dos・ff=unix で揃える（保存で書く）");
+            self.svc.notify.info("このファイルは CRLF と LF が混ざっています。状態の行の「混在」を押すか :set ff=dos・ff=unix で揃える（保存で書く）");
         }
     }
 
@@ -286,14 +286,14 @@ impl Editor {
                 [i] => Some(*i),
                 [] => None,
                 _ => {
-                    self.notify.error(format!("E93: {arg} に当てはまるバッファが複数あります"));
+                    self.svc.notify.error(format!("E93: {arg} に当てはまるバッファが複数あります"));
                     return;
                 }
             }
         };
         match id {
             Some(i) => self.switch_doc(i),
-            None => self.notify.error(format!("E86: バッファ {arg} はありません")),
+            None => self.svc.notify.error(format!("E86: バッファ {arg} はありません")),
         }
     }
 
@@ -313,7 +313,7 @@ impl Editor {
             a => match a.parse::<usize>().ok().and_then(|n| n.checked_sub(1)) {
                 Some(i) if !matches!(self.docs.get(i), None | Some(Slot::Deleted)) => i,
                 _ => {
-                    self.notify.error(format!("E516: バッファ {a} はありません"));
+                    self.svc.notify.error(format!("E516: バッファ {a} はありません"));
                     return;
                 }
             },
@@ -324,7 +324,7 @@ impl Editor {
             Slot::Deleted => false,
         };
         if dirty && !force {
-            self.notify.error(format!("E89: バッファ {} の変更が保存されていません（:bd! で破棄）", id + 1));
+            self.svc.notify.error(format!("E89: バッファ {} の変更が保存されていません（:bd! で破棄）", id + 1));
             return;
         }
         // 閉じたファイルを覚える（ReopenClosedTab で開き直す）
@@ -393,13 +393,13 @@ impl Editor {
                 return;
             }
         }
-        self.notify.info("開き直すファイルがありません");
+        self.svc.notify.info("開き直すファイルがありません");
     }
 
     /// 最近の編集箇所の一覧（IntelliJ の RecentLocations。選ぶとそこへ）
     pub(crate) fn recent_locations(&mut self) {
         if self.recent_edits.is_empty() {
-            self.notify.info("まだ編集した箇所がありません");
+            self.svc.notify.info("まだ編集した箇所がありません");
             return;
         }
         let root = self.nav_root();
@@ -430,7 +430,7 @@ impl Editor {
                 format!("{}{mark}{} {name}", i + 1, if dirty { "+" } else { "" })
             })
             .collect();
-        self.notify.info(items.join("  "));
+        self.svc.notify.info(items.join("  "));
     }
 
     /// 変更が保存されていないバッファ（作業中を含む）の番号
@@ -461,20 +461,20 @@ impl Editor {
             }
         }
         for m in failed {
-            self.notify.error(m);
+            self.svc.notify.error(m);
         }
         if self.buf.dirty && self.buf.path.is_some() {
             self.tidy_before_save();
             match self.buf.save() {
                 Ok(_) => n += 1,
                 Err(e) => {
-                    self.notify.error(format!("E212: 書き込めません: {e}"));
+                    self.svc.notify.error(format!("E212: 書き込めません: {e}"));
                     ok = false;
                 }
             }
         }
         if ok {
-            self.notify.info(format!("{n} 個のバッファを書き込み"));
+            self.svc.notify.info(format!("{n} 個のバッファを書き込み"));
         }
         ok
     }
@@ -558,7 +558,7 @@ mod tests {
         keys(&mut e, &format!(":e {}<CR>", b.display()));
         assert_eq!(e.docs.len(), 2, "開いているファイルは開き直さない");
         keys(&mut e, ":ls<CR>");
-        assert!(e.notify.text.contains("1#+ a.txt") && e.notify.text.contains("2% b.txt"), "{}", e.notify.text);
+        assert!(e.svc.notify.text.contains("1#+ a.txt") && e.svc.notify.text.contains("2% b.txt"), "{}", e.svc.notify.text);
     }
 
     /// 隠れたバッファに変更があれば `:qa` `:bd` は止め、`!` なら進む
@@ -570,9 +570,9 @@ mod tests {
         keys(&mut e, "x");
         keys(&mut e, &format!(":e {}<CR>", b.display()));
         assert!(matches!(keys(&mut e, ":qa<CR>"), Some(Effect::None)));
-        assert!(e.notify.text.starts_with("E162"), "{}", e.notify.text);
+        assert!(e.svc.notify.text.starts_with("E162"), "{}", e.svc.notify.text);
         keys(&mut e, ":bd 1<CR>");
-        assert!(e.notify.text.starts_with("E89"), "{}", e.notify.text);
+        assert!(e.svc.notify.text.starts_with("E89"), "{}", e.svc.notify.text);
         keys(&mut e, ":bd! 1<CR>");
         assert_eq!(e.buffer_list().len(), 1);
         assert!(matches!(keys(&mut e, ":qa<CR>"), Some(Effect::Quit)));
@@ -601,7 +601,7 @@ mod tests {
         assert_eq!(e.buf.path.as_deref(), Some(a.as_path()));
         // 変更があれば止める
         assert!(matches!(keys(&mut e, ":q<CR>"), Some(Effect::None)));
-        assert!(e.notify.text.starts_with("E37"), "{}", e.notify.text);
+        assert!(e.svc.notify.text.starts_with("E37"), "{}", e.svc.notify.text);
         assert_eq!(e.buf.path.as_deref(), Some(a.as_path()));
         // :wq は保存して閉じる（最後の 1 つなので空のバッファになる）
         assert!(matches!(keys(&mut e, ":wq<CR>"), Some(Effect::None)));
@@ -646,9 +646,9 @@ mod write_as_tests {
         assert_eq!(e.buf.path.as_deref(), Some(a.as_path()));
         assert!(e.buf.dirty, "a にはまだ書いていない");
         keys(&mut e, &format!(":w {}<CR>", b.display()));
-        assert!(e.notify.text.starts_with("E13"), "{}", e.notify.text);
+        assert!(e.svc.notify.text.starts_with("E13"), "{}", e.svc.notify.text);
         keys(&mut e, &format!(":w! {}<CR>", b.display()));
-        assert!(!e.notify.text.starts_with("E13"));
+        assert!(!e.svc.notify.text.starts_with("E13"));
         // :saveas は名前ごと変える
         let c = dir.join("c.txt");
         keys(&mut e, &format!(":saveas {}<CR>", c.display()));

@@ -475,11 +475,11 @@ impl Editor {
     }
 
     fn open_log_with(&mut self, file: bool, range: Option<String>) {
-        if self.git.root.is_none() {
+        if self.svc.git.root.is_none() {
             self.start_git();
         }
-        let Some(root) = self.git.root.clone() else {
-            self.notify.info("git のリポジトリではありません");
+        let Some(root) = self.svc.git.root.clone() else {
+            self.svc.notify.info("git のリポジトリではありません");
             return;
         };
         let path = if file {
@@ -495,7 +495,7 @@ impl Editor {
 
     /// 履歴を読み直す（操作の後。下の欄に収めているかは保つ）
     pub(crate) fn reload_log(&mut self) {
-        let (Some(root), Some(l)) = (self.git.root.clone(), &self.log) else { return };
+        let (Some(root), Some(l)) = (self.svc.git.root.clone(), &self.log) else { return };
         let (path, range) = (l.src_path.clone(), l.src_range.clone());
         let state = self.state();
         self.load_log(root, path, range);
@@ -586,7 +586,7 @@ impl Editor {
                     l.rows = rows;
                     l.refilter();
                 }
-                Err(e) => self.notify.error(format!("git log: {}", e.first_line())),
+                Err(e) => self.svc.notify.error(format!("git log: {}", e.first_line())),
             }
             changed = true;
         }
@@ -619,7 +619,7 @@ impl Editor {
     /// 裏の仕事が終わったときだけ見ていると、ほかの仕事が無い間は前のコミットの中身のままになる）
     pub(crate) fn log_request_detail(&mut self) {
         let waker = self.waker.clone();
-        let root = self.git.root.clone();
+        let root = self.svc.git.root.clone();
         let Some(l) = &mut self.log else { return };
         let want = l.current().map(|c| c.hash.clone());
         if let (Some(h), Some(root)) = (want, root) {
@@ -839,7 +839,7 @@ impl Editor {
         if let Some(l) = &mut self.log {
             l.branch_sel = Some(i);
         }
-        self.notify.info(if all { "全部のブランチの履歴を出しました".to_string() } else { format!("{name} の履歴だけを出しました（もう一度ダブルクリックで全部に戻す）") });
+        self.svc.notify.info(if all { "全部のブランチの履歴を出しました".to_string() } else { format!("{name} の履歴だけを出しました（もう一度ダブルクリックで全部に戻す）") });
     }
 
     /// `:` の行に `head` と `tail` を入れ、その間にカーソルを置く（名前などを打たせる）
@@ -853,7 +853,7 @@ impl Editor {
     /// 確かめてから行う（確認の窓で「はい」なら log_do）
     pub(crate) fn log_ask(&mut self, c: Confirm) {
         let s = |h: &str| h[..7.min(h.len())].to_string();
-        let cur = self.git.status.as_ref().map(|s| s.branch.clone()).unwrap_or_default();
+        let cur = self.svc.git.status.as_ref().map(|s| s.branch.clone()).unwrap_or_default();
         let q = match &c {
             Confirm::Checkout(h) => format!("{} をチェックアウトしますか（HEAD を切り離す）", s(h)),
             Confirm::CherryPick(h) => format!("{} を {cur} にチェリーピックしますか", s(h)),
@@ -878,7 +878,7 @@ impl Editor {
     /// 確かめた操作を行い、git の状態と履歴を読み直す。作業中の変更が上書きされるなら、退避・破棄・中止を確かめてもう一度
     fn log_do(&mut self, c: Confirm) {
         use nagi_workers::git;
-        let Some(root) = self.git.root.clone() else { return };
+        let Some(root) = self.svc.git.root.clone() else { return };
         match &c {
             Confirm::PushTo(h, up) => {
                 // 送るのはネットワークを使うので裏で
@@ -896,8 +896,8 @@ impl Editor {
                             e.log_ask(Confirm::DeleteBranch(b, true));
                             return;
                         }
-                        Ok(_) => e.notify.info(format!("ブランチ {b} を消しました")),
-                        Err(err) => e.notify.error(format!("git: {}", git::reason(&err))),
+                        Ok(_) => e.svc.notify.info(format!("ブランチ {b} を消しました")),
+                        Err(err) => e.svc.notify.error(format!("git: {}", git::reason(&err))),
                     }
                     e.refresh_git();
                     e.reload_log();
@@ -911,7 +911,7 @@ impl Editor {
     pub(crate) fn log_checkout_branch(&mut self, i: usize) {
         let Some((sec, name, cur)) = self.log.as_ref().and_then(|l| l.branches.get(i).cloned()) else { return };
         if cur {
-            self.notify.info(format!("{name} はもうチェックアウトしています"));
+            self.svc.notify.info(format!("{name} はもうチェックアウトしています"));
             return;
         }
         if sec == "タグ" {
@@ -958,13 +958,13 @@ impl Editor {
 
     /// 履歴（幅 `w`）の左のブランチの列と右の中身の列の幅
     pub(crate) fn log_cols_for(&self, w: usize) -> (usize, usize) {
-        log_cols(w, self.sizes.get("log_branch_width"), self.sizes.get("log_detail_width"))
+        log_cols(w, self.svc.sizes.get("log_branch_width"), self.svc.sizes.get("log_detail_width"))
     }
 
     /// コミットの作者・日時・ハッシュの列の幅（作者・日時はドラッグで変えていればその幅、でなければ中身に合わせる）
     pub(crate) fn log_right_cols(&self) -> (usize, usize, usize) {
         let auto = self.log.as_ref().map_or((10, 10, 7), |l| l.auto_cols);
-        (self.sizes.get("log_author_width").unwrap_or(auto.0).clamp(4, 40), self.sizes.get("log_date_width").unwrap_or(auto.1).clamp(4, 40), auto.2)
+        (self.svc.sizes.get("log_author_width").unwrap_or(auto.0).clamp(4, 40), self.svc.sizes.get("log_date_width").unwrap_or(auto.1).clamp(4, 40), auto.2)
     }
 
     /// コミットの列（`end` はその右端の次の列）の、題名と作者の境目・作者と日時の境目の列（描き方と同じ割り付け）
@@ -1024,8 +1024,8 @@ impl Editor {
         let hit = self.log_hit(row, col, w);
         self.log_click(row, col, w, 1);
         let Some(l) = &self.log else { return false };
-        let cur = self.git.status.as_ref().map(|s| s.branch.clone()).unwrap_or_default();
-        let upstream = self.git.status.as_ref().and_then(|s| s.upstream.clone());
+        let cur = self.svc.git.status.as_ref().map(|s| s.branch.clone()).unwrap_or_default();
+        let upstream = self.svc.git.status.as_ref().and_then(|s| s.upstream.clone());
         // 右の列（選んだコミットの変えたファイル）
         let menu = if l.focus_files && matches!(hit, Some(LogHit::Detail(_) | LogHit::DetailArea)) {
             let Some(d) = &l.detail else { return false };
@@ -1167,7 +1167,7 @@ impl Editor {
         let Some(l) = &self.log else { return false };
         let picked = l.picked();
         let n = picked.len();
-        let cur = self.git.status.as_ref().map(|s| s.branch.clone()).unwrap_or_default();
+        let cur = self.svc.git.status.as_ref().map(|s| s.branch.clone()).unwrap_or_default();
         let mut m = crate::menu::Menu::new(at.0, at.1);
         m = m.item(format!("{n} 件のハッシュをコピー"), |e| e.log_copy_picked(false));
         m = m.item(format!("{n} 件のハッシュと題名をコピー"), |e| e.log_copy_picked(true));
@@ -1222,7 +1222,7 @@ impl Editor {
     /// 2 つのコミットを比べる: 右の列に、`old` から `new` までに変わったファイルを出す（Enter・ダブルクリックでその差分）
     fn log_compare_two(&mut self, old: &str, new: &str) {
         let waker = self.waker.clone();
-        let Some(root) = self.git.root.clone() else { return };
+        let Some(root) = self.svc.git.root.clone() else { return };
         let Some(l) = &mut self.log else { return };
         // 右の列は今の行のコミットの中身なので、新しい方を今の行に
         if let Some(k) = l.visible.iter().position(|&i| l.rows[i].commit.as_ref().is_some_and(|c| c.hash == new)) {
@@ -1253,7 +1253,7 @@ impl Editor {
     /// `:Greword ハッシュ 新しいメッセージ`
     pub(crate) fn git_reword(&mut self, arg: &str) {
         let Some((h, msg)) = arg.trim().split_once(' ') else {
-            self.notify.info("ハッシュと新しいメッセージを書いてください");
+            self.svc.notify.info("ハッシュと新しいメッセージを書いてください");
             return;
         };
         let (h, msg) = (h.to_string(), msg.trim().to_string());
@@ -1264,7 +1264,7 @@ impl Editor {
     pub(crate) fn git_tag(&mut self, arg: &str) {
         let mut it = arg.split_whitespace();
         let Some(name) = it.next() else {
-            self.notify.info("タグの名前を書いてください");
+            self.svc.notify.info("タグの名前を書いてください");
             return;
         };
         let mut args = vec!["tag", name];
@@ -1280,7 +1280,7 @@ impl Editor {
     pub(crate) fn git_rename_branch(&mut self, arg: &str) {
         let v: Vec<&str> = arg.split_whitespace().collect();
         let [old, new] = v[..] else {
-            self.notify.info("今の名前と新しい名前を書いてください");
+            self.svc.notify.info("今の名前と新しい名前を書いてください");
             return;
         };
         self.git_guarded_args(&["branch", "-m", old, new], format!("{old} を {new} に変えました"), |e, ok| {
@@ -1299,7 +1299,7 @@ impl Editor {
 
     /// 選んだコミットの、選んだファイルの差分（1 つ前の版 ↔ このコミット）
     fn log_open_file_diff(&mut self) {
-        let (Some(root), Some(l)) = (self.git.root.clone(), &self.log) else { return };
+        let (Some(root), Some(l)) = (self.svc.git.root.clone(), &self.log) else { return };
         let Some(d) = &l.detail else { return };
         let Some((_, path)) = d.files.get(l.file_sel).cloned() else { return };
         let h = d.hash.clone();
@@ -1324,7 +1324,7 @@ impl Editor {
 
     /// コミット `h` の版の `path` と、作業中のファイルを比べる（右が作業中）
     fn log_compare_worktree(&mut self, h: &str, path: &str) {
-        let Some(root) = self.git.root.clone() else { return };
+        let Some(root) = self.svc.git.root.clone() else { return };
         let (h, path) = (h.to_string(), path.to_string());
         let short = h[..7.min(h.len())].to_string();
         let p = path.clone();
@@ -1337,10 +1337,10 @@ impl Editor {
 
     /// 作業ツリーの `path` を開く（無ければ知らせる）
     fn log_open_worktree_file(&mut self, path: &str) {
-        let Some(root) = self.git.root.clone() else { return };
+        let Some(root) = self.svc.git.root.clone() else { return };
         let p = root.join(path);
         if !p.exists() {
-            self.notify.warn(format!("{path} は作業ツリーにありません"));
+            self.svc.notify.warn(format!("{path} は作業ツリーにありません"));
             return;
         }
         self.edit_file(p);
@@ -1349,7 +1349,7 @@ impl Editor {
 
     /// `path`（根からの / 区切り）の履歴を開く
     fn open_log_file(&mut self, path: &str) {
-        let Some(root) = self.git.root.clone() else { return };
+        let Some(root) = self.svc.git.root.clone() else { return };
         self.log = None;
         self.load_log(root, Some(path.to_string()), None);
     }
@@ -1358,7 +1358,7 @@ impl Editor {
     pub(crate) fn git_new_branch(&mut self, arg: &str) {
         let mut it = arg.split_whitespace();
         let Some(name) = it.next() else {
-            self.notify.info("ブランチの名前を書いてください");
+            self.svc.notify.info("ブランチの名前を書いてください");
             return;
         };
         let mut args = vec!["checkout", "-q", "-b", name];
@@ -1422,7 +1422,7 @@ impl crate::layout::View for LogScreenView {
     fn draw(&self, ed: &crate::editor::Editor, p: &mut crate::view::Painter, r: crate::panes::Rect, s: crate::layout::Screen) {
         let _ = (r, s);
         if let Some(l) = &ed.log {
-            draw::draw_log_view(p, l, r, ed.log_cols_for(r.w), ed.log_right_cols(), &ed.preedit, ed.git.status.as_ref().map(|s| (s.branch.as_str(), s.ahead as usize, s.behind as usize)));
+            draw::draw_log_view(p, l, r, ed.log_cols_for(r.w), ed.log_right_cols(), &ed.preedit, ed.svc.git.status.as_ref().map(|s| (s.branch.as_str(), s.ahead as usize, s.behind as usize)));
         }
     }
 
@@ -1936,7 +1936,7 @@ mod tests {
         let wait = |e: &mut Editor| {
             for _ in 0..500 {
                 e.poll_background();
-                if e.log.as_ref().is_some_and(|l| !l.loading && !l.branches.is_empty() && l.rx_detail.is_none()) && e.git.status.is_some() {
+                if e.log.as_ref().is_some_and(|l| !l.loading && !l.branches.is_empty() && l.rx_detail.is_none()) && e.svc.git.status.is_some() {
                     return;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(20));
@@ -1971,7 +1971,7 @@ mod tests {
         let i = e.menu.as_ref().unwrap().items.iter().position(|it| it.label == "チェックアウト").unwrap();
         e.menu_run(i);
         e.wait_jobs();
-        assert_eq!(g(&["rev-parse", "--abbrev-ref", "HEAD"]), "topic", "{}", e.notify.text);
+        assert_eq!(g(&["rev-parse", "--abbrev-ref", "HEAD"]), "topic", "{}", e.svc.notify.text);
         wait(&mut e);
         // 本文を押すとエディタへ（どのペインからでも）
         assert_eq!(e.state(), State::Log);
@@ -1995,7 +1995,7 @@ mod tests {
         e.key(Key::Char('y'));
         e.wait_jobs();
         assert_eq!(e.state(), State::Log, "答えたら履歴へ戻る");
-        assert_eq!(g(&["log", "--format=%s"]), "add c\nadd a", "{}", e.notify.text);
+        assert_eq!(g(&["log", "--format=%s"]), "add c\nadd a", "{}", e.svc.notify.text);
         // メッセージを編集（:Greword）
         let head = g(&["rev-parse", "--short", "HEAD"]);
         e.git_reword(&format!("{head} add c!"));
@@ -2040,7 +2040,7 @@ mod tests {
             }
             panic!("届かない");
         };
-        let ready = |e: &Editor| e.log.as_ref().is_some_and(|l| !l.loading && !l.branches.is_empty() && l.rx_detail.is_none()) && e.git.status.is_some();
+        let ready = |e: &Editor| e.log.as_ref().is_some_and(|l| !l.loading && !l.branches.is_empty() && l.rx_detail.is_none()) && e.svc.git.status.is_some();
         e.select_bottom_tab(crate::result_grid::BottomKind::Git);
         wait(&mut e, &ready);
         // 題名の行（見せている行の番号）。欄の 0 行目はタブ、1 行目は見出しなので、押す行は 2 + k
@@ -2098,7 +2098,7 @@ mod tests {
         assert!(e.menu.as_ref().unwrap().title.as_deref().is_some_and(|t| t.contains("2 件のコミット")));
         e.key(Key::Char('y'));
         e.wait_jobs();
-        assert_eq!(g(&["log", "--format=%s", "side"]), "add c\nadd b\nadd d\nadd a", "{}", e.notify.text);
+        assert_eq!(g(&["log", "--format=%s", "side"]), "add c\nadd b\nadd d\nadd a", "{}", e.svc.notify.text);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

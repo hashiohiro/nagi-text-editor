@@ -635,7 +635,7 @@ impl Frame {
         let n = self.rc.keymap.len();
         let us = t.elapsed().as_micros();
         if let Some(ed) = &mut self.ed {
-            ed.notify.info(format!("設定を読み直しました（マッピング {n} 件、{us}µs）"));
+            ed.svc.notify.info(format!("設定を読み直しました（マッピング {n} 件、{us}µs）"));
         }
     }
 
@@ -938,7 +938,7 @@ impl Frame {
                     self.stats.summary(clock::at("window visible"), clock::memory_mb().0)
                 };
                 if let Some(ed) = &mut self.ed {
-                    ed.notify.info(msg);
+                    ed.svc.notify.info(msg);
                 }
             }
             Effect::ReloadRc => self.reload_rc(),
@@ -1131,7 +1131,7 @@ impl Frame {
     fn on_press(&mut self) {
         // 入力欄のモードの表示（`-- VISUAL --` など）は、押して別の所へ移ったら残さない
         if let Some(ed) = &mut self.ed {
-            ed.notify.clear_mode();
+            ed.svc.notify.clear_mode();
         }
         // 今向いている部品（ダイアログ・ランチャー・コマンドの候補）が受け取るなら、そこへ（component.rs）
         if let (Some(ed), Some(f)) = (&mut self.ed, &self.fonts) {
@@ -1508,7 +1508,7 @@ impl Frame {
                 self.draw();
             }
             // 時刻を過ぎた知らせの吹き出しを消す
-            if self.ed.as_mut().is_some_and(|e| e.notify.expire(now)) {
+            if self.ed.as_mut().is_some_and(|e| e.svc.notify.expire(now)) {
                 self.draw();
             }
             // ヤンクした範囲の光を消す
@@ -1548,7 +1548,7 @@ impl Frame {
         let auto = self.ed.as_ref().and_then(|e| e.auto_complete_at);
         let flash = self.ed.as_ref().and_then(|e| e.yank_flash.map(|f| f.2));
         let save_at = self.ed.as_ref().and_then(|e| e.autosave_deadline());
-        let balloon = self.ed.as_ref().and_then(|e| e.notify.balloon_deadline());
+        let balloon = self.ed.as_ref().and_then(|e| e.svc.notify.balloon_deadline());
         let deadline = [self.map_deadline, self.snap_deadline, self.autoscroll_deadline, self.replay_deadline, self.held.as_ref().map(|h| h.3), auto, flash, save_at, balloon].into_iter().flatten().min();
         let _ = el;
         self.flow = if self.scroll_anim.is_some() {

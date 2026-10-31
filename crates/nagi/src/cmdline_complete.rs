@@ -359,7 +359,7 @@ mod tests {
         assert_eq!(names(&e), vec!["Gblame"]);
         // 小文字のまま実行できる
         keys(&mut e, "<CR>");
-        assert!(!e.notify.text.contains("E492"), "{}", e.notify.text);
+        assert!(!e.svc.notify.text.contains("E492"), "{}", e.svc.notify.text);
         assert_eq!(crate::commands::find("gblame").map(|c| c.0.names[0]), Some("Gblame"));
         assert_eq!(crate::commands::find("w").map(|c| c.0.names[0]), Some("w"));
         // Insert の Ctrl+Space は単語の候補

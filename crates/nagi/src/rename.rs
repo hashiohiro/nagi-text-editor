@@ -23,7 +23,7 @@ impl Editor {
     /// `:Rename [新しい名前]`。名前を書かなければ、今の名前を入れたコマンドの行を開く（Shift+F6）
     pub(crate) fn rename_command(&mut self, arg: &str) {
         let Some((name, word_at)) = self.word_at_cursor() else {
-            self.notify.error("E348: カーソルの下に識別子がありません");
+            self.svc.notify.error("E348: カーソルの下に識別子がありません");
             return;
         };
         let new = arg.trim();
@@ -34,7 +34,7 @@ impl Editor {
             return;
         }
         if !valid_name(new) {
-            self.notify.error(format!("名前に使えない文字があります: {new}"));
+            self.svc.notify.error(format!("名前に使えない文字があります: {new}"));
             return;
         }
         if new == name {
@@ -44,7 +44,7 @@ impl Editor {
         // ファイルの中の束縛のうち、プロジェクトの索引に無いもの（ローカル変数・引数）。メソッド・フィールドは索引にある
         if let Some(def) = self.syntax.as_ref().and_then(|s| s.local_definition(&self.buf, word_at)) {
             let Some(idx) = &self.nav.index else {
-                self.notify.warn("索引を作っているところです。しばらくしてからもう一度");
+                self.svc.notify.warn("索引を作っているところです。しばらくしてからもう一度");
                 return;
             };
             let here = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
@@ -57,18 +57,18 @@ impl Editor {
             }
         }
         if !self.dirty_docs().is_empty() {
-            self.notify.warn("保存していないファイルがあります。:wa で保存してから名前を変えてください");
+            self.svc.notify.warn("保存していないファイルがあります。:wa で保存してから名前を変えてください");
             return;
         }
         let Some(target) = self.definition_target(&name, word_at) else {
-            self.notify.warn(format!("{name} の定義が 1 か所に決まらないので、名前を変えられません（索引ができていないか、同じ名前の定義がいくつもある）"));
+            self.svc.notify.warn(format!("{name} の定義が 1 か所に決まらないので、名前を変えられません（索引ができていないか、同じ名前の定義がいくつもある）"));
             return;
         };
         self.open_grep_regex(&format!(r"\b{}\b", regex::escape(&name)));
         if let Some(g) = &mut self.grep {
             g.refs = Some(crate::grep_panel::RefsFilter { name, target, rename: Some(new.to_string()) });
         }
-        self.notify.info("名前を変える所を探しています…");
+        self.svc.notify.info("名前を変える所を探しています…");
     }
 
     /// 今のファイルの中で、`def` の束縛を指す `name` を `new` に（1 回の編集で戻せる）
@@ -93,7 +93,7 @@ impl Editor {
         let delta = at.iter().filter(|&&s| s < self.buf.line_start(line) + byte && s >= self.buf.line_start(line)).count() as isize * (new.len() as isize - name.len() as isize);
         self.cursor.byte = ((byte as isize + delta).max(0) as usize).min(self.buf.line(line).len());
         self.clamp_normal();
-        self.notify.info(format!("{name} を {new} に変えました（{} か所。u で戻せる）", at.len()));
+        self.svc.notify.info(format!("{name} を {new} に変えました（{} か所。u で戻せる）", at.len()));
     }
 
     /// 全文検索は 1 行に 1 件なので、同じ行のほかの一致もそれぞれ 1 件に分ける（1 つずつ定義を確かめて変えるため）
@@ -130,7 +130,7 @@ impl Editor {
             v.len()
         };
         if sites.is_empty() {
-            self.notify.warn(format!("{name} の使われている所が見つかりません"));
+            self.svc.notify.warn(format!("{name} の使われている所が見つかりません"));
             return;
         }
         let root = g.root.clone();
@@ -261,7 +261,7 @@ impl Editor {
         // 索引を作り直す（変えた名前で引けるように）
         self.start_index();
         for f in &failed {
-            self.notify.error(f.clone());
+            self.svc.notify.error(f.clone());
         }
         let mut msg = format!("{name} を {new} に変えました（{done} か所・{} ファイル。u で全部のファイルを戻せる）", by_file.len());
         if let Some(to) = moved {
@@ -271,7 +271,7 @@ impl Editor {
             msg.push_str(&format!("。中身がずれていた {skipped} か所は変えていません"));
         }
         if failed.is_empty() {
-            self.notify.info(msg);
+            self.svc.notify.info(msg);
         }
     }
 
@@ -372,13 +372,13 @@ impl Editor {
             }
         }
         for f in failed {
-            self.notify.error(f);
+            self.svc.notify.error(f);
         }
         let mut msg = format!("名前の変更を{}（{n} ファイル）", if redo { "やり直しました" } else { "戻しました" });
         if !stale.is_empty() {
             msg.push_str(&format!("。後から変えた {} ファイルは触っていません: {}", stale.len(), stale.iter().filter_map(|p| p.file_name()).map(|f| f.to_string_lossy().into_owned()).collect::<Vec<_>>().join(", ")));
         }
-        self.notify.info(msg);
+        self.svc.notify.info(msg);
         self.start_index();
     }
 }
@@ -446,7 +446,7 @@ mod tests {
         }
         keys(&mut e, "4G0ww");
         e.rename_command("count");
-        assert_eq!(e.buf.text(), "class A {\n  int n;\n  void a() {\n    int count = 1;\n    count = count + this.n;\n  }\n  void b() {\n    int n = 2;\n  }\n}\n", "{}", e.notify.text);
+        assert_eq!(e.buf.text(), "class A {\n  int n;\n  void a() {\n    int count = 1;\n    count = count + this.n;\n  }\n  void b() {\n    int n = 2;\n  }\n}\n", "{}", e.svc.notify.text);
         keys(&mut e, "u");
         assert!(e.buf.text().contains("    int n = 1;\n    n = n + this.n;"));
         // 名前を書かなければ、今の名前を入れたダイアログ。打ち直して Enter で変える
@@ -486,14 +486,14 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
-        assert_eq!(e.state(), State::Menu, "確かめる: {}", e.notify.text);
+        assert_eq!(e.state(), State::Menu, "確かめる: {}", e.svc.notify.text);
         // はい
         keys(&mut e, "<CR>");
-        assert_eq!(std::fs::read_to_string(dir.join("p/Use.java")).unwrap(), "package p;\n\nclass Use {\n  Bar f = new Bar();\n  // Foo\n  String s = \"Foo\";\n}\n", "{}", e.notify.text);
+        assert_eq!(std::fs::read_to_string(dir.join("p/Use.java")).unwrap(), "package p;\n\nclass Use {\n  Bar f = new Bar();\n  // Foo\n  String s = \"Foo\";\n}\n", "{}", e.svc.notify.text);
         assert!(!dir.join("p/Foo.java").exists());
         assert_eq!(std::fs::read_to_string(dir.join("p/Bar.java")).unwrap(), "package p;\n\npublic class Bar {\n  public Bar() {}\n}\n");
         assert_eq!(e.buf.text(), std::fs::read_to_string(dir.join("p/Use.java")).unwrap(), "開いているバッファも");
-        assert!(e.notify.text.contains("ファイルの名前も Bar.java"), "{}", e.notify.text);
+        assert!(e.svc.notify.text.contains("ファイルの名前も Bar.java"), "{}", e.svc.notify.text);
         // u で全部のファイルとファイルの名前を戻し、Ctrl-r でやり直す
         let use0 = "package p;\n\nclass Use {\n  Foo f = new Foo();\n  // Foo\n  String s = \"Foo\";\n}\n";
         let foo0 = "package p;\n\npublic class Foo {\n  public Foo() {}\n}\n";
@@ -501,21 +501,21 @@ mod tests {
         assert_eq!(e.buf.text(), use0);
         assert_eq!(std::fs::read_to_string(dir.join("p/Use.java")).unwrap(), use0);
         assert!(!dir.join("p/Bar.java").exists());
-        assert_eq!(std::fs::read_to_string(dir.join("p/Foo.java")).unwrap(), foo0, "{}", e.notify.text);
-        assert!(e.notify.text.contains("名前の変更を戻しました（2 ファイル）"), "{}", e.notify.text);
+        assert_eq!(std::fs::read_to_string(dir.join("p/Foo.java")).unwrap(), foo0, "{}", e.svc.notify.text);
+        assert!(e.svc.notify.text.contains("名前の変更を戻しました（2 ファイル）"), "{}", e.svc.notify.text);
         keys(&mut e, "<C-r>");
         assert!(e.buf.text().contains("Bar f = new Bar();"));
-        assert!(std::fs::read_to_string(dir.join("p/Bar.java")).unwrap().contains("public class Bar"), "{}", e.notify.text);
+        assert!(std::fs::read_to_string(dir.join("p/Bar.java")).unwrap().contains("public class Bar"), "{}", e.svc.notify.text);
         assert!(!dir.join("p/Foo.java").exists());
         // 変えたときに開いていなかったファイルを後から開いても、その u・Ctrl-r で全部を戻す・進める
         e.edit_file(dir.join("p/Bar.java"));
         keys(&mut e, "u");
-        assert_eq!(e.buf.text(), foo0, "{}", e.notify.text);
+        assert_eq!(e.buf.text(), foo0, "{}", e.svc.notify.text);
         assert!(e.buf.path.as_deref().is_some_and(|p| p.ends_with("Foo.java")), "{:?}", e.buf.path);
         assert_eq!(std::fs::read_to_string(dir.join("p/Use.java")).unwrap(), use0);
         assert!(!dir.join("p/Bar.java").exists());
         keys(&mut e, "<C-r>");
-        assert!(e.buf.text().contains("public class Bar"), "{}", e.notify.text);
+        assert!(e.buf.text().contains("public class Bar"), "{}", e.svc.notify.text);
         assert!(e.buf.path.as_deref().is_some_and(|p| p.ends_with("Bar.java")), "{:?}", e.buf.path);
         assert!(std::fs::read_to_string(dir.join("p/Use.java")).unwrap().contains("Bar f = new Bar();"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -550,7 +550,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         keys(&mut e, "<CR>");
-        assert_eq!(e.buf.text(), "class A {\n  void start() {}\n  void use() {\n    start(); start();\n  }\n}\n", "{}", e.notify.text);
+        assert_eq!(e.buf.text(), "class A {\n  void start() {}\n  void use() {\n    start(); start();\n  }\n}\n", "{}", e.svc.notify.text);
         assert_eq!(std::fs::read_to_string(dir.join("B.java")).unwrap(), "class B {\n  void run() {}\n  void go(A a) {\n    a.start();\n    run();\n    // run\n    log(\"A.run\");\n  }\n}\n");
         // 脇のバッファも書き換えている
         let id = e.find_doc(&dir.join("B.java")).unwrap();
@@ -568,7 +568,7 @@ mod tests {
         d.hist.record(c);
         keys(&mut e, "u");
         assert!(e.parked_doc_mut(id).unwrap().buf.text().contains("a.start();"));
-        assert!(e.notify.text.contains("後から変えた 1 ファイル"), "{}", e.notify.text);
+        assert!(e.svc.notify.text.contains("後から変えた 1 ファイル"), "{}", e.svc.notify.text);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -597,10 +597,10 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
-        eprintln!("ASK {}", e.notify.text);
+        eprintln!("ASK {}", e.svc.notify.text);
         if e.state() == State::Menu {
             keys(&mut e, "<CR>");
         }
-        eprintln!("DONE {}", e.notify.text);
+        eprintln!("DONE {}", e.svc.notify.text);
     }
 }

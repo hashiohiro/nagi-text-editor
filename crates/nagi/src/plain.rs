@@ -143,7 +143,7 @@ impl Editor {
                 if matches!(self.state(), State::Visual { .. }) {
                     self.set_state(State::Normal);
                 }
-                self.git.popup = None;
+                self.svc.git.popup = None;
                 true
             }
             (Some(Nav::Backspace | Nav::Delete), _) if self.plain_selection().is_some() => {
@@ -461,7 +461,7 @@ impl Editor {
         let at = self.undo_step(redo);
         match at {
             Some(at) => self.set_abs(at),
-            None if !redo => self.notify.info("これ以上は元に戻せません"),
+            None if !redo => self.svc.notify.info("これ以上は元に戻せません"),
             None => {}
         }
     }

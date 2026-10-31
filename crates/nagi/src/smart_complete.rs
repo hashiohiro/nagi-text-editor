@@ -75,7 +75,7 @@ impl Editor {
         let start = self.buf.line_start(self.cursor.line) + ws;
         let all = if self.console_source().is_some() { self.sql_smart_candidates(start, &prefix) } else { self.smart_candidates(&line, ws, start) };
         if all.is_empty() {
-            self.notify.info("-- 補完の候補はありません");
+            self.svc.notify.info("-- 補完の候補はありません");
             return;
         }
         self.completion = Some(Completion { start, original: prefix, items: Vec::new(), sel: Some(0), notes: Vec::new(), smart: Some(SmartState { all, shown: Vec::new() }), drawn: Default::default() });
@@ -137,13 +137,13 @@ impl Editor {
         }
         let sel = self.completion.as_ref().and_then(|c| c.sel.and_then(|s| c.items.get(s).cloned()));
         if self.completion.as_ref().is_some_and(|c| c.smart.is_some()) || self.completion.is_none() {
-            let msg = self.notify.text.clone();
+            let msg = self.svc.notify.text.clone();
             self.completion = None;
             self.data_wait = None;
             self.start_smart_completion();
             // 出せなければ「候補はありません」は出さない
             if self.completion.is_none() {
-                self.notify.info(msg);
+                self.svc.notify.info(msg);
             }
             // 選んでいた候補を選び直す
             if let (Some(c), Some(name)) = (&mut self.completion, sel) {
@@ -269,11 +269,11 @@ impl Editor {
         if self.state() != crate::editor::State::Insert || self.completion.is_some() {
             return false;
         }
-        let msg = self.notify.text.clone();
+        let msg = self.svc.notify.text.clone();
         self.start_smart_completion();
         // 自動で出すときは「候補はありません」を出さない
         if self.completion.is_none() {
-            self.notify.info(msg);
+            self.svc.notify.info(msg);
         }
         self.completion.is_some()
     }
@@ -352,7 +352,7 @@ mod tests {
         // user. の後で Ctrl+Space
         keys(&mut e, "3G$a<C-Space>");
         let names = e.completion.as_ref().map(|c| c.items.clone()).unwrap_or_default();
-        assert!(names.contains(&"getName".to_string()) && names.contains(&"setName".to_string()) && names.contains(&"baseName".to_string()), "{names:?} {}", e.notify.text);
+        assert!(names.contains(&"getName".to_string()) && names.contains(&"setName".to_string()) && names.contains(&"baseName".to_string()), "{names:?} {}", e.svc.notify.text);
         assert!(!names.contains(&"name".to_string()), "ほかのクラスの private は出さない: {names:?}");
         assert!(!names.contains(&"User".to_string()), "コンストラクタは出さない: {names:?}");
         assert_eq!(&names[..2], ["getName", "setName"], "定義の順（子の型が先）");
@@ -512,7 +512,7 @@ mod tests {
         e.nav.libs.set(nagi_lang::eco::JVM, std::sync::Arc::new(ix));
         // 小文字で打っても型を出す。決めると import を足す
         keys(&mut e, "5G$aarrayLi<C-Space>");
-        let c = e.completion.as_ref().unwrap_or_else(|| panic!("{} / {:?}", e.notify.text, e.buf.line(4)));
+        let c = e.completion.as_ref().unwrap_or_else(|| panic!("{} / {:?}", e.svc.notify.text, e.buf.line(4)));
         assert_eq!(c.items[0], "ArrayList", "{:?}", c.items);
         keys(&mut e, "<CR>");
         assert_eq!(e.buf.text(), "package app;\n\nimport java.util.ArrayList;\n\nclass App {\n  void f() {\n    ArrayList\n  }\n}\n");
@@ -624,7 +624,7 @@ mod tests {
         e.nav.sources_dir = Some(dir.join("sources"));
         keys(&mut e, "<Esc>0fzgd");
         let p = e.buf.path.clone().unwrap();
-        assert!(p.ends_with("java/util/List.java") || p.ends_with("java\\util\\List.java"), "{}: {}", p.display(), e.notify.text);
+        assert!(p.ends_with("java/util/List.java") || p.ends_with("java\\util\\List.java"), "{}: {}", p.display(), e.svc.notify.text);
         assert!(e.buf.line(e.cursor.line).contains("size()"), "{}", e.buf.line(e.cursor.line));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -690,7 +690,7 @@ mod tests {
         e.nav.sources_dir = Some(dir.join("sources"));
         keys(&mut e, "<Esc>8G0frgd");
         let p = e.buf.path.clone().unwrap();
-        assert!(p.ends_with("java/util/UUID.java") || p.ends_with("java\\util\\UUID.java"), "{}: {}", p.display(), e.notify.text);
+        assert!(p.ends_with("java/util/UUID.java") || p.ends_with("java\\util\\UUID.java"), "{}: {}", p.display(), e.svc.notify.text);
         assert!(e.buf.line(e.cursor.line).contains("randomUUID"), "{}", e.buf.line(e.cursor.line));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -837,7 +837,7 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        assert!(e.completion.as_ref().is_some_and(|c| c.items.iter().any(|x| x == "trimEnd")), "{:?} {}", e.completion.as_ref().map(|c| c.items.clone()), e.notify.text);
+        assert!(e.completion.as_ref().is_some_and(|c| c.items.iter().any(|x| x == "trimEnd")), "{:?} {}", e.completion.as_ref().map(|c| c.items.clone()), e.svc.notify.text);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -896,7 +896,7 @@ mod tests {
         assert_eq!(e.buf.line(0), "import { HttpClient } from '@acme/http';");
         // 定義へ（gd）: パッケージの .d.ts のメソッドの宣言の行
         keys(&mut e, "7GA<CR>this.http.get('/u');<Esc>0fggd");
-        assert!(e.buf.path.as_ref().unwrap().ends_with("index.d.ts"), "{:?} {}", e.buf.path, e.notify.text);
+        assert!(e.buf.path.as_ref().unwrap().ends_with("index.d.ts"), "{:?} {}", e.buf.path, e.svc.notify.text);
         assert!(e.buf.line(e.cursor.line).contains("get<T>(url: string)"), "{}", e.buf.line(e.cursor.line));
         let _ = std::fs::remove_dir_all(&dir);
     }

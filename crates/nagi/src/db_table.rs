@@ -360,7 +360,7 @@ impl Editor {
         if let Some(c) = self.db.as_mut().map(|p| &mut p.conns[i]) {
             c.send_batch(crate::db_panel::Target::Table, stmts);
         }
-        self.notify.info("送信しています…");
+        self.svc.notify.info("送信しています…");
     }
 
     /// 選んでいるセルの値をコピー（NULL は空）
@@ -390,9 +390,9 @@ impl Editor {
             }
         }
         match n {
-            0 => self.notify.warn("消す行には貼れません（dd で取り消し）"),
+            0 => self.svc.notify.warn("消す行には貼れません（dd で取り消し）"),
             1 => {}
-            n => self.notify.info(format!("{n} 個のセルに貼りました")),
+            n => self.svc.notify.info(format!("{n} 個のセルに貼りました")),
         }
     }
 
@@ -480,7 +480,7 @@ impl Editor {
             (_, Key::Char('G')) => te.row = last_row,
             (_, Key::Char('i') | Key::Enter | Key::F(2)) if !te.cols.is_empty() && te.len() > 0 => {
                 if te.at(te.row).0 == RowState::Deleted {
-                    self.notify.warn("消す行は直せません（dd で取り消し）");
+                    self.svc.notify.warn("消す行は直せません（dd で取り消し）");
                 } else {
                     te.editing = Some(VimField::new(&te.value(te.row, te.col).unwrap_or_default(), false));
                 }
@@ -488,7 +488,7 @@ impl Editor {
             // c: 空にしてから直す（値を入れ替える）
             (_, Key::Char('c')) if !te.cols.is_empty() && te.len() > 0 => {
                 if te.at(te.row).0 == RowState::Deleted {
-                    self.notify.warn("消す行は直せません（dd で取り消し）");
+                    self.svc.notify.warn("消す行は直せません（dd で取り消し）");
                 } else {
                     te.editing = Some(VimField::new("", false));
                 }
@@ -504,11 +504,11 @@ impl Editor {
             }
             (_, Key::Char('u') | Key::Ctrl('z')) => {
                 if !te.undo_one() {
-                    self.notify.info("戻す変更はありません");
+                    self.svc.notify.info("戻す変更はありません");
                 }
             }
             (_, Key::Ctrl('m')) => match te.statements() {
-                Ok(s) if s.is_empty() => self.notify.info("送る変更はありません"),
+                Ok(s) if s.is_empty() => self.svc.notify.info("送る変更はありません"),
                 Ok(s) => {
                     let q = format!("{} 件の変更を送りますか（送る文は上に出ています）", s.len());
                     te.preview = Some(s);
@@ -516,10 +516,10 @@ impl Editor {
                         if let Some(te) = &mut e.db_table {
                             te.preview = None;
                         }
-                        e.notify.info("送信をやめました（変更は残っています）");
+                        e.svc.notify.info("送信をやめました（変更は残っています）");
                     });
                 }
-                Err(e) => self.notify.error(e),
+                Err(e) => self.svc.notify.error(e),
             },
             (_, Key::Char('f') | Key::Char('F')) if !dirty => {
                 let field = if key == Key::Char('f') { Field::Where } else { Field::Order };
@@ -550,16 +550,16 @@ impl Editor {
             (_, Key::Char('R')) => {
                 if dirty && !te.quit_armed {
                     te.quit_armed = true;
-                    self.notify.info("未送信の変更があります。もう一度 R で捨てて読み直す");
+                    self.svc.notify.info("未送信の変更があります。もう一度 R で捨てて読み直す");
                 } else {
                     self.db_table_reload();
                 }
             }
-            (_, Key::Char('f' | 'F' | 's' | '>' | '<')) => self.notify.info("未送信の変更があります（Ctrl+Enter で送るか、u で戻す）"),
+            (_, Key::Char('f' | 'F' | 's' | '>' | '<')) => self.svc.notify.info("未送信の変更があります（Ctrl+Enter で送るか、u で戻す）"),
             (_, Key::Char('q') | Key::Esc) => {
                 if dirty && !te.quit_armed {
                     te.quit_armed = true;
-                    self.notify.info(format!("未送信の変更が {} 件あります。もう一度 q で捨てて閉じる", te.changes()));
+                    self.svc.notify.info(format!("未送信の変更が {} 件あります。もう一度 q で捨てて閉じる", te.changes()));
                 } else {
                     self.close_db_table();
                 }
@@ -664,7 +664,7 @@ impl crate::layout::View for DbTableView {
             }
             let Some(te) = &mut ed.db_table else { return crate::layout::Click::Done };
             if te.changes() > 0 {
-                ed.notify.info("未送信の変更があります（Ctrl+Enter で送るか、u で戻す）");
+                ed.svc.notify.info("未送信の変更があります（Ctrl+Enter で送るか、u で戻す）");
             } else {
                 te.filter_edit = Some((field, VimField::new(if field == Field::Where { &te.where_ } else { &te.order }, false)));
             }
@@ -1001,7 +1001,7 @@ mod tests {
         e.set_state(State::Normal);
         assert!(e.db_table.is_some());
         assert_eq!(e.state(), State::DbTable);
-        assert!(e.notify.text.contains("送っていない変更が 1 件"), "{}", e.notify.text);
+        assert!(e.svc.notify.text.contains("送っていない変更が 1 件"), "{}", e.svc.notify.text);
         keys(&mut e, "q");
         assert!(e.db_table.is_some());
         keys(&mut e, "q");

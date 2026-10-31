@@ -253,7 +253,21 @@ pub struct Search {
     pub highlight: bool,
 }
 
+/// どの部品からも使うもの（ADR 0018 の §5）: 知らせ・裏の仕事・ドラッグで変えた大きさ・git の状態。
+/// 部品の状態（Editor のほかのフィールド）と分けておくと、部品の状態と一緒に借りられる
+#[derive(Default)]
+pub struct Services {
+    pub notify: crate::notify::Notify,
+    /// 裏の仕事と、終わったら呼ぶ受け取り（ADR 0018 の §4。`Editor::job` で始める）
+    pub jobs: nagi_core::task::Jobs<Editor>,
+    /// ドラッグで変えた大きさ（欄の幅・高さ、履歴の列の幅。名前は resize.rs。無ければ既定の大きさ）
+    pub sizes: nagi_ui::Sizes,
+    pub(crate) git: crate::git_ui::GitState,
+}
+
 pub struct Editor {
+    /// どの部品からも使うもの
+    pub svc: Services,
     pub buf: Buffer,
     pub(crate) hist: History,
     pub cursor: Cursor,
@@ -275,8 +289,6 @@ pub struct Editor {
     pub(crate) vim_on: bool,
     /// Vim を使わないときの、取り消しをまとめている操作（plain.rs）
     pub(crate) plain_run: crate::plain::Run,
-    /// 状態の行の文・知らせの履歴（notify.rs。self.notify.info・warn・error で書く）
-    pub notify: crate::notify::Notify,
     pub cmdline: Prompt,
     /// 検索語（置換のときも）と置換後
     pub query: Prompt,
@@ -379,8 +391,6 @@ pub struct Editor {
     pub(crate) in_global: bool,
     /// 直前の :s（& で繰り返す）
     pub(crate) last_sub: Option<crate::ex_cmds::LastSub>,
-    /// git（status・HEAD の版・差分・ポップアップ）
-    pub(crate) git: crate::git_ui::GitState,
     /// 左の欄・下のパネルを隠しているか（中身は残す）
     pub left_hidden: bool,
     /// 開いているファイルに木を合わせる（:TreeSync で切り替え。既定は合わせる）
@@ -444,8 +454,6 @@ pub struct Editor {
     pub right_tab: crate::right_panel::RightTab,
     pub right_hidden: bool,
     pub(crate) right_pending_w: bool,
-    /// ドラッグで変えた大きさ（欄の幅・高さ、履歴の列の幅。名前は resize.rs。無ければ既定の大きさ）
-    pub sizes: nagi_ui::Sizes,
     /// 最後に描いた入力欄の縦棒カーソル（列, y の px）。IME の候補の窓の位置に使う
     pub prompt_caret: std::cell::Cell<Option<(usize, f32)>>,
     /// マウスを載せている SQL コンソールの帯のボタン
@@ -480,8 +488,6 @@ pub struct Editor {
     pub branch_popup: Option<crate::branches::BranchPopup>,
     /// 裏で動かしているフェッチ・pull（見出し, 引数（止まったらもう一度動かす）, 結果）
     pub git_job: Option<(String, Vec<String>, nagi_core::task::Task<nagi_core::Result<String>>)>,
-    /// 裏の仕事と、終わったら呼ぶ受け取り（ADR 0018 の §4。`job` で始める）
-    pub jobs: nagi_core::task::Jobs<Editor>,
     /// 履歴の画面（開いている間だけ）
     pub log: Option<crate::log_view::LogView>,
     /// blame（出している間だけ）
@@ -539,10 +545,10 @@ impl Editor {
     /// 裏の処理から届いたものを全部受け取る（UI が起こされたとき）。どれかが変われば true。
     /// 裏の処理を足したら、その受け取りをここに 1 行足す（ADR 0016 の 1）
     pub fn poll_background(&mut self) -> bool {
-        // 終わった仕事の受け取り（受け取りの中で始めた仕事は self.jobs に入るので、残りと合わせる）
-        let mut jobs = std::mem::take(&mut self.jobs);
+        // 終わった仕事の受け取り（受け取りの中で始めた仕事は self.svc.jobs に入るので、残りと合わせる）
+        let mut jobs = std::mem::take(&mut self.svc.jobs);
         let mut changed = jobs.poll(self);
-        self.jobs.merge(jobs);
+        self.svc.jobs.merge(jobs);
         if self.poll_load() {
             crate::clock::mark_once("file: full buffer swapped in");
             changed = true;
@@ -622,7 +628,7 @@ impl Editor {
         match self.db_table.as_ref().map(|t| t.changes()) {
             Some(0) => self.db_table = None,
             Some(n) => {
-                self.notify.info(format!("テーブルに送っていない変更が {n} 件あります（Ctrl+Enter で送るか、q で捨てて閉じる）"));
+                self.svc.notify.info(format!("テーブルに送っていない変更が {n} 件あります（Ctrl+Enter で送るか、q で捨てて閉じる）"));
                 return false;
             }
             None => {}
@@ -645,7 +651,7 @@ impl Editor {
     /// `name` の仕事を裏で動かし、終わったら UI スレッドで `done` に結果を渡す（同じ名前の前の仕事は取り消す。ADR 0018 の §4）
     pub(crate) fn job<R: Send + 'static>(&mut self, name: &str, work: impl FnOnce() -> R + Send + 'static, done: impl FnOnce(&mut Editor, R) + 'static) {
         let waker = self.waker();
-        self.jobs.run(name, waker, work, done);
+        self.svc.jobs.run(name, waker, work, done);
     }
 
     /// 試験: 裏の仕事が全部終わって受け取りを呼び終えるまで待つ（10 秒まで）
@@ -653,7 +659,7 @@ impl Editor {
     pub(crate) fn wait_jobs(&mut self) {
         for _ in 0..2000 {
             self.poll_background();
-            if self.jobs.is_empty() {
+            if self.svc.jobs.is_empty() {
                 return;
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
@@ -667,6 +673,7 @@ impl Editor {
 
     pub fn new(buf: Buffer, syntax: Option<nagi_syntax::Syntax>) -> Self {
         Self {
+            svc: Services::default(),
             buf,
             hist: History::default(),
             cursor: Cursor::default(),
@@ -679,7 +686,6 @@ impl Editor {
             menu: None,
             vim_on: true,
             plain_run: Default::default(),
-            notify: Default::default(),
             cmdline: Prompt::default(),
             query: Prompt::default(),
             repl: Prompt::default(),
@@ -746,7 +752,6 @@ impl Editor {
             cmd_complete: None,
             cmd_files: None,
             make: None,
-            git: Default::default(),
             commit: None,
             run_panel: None,
             blame: None,
@@ -770,7 +775,6 @@ impl Editor {
             hover_bar: None,
             hover_buftab: None,
             prompt_caret: Default::default(),
-            sizes: Default::default(),
             db: None,
             maven: None,
             db_results: Default::default(),
@@ -807,7 +811,6 @@ impl Editor {
             right_hidden: false,
             right_pending_w: false,
             git_job: None,
-            jobs: Default::default(),
             diff: None,
             diff_return: None,
             diff_pending: None,
@@ -829,7 +832,7 @@ impl Editor {
             }
         });
         self.loading = Some(rx2);
-        self.notify.info(LOADING);
+        self.svc.notify.info(LOADING);
     }
 
     /// 全体が届いていれば差し替える。差し替えたら true（描き直す）
@@ -871,8 +874,8 @@ impl Editor {
         // 先頭部分は全体の頭と同じ内容なので、カーソルと表示位置はそのまま使える
         self.buf = b;
         self.reset_search_cache();
-        if self.notify.text == LOADING {
-            self.notify.clear();
+        if self.svc.notify.text == LOADING {
+            self.svc.notify.clear();
         }
         self.start_syntax();
     }
@@ -1046,7 +1049,7 @@ impl Editor {
     pub(crate) fn enter_insert(&mut self) {
         self.hist.begin();
         self.set_state(State::Insert);
-        self.notify.clear();
+        self.svc.notify.clear();
     }
 
     pub(crate) fn leave_insert_pub(&mut self) {
@@ -1264,11 +1267,11 @@ impl Editor {
                 }
                 // SQL コンソールでは「別名.」の後にすぐ列の候補を出す（列がまだ無ければ、届いたら出る）
                 if c == '.' && self.console_source().is_some() {
-                    let msg = self.notify.text.clone();
+                    let msg = self.svc.notify.text.clone();
                     self.completion = None;
                     self.start_smart_completion();
                     if self.completion.is_none() {
-                        self.notify.info(msg);
+                        self.svc.notify.info(msg);
                     }
                 }
             }
@@ -1456,7 +1459,7 @@ impl Editor {
         self.repl = Prompt::default();
         self.replace_field = if replace && !initial.is_empty() { 1 } else { 0 };
         self.set_state(if replace { State::Replace } else { State::Search });
-        self.notify.clear();
+        self.svc.notify.clear();
         self.update_incsearch();
     }
 
@@ -1582,9 +1585,9 @@ impl Editor {
                     // wrapscan がオフで、端の向こうにはある
                     let elsewhere = !self.settings.bool("vim.wrapscan") && self.find_next(0, true, true).is_some();
                     match (elsewhere, self.search.forward) {
-                        (true, true) => self.notify.error("E385: 末尾まで検索しました（wrapscan がオフ）"),
-                        (true, false) => self.notify.error("E384: 先頭まで検索しました（wrapscan がオフ）"),
-                        _ => self.notify.error(format!("E486: パターンは見つかりませんでした: {pattern}")),
+                        (true, true) => self.svc.notify.error("E385: 末尾まで検索しました（wrapscan がオフ）"),
+                        (true, false) => self.svc.notify.error("E384: 先頭まで検索しました（wrapscan がオフ）"),
+                        _ => self.svc.notify.error(format!("E486: パターンは見つかりませんでした: {pattern}")),
                     }
                 } else {
                     self.show_count();
@@ -1602,12 +1605,12 @@ impl Editor {
         let lead = if f { '/' } else { '?' };
         match self.match_count() {
             Some((Some(i), n)) => {
-                self.notify.progress(format!("{lead}{p}  [{}/{n}]", i + 1));
+                self.svc.notify.progress(format!("{lead}{p}  [{}/{n}]", i + 1));
                 self.search.count_message = false;
             }
             _ => {
                 // 全件はまだ数えている途中。届いたら出し直す
-                self.notify.progress(format!("{lead}{p}  [?/…]"));
+                self.svc.notify.progress(format!("{lead}{p}  [?/…]"));
                 self.search.count_message = true;
             }
         }
@@ -1616,7 +1619,7 @@ impl Editor {
     /// n / N の移動先。`reverse` は検索の向きを逆にする
     pub(crate) fn search_next(&mut self, reverse: bool, count: usize) -> Option<usize> {
         let Some((_, _, forward)) = self.search.last.clone() else {
-            self.notify.error("E35: 前回の検索パターンがありません");
+            self.svc.notify.error("E35: 前回の検索パターンがありません");
             return None;
         };
         self.search.highlight = self.settings.bool("vim.hlsearch");
@@ -1631,7 +1634,7 @@ impl Editor {
             if let Some((s, _)) = found {
                 at = s;
             } else if !wrap {
-                self.notify.error(if fwd { "E385: 末尾まで検索しました（wrapscan がオフ）" } else { "E384: 先頭まで検索しました（wrapscan がオフ）" });
+                self.svc.notify.error(if fwd { "E385: 末尾まで検索しました（wrapscan がオフ）" } else { "E384: 先頭まで検索しました（wrapscan がオフ）" });
                 return None;
             }
         }
@@ -1643,7 +1646,7 @@ impl Editor {
             }
             None => {
                 let p = self.search.last.as_ref().map(|l| l.0.clone()).unwrap_or_default();
-                self.notify.error(format!("E486: パターンは見つかりませんでした: {p}"));
+                self.svc.notify.error(format!("E486: パターンは見つかりませんでした: {p}"));
                 None
             }
         }
@@ -1674,7 +1677,7 @@ impl Editor {
                 match self.search.current {
                     Some((s, _)) => self.set_abs(s),
                     None => {
-                        self.notify.info("置換が終わりました");
+                        self.svc.notify.info("置換が終わりました");
                         self.set_state(State::Normal);
                         self.set_abs(s);
                         self.clamp_normal();
@@ -1698,7 +1701,7 @@ impl Editor {
                     self.edit(s, e, rep);
                 }
                 self.hist.close();
-                self.notify.info(format!("{} 箇所を置換しました", ms.len()));
+                self.svc.notify.info(format!("{} 箇所を置換しました", ms.len()));
                 self.set_state(State::Normal);
                 self.search.origin = None;
                 self.set_abs(ms[0].0);
@@ -1745,7 +1748,7 @@ impl Editor {
             return self.write();
         }
         if target.exists() && !force {
-            self.notify.error(format!("E13: ファイルが既にあります（:w! {name} で上書き）"));
+            self.svc.notify.error(format!("E13: ファイルが既にあります（:w! {name} で上書き）"));
             return false;
         }
         if self.buf.path.is_none() || rename {
@@ -1772,7 +1775,7 @@ impl Editor {
         match self.buf.save() {
             Ok(n) => {
                 let name = self.buf.path.as_ref().map(|p| p.display().to_string()).unwrap_or_default();
-                self.notify.info(format!("\"{name}\" {}L, {n}B 書き込み", self.buf.line_count()));
+                self.svc.notify.info(format!("\"{name}\" {}L, {n}B 書き込み", self.buf.line_count()));
                 // 保存したファイルの定義を索引し直す（裏で）。git の状態も取り直す
                 self.reindex_saved();
                 self.refresh_status();
@@ -1782,7 +1785,7 @@ impl Editor {
                 true
             }
             Err(e) => {
-                self.notify.error(format!("E212: 書き込めません: {e}"));
+                self.svc.notify.error(format!("E212: 書き込めません: {e}"));
                 false
             }
         }
@@ -1795,7 +1798,7 @@ impl Editor {
                 self.set_abs(at.min(self.buf.len_bytes()));
                 self.clamp_normal();
             }
-            None => self.notify.info(if later { "これ以上は進めません" } else { "これ以上は戻せません" }),
+            None => self.svc.notify.info(if later { "これ以上は進めません" } else { "これ以上は戻せません" }),
         }
     }
 
@@ -1817,10 +1820,10 @@ impl Editor {
                 Some((_, cmd)) => {
                     crate::commands::run(self, cmd);
                 }
-                None => self.notify.info(format!("未実装: {desc}（{id}）")),
+                None => self.svc.notify.info(format!("未実装: {desc}（{id}）")),
             },
-            Some((None, desc)) => self.notify.info(format!("Nagi には無い機能: {desc}")),
-            None => self.notify.info(format!("不明なアクション: {name}")),
+            Some((None, desc)) => self.svc.notify.info(format!("Nagi には無い機能: {desc}")),
+            None => self.svc.notify.info(format!("不明なアクション: {name}")),
         }
     }
 
@@ -1830,7 +1833,7 @@ impl Editor {
                 self.set_abs(at.min(self.buf.len_bytes()));
                 self.clamp_normal();
             }
-            None => self.notify.error("E664: 変更履歴がありません"),
+            None => self.svc.notify.error("E664: 変更履歴がありません"),
         }
     }
 
@@ -1880,7 +1883,7 @@ impl Editor {
             None => crate::clipboard::get(),
         };
         let Some(text) = text.filter(|t| !t.is_empty()) else {
-            self.notify.info("クリップボードが空です");
+            self.svc.notify.info("クリップボードが空です");
             return;
         };
         let text = if self.state() == State::CommitMsg {
@@ -2232,7 +2235,7 @@ mod tests {
         assert_eq!(e.match_count(), Some((Some(0), 1)));
         e.key(Key::Enter);
         assert_eq!(e.state(), State::Normal);
-        assert_eq!(e.notify.text, "/needle  [1/1]");
+        assert_eq!(e.svc.notify.text, "/needle  [1/1]");
         // n は近くから探す（全件はもう数えてある）
         e.key(Key::Char('g'));
         e.key(Key::Char('g'));
@@ -2320,7 +2323,7 @@ mod tests {
         for k in "jVjzf".chars() {
             e.key(Key::Char(k));
         }
-        assert!(!e.folds.is_empty(), "{}", e.notify.text);
+        assert!(!e.folds.is_empty(), "{}", e.svc.notify.text);
         for k in "gg$".chars() {
             e.key(Key::Char(k));
         }

@@ -44,12 +44,12 @@ impl Editor {
     /// 今のファイルを整形する（設定の「整形のコマンド」で）
     pub(crate) fn format_buffer(&mut self) {
         let Some(path) = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()) else {
-            self.notify.info("ファイル名がありません");
+            self.svc.notify.info("ファイル名がありません");
             return;
         };
         let ext = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
         let Some(cmd) = command_for(&self.settings.list("tools.formatters"), &ext) else {
-            self.notify.info(format!(".{ext} の整形のコマンドがありません（設定の「整形のコマンド」で 拡張子=コマンド）"));
+            self.svc.notify.info(format!(".{ext} の整形のコマンドがありません（設定の「整形のコマンド」で 拡張子=コマンド）"));
             return;
         };
         let root = self.nav_root();
@@ -82,7 +82,7 @@ impl Editor {
             ctx.send(run());
         });
         self.format_job = Some(FormatJob { version: self.buf.version, path, task });
-        self.notify.info(format!("整形しています: {shown}"));
+        self.svc.notify.info(format!("整形しています: {shown}"));
     }
 
     /// import の整理（Ctrl+Alt+O・:OptimizeImports。nagi_lang::imports）。違う所だけを 1 回の編集で入れる（u で戻せる）
@@ -90,19 +90,19 @@ impl Editor {
         let path = self.buf.path.clone().unwrap_or_default();
         let ext = path.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_default();
         let Some(kind) = nagi_lang::imports::Kind::of_ext(&ext) else {
-            self.notify.info(format!("import の整理は Java・Kotlin・TypeScript・JavaScript・Python だけです（.{ext}）"));
+            self.svc.notify.info(format!("import の整理は Java・Kotlin・TypeScript・JavaScript・Python だけです（.{ext}）"));
             return;
         };
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let old = self.buf.text();
         let nl = self.buf.newline();
         match nagi_lang::imports::optimize(kind, &old.replace("\r\n", "\n"), &name) {
-            Err(e) => self.notify.warn(e),
-            Ok(None) => self.notify.info("整理する import はありません"),
+            Err(e) => self.svc.notify.warn(e),
+            Ok(None) => self.svc.notify.info("整理する import はありません"),
             Ok(Some((new, removed))) => {
                 let new = new.replace('\n', nl);
                 let Some((s, e, t)) = changed_span(&old, &new) else {
-                    self.notify.info("整理する import はありません");
+                    self.svc.notify.info("整理する import はありません");
                     return;
                 };
                 let (line, byte) = (self.cursor.line, self.cursor.byte);
@@ -115,7 +115,7 @@ impl Editor {
                 self.cursor.line = line.min(self.buf.line_count().saturating_sub(1));
                 self.cursor.byte = byte.min(self.buf.line(self.cursor.line).len());
                 self.clamp_normal();
-                self.notify.info(if removed > 0 { format!("import を整理しました（{removed} 件外した。u で戻せる）") } else { "import を並べ直しました（u で戻せる）".into() });
+                self.svc.notify.info(if removed > 0 { format!("import を整理しました（{removed} 件外した。u で戻せる）") } else { "import を並べ直しました（u で戻せる）".into() });
             }
         }
     }
@@ -132,14 +132,14 @@ impl Editor {
         let job = self.format_job.take().unwrap();
         let here = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
         match r {
-            Err(e) => self.notify.error(format!("整形できません: {e}")),
-            Ok(_) if here.as_ref() != Some(&job.path) || self.buf.version != job.version => self.notify.info("整形の間に中身が変わったので、入れませんでした"),
+            Err(e) => self.svc.notify.error(format!("整形できません: {e}")),
+            Ok(_) if here.as_ref() != Some(&job.path) || self.buf.version != job.version => self.svc.notify.info("整形の間に中身が変わったので、入れませんでした"),
             Ok(out) => {
                 let nl = self.buf.newline();
                 let out = out.replace("\r\n", "\n").replace('\n', nl);
                 let old = self.buf.text();
                 match changed_span(&old, &out) {
-                    None => self.notify.info("整形済みです（変わる所はありません）"),
+                    None => self.svc.notify.info("整形済みです（変わる所はありません）"),
                     Some((s, e, t)) => {
                         let (line, byte) = (self.cursor.line, self.cursor.byte);
                         self.hist.begin();
@@ -148,7 +148,7 @@ impl Editor {
                         self.cursor.line = line.min(self.buf.line_count().saturating_sub(1));
                         self.cursor.byte = byte.min(self.buf.line(self.cursor.line).len());
                         self.clamp_normal();
-                        self.notify.info("整形しました（u で戻せる）");
+                        self.svc.notify.info("整形しました（u で戻せる）");
                     }
                 }
             }
@@ -186,7 +186,7 @@ mod tests {
         while !e.poll_format() && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        assert_eq!(e.buf.text(), "a\n", "{}", e.notify.text);
+        assert_eq!(e.buf.text(), "a\n", "{}", e.svc.notify.text);
         // 無いコマンド
         e.settings.set("tools.formatters", "zz=nagi-no-such-formatter -", false);
         e.format_buffer();
@@ -194,7 +194,7 @@ mod tests {
         while !e.poll_format() && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        assert!(e.notify.text.contains("nagi-no-such-formatter が見つかりません"), "{}", e.notify.text);
+        assert!(e.svc.notify.text.contains("nagi-no-such-formatter が見つかりません"), "{}", e.svc.notify.text);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -208,8 +208,8 @@ mod tests {
         let mut e = Editor::new(nagi_core::Buffer::open(&f).unwrap(), None);
         e.cursor.line = 4;
         e.optimize_imports();
-        assert_eq!(e.buf.text(), "import java.util.List;\r\n\r\nclass A {\r\n  List<String> xs;\r\n}\r\n", "{}", e.notify.text);
-        assert!(e.notify.text.contains("1 件"), "{}", e.notify.text);
+        assert_eq!(e.buf.text(), "import java.util.List;\r\n\r\nclass A {\r\n  List<String> xs;\r\n}\r\n", "{}", e.svc.notify.text);
+        assert!(e.svc.notify.text.contains("1 件"), "{}", e.svc.notify.text);
         assert_eq!(e.cursor.line, 3, "カーソルは同じ行に残る");
         e.key(nagi_vim::Key::Char('u'));
         assert!(e.buf.text().starts_with("import java.util.Map;"));

@@ -51,8 +51,8 @@ impl Editor {
     pub(crate) fn start_easy(&mut self, kind: EasyKind) {
         let mut e = Easy { kind, targets: Vec::new(), typed: String::new(), query: String::new(), picking: false };
         match kind {
-            EasyKind::FindChar => self.notify.info("EasyMotion: 跳ぶ先の文字を打つ（Esc でやめる）"),
-            EasyKind::Search => self.notify.info("EasyMotion: 検索する文字列を打って Enter"),
+            EasyKind::FindChar => self.svc.notify.info("EasyMotion: 跳ぶ先の文字を打つ（Esc でやめる）"),
+            EasyKind::Search => self.svc.notify.info("EasyMotion: 検索する文字列を打って Enter"),
             _ => {
                 e.targets = self.easy_targets(kind, "");
                 e.picking = true;
@@ -124,19 +124,19 @@ impl Editor {
         match e.targets.len() {
             0 => {
                 self.easy = None;
-                self.notify.info("EasyMotion: 跳び先がありません");
+                self.svc.notify.info("EasyMotion: 跳び先がありません");
             }
             1 => {
                 let (l, b, _) = e.targets[0].clone();
                 self.easy_jump(l, b);
             }
-            n => self.notify.info(format!("EasyMotion: 印を打って跳ぶ（{n} か所。Esc でやめる）")),
+            n => self.svc.notify.info(format!("EasyMotion: 印を打って跳ぶ（{n} か所。Esc でやめる）")),
         }
     }
 
     fn easy_jump(&mut self, line: usize, byte: usize) {
         self.easy = None;
-        self.notify.clear();
+        self.svc.notify.clear();
         self.push_jump();
         self.cursor.line = line;
         self.cursor.byte = byte;
@@ -149,7 +149,7 @@ impl Editor {
         let Some(e) = &mut self.easy else { return };
         if matches!(key, Key::Esc | Key::Ctrl('c')) {
             self.easy = None;
-            self.notify.clear();
+            self.svc.notify.clear();
             return;
         }
         if !e.picking {
@@ -158,7 +158,7 @@ impl Editor {
                 (EasyKind::Search, Key::Char(c)) => {
                     e.query.push(c);
                     let q = e.query.clone();
-                    self.notify.info(format!("EasyMotion: {q}"));
+                    self.svc.notify.info(format!("EasyMotion: {q}"));
                     return;
                 }
                 (EasyKind::Search, Key::Backspace) => {

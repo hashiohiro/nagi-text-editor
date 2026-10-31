@@ -574,7 +574,7 @@ impl crate::editor::Editor {
             let keys: Vec<String> = self.settings.global.keys().filter_map(|k| k.strip_prefix("state.")).filter(|k| k.ends_with("_width") || k.ends_with("_height")).map(String::from).collect();
             for k in keys {
                 if let Some(v) = num(&format!("state.{k}")) {
-                    self.sizes.set_default(&k, v);
+                    self.svc.sizes.set_default(&k, v);
                 }
             }
         }
@@ -658,11 +658,11 @@ impl crate::editor::Editor {
             return;
         }
         let old = self.settings.clone();
-        for (k, v) in self.sizes.iter() {
+        for (k, v) in self.svc.sizes.iter() {
             self.settings.global.insert(format!("state.{k}"), v.to_string());
         }
         if let Err(e) = self.save_settings(&old) {
-            self.notify.error(format!("欄の大きさを覚えられません: {e}"));
+            self.svc.notify.error(format!("欄の大きさを覚えられません: {e}"));
         }
     }
 

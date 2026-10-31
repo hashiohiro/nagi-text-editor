@@ -503,7 +503,7 @@ impl Editor {
         let what = [(maven, "Maven"), (jdk, "JDK")].iter().filter(|(m, _)| *m).map(|(_, n)| *n).collect::<Vec<_>>().join("・");
         // 入れた後でもまだ足りなければ、もう入れに行かない（同じダウンロードを繰り返さない）
         if self.tools_fetched {
-            self.notify.error(format!("{what} が見つかりません（設定の「ビルド・実行」で選ぶか、ダウンロードしてください）"));
+            self.svc.notify.error(format!("{what} が見つかりません（設定の「ビルド・実行」で選ぶか、ダウンロードしてください）"));
             return false;
         }
         if maven && self.tool_download.as_ref().is_none_or(|(id, _)| id != "maven") {
@@ -513,7 +513,7 @@ impl Editor {
             self.start_jdk_download(nagi_workers::jdk::AUTO);
         }
         self.after_tools = Some(then);
-        self.notify.info(format!("{what} が無いので、nagi 用にダウンロードして入れます。入れ終わったら続けて動かします"));
+        self.svc.notify.info(format!("{what} が無いので、nagi 用にダウンロードして入れます。入れ終わったら続けて動かします"));
         false
     }
 
@@ -535,32 +535,32 @@ impl Editor {
     pub(crate) fn start_tool_download(&mut self, id: &str, release: Option<nagi_workers::toolchains::Release>) {
         let label = nagi_workers::toolchains::def(id).map_or(id, |t| t.label);
         if self.tool_download.is_some() {
-            self.notify.info("ほかのツールをダウンロードしています");
+            self.svc.notify.info("ほかのツールをダウンロードしています");
             return;
         }
         let what = release.as_ref().map_or("最新版".to_string(), |r| r.version.clone());
         if cfg!(test) {
-            self.notify.info(format!("（試験）{label} {what} のダウンロード"));
+            self.svc.notify.info(format!("（試験）{label} {what} のダウンロード"));
             return;
         }
         let waker = self.waker();
         self.tool_download = Some((id.to_string(), nagi_workers::toolchains::download(id, release, waker)));
-        self.notify.info(format!("{label} {what} をダウンロードします…"));
+        self.svc.notify.info(format!("{label} {what} をダウンロードします…"));
     }
 
     /// JDK（Eclipse Temurin の `version`）をダウンロードし始める。進み具合は状態の行に、終わったら設定に入れる
     pub(crate) fn start_jdk_download(&mut self, version: u32) {
         if self.jdk_download.is_some() {
-            self.notify.info("JDK をダウンロードしています。終わるまでお待ちください");
+            self.svc.notify.info("JDK をダウンロードしています。終わるまでお待ちください");
             return;
         }
         if cfg!(test) {
-            self.notify.info(format!("（試験）JDK {version} のダウンロード"));
+            self.svc.notify.info(format!("（試験）JDK {version} のダウンロード"));
             return;
         }
         let waker = self.waker();
         self.jdk_download = Some((version, nagi_workers::jdk::download_temurin(version, waker)));
-        self.notify.info(format!("Eclipse Temurin {version} をダウンロードしています（約 200MB。{} に置く）", nagi_workers::jdk::jdks_dir().display()));
+        self.svc.notify.info(format!("Eclipse Temurin {version} をダウンロードしています（約 200MB。{} に置く）", nagi_workers::jdk::jdks_dir().display()));
     }
 
     /// ダウンロードの進み具合を受け取る。変わったら true
@@ -579,7 +579,7 @@ impl Editor {
         let label = nagi_workers::toolchains::def(&id).map_or(id.clone(), |t| t.label.to_string());
         let changed = polled.status.is_some() || polled.done.is_some();
         if let Some(st) = polled.status {
-            self.notify.progress(format!("{label}: {st}"));
+            self.svc.notify.progress(format!("{label}: {st}"));
         }
         if let Some(r) = polled.done {
             self.tool_download = None;
@@ -589,11 +589,11 @@ impl Editor {
                     let project = self.settings_dialog.as_ref().is_some_and(|d| d.project_scope);
                     let p = self.set_downloaded(&format!("toolchain.{id}"), &path, project);
                     let scope = if project { "このプロジェクトの設定" } else { "設定" };
-                    self.notify.info(format!("{label} を入れました: {p}（{scope}にしました。ターミナル・実行の構成・:Make で使う）"));
+                    self.svc.notify.info(format!("{label} を入れました: {p}（{scope}にしました。ターミナル・実行の構成・:Make で使う）"));
                 }
                 Err(e) => {
                     self.after_tools = None;
-                    self.notify.error(format!("{label} をダウンロードできません: {e}"));
+                    self.svc.notify.error(format!("{label} をダウンロードできません: {e}"));
                 }
             }
         }
@@ -605,18 +605,18 @@ impl Editor {
         let (ver, polled) = (*ver, d.poll());
         let changed = polled.status.is_some() || polled.done.is_some();
         if let Some(st) = polled.status {
-            self.notify.progress(format!("Eclipse Temurin {ver}: {st}"));
+            self.svc.notify.progress(format!("Eclipse Temurin {ver}: {st}"));
         }
         if let Some(r) = polled.done {
             self.jdk_download = None;
             match r {
                 Ok(path) => {
                     let p = self.set_downloaded("maven.jdk", &path, false);
-                    self.notify.info(format!("JDK を入れました: {p}（設定の JDK にしました）"));
+                    self.svc.notify.info(format!("JDK を入れました: {p}（設定の JDK にしました）"));
                 }
                 Err(e) => {
                     self.after_tools = None;
-                    self.notify.error(format!("JDK をダウンロードできません: {e}"));
+                    self.svc.notify.error(format!("JDK をダウンロードできません: {e}"));
                 }
             }
         }
@@ -674,7 +674,7 @@ impl Editor {
         }
         self.settings_dialog = Some(d);
         self.set_state(State::Settings);
-        self.notify.clear();
+        self.svc.notify.clear();
     }
 
     /// 適用（保存して、動いている nagi に効かせる）
@@ -682,7 +682,7 @@ impl Editor {
         let Some(d) = &mut self.settings_dialog else { return false };
         if d.focus == SFocus::Edit {
             if let Some(e) = d.commit_edit() {
-                self.notify.error(e);
+                self.svc.notify.error(e);
                 return false;
             }
         }
@@ -692,7 +692,7 @@ impl Editor {
             if let Some(p) = crate::settings::keys_path() {
                 let r = if text.lines().count() <= 1 { std::fs::remove_file(&p).or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) }) } else { p.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|_| std::fs::write(&p, &text)) };
                 if let Err(e) = r {
-                    self.notify.error(format!("割り当てを保存できません（{}）: {e}", p.display()));
+                    self.svc.notify.error(format!("割り当てを保存できません（{}）: {e}", p.display()));
                     return false;
                 }
             }
@@ -710,11 +710,11 @@ impl Editor {
                 d.base = work.clone();
                 let old = std::mem::replace(&mut self.settings, work);
                 self.apply_settings(Some(&old));
-                self.notify.info("設定を保存しました");
+                self.svc.notify.info("設定を保存しました");
                 true
             }
             Err(e) => {
-                self.notify.error(format!("設定を保存できません: {e}"));
+                self.svc.notify.error(format!("設定を保存できません: {e}"));
                 false
             }
         }
@@ -734,7 +734,7 @@ impl Editor {
             SButton::Cancel => {
                 self.settings_dialog = None;
                 self.set_state(State::Normal);
-                self.notify.info("設定の画面を閉じました（適用していない変更は捨てました）");
+                self.svc.notify.info("設定の画面を閉じました（適用していない変更は捨てました）");
             }
             SButton::Scope => {
                 if let Some(d) = &mut self.settings_dialog {
@@ -825,7 +825,7 @@ impl Editor {
                 match out {
                     FieldOut::Submit => {
                         if let Some(e) = d.commit_edit() {
-                            self.notify.error(e);
+                            self.svc.notify.error(e);
                         }
                     }
                     FieldOut::Cancel => {
@@ -929,7 +929,7 @@ impl Editor {
         let Some(d) = &mut self.settings_dialog else { return };
         if d.dirty && !confirm {
             d.confirm_close = true;
-            self.notify.info("適用していない変更があります。もう一度 Esc で捨てて閉じる、Ctrl+Enter で適用して閉じる");
+            self.svc.notify.info("適用していない変更があります。もう一度 Esc で捨てて閉じる、Ctrl+Enter で適用して閉じる");
         } else {
             self.settings_button(SButton::Cancel);
         }
@@ -1364,7 +1364,7 @@ mod tests {
         // 足す: o で「n <leader>」の続きを打つ
         keys(&mut e, "ox :Files<CR>");
         let d = e.settings_dialog.as_ref().unwrap();
-        assert_eq!(d.maps.len(), 3, "{}", e.notify.text);
+        assert_eq!(d.maps.len(), 3, "{}", e.svc.notify.text);
         assert_eq!(vim_maps::line_of(&d.maps[2]), "n <leader>x :Files");
         // 1 行目の右辺を Action の一覧から（絞り込んで Enter）
         keys(&mut e, "gaFindInPath<CR>");
@@ -1376,7 +1376,7 @@ mod tests {
         let d = e.settings_dialog.as_ref().unwrap();
         assert_eq!(d.maps.iter().map(vim_maps::line_of).collect::<Vec<_>>(), ["n ew :<C-u>w<CR>", "n <leader>x :Files"]);
         keys(&mut e, "<C-m>");
-        assert_eq!(e.state(), State::Normal, "{}", e.notify.text);
+        assert_eq!(e.state(), State::Normal, "{}", e.svc.notify.text);
         assert_eq!(e.vim_maps.len(), 2);
         assert!(e.rc_dirty);
         let text = vim_maps::render(&e.vim_maps_base, &e.vim_maps);
@@ -1404,7 +1404,7 @@ mod tests {
         keys(&mut e, "/インデントの幅<CR>");
         assert_eq!(e.settings_dialog.as_ref().unwrap().current().unwrap().key, "editor.indent_width");
         keys(&mut e, "<CR><Esc>S99<CR>");
-        assert!(e.notify.text.contains("1〜16"), "{}", e.notify.text);
+        assert!(e.svc.notify.text.contains("1〜16"), "{}", e.svc.notify.text);
         keys(&mut e, "<CR><Esc>S2<CR>");
         assert_eq!(e.settings_dialog.as_ref().unwrap().work.int("editor.indent_width"), 2);
         // p でこのプロジェクトに。オン・オフは Space
@@ -1412,7 +1412,7 @@ mod tests {
         assert!(e.settings_dialog.as_ref().unwrap().project_scope);
         // Ctrl+Enter で適用して閉じる → Editor.settings に入り、プロジェクトのファイルは書かない（全体に入れたので）
         keys(&mut e, "<C-m>");
-        assert_eq!(e.state(), State::Normal, "{}", e.notify.text);
+        assert_eq!(e.state(), State::Normal, "{}", e.svc.notify.text);
         assert_eq!(e.settings.get("editor.line_numbers"), "relative");
         assert_eq!(e.settings.int("editor.indent_width"), 2);
         // 直してから Esc を 1 回だと確かめる
@@ -1456,7 +1456,7 @@ mod tests {
         assert!(c.items[0].label.starts_with("自動"));
         assert!(c.items.iter().any(|i| i.value == "download:21"));
         keys(&mut e, "temurin 21<CR>");
-        assert!(e.notify.text.contains("JDK 21"), "{}", e.notify.text);
+        assert!(e.svc.notify.text.contains("JDK 21"), "{}", e.svc.notify.text);
         assert_eq!(e.settings_dialog.as_ref().unwrap().work.get("maven.jdk"), "", "ダウンロードが終わるまでは変えない");
     }
 
@@ -1478,6 +1478,6 @@ mod tests {
         let labels: Vec<&str> = c.items.iter().map(|i| i.label.as_str()).collect();
         assert!(labels.contains(&"＋ ダウンロード: Node.js 22.30.0") && !c.items.iter().any(|i| i.value == RELEASES_WAIT), "{labels:?}");
         keys(&mut e, "22.30<CR>");
-        assert!(e.notify.text.contains("Node.js 22.30.0"), "{}", e.notify.text);
+        assert!(e.svc.notify.text.contains("Node.js 22.30.0"), "{}", e.svc.notify.text);
     }
 }

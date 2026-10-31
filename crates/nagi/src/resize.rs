@@ -83,16 +83,16 @@ impl Editor {
     /// 左の欄の幅（ドラッグで変えていればその幅）
     pub fn left_width(&self) -> usize {
         let cols = self.area().w;
-        let w = self.sizes.get("left_width").unwrap_or_else(|| crate::tree_panel::tree_width(cols));
+        let w = self.svc.sizes.get("left_width").unwrap_or_else(|| crate::tree_panel::tree_width(cols));
         // 右の欄が出ていればその分も除いて、窓に 20 列は残す
-        let right = if self.right_visible().is_some() { self.sizes.get("right_width").unwrap_or(10).min(40) + 1 } else { 0 };
+        let right = if self.right_visible().is_some() { self.svc.sizes.get("right_width").unwrap_or(10).min(40) + 1 } else { 0 };
         w.clamp(10.min(cols), cols.saturating_sub(20 + right).max(10))
     }
 
     /// 下のパネルの高さ（ドラッグで変えていればその高さ）
     pub fn bottom_height(&self) -> usize {
         let rows = self.screen.1;
-        let h = self.sizes.get("bottom_height").unwrap_or_else(|| crate::grep_panel::panel_height(rows));
+        let h = self.svc.sizes.get("bottom_height").unwrap_or_else(|| crate::grep_panel::panel_height(rows));
         h.clamp(3.min(rows), rows.saturating_sub(4).max(1))
     }
 
@@ -140,7 +140,7 @@ impl Editor {
     /// ドラッグ中: マウスの (行, 列) に区切りを合わせる
     pub(crate) fn drag_sep(&mut self, sep: &Sep, row: usize, col: usize) {
         match sep {
-            Sep::Size(s) => s.drag(&mut self.sizes, row, col),
+            Sep::Size(s) => s.drag(&mut self.svc.sizes, row, col),
             Sep::Split { path, idx, vertical, area } => {
                 let Some(Layout::Split { kids, weights, .. }) = node_mut(&mut self.layout, path) else { return };
                 let n = kids.len();
@@ -164,7 +164,7 @@ impl Editor {
     /// ダブルクリック: 元の大きさ（等分）に戻す
     pub(crate) fn reset_sep(&mut self, sep: &Sep) {
         match sep {
-            Sep::Size(s) => self.sizes.reset(s.key),
+            Sep::Size(s) => self.svc.sizes.reset(s.key),
             Sep::Split { path, .. } => {
                 if let Some(Layout::Split { weights, .. }) = node_mut(&mut self.layout, path) {
                     *weights = vec![1.0; weights.len()];
@@ -235,7 +235,7 @@ mod tests {
         e.drag_sep(&bottom, p.y - 2, p.x + 3);
         assert_eq!(e.bottom_height(), p.h + 2);
         e.drag_sep(&left, 3, a.x + 30);
-        let saved: Vec<(String, usize)> = e.sizes.iter().map(|(k, v)| (k.to_string(), v)).collect();
+        let saved: Vec<(String, usize)> = e.svc.sizes.iter().map(|(k, v)| (k.to_string(), v)).collect();
         assert_eq!(saved, [("bottom_height".to_string(), p.h + 2), ("left_width".to_string(), 30)]);
     }
 }

@@ -883,6 +883,6 @@ mod tests {
         e.open_dropped(dir.join("proj"));
         assert!(e.launcher.is_none());
         assert_ne!(e.state(), State::Launcher, "ランチャーから開いたときと同じく、ツリーへ");
-        assert!(e.git.root.as_ref().is_some_and(|r| r.ends_with("proj")) || e.notify.text.contains("proj"), "{}", e.notify.text);
+        assert!(e.svc.git.root.as_ref().is_some_and(|r| r.ends_with("proj")) || e.svc.notify.text.contains("proj"), "{}", e.svc.notify.text);
     }
 }

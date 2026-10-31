@@ -128,7 +128,7 @@ impl Editor {
     /// 今の行のブレークポイントを付ける・外す（F9・:Breakpoint・行番号の欄を押す）
     pub(crate) fn toggle_breakpoint(&mut self, line: Option<usize>) {
         let Some(path) = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()) else {
-            self.notify.info("ファイル名がありません");
+            self.svc.notify.info("ファイル名がありません");
             return;
         };
         let line = line.unwrap_or(self.cursor.line);
@@ -143,9 +143,9 @@ impl Editor {
             self.breakpoints.remove(&path);
         }
         if lang_of(&path).is_none() {
-            self.notify.info("ブレークポイントで止まるのは Java・Kotlin・TypeScript・JavaScript・Python のファイルだけです");
+            self.svc.notify.info("ブレークポイントで止まるのは Java・Kotlin・TypeScript・JavaScript・Python のファイルだけです");
         } else {
-            self.notify.info(format!("{} 行目のブレークポイントを{}", line + 1, if on { "付けました" } else { "外しました" }));
+            self.svc.notify.info(format!("{} 行目のブレークポイントを{}", line + 1, if on { "付けました" } else { "外しました" }));
         }
         self.send_breakpoints();
     }
@@ -250,7 +250,7 @@ impl Editor {
         let here_py = self.buf.path.as_deref().is_some_and(|p| lang_of(p) == Some(Lang::Python));
         let picked = want.and_then(|w| configs.iter().find(|c| c.name == w).cloned()).or_else(|| if here_py { self.current_file_config() } else { None }).or_else(|| configs.first().cloned()).or_else(|| self.current_file_config());
         let Some(cfg) = picked else {
-            self.notify.info("実行の構成がありません（:DebugTest でカーソルの位置のテスト、:DebugBrowser でブラウザ、:DebugAttach 5005 で動いている JVM へ）");
+            self.svc.notify.info("実行の構成がありません（:DebugTest でカーソルの位置のテスト、:DebugBrowser でブラウザ、:DebugAttach 5005 で動いている JVM へ）");
             return;
         };
         self.debug_config(cfg);
@@ -259,7 +259,7 @@ impl Editor {
     fn debug_config(&mut self, cfg: nagi_workers::runconfig::RunConfig) {
         use nagi_workers::runconfig::Kind;
         let Some(port) = free_port() else {
-            self.notify.error("空いているポートがありません");
+            self.svc.notify.error("空いているポートがありません");
             return;
         };
         // IntelliJ の JavaScript Debug の構成（URL）: ブラウザを起こしてつなぐ
@@ -273,7 +273,7 @@ impl Editor {
             None => match self.with_debugpy(&cfg, port) {
                 Some(c) => (c, Lang::Python),
                 None => {
-                    self.notify.error(format!("「{}」（{}）はデバッグで動かせません（Java の Maven・Spring Boot・アプリケーション・java のコマンド、Python、ブラウザの URL）", cfg.name, cfg.kind_label()));
+                    self.svc.notify.error(format!("「{}」（{}）はデバッグで動かせません（Java の Maven・Spring Boot・アプリケーション・java のコマンド、Python、ブラウザの URL）", cfg.name, cfg.kind_label()));
                     return;
                 }
             },
@@ -284,7 +284,7 @@ impl Editor {
         let name = dcfg.name.clone();
         self.run_config(dcfg);
         self.start_debug(name.clone(), lang, format!("127.0.0.1:{port}"), Some(format!("{}{name}", crate::run_configs::RUN_PREFIX)), "");
-        self.notify.info(format!("デバッグ: {name}（起きたらつなぐ）"));
+        self.svc.notify.info(format!("デバッグ: {name}（起きたらつなぐ）"));
     }
 
     /// プロジェクトの Python（.venv・venv があればその中のもの）
@@ -301,7 +301,7 @@ impl Editor {
         nagi_workers::sys::no_window(&mut c);
         let ok = c.status().is_ok_and(|s| s.success());
         if !ok {
-            self.notify.error(format!("{py} に debugpy がありません（{py} -m pip install debugpy）"));
+            self.svc.notify.error(format!("{py} に debugpy がありません（{py} -m pip install debugpy）"));
         }
         ok
     }
@@ -326,7 +326,7 @@ impl Editor {
     pub(crate) fn debug_browser(&mut self, url: &str) {
         let url = if url.trim().is_empty() { self.dev_server_url() } else { url.trim().to_string() };
         let Some(exe) = nagi_workers::cdp::find_browser() else {
-            self.notify.error("Chrome も Edge も見つかりません");
+            self.svc.notify.error("Chrome も Edge も見つかりません");
             return;
         };
         let Some(port) = free_port() else { return };
@@ -334,9 +334,9 @@ impl Editor {
             Ok(_) => {
                 let hint = url.split("://").nth(1).unwrap_or(&url).to_string();
                 self.start_debug(format!("ブラウザ（{url}）"), Lang::Browser, format!("127.0.0.1:{port}"), None, &hint);
-                self.notify.info(format!("デバッグ: {} で {url} を開きました", exe.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+                self.svc.notify.info(format!("デバッグ: {} で {url} を開きました", exe.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
             }
-            Err(e) => self.notify.error(e),
+            Err(e) => self.svc.notify.error(e),
         }
     }
 
@@ -352,7 +352,7 @@ impl Editor {
         let a = arg.trim();
         let addr = if a.is_empty() { "127.0.0.1:9222".to_string() } else if a.contains(':') { a.to_string() } else { format!("127.0.0.1:{a}") };
         self.start_debug(format!("ブラウザ（{addr}）"), Lang::Browser, addr, None, "");
-        self.notify.info("ブラウザにつないでいます…（chrome --remote-debugging-port=9222 で起こしたもの）");
+        self.svc.notify.info("ブラウザにつないでいます…（chrome --remote-debugging-port=9222 で起こしたもの）");
     }
 
     /// `:DebugAttachPython [ポート]`: debugpy（python -m debugpy --listen 5678 ...）につなぐ
@@ -360,7 +360,7 @@ impl Editor {
         let a = arg.trim();
         let addr = if a.is_empty() { "127.0.0.1:5678".to_string() } else if a.contains(':') { a.to_string() } else { format!("127.0.0.1:{a}") };
         self.start_debug(format!("Python（{addr}）"), Lang::Python, addr, None, "");
-        self.notify.info("debugpy につないでいます…");
+        self.svc.notify.info("debugpy につないでいます…");
     }
 
     /// `:DebugTest`: カーソルの位置のテストをデバッグで（Maven の surefire の口を開ける）
@@ -378,7 +378,7 @@ impl Editor {
             a => format!("127.0.0.1:{a}"),
         };
         self.start_debug(format!("つないだ JVM（{addr}）"), Lang::Java, addr, None, "");
-        self.notify.info("JVM につないでいます…");
+        self.svc.notify.info("JVM につないでいます…");
     }
 
     fn debug_send(&mut self, c: Cmd) {
@@ -386,7 +386,7 @@ impl Editor {
             Some(tx) if !self.debug.as_ref().is_some_and(|d| d.ended) => {
                 let _ = tx.send(c);
             }
-            _ => self.notify.info("デバッグしていません（Shift+F9 で始める）"),
+            _ => self.svc.notify.info("デバッグしていません（Shift+F9 で始める）"),
         }
     }
 
@@ -401,7 +401,7 @@ impl Editor {
 
     pub(crate) fn debug_step(&mut self, d: Depth) {
         if !self.debug.as_ref().is_some_and(|x| x.stopped) {
-            self.notify.info("止まっていないのでステップできません");
+            self.svc.notify.info("止まっていないのでステップできません");
             return;
         }
         self.debug_send(Cmd::Step(d));
@@ -410,7 +410,7 @@ impl Editor {
     /// 止める（JVM を終わらせ、動かしていたターミナルも閉じる）
     pub(crate) fn debug_stop(&mut self) {
         if !self.debug.as_ref().is_some_and(|d| !d.ended) {
-            self.notify.info("デバッグしていません");
+            self.svc.notify.info("デバッグしていません");
             return;
         }
         self.debug_send(Cmd::Stop);
@@ -468,7 +468,7 @@ impl Editor {
                     d.at = Some((p, line - 1));
                 }
             }
-            None => self.notify.info(format!("{src} がプロジェクトに見つかりません（{}.{}:{line}）", f.class, f.method)),
+            None => self.svc.notify.info(format!("{src} がプロジェクトに見つかりません（{}.{}:{line}）", f.class, f.method)),
         }
     }
 
@@ -525,7 +525,7 @@ impl Editor {
                         }
                     }
                 }
-                Ev::Note(n) => self.notify.info(n),
+                Ev::Note(n) => self.svc.notify.info(n),
                 Ev::Ended(m) => {
                     if let Some(d) = &mut self.debug {
                         d.ended = true;
@@ -534,7 +534,7 @@ impl Editor {
                         d.tx = None;
                         d.status = format!("終わりました: {m}");
                     }
-                    self.notify.info(format!("デバッグ: {m}"));
+                    self.svc.notify.info(format!("デバッグ: {m}"));
                 }
             }
         }

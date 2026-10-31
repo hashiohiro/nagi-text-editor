@@ -279,7 +279,7 @@ impl Editor {
         let rect = self.active_rect();
         // 狭すぎる窓は分けない（Vim の E36）
         if (vertical && rect.w < 2 * 12 + 1) || (!vertical && rect.h < 2 * 3) {
-            self.notify.error("E36: 分割する余地がありません");
+            self.svc.notify.error("E36: 分割する余地がありません");
             return;
         }
         let new = self.wins.len();
@@ -458,7 +458,7 @@ impl Editor {
                 if self.is_split() {
                     self.close_window(self.cur_win);
                 } else if c == 'c' {
-                    self.notify.error("E444: 最後のウィンドウは閉じられません");
+                    self.svc.notify.error("E444: 最後のウィンドウは閉じられません");
                 }
             }
             'o' => self.only_window(),

@@ -213,7 +213,7 @@ impl Editor {
         let dir = if linux { nagi_workers::wsl::resolve_typed(&s) } else { dir };
         let dir = self.resolve(dir);
         if !dir.is_dir() {
-            self.notify.info(format!("フォルダではありません: {}", dir.display()));
+            self.svc.notify.info(format!("フォルダではありません: {}", dir.display()));
             return;
         }
         let p = project::detect(&dir);
@@ -229,7 +229,7 @@ impl Editor {
             if let Some(f) = &mut self.finder {
                 f.set_projects(items, locs, true);
             }
-            self.notify.info(format!("Eclipse のワークスペース {}: 開くプロジェクトを選んでください", p.name));
+            self.svc.notify.info(format!("Eclipse のワークスペース {}: 開くプロジェクトを選んでください", p.name));
             return;
         }
         self.switch_project(p);
@@ -244,7 +244,7 @@ impl Editor {
     fn switch_project(&mut self, p: project::Project) {
         // この窓の作業フォルダにする（プロセスの作業フォルダは変えない。ほかの窓は別のプロジェクトを開いている）
         if let Err(e) = std::fs::read_dir(&p.root) {
-            self.notify.error(format!("{}: {e}", p.root.display()));
+            self.svc.notify.error(format!("{}: {e}", p.root.display()));
             return;
         }
         // 前のプロジェクトで開いていたファイルを覚える（戻ってきたときに開き直す）
@@ -313,7 +313,7 @@ impl Editor {
         };
         let ex = if p.excludes.is_empty() { String::new() } else { format!("、除外 {} か所", p.excludes.len()) };
         let files = if restored > 0 { format!("、前に開いていたファイル {restored} 件") } else { String::new() };
-        self.notify.info(format!("{what}「{}」を開きました{files}{ex}", p.name));
+        self.svc.notify.info(format!("{what}「{}」を開きました{files}{ex}", p.name));
         if !cfg!(test) {
             self.load_run_configs();
         }
@@ -329,7 +329,7 @@ mod tests {
     fn unc_is_not_linux_path() {
         let mut e = Editor::new(Buffer::from_str(""), None);
         e.open_project(PathBuf::from(r"\\wsl.localhost\no-such-distro\home\x"));
-        assert!(e.notify.text.contains(r"\\wsl.localhost\no-such-distro\home\x"), "UNC は変換しない: {}", e.notify.text);
+        assert!(e.svc.notify.text.contains(r"\\wsl.localhost\no-such-distro\home\x"), "UNC は変換しない: {}", e.svc.notify.text);
     }
 
     /// 1 つのプロセスの 2 枚の窓: 違うプロジェクトを開いても、作業フォルダ・題名の根・除外するフォルダ（プロジェクトの設定）・
@@ -398,10 +398,10 @@ mod tests {
         // 窓の作業フォルダになり、プロセスの作業フォルダ（ほかの窓と共有）は変えない
         assert_eq!(e.cwd, std::path::absolute(&d).unwrap());
         assert_eq!(std::env::current_dir().unwrap(), cwd);
-        assert!(e.buf.path.as_ref().unwrap().ends_with("A.java"), "{:?} {}", e.buf.path, e.notify.text);
+        assert!(e.buf.path.as_ref().unwrap().ends_with("A.java"), "{:?} {}", e.buf.path, e.svc.notify.text);
         // IntelliJ の列 9 は 9 文字目（「*/」の *）。byte では「  /* 」5 + 日本語 9 + 空白 1 = 15（byte として 9 を使うと「本」の途中）
         assert_eq!((e.cursor.line, e.cursor.byte), (1, 15));
-        assert!(e.notify.text.contains("IntelliJ"), "{}", e.notify.text);
+        assert!(e.svc.notify.text.contains("IntelliJ"), "{}", e.svc.notify.text);
         assert!(e.tree.is_some(), "木を出す");
         // 索引は出力先（out）を見ない
         for _ in 0..1000 {

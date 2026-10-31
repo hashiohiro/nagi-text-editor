@@ -123,10 +123,10 @@ impl Editor {
         if !on || self.dirty_docs().is_empty() || self.buffer_list().iter().all(|(_, p, d, _)| !*d || p.is_none()) {
             return;
         }
-        let msg = self.notify.text.clone();
+        let msg = self.svc.notify.text.clone();
         // 自動の保存では、前の知らせを消さない（保存できなかったときはその知らせ）
         if self.write_all() {
-            self.notify.info(msg);
+            self.svc.notify.info(msg);
         }
     }
 

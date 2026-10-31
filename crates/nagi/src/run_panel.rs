@@ -118,9 +118,9 @@ impl Editor {
         match self.terminals.list.iter_mut().find(|t| t.name.strip_prefix(RUN_PREFIX) == Some(name) && !t.exited) {
             Some(t) => {
                 t.term.kill();
-                self.notify.info(format!("止めました: {name}"));
+                self.svc.notify.info(format!("止めました: {name}"));
             }
-            None => self.notify.info(format!("{name} は動いていません")),
+            None => self.svc.notify.info(format!("{name} は動いていません")),
         }
     }
 

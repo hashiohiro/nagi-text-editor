@@ -139,8 +139,8 @@ impl Editor {
 
     /// 今のファイルの差分（`:Gdiff`）
     pub(crate) fn diff_current(&mut self) {
-        let (Some(root), Some(p)) = (self.git.root.clone(), self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok())) else {
-            self.notify.info("git のリポジトリのファイルではありません");
+        let (Some(root), Some(p)) = (self.svc.git.root.clone(), self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok())) else {
+            self.svc.notify.info("git のリポジトリのファイルではありません");
             return;
         };
         let Ok(rel) = p.strip_prefix(&root) else { return };
@@ -152,7 +152,7 @@ impl Editor {
     pub(crate) fn show_diff(&mut self, left_title: String, right_title: String, old: &str, new: &str, work: Option<(PathBuf, String, PathBuf)>) {
         let (rows, hunk_rows, hunks) = build_rows(old, new);
         if hunks.is_empty() {
-            self.notify.info("差分はありません");
+            self.svc.notify.info("差分はありません");
         }
         let cursor = hunk_rows.first().copied().unwrap_or(0);
         self.diff = Some(DiffView { left_title, right_title, rows, top: cursor.saturating_sub(5), cursor, col: 0, on_left: false, left: 0, hunk_rows, work, hunks, old_text: old.to_string() });
@@ -232,11 +232,11 @@ impl Editor {
     fn diff_apply(&mut self, stage: bool) {
         let Some(d) = &self.diff else { return };
         let Some((root, rel, path)) = d.work.clone() else {
-            self.notify.warn("この差分では戻せません（作業中のファイルとの差分だけ）");
+            self.svc.notify.warn("この差分では戻せません（作業中のファイルとの差分だけ）");
             return;
         };
         let Some(k) = d.rows[d.cursor].hunk.or_else(|| d.hunk_rows.iter().rposition(|&r| r <= d.cursor)) else {
-            self.notify.info("カーソルの行に変更はありません");
+            self.svc.notify.info("カーソルの行に変更はありません");
             return;
         };
         let h = d.hunks[k].clone();
@@ -250,8 +250,8 @@ impl Editor {
             // index に当てるのは裏で（ADR 0018 の §4）
             self.job("git-stage", move || nagi_workers::git::apply_cached(&root, &patch), |e, r| {
                 match r {
-                    Ok(()) => e.notify.info("変更をステージしました"),
-                    Err(err) => e.notify.error(format!("ステージできません: {}", err.first_line())),
+                    Ok(()) => e.svc.notify.info("変更をステージしました"),
+                    Err(err) => e.svc.notify.error(format!("ステージできません: {}", err.first_line())),
                 }
                 e.refresh_status();
             });
@@ -269,7 +269,7 @@ impl Editor {
         self.hist.begin();
         self.edit(start, end, &text);
         self.hist.close();
-        self.notify.info("変更を戻しました（バッファで u で取り消し）");
+        self.svc.notify.info("変更を戻しました（バッファで u で取り消し）");
         drop(keep);
         // 差分を作り直して開き直す
         let new = self.buf.text();

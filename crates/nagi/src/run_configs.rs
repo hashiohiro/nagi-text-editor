@@ -57,7 +57,7 @@ impl Editor {
         if v.is_empty() {
             // 構成が無ければ、追加の行だけの一覧を出す
             self.open_run_chooser();
-            self.notify.info("実行の構成がありません。「＋ 構成を追加・編集」で足せます（IntelliJ で作った構成も読みます）");
+            self.svc.notify.info("実行の構成がありません。「＋ 構成を追加・編集」で足せます（IntelliJ で作った構成も読みます）");
             return;
         }
         let want = if arg.is_empty() { self.run_selected.clone().unwrap_or_default() } else { arg.to_string() };
@@ -109,7 +109,7 @@ impl Editor {
     /// `:RunAdd 名前 = コマンド`: nagi の構成に 1 行足して選ぶ
     pub(crate) fn run_add(&mut self, arg: &str) {
         let Some((name, cmd)) = arg.split_once('=').map(|(n, c)| (n.trim(), c.trim())).filter(|(n, c)| !n.is_empty() && !c.is_empty()) else {
-            self.notify.info("書き方: :RunAdd 名前 = コマンド（例: :RunAdd 開発サーバー = npm run dev）");
+            self.svc.notify.info("書き方: :RunAdd 名前 = コマンド（例: :RunAdd 開発サーバー = npm run dev）");
             return;
         };
         let path = self.nav_root().join(".nagi").join("run.conf");
@@ -124,9 +124,9 @@ impl Editor {
         match std::fs::write(&path, text) {
             Ok(()) => {
                 self.run_selected = Some(name.to_string());
-                self.notify.info(format!("実行の構成を足しました: {name}（Shift+F10 で実行。{}）", path.display()));
+                self.svc.notify.info(format!("実行の構成を足しました: {name}（Shift+F10 で実行。{}）", path.display()));
             }
-            Err(e) => self.notify.error(format!("{}: {e}", path.display())),
+            Err(e) => self.svc.notify.error(format!("{}: {e}", path.display())),
         }
     }
 
@@ -136,10 +136,10 @@ impl Editor {
         self.run_selected = Some(cfg.name.clone());
         self.run_last = Some(cfg.name.clone());
         match runconfig::launch(&cfg, &root) {
-            Err(e) => self.notify.error(e),
+            Err(e) => self.svc.notify.error(e),
             Ok(Launch::Open(url)) => {
                 open_url(&url);
-                self.notify.info(format!("ブラウザで開きました: {url}"));
+                self.svc.notify.info(format!("ブラウザで開きました: {url}"));
             }
             Ok(Launch::Command { cmd, cwd, env }) => {
                 // Maven・Gradle で JAVA_HOME が使えなければ、見つけた JDK を使う（:Make と同じ。WSL では渡さない）
@@ -154,7 +154,7 @@ impl Editor {
                 let shell = match ex.terminal_line(&cfg.name, &cmd) {
                     Ok(s) => s,
                     Err(e) => {
-                        self.notify.error(e);
+                        self.svc.notify.error(e);
                         return;
                     }
                 };
@@ -165,7 +165,7 @@ impl Editor {
                 self.bottom_kind = BottomKind::Terminal;
                 self.rows = self.text_rows(self.active_rect());
                 if self.new_terminal(&name, &shell) {
-                    self.notify.info(format!("実行: {}   {cmd}", cfg.name));
+                    self.svc.notify.info(format!("実行: {}   {cmd}", cfg.name));
                 }
             }
         }
@@ -182,7 +182,7 @@ impl Editor {
     /// カーソルの位置のテストを動かす構成（:RunTest・:DebugTest）。分からなければ知らせて None
     pub(crate) fn test_config(&mut self) -> Option<RunConfig> {
         let Some(file) = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()) else {
-            self.notify.info("ファイル名がありません");
+            self.svc.notify.info("ファイル名がありません");
             return None;
         };
         self.ensure_syntax();
@@ -205,13 +205,13 @@ impl Editor {
                     let t = target.replace('#', ".");
                     (target, Kind::Shell { command: format!("{gradlew} test --tests {t}"), workdir: Some(dir.display().to_string()) })
                 } else {
-                    self.notify.info("pom.xml も build.gradle も見つかりません");
+                    self.svc.notify.info("pom.xml も build.gradle も見つかりません");
                     return None;
                 }
             }
             "rs" => {
                 let Some(dir) = up(&["Cargo.toml"]) else {
-                    self.notify.info("Cargo.toml が見つかりません");
+                    self.svc.notify.info("Cargo.toml が見つかりません");
                     return None;
                 };
                 let t = method.clone().unwrap_or_default();
@@ -226,7 +226,7 @@ impl Editor {
                 (method.clone().unwrap_or(stem.clone()), Kind::Shell { command: format!("python -m pytest \"{t}\""), workdir: Some(dir.display().to_string()) })
             }
             _ => {
-                self.notify.info("この種類のファイルのテストの動かし方を知りません（Java・Kotlin・Rust・Python）");
+                self.svc.notify.info("この種類のファイルのテストの動かし方を知りません（Java・Kotlin・Rust・Python）");
                 return None;
             }
         };
@@ -277,8 +277,8 @@ impl Editor {
             t.name.trim_start_matches(RUN_PREFIX).to_string()
         });
         match stopped {
-            Some(name) => self.notify.info(format!("止めました: {name}")),
-            None => self.notify.info("動いている構成はありません"),
+            Some(name) => self.svc.notify.info(format!("止めました: {name}")),
+            None => self.svc.notify.info("動いている構成はありません"),
         }
     }
 

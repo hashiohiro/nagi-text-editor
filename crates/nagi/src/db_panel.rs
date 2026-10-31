@@ -649,7 +649,7 @@ impl Editor {
             self.db = Some(p);
         }
         if self.db.as_ref().is_some_and(|p| p.sources.is_empty()) {
-            self.notify.info("接続先がありません。a（＋）で足せます");
+            self.svc.notify.info("接続先がありません。a（＋）で足せます");
         }
         self.focus_right(RightTab::Database);
     }
@@ -661,7 +661,7 @@ impl Editor {
         let Some(p) = &mut self.db else { return };
         let (Some(name), Some(url)) = (f.first(), f.get(1).filter(|u| Kind::of(u).is_some())) else {
             p.form = Some(Form::new(Kind::Oracle));
-            self.notify.info("接続先を足す: Tab で次の欄、種類は ← →、最後の欄で Enter で保存してつなぐ");
+            self.svc.notify.info("接続先を足す: Tab で次の欄、種類は ← →、最後の欄で Enter で保存してつなぐ");
             return;
         };
         let ds = DataSource { name: name.to_string(), url: url.to_string(), user: f.get(2).unwrap_or(&"").to_string(), origin: ":DbAdd".into(), schema: String::new() };
@@ -683,11 +683,11 @@ impl Editor {
             }
             text.push_str(&config_line(&ds));
             match std::fs::write(&cfg, text) {
-                Ok(()) => self.notify.info(format!("{} を {} に保存しました", ds.name, cfg.display())),
-                Err(e) => self.notify.error(format!("保存できません: {e}")),
+                Ok(()) => self.svc.notify.info(format!("{} を {} に保存しました", ds.name, cfg.display())),
+                Err(e) => self.svc.notify.error(format!("保存できません: {e}")),
             }
         } else {
-            self.notify.info(format!("接続先 {} を足しました", ds.name));
+            self.svc.notify.info(format!("接続先 {} を足しました", ds.name));
         }
         let Some(p) = &mut self.db else { return };
         p.sources.push(ds);
@@ -708,7 +708,7 @@ impl Editor {
                 if let Some(p) = &mut e.db {
                     p.setup_ask = None;
                 }
-                e.notify.info("やめました");
+                e.svc.notify.info("やめました");
             });
             return;
         }
@@ -721,7 +721,7 @@ impl Editor {
             return;
         }
         p.password = Some((i, Prompt::default()));
-        self.notify.info(format!("{} のパスワード（{}。Enter でつなぐ・Esc でやめる）", s.name, s.url));
+        self.svc.notify.info(format!("{} のパスワード（{}。Enter でつなぐ・Esc でやめる）", s.name, s.url));
     }
 
     fn db_connect(&mut self, i: usize, pass: String) {
@@ -749,8 +749,8 @@ impl Editor {
         };
         p.rebuild();
         match msg {
-            Ok(m) => self.notify.info(m),
-            Err(e) => self.notify.error(e),
+            Ok(m) => self.svc.notify.info(m),
+            Err(e) => self.svc.notify.error(e),
         }
     }
 
@@ -811,13 +811,13 @@ impl Editor {
                 p.download = None;
                 match r {
                     Ok(dir) => {
-                        self.notify.info(format!("Oracle のドライバーを {} に置きました", dir.display()));
+                        self.svc.notify.info(format!("Oracle のドライバーを {} に置きました", dir.display()));
                         self.db_log_line(&format!("ドライバー: Oracle Instant Client を {} に置きました", dir.display()), false);
                         self.db_begin_connect(i);
                     }
                     Err(e) => {
                         p.conns[i].error = Some(e.to_string());
-                        self.notify.error(e);
+                        self.svc.notify.error(e);
                     }
                 }
             }
@@ -857,7 +857,7 @@ impl Editor {
     fn db_reply_inner(&mut self, i: usize, r: Reply) {
         // 途中の知らせは、頼みごとの答えではない
         if let Reply::Note(s) = r {
-            self.notify.info(s.clone());
+            self.svc.notify.info(s.clone());
             self.db_log_line(&s, false);
             return;
         }
@@ -894,7 +894,7 @@ impl Editor {
                         Err(e) => format!("。パスワードを保存できません: {e}"),
                     };
                 }
-                self.notify.info(format!("{name} につなぎました（{product}、{schema}）{saved}"));
+                self.svc.notify.info(format!("{name} につなぎました（{product}、{schema}）{saved}"));
                 self.db_log_line(&format!("{name} につなぎました（{product}、{schema}）{saved}"), false);
                 if let Some(sql) = self.db.as_mut().and_then(|p| p.then.remove(&i)) {
                     self.db_execute(i, sql);
@@ -906,9 +906,9 @@ impl Editor {
                 // 保存したパスワードで失敗した: 入れ直してもらう（つながったら上書きする）
                 if c.pass.take().is_some_and(|(_, saved)| saved) {
                     p.password = Some((i, Prompt::default()));
-                    self.notify.error(format!("{name} に保存したパスワードでつなげません: {e}。パスワードを入れ直してください（Enter でつなぐ・Esc でやめる）"));
+                    self.svc.notify.error(format!("{name} に保存したパスワードでつなげません: {e}。パスワードを入れ直してください（Enter でつなぐ・Esc でやめる）"));
                 } else {
-                    self.notify.error(format!("{name} につなげません: {e}"));
+                    self.svc.notify.error(format!("{name} につなげません: {e}"));
                 }
                 self.db_log_line(&format!("{name} につなげません: {e}"), true);
             }
@@ -943,7 +943,7 @@ impl Editor {
                 };
                 self.db_log(&name, &sql, &outcome, !ok);
                 if let Reply::Error(e) = &reply {
-                    self.notify.error(format!("SQL の誤り: {}", e.lines().next().unwrap_or("")));
+                    self.svc.notify.error(format!("SQL の誤り: {}", e.lines().next().unwrap_or("")));
                 }
                 // テーブルを作ったり消したりしたかもしれないので、木を読み直す
                 if ok && changes {
@@ -982,7 +982,7 @@ impl Editor {
                         c.pending += n;
                     }
                     let manual = c.manual;
-                    self.notify.info(format!("{n} 件の変更を送信しました{}", if manual { "（まだコミットしていません）" } else { "" }));
+                    self.svc.notify.info(format!("{n} 件の変更を送信しました{}", if manual { "（まだコミットしていません）" } else { "" }));
                     let what = if target == Target::Table { "テーブルの編集" } else { "結果の編集" };
                     self.db_log(&name, &format!("{n} 件の変更（{what}）"), &format!("{ms} ms"), false);
                     match target {
@@ -991,7 +991,7 @@ impl Editor {
                     }
                 }
                 Reply::Error(e) => {
-                    self.notify.error(format!("送信できません: {}", e.lines().next().unwrap_or("")));
+                    self.svc.notify.error(format!("送信できません: {}", e.lines().next().unwrap_or("")));
                     let what = if target == Target::Table { "テーブルの編集" } else { "結果の編集" };
                     self.db_log(&name, &format!("{n} 件の変更（{what}）"), e, true);
                     if let Some(te) = &mut self.db_table {
@@ -1001,19 +1001,19 @@ impl Editor {
                 _ => {}
             },
             (Some(Expect::Tx), Reply::Error(e)) | (Some(Expect::SetSchema(_)), Reply::Error(e)) | (Some(Expect::Ddl(_)), Reply::Error(e)) => {
-                self.notify.info(format!("{name}: {}", e.lines().next().unwrap_or("")));
+                self.svc.notify.info(format!("{name}: {}", e.lines().next().unwrap_or("")));
                 self.db_log_line(&format!("{name}: {e}"), true);
             }
             (Some(Expect::Tx), _) => {}
             (Some(Expect::Commit(commit, n)), reply) => {
                 let what = if commit { "コミット" } else { "ロールバック" };
                 if let Reply::Error(e) = &reply {
-                    self.notify.error(format!("{name}: {what}できません: {}", e.lines().next().unwrap_or("")));
+                    self.svc.notify.error(format!("{name}: {what}できません: {}", e.lines().next().unwrap_or("")));
                     self.db_log_line(&format!("{name}: {what}できません: {e}"), true);
                     return;
                 }
                 c.pending = c.pending.saturating_sub(n);
-                self.notify.info(format!("{what}しました（{n} 件）"));
+                self.svc.notify.info(format!("{what}しました（{n} 件）"));
                 self.db_log_line(&format!("{what}しました（{n} 件）"), false);
                 // 結果の表で直して送った値: ロールバックなら前の値に戻して読み直す
                 for id in self.db_results.tx_ended(i, commit) {
@@ -1027,11 +1027,11 @@ impl Editor {
                 }
                 p.folds.set_open(&format!("c{i}:{s}"), true);
                 p.folds.set_open(&format!("g{i}:{s}:Tables"), true);
-                self.notify.info(format!("スキーマを {s} にしました"));
+                self.svc.notify.info(format!("スキーマを {s} にしました"));
             }
             (Some(Expect::Ddl(t)), Reply::Ddl(text)) => self.db_open_text(&format!("{}.ddl.sql", safe_name(&t)), &text),
             (_, Reply::Error(e)) => {
-                self.notify.info(format!("{name}: {}", e.lines().next().unwrap_or("")));
+                self.svc.notify.info(format!("{name}: {}", e.lines().next().unwrap_or("")));
             }
             _ => {}
         }
@@ -1053,18 +1053,18 @@ impl Editor {
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join(file);
         if let Err(e) = std::fs::write(&path, text) {
-            self.notify.error(format!("書けません: {e}"));
+            self.svc.notify.error(format!("書けません: {e}"));
             return;
         }
         self.edit_file(path.clone());
         self.set_state(State::Normal);
-        self.notify.info(format!("{} に書きました", path.display()));
+        self.svc.notify.info(format!("{} に書きました", path.display()));
     }
 
     /// SQL を流す（つないでいなければつないでから。自動のときは、データを変える文を確かめてから）
     pub(crate) fn db_execute(&mut self, i: usize, sql: String) {
         if sql.trim().is_empty() {
-            self.notify.info("流す文がありません（カーソルを文の上に置いてください）");
+            self.svc.notify.info("流す文がありません（カーソルを文の上に置いてください）");
             return;
         }
         let Some(p) = &mut self.db else { return };
@@ -1080,7 +1080,7 @@ impl Editor {
         if changes && !p.conns[i].manual {
             let head: String = sql.split_whitespace().take(4).collect::<Vec<_>>().join(" ");
             let q = format!("データを変える文です（{head} …）。{} で実行しますか（Tx を手動にすると確かめません）", p.sources[i].name);
-            self.ask_or(q, move |e| e.db_run(i, sql), |e| e.notify.info("実行をやめました"));
+            self.ask_or(q, move |e| e.db_run(i, sql), |e| e.svc.notify.info("実行をやめました"));
             return;
         }
         self.db_run(i, sql);
@@ -1108,7 +1108,7 @@ impl Editor {
         let (i, sql, count, offset) = (t.src, t.effective_sql(), t.count_sql(), t.offset);
         let Some(c) = self.db.as_mut().and_then(|p| p.conns.get_mut(i)) else { return };
         if !c.connected {
-            self.notify.info("まだつないでいません");
+            self.svc.notify.info("まだつないでいません");
             return;
         }
         c.send(Req::Query { sql: sql.clone(), max: MAX_ROWS, offset }, Expect::Query(Target::Result(id), sql, false));
@@ -1125,7 +1125,7 @@ impl Editor {
         p.download = Some((i, drivers::download_oracle(waker), "ダウンロードを始めます…".into()));
         p.folds.set_open(&format!("s{i}"), true);
         p.rebuild();
-        self.notify.info("Oracle のドライバーをダウンロードしています…");
+        self.svc.notify.info("Oracle のドライバーをダウンロードしています…");
     }
 
     /// 今のバッファが SQL コンソールなら、その接続先
@@ -1172,22 +1172,22 @@ impl Editor {
     /// Tx の自動・手動を切り替える
     pub(crate) fn db_toggle_tx(&mut self, i: usize) {
         if self.db.as_ref().and_then(|p| p.kind(i)) == Some(Kind::Salesforce) {
-            self.notify.info("Salesforce にトランザクションはありません");
+            self.svc.notify.info("Salesforce にトランザクションはありません");
             return;
         }
         let Some(c) = self.db.as_mut().map(|p| &mut p.conns[i]) else { return };
         if !c.connected {
-            self.notify.info("まだつないでいません");
+            self.svc.notify.info("まだつないでいません");
             return;
         }
         if c.manual && c.pending > 0 {
-            self.notify.info(format!("まだコミットしていない変更が {} 件あります。先にコミットかロールバックを", c.pending));
+            self.svc.notify.info(format!("まだコミットしていない変更が {} 件あります。先にコミットかロールバックを", c.pending));
             return;
         }
         c.manual = !c.manual;
         let m = c.manual;
         c.send(Req::AutoCommit(!m), Expect::Tx);
-        self.notify.info(if m { "Tx: 手動（コミットするまで確定しません）" } else { "Tx: 自動" });
+        self.svc.notify.info(if m { "Tx: 手動（コミットするまで確定しません）" } else { "Tx: 自動" });
         self.db_log_line(&format!("トランザクション: {}", if m { "手動" } else { "自動" }), false);
     }
 
@@ -1208,10 +1208,10 @@ impl Editor {
         let c = &mut p.conns[i];
         let n = if tx_lost { std::mem::take(&mut c.pending) } else { 0 };
         if n > 0 {
-            self.notify.error(format!("{name} の接続が切れていたので、つなぎ直しました。コミットしていない {n} 件の変更は失われました"));
+            self.svc.notify.error(format!("{name} の接続が切れていたので、つなぎ直しました。コミットしていない {n} 件の変更は失われました"));
             self.db_log_line(&format!("{name} の接続が切れていたので、つなぎ直しました。コミットしていない {n} 件の変更は失われました"), true);
         } else {
-            self.notify.info(format!("{name} の接続が切れていたので、つなぎ直しました"));
+            self.svc.notify.info(format!("{name} の接続が切れていたので、つなぎ直しました"));
             self.db_log_line(&format!("{name} の接続が切れていたので、つなぎ直しました"), false);
         }
         if tx_lost {
@@ -1231,7 +1231,7 @@ impl Editor {
     pub(crate) fn db_logout(&mut self) {
         match self.db_current_source() {
             Some(i) => self.db_forget_login(i),
-            None => self.notify.info("接続先がありません"),
+            None => self.svc.notify.info("接続先がありません"),
         }
     }
 
@@ -1250,7 +1250,7 @@ impl Editor {
         let n = p.conns[i].pending;
         if n > 0 {
             let q = format!("まだコミットしていない変更が {n} 件あります。捨てて{}か", if again { "つなぎ直します" } else { "切ります" });
-            self.ask_or(q, move |e| e.db_close_now(i, again), |e| e.notify.info("やめました"));
+            self.ask_or(q, move |e| e.db_close_now(i, again), |e| e.svc.notify.info("やめました"));
             return;
         }
         self.db_close_now(i, again);
@@ -1268,7 +1268,7 @@ impl Editor {
         if again {
             self.db_begin_connect(i);
         } else {
-            self.notify.info(format!("{name} を切りました"));
+            self.svc.notify.info(format!("{name} を切りました"));
         }
     }
 
@@ -1285,7 +1285,7 @@ impl Editor {
             c.send(Req::Schemas, Expect::Schemas);
             c.send(Req::Objects(s.clone()), Expect::Objects(s.clone()));
             c.requested.insert(format!("o:{s}"));
-            self.notify.info("読み直しています…");
+            self.svc.notify.info("読み直しています…");
         }
         p.rebuild();
     }
@@ -1296,20 +1296,20 @@ impl Editor {
         let s = p.sources[i].clone();
         if p.kind(i) != Some(Kind::Salesforce) {
             let had = nagi_workers::db::forget_password(&s.url, &s.user);
-            self.notify.info(if had { format!("{} の保存したパスワードを消しました", s.name) } else { "保存したパスワードはありません".to_string() });
+            self.svc.notify.info(if had { format!("{} の保存したパスワードを消しました", s.name) } else { "保存したパスワードはありません".to_string() });
             return;
         }
         let had = nagi_workers::salesforce::forget(&s.url, &s.user);
         p.conns[i] = Conn::default();
         p.rebuild();
-        self.notify.info(if had { format!("{} の保存したログインを消しました", s.name) } else { "保存したログインはありません".to_string() });
+        self.svc.notify.info(if had { format!("{} の保存したログインを消しました", s.name) } else { "保存したログインはありません".to_string() });
     }
 
     /// `:DbSchema 名前`
     pub(crate) fn db_set_schema(&mut self, s: &str) {
         match self.db_current_source() {
             Some(i) => self.db_switch_schema(i, s),
-            None => self.notify.info("接続先がありません"),
+            None => self.svc.notify.info("接続先がありません"),
         }
     }
 
@@ -1317,7 +1317,7 @@ impl Editor {
     fn db_switch_schema(&mut self, i: usize, s: &str) {
         let Some(c) = self.db.as_mut().map(|p| &mut p.conns[i]) else { return };
         if !c.connected {
-            self.notify.info("まだつないでいません");
+            self.svc.notify.info("まだつないでいません");
             return;
         }
         let s = s.trim().to_string();
@@ -1332,7 +1332,7 @@ impl Editor {
         let ds = ds.clone();
         let cfg = config_path();
         if let Err(e) = save_config_line(&cfg, &ds) {
-            self.notify.error(format!("設定ファイルに書けません: {e}"));
+            self.svc.notify.error(format!("設定ファイルに書けません: {e}"));
             return;
         }
         p.rebuild();
@@ -1341,7 +1341,7 @@ impl Editor {
         if switch {
             c.send(Req::SetSchema(ds.schema.clone()), Expect::SetSchema(ds.schema.clone()));
         }
-        self.notify.info(if ds.schema.is_empty() {
+        self.svc.notify.info(if ds.schema.is_empty() {
             format!("{} の既定のスキーマを外しました（{}）", ds.name, cfg.display())
         } else {
             format!("{} の既定のスキーマを {} にしました（つないだら切り替える。{}）", ds.name, ds.schema, cfg.display())
@@ -1352,7 +1352,7 @@ impl Editor {
     pub(crate) fn db_default_schema_command(&mut self, s: &str) {
         match self.db_current_source() {
             Some(i) => self.db_set_default_schema(i, s),
-            None => self.notify.info("接続先がありません"),
+            None => self.svc.notify.info("接続先がありません"),
         }
     }
 
@@ -1364,7 +1364,7 @@ impl Editor {
     /// `:DbCommit` / `:DbRollback` / `:DbTx`
     pub(crate) fn db_tx_command(&mut self, what: &str) {
         let Some(i) = self.db_current_source() else {
-            self.notify.info("接続先がありません");
+            self.svc.notify.info("接続先がありません");
             return;
         };
         match what {
@@ -1412,7 +1412,7 @@ impl Editor {
         let path = dir.join(format!("{base}_query_{n}.sql"));
         let body = format!("-- {}  クエリ {n}\n\n{}", s.name, initial.map(|q| format!("{q}\n")).unwrap_or_default());
         if let Err(e) = std::fs::write(&path, body) {
-            self.notify.error(format!("クエリのファイルを作れません: {e}"));
+            self.svc.notify.error(format!("クエリのファイルを作れません: {e}"));
             return;
         }
         let abs = std::path::absolute(&path).unwrap_or(path.clone());
@@ -1422,7 +1422,7 @@ impl Editor {
         // 最後の行の終わりから Insert で書き始める
         self.key(Key::Char('G'));
         self.key(Key::Char('A'));
-        self.notify.info(format!("新しいクエリ（{}）。Ctrl+Enter で実行", s.name));
+        self.svc.notify.info(format!("新しいクエリ（{}）。Ctrl+Enter で実行", s.name));
     }
 
     /// `:DbNew`: 今の接続先（コンソール・木で選んでいるもの。無ければ最初の接続先）で新しいクエリ
@@ -1433,7 +1433,7 @@ impl Editor {
         let i = self.db_current_source().or_else(|| self.db.as_ref().filter(|p| !p.sources.is_empty()).map(|_| 0));
         match i {
             Some(i) => self.db_new_query(i, None),
-            None => self.notify.info("接続先がありません。データベースの欄の a で足せます"),
+            None => self.svc.notify.info("接続先がありません。データベースの欄の a で足せます"),
         }
     }
 
@@ -1610,7 +1610,7 @@ impl Editor {
         let c = &mut p.conns[i];
         let Some(cols) = c.columns.get(&(s.to_string(), t.to_string())).cloned() else {
             c.ensure_columns(s, t);
-            self.notify.info("列を読んでいます。もう一度選んでください");
+            self.svc.notify.info("列を読んでいます。もう一度選んでください");
             return;
         };
         let d = self.db_dialect(i);
@@ -1666,7 +1666,7 @@ impl Editor {
             match key {
                 Key::Esc => {
                     p.password = None;
-                    self.notify.info("やめました");
+                    self.svc.notify.info("やめました");
                 }
                 Key::Enter => {
                     let (i, pass) = (*i, std::mem::take(&mut prompt.text));
@@ -1710,7 +1710,7 @@ impl Editor {
             match out {
                 FieldOut::Cancel => {
                     p.form = None;
-                    self.notify.info("やめました");
+                    self.svc.notify.info("やめました");
                 }
                 FieldOut::Submit if f.at + 1 < f.fields.len() => {
                     f.at += 1;
@@ -1723,7 +1723,7 @@ impl Editor {
                         let i = self.db.as_ref().unwrap().sources.len() - 1;
                         self.db_begin_connect(i);
                     }
-                    Err(e) => self.notify.error(e),
+                    Err(e) => self.svc.notify.error(e),
                 },
                 _ => {}
             }
@@ -1755,7 +1755,7 @@ impl Editor {
             Key::Char('g') => p.selected = 0,
             Key::Char('/') => {
                 p.filter = Some(VimField::new(&p.filter_text, false));
-                self.notify.info("絞り込み: 名前の一部を打つ（Enter で決める・Esc 2 回で消す）");
+                self.svc.notify.info("絞り込み: 名前の一部を打つ（Enter で決める・Esc 2 回で消す）");
             }
             Key::Enter | Key::Char('l') | Key::Right => self.db_activate(),
             Key::Char('h') | Key::Left => {
@@ -1778,7 +1778,7 @@ impl Editor {
                 if let Some(f) = &mut p.form {
                     f.fields[f.at].1.reinsert();
                 }
-                self.notify.info("接続先を足す: Tab で次の欄、種類は ← →、最後の欄で Enter で保存してつなぐ");
+                self.svc.notify.info("接続先を足す: Tab で次の欄、種類は ← →、最後の欄で Enter で保存してつなぐ");
             }
             Key::Char('D') => self.db_ddl(),
             // 新しいクエリ（テーブルの上なら SELECT を書き入れて）
@@ -1819,7 +1819,7 @@ impl Editor {
             }
             Key::Char('q') => {
                 if self.db.as_ref().is_some_and(|p| p.conns.iter().any(|c| c.pending > 0)) {
-                    self.notify.info("まだコミットしていない変更があります。先にコミットかロールバックを");
+                    self.svc.notify.info("まだコミットしていない変更があります。先にコミットかロールバックを");
                 } else {
                     self.db = None;
                     self.set_state(State::Normal);
@@ -2012,7 +2012,7 @@ pub(crate) mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        panic!("待ちきれない: {}", e.notify.text);
+        panic!("待ちきれない: {}", e.svc.notify.text);
     }
 
     /// 偽の Salesforce で: 足す → つなぐ（ブラウザの代わりに curl）→ 木 → o で SOQL → 結果のタブ

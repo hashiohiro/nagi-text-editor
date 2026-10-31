@@ -226,7 +226,7 @@ impl Editor {
     /// `gd`: 定義へ
     pub(crate) fn goto_definition(&mut self) {
         let Some((name, word_at)) = self.word_at_cursor() else {
-            self.notify.error("E348: カーソルの下に識別子がありません");
+            self.svc.notify.error("E348: カーソルの下に識別子がありません");
             return;
         };
         // 言語が丸ごと決める定義（Angular のテンプレート: 式の名前は部品の .ts（と親クラス）、タグは部品、属性は部品の @Input / @Output）
@@ -238,8 +238,8 @@ impl Editor {
         };
         match found {
             Some(nagi_lang::lang::Found::Jump(t)) => return self.jump_to(&t.path, t.line, t.col),
-            Some(nagi_lang::lang::Found::Warn(m)) => return self.notify.warn(m),
-            Some(nagi_lang::lang::Found::Info(m)) => return self.notify.info(m),
+            Some(nagi_lang::lang::Found::Warn(m)) => return self.svc.notify.warn(m),
+            Some(nagi_lang::lang::Found::Info(m)) => return self.svc.notify.info(m),
             Some(nagi_lang::lang::Found::Stop) => return,
             None => {}
         }
@@ -285,7 +285,7 @@ impl Editor {
                     nagi_lang::project::Ranked::Outside(t) => {
                         // 受け手の型（またはその親）がライブラリ。同じ名前のプロジェクトのメソッドへは跳ばない
                         if !self.goto_outside(&name, word_at) {
-                            self.notify.info(format!("定義はプロジェクトの外です: {name}（{t} から先はライブラリ）"));
+                            self.svc.notify.info(format!("定義はプロジェクトの外です: {name}（{t} から先はライブラリ）"));
                         }
                         return;
                     }
@@ -319,7 +319,7 @@ impl Editor {
         }
         match cands.len() {
             0 => {
-                self.notify.warn(match &self.nav.progress {
+                self.svc.notify.warn(match &self.nav.progress {
                     Some((a, b)) => format!("定義が見つかりません: {name}（索引を作っています {a}/{b}）"),
                     None => format!("定義が見つかりません: {name}"),
                 });
@@ -343,7 +343,7 @@ impl Editor {
                 let locs = cands.into_iter().map(|(p, l, c, _)| (p, l, c)).collect();
                 self.open_locations(Source::Definitions, items, locs, false);
                 if mark {
-                    self.notify.info(format!("定義の候補 {n} 件（● の {best} 件が有力）"));
+                    self.svc.notify.info(format!("定義の候補 {n} 件（● の {best} 件が有力）"));
                 }
             }
         }
@@ -354,7 +354,7 @@ impl Editor {
         let Some(t) = self.outside_definition(name, word_at) else { return false };
         self.jump_to(&t.path, t.line, t.col);
         if let Some(n) = t.note {
-            self.notify.info(n);
+            self.svc.notify.info(n);
         }
         true
     }
@@ -372,7 +372,7 @@ impl Editor {
     pub(crate) fn goto_implementation(&mut self) {
         match self.find_implementations() {
             Ok((locs, root)) => self.show_implementations(locs, root),
-            Err(m) => self.notify.error(m),
+            Err(m) => self.svc.notify.error(m),
         }
     }
 
@@ -421,7 +421,7 @@ impl Editor {
         let items = locs.iter().map(|(n, l)| format!("{n}  {}  {}:{}", l.kind.label(), l.path, l.line + 1)).collect();
         let at = locs.iter().map(|(_, l)| (root.join(&*l.path), l.line as usize, l.col as usize)).collect();
         self.open_locations(Source::Definitions, items, at, false);
-        self.notify.info(format!("実装 {n} 件"));
+        self.svc.notify.info(format!("実装 {n} 件"));
     }
 
     /// カーソルがメソッド・型の定義そのものの上か（gd を実装へ向ける）
@@ -494,10 +494,10 @@ impl Editor {
         // ファイルが多すぎれば名前の一致のまま（固まらないように）
         if by_file.len() > 400 {
             if rename.is_some() {
-                self.notify.warn(format!("{} ファイルにあり、多すぎるので名前を変えません", by_file.len()));
+                self.svc.notify.warn(format!("{} ファイルにあり、多すぎるので名前を変えません", by_file.len()));
                 return;
             }
-            self.notify.info(format!("参照: {} ファイル（多いので名前の一致のまま）", by_file.len()));
+            self.svc.notify.info(format!("参照: {} ファイル（多いので名前の一致のまま）", by_file.len()));
             return;
         }
         let mut keep = vec![true; hits.len()];
@@ -580,7 +580,7 @@ impl Editor {
         g.selected = 0;
         g.scroll = 0;
         let dropped = before - g.hits.len();
-        self.notify.info(format!("参照: {} 件（名前が同じ別のもの {dropped} 件を除いた）", g.hits.len()));
+        self.svc.notify.info(format!("参照: {} 件（名前が同じ別のもの {dropped} 件を除いた）", g.hits.len()));
         if let Some((name, new, target)) = rename {
             self.ask_rename(name, new, target);
         }
@@ -589,7 +589,7 @@ impl Editor {
     /// シンボル検索（`types` なら型だけ）
     pub(crate) fn symbol_search(&mut self, types: bool) {
         let Some(idx) = &self.nav.index else {
-            self.notify.info(match &self.nav.progress {
+            self.svc.notify.info(match &self.nav.progress {
                 Some((a, b)) => format!("索引を作っています（{a}/{b}）。しばらくしてからもう一度"),
                 None => "索引がありません".into(),
             });
@@ -612,7 +612,7 @@ impl Editor {
     pub(crate) fn outline(&mut self) {
         self.ensure_syntax();
         let (Some(syn), Some(path)) = (&self.syntax, self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok())) else {
-            self.notify.error("このファイルには構文木が無いので使えません");
+            self.svc.notify.error("このファイルには構文木が無いので使えません");
             return;
         };
         let defs = syn.defs(&self.buf);
@@ -639,17 +639,17 @@ impl Editor {
     /// `:Idea`: 今のファイルと行を IntelliJ で開く（重いリファクタリング用）
     pub(crate) fn open_in_intellij(&mut self) {
         let Some(path) = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()) else {
-            self.notify.info("ファイル名がありません");
+            self.svc.notify.info("ファイル名がありません");
             return;
         };
         let Some(exe) = find_idea() else {
-            self.notify.warn("IntelliJ が見つかりません（NAGI_IDEA に idea64.exe の場所を入れてください）");
+            self.svc.notify.warn("IntelliJ が見つかりません（NAGI_IDEA に idea64.exe の場所を入れてください）");
             return;
         };
         let line = (self.cursor.line + 1).to_string();
         match std::process::Command::new(&exe).arg("--line").arg(&line).arg(&path).spawn() {
-            Ok(_) => self.notify.info(format!("IntelliJ で開きました: {}:{line}", path.display())),
-            Err(e) => self.notify.error(format!("IntelliJ を起動できません: {e}")),
+            Ok(_) => self.svc.notify.info(format!("IntelliJ で開きました: {}:{line}", path.display())),
+            Err(e) => self.svc.notify.error(format!("IntelliJ を起動できません: {e}")),
         }
     }
 
@@ -989,7 +989,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         let got: Vec<(String, usize)> = e.grep.as_ref().unwrap().hits.iter().map(|h| (h.path.clone(), h.line)).collect();
-        assert_eq!(got, vec![("A.java".to_string(), 2), ("A.java".to_string(), 4), ("B.java".to_string(), 4)], "{}", e.notify.text);
+        assert_eq!(got, vec![("A.java".to_string(), 2), ("A.java".to_string(), 4), ("B.java".to_string(), 4)], "{}", e.svc.notify.text);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1032,7 +1032,7 @@ mod tests {
                 }
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
-            println!("{name}（定義 {n_defs}）: {:?} {} / 名前の一致 {before}+", t0.elapsed(), e.notify.text);
+            println!("{name}（定義 {n_defs}）: {:?} {} / 名前の一致 {before}+", t0.elapsed(), e.svc.notify.text);
             println!("  定義: {}:{}", l.path, l.line + 1);
             if let Some(f) = std::env::var_os("NAGI_RATE_DUMP") {
                 let mut f = std::path::PathBuf::from(f);
@@ -1114,16 +1114,16 @@ mod tests {
         assert_eq!(e.cursor.line, 1);
         // 別のファイル: helper → b.ts の定義（import の束縛ではなく、索引の定義へ… import 文の中は束縛として扱わない）
         keys(&mut e, "3G0gd");
-        assert!(e.buf.path.as_ref().unwrap().ends_with("b.ts"), "{:?} {}", e.buf.path, e.notify.text);
+        assert!(e.buf.path.as_ref().unwrap().ends_with("b.ts"), "{:?} {}", e.buf.path, e.svc.notify.text);
         assert_eq!((e.cursor.line, e.cursor.byte), (0, 16));
         // Ctrl-o で戻る
         keys(&mut e, "<C-o>");
         assert!(e.buf.path.as_ref().unwrap().ends_with("a.ts"));
         // F12 でも（Insert の最中でも）
         keys(&mut e, "3G0<F12>");
-        assert!(e.buf.path.as_ref().unwrap().ends_with("b.ts"), "{:?} {}", e.buf.path, e.notify.text);
+        assert!(e.buf.path.as_ref().unwrap().ends_with("b.ts"), "{:?} {}", e.buf.path, e.svc.notify.text);
         keys(&mut e, "<C-o>3G0i<F12>");
-        assert!(e.buf.path.as_ref().unwrap().ends_with("b.ts"), "{:?} {}", e.buf.path, e.notify.text);
+        assert!(e.buf.path.as_ref().unwrap().ends_with("b.ts"), "{:?} {}", e.buf.path, e.svc.notify.text);
         assert_eq!(e.state(), State::Normal);
         keys(&mut e, "<C-o>");
         // 候補が 2 つ（Box）: ファインダーで選ぶ
@@ -1157,19 +1157,19 @@ mod tests {
         wait_index(&mut e);
         // users.find の gd はインタフェースの宣言、gI は実装
         keys(&mut e, "3G0/find<CR>gd");
-        assert!(e.buf.path.as_ref().unwrap().ends_with("UserService.java"), "{:?} {}", e.buf.path, e.notify.text);
+        assert!(e.buf.path.as_ref().unwrap().ends_with("UserService.java"), "{:?} {}", e.buf.path, e.svc.notify.text);
         keys(&mut e, "<C-o>3G0/find<CR>gI");
-        assert!(e.buf.path.as_ref().unwrap().ends_with("UserServiceImpl.java"), "{:?} {}", e.buf.path, e.notify.text);
+        assert!(e.buf.path.as_ref().unwrap().ends_with("UserServiceImpl.java"), "{:?} {}", e.buf.path, e.svc.notify.text);
         assert_eq!(e.cursor.line, 1);
         // インタフェースの宣言の上で gI → 実装
         keys(&mut e, &format!(":e {}<CR>2G0/find<CR>gI", dir.join("src/UserService.java").display()));
-        assert!(e.buf.path.as_ref().unwrap().ends_with("UserServiceImpl.java"), "{:?} {}", e.buf.path, e.notify.text);
+        assert!(e.buf.path.as_ref().unwrap().ends_with("UserServiceImpl.java"), "{:?} {}", e.buf.path, e.svc.notify.text);
         // 宣言の上の gd も実装へ（実装が無ければ従来どおり）
         keys(&mut e, &format!(":e {}<CR>2G0/find<CR>gd", dir.join("src/UserService.java").display()));
-        assert!(e.buf.path.as_ref().unwrap().ends_with("UserServiceImpl.java"), "{:?} {}", e.buf.path, e.notify.text);
+        assert!(e.buf.path.as_ref().unwrap().ends_with("UserServiceImpl.java"), "{:?} {}", e.buf.path, e.svc.notify.text);
         // 型の上で gI → 実装している型
         keys(&mut e, &format!(":e {}<CR>1G0wgI", dir.join("src/UserService.java").display()));
-        assert!(e.buf.path.as_ref().unwrap().ends_with("UserServiceImpl.java"), "{:?} {}", e.buf.path, e.notify.text);
+        assert!(e.buf.path.as_ref().unwrap().ends_with("UserServiceImpl.java"), "{:?} {}", e.buf.path, e.svc.notify.text);
         assert_eq!(e.cursor.line, 0);
     }
 
@@ -1210,19 +1210,19 @@ mod tests {
         let at = |e: &Editor| (e.buf.path.as_ref().unwrap().file_name().unwrap().to_string_lossy().into_owned(), e.cursor.line);
         // {{ title }} → 部品のプロパティ
         keys(&mut e, "gg/title<CR>gd");
-        assert_eq!(at(&e), ("page.component.ts".into(), 2), "{}", e.notify.text);
+        assert_eq!(at(&e), ("page.component.ts".into(), 2), "{}", e.svc.notify.text);
         // (click)="onGo(1)" → 部品のメソッド
         keys(&mut e, "<C-o>2G0/onGo<CR>gd");
-        assert_eq!(at(&e), ("page.component.ts".into(), 3), "{}", e.notify.text);
+        assert_eq!(at(&e), ("page.component.ts".into(), 3), "{}", e.svc.notify.text);
         // <app-button> → 部品のクラス
         keys(&mut e, "<C-o>2G0wgd");
-        assert_eq!(at(&e), ("button.component.ts".into(), 4), "{}（@Component の付いたクラス。前の interface でなく）", e.notify.text);
+        assert_eq!(at(&e), ("button.component.ts".into(), 4), "{}（@Component の付いたクラス。前の interface でなく）", e.svc.notify.text);
         // [width] → 部品の @Input
         keys(&mut e, "<C-o>2G0/width<CR>gd");
-        assert_eq!(at(&e), ("button.component.ts".into(), 5), "{}", e.notify.text);
+        assert_eq!(at(&e), ("button.component.ts".into(), 5), "{}", e.svc.notify.text);
         // goBack() → 親クラスのメソッド
         keys(&mut e, "<C-o>3G0/goBack<CR>gd");
-        assert_eq!(at(&e), ("page-base.ts".into(), 1), "{}", e.notify.text);
+        assert_eq!(at(&e), ("page-base.ts".into(), 1), "{}", e.svc.notify.text);
     }
 
     /// 外で package.json が変わったら（git pull など）、前に出たときの見直しで .d.ts の索引を作り直す（索引を読むところまで）

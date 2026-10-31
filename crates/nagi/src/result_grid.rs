@@ -453,7 +453,7 @@ impl Editor {
         }
         let n = s.lines().count();
         self.registers.insert('"', (s, false));
-        self.notify.info(format!("{what}をコピーしました{}", if n > 1 { format!("（{n} 行）") } else { String::new() }));
+        self.svc.notify.info(format!("{what}をコピーしました{}", if n > 1 { format!("（{n} 行）") } else { String::new() }));
     }
 
     /// `:DbExport csv|tsv|insert`: 今の結果（テーブルの編集の画面ならその表）を書き出して開く
@@ -474,7 +474,7 @@ impl Editor {
                 _ => t.to_tsv(),
             }, format!("result{}", t.id))
         } else {
-            self.notify.info("書き出す結果がありません");
+            self.svc.notify.info("書き出す結果がありません");
             return;
         };
         let ext = match fmt.as_str() {
@@ -527,7 +527,7 @@ impl Editor {
     pub(crate) fn result_begin_edit(&mut self, empty: bool) {
         if let Err(e) = self.result_plan() {
             if !e.is_empty() {
-                self.notify.warn(e);
+                self.svc.notify.warn(e);
             }
             return;
         }
@@ -602,7 +602,7 @@ impl Editor {
     fn result_paste(&mut self) {
         if let Err(e) = self.result_plan() {
             if !e.is_empty() {
-                self.notify.warn(e);
+                self.svc.notify.warn(e);
             }
             return;
         }
@@ -618,7 +618,7 @@ impl Editor {
             }
         }
         if n > 1 {
-            self.notify.info(format!("{n} 個のセルに貼りました"));
+            self.svc.notify.info(format!("{n} 個のセルに貼りました"));
         }
     }
 
@@ -629,7 +629,7 @@ impl Editor {
             None => crate::clipboard::get(),
         };
         let Some(text) = text.filter(|t| !t.is_empty()) else {
-            self.notify.info("クリップボードが空です");
+            self.svc.notify.info("クリップボードが空です");
             return None;
         };
         Some(cells_of(&text))
@@ -638,7 +638,7 @@ impl Editor {
     /// 選んでいるセルを NULL に
     pub(crate) fn result_set_null(&mut self) {
         if let Err(e) = self.result_plan() {
-            self.notify.warn(e);
+            self.svc.notify.warn(e);
             return;
         }
         if let Some(t) = self.db_results.active_tab_mut().filter(|t| !t.rows.is_empty()) {
@@ -649,7 +649,7 @@ impl Editor {
 
     pub(crate) fn result_undo(&mut self) {
         if !self.db_results.active_tab_mut().is_some_and(|t| t.undo_one()) {
-            self.notify.info("戻す変更はありません");
+            self.svc.notify.info("戻す変更はありません");
         }
     }
 
@@ -658,14 +658,14 @@ impl Editor {
         let (name, pk, names) = match self.result_plan() {
             Ok(x) => x,
             Err(e) => {
-                self.notify.warn(e);
+                self.svc.notify.warn(e);
                 return;
             }
         };
         let Some(t) = self.db_results.active_tab() else { return };
         let stmts = t.statements(&name, &pk, &names);
         if stmts.is_empty() {
-            self.notify.info("送る変更はありません");
+            self.svc.notify.info("送る変更はありません");
             return;
         }
         let (id, src) = (t.id, t.src);
@@ -676,12 +676,12 @@ impl Editor {
             move |e| {
                 if let Some(c) = e.db.as_mut().and_then(|p| p.conns.get_mut(src)).filter(|c| c.connected) {
                     c.send_batch(crate::db_panel::Target::Result(id), stmts);
-                    e.notify.info("送信しています…");
+                    e.svc.notify.info("送信しています…");
                 } else {
-                    e.notify.info("まだつないでいません");
+                    e.svc.notify.info("まだつないでいません");
                 }
             },
-            |e| e.notify.info("送信をやめました（変更は残っています）"),
+            |e| e.svc.notify.info("送信をやめました（変更は残っています）"),
         );
     }
 
@@ -755,7 +755,7 @@ impl Editor {
                 }
                 // 読み直すと直した値が消えるので、送るか戻すまで止める
                 Key::Char('f' | 'F' | 's' | '>' | '<' | 'R') if dirty => {
-                    self.notify.info("未送信の変更があります（Ctrl+Enter で送るか、u・Ctrl+Z で戻す）");
+                    self.svc.notify.info("未送信の変更があります（Ctrl+Enter で送るか、u・Ctrl+Z で戻す）");
                     return crate::editor::Effect::None;
                 }
                 Key::Char('q') if dirty => {
@@ -933,7 +933,7 @@ impl Editor {
         let head = if t.filterable { 4 } else { 3 };
         if row == 1 && t.filterable {
             if !t.edits.is_empty() {
-                self.notify.info("未送信の変更があります（Ctrl+Enter で送るか、u・Ctrl+Z で戻す）");
+                self.svc.notify.info("未送信の変更があります（Ctrl+Enter で送るか、u・Ctrl+Z で戻す）");
                 return;
             }
             let field = filter_field_at(col + 1);
