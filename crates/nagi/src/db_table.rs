@@ -272,6 +272,173 @@ impl TableEditor {
     }
 }
 
+/// テーブルの画面のキーで、外に及ぶこと（Editor が行う。ADR 0018 の §5）
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TableAction {
+    None,
+    /// 打った値を決める（true ならその後、右の列へ）
+    CommitEdit(bool),
+    /// 読み直す（絞り込み・並べ替え・前後のページ・捨てて読み直す）
+    Reload,
+    /// その数の変更を送るか確かめる（送る文は preview に入れてある）
+    AskSend(usize),
+    Close,
+    Command,
+}
+
+impl TableEditor {
+    /// テーブルの画面のキー（`half` は半画面の行数）。値の入力・絞り込みの欄（`svc` で動かす）・移動・行の追加と削除・戻す・
+    /// 並べ替えの指定・送る文の用意はここで行い、外に及ぶことを返す
+    pub fn key(&mut self, key: Key, half: usize, svc: &mut crate::editor::Services) -> TableAction {
+        let te = self;
+        // 値の入力中（Vim 風。Enter か Tab で決める、ノーマルの Esc でやめる）
+        if let Some(f) = &mut te.editing {
+            let out = if key == Key::Tab { FieldOut::Submit } else { f.feed(key, svc) };
+            match out {
+                FieldOut::Cancel => te.editing = None,
+                FieldOut::Submit => return TableAction::CommitEdit(key == Key::Tab),
+                _ => {}
+            }
+            return TableAction::None;
+        }
+        // 絞り込みの欄の入力中
+        if let Some((_, f)) = &mut te.filter_edit {
+            match f.feed(key, svc) {
+                FieldOut::Cancel => te.filter_edit = None,
+                FieldOut::Submit => {
+                    let (field, f) = te.filter_edit.take().unwrap();
+                    let text = f.text();
+                    match field {
+                        Field::Where => te.where_ = text,
+                        Field::Order => te.order = text,
+                    }
+                    te.offset = 0;
+                    te.total = None;
+                    return TableAction::Reload;
+                }
+                _ => {}
+            }
+            return TableAction::None;
+        }
+        let pending = te.pending.take();
+        let last_row = te.len().saturating_sub(1);
+        let last_col = te.cols.len().saturating_sub(1);
+        if key != Key::Char('q') {
+            te.quit_armed = false;
+        }
+        let dirty = te.changes() > 0;
+        match (pending, key) {
+            (Some('d'), Key::Char('d')) => match te.at(te.row) {
+                (RowState::Added, a) => {
+                    te.added.remove(a);
+                    te.row = te.row.min(te.len().saturating_sub(1));
+                }
+                (_, r) => {
+                    if !te.deleted.remove(&r) {
+                        te.deleted.insert(r);
+                    }
+                    te.undo.push(Change::Delete(r));
+                }
+            },
+            (Some('g'), Key::Char('g')) => te.row = 0,
+            (_, Key::Char(c @ ('d' | 'g'))) => te.pending = Some(c),
+            (_, Key::Char('j') | Key::Down) => te.row = (te.row + 1).min(last_row),
+            (_, Key::Char('k') | Key::Up) => te.row = te.row.saturating_sub(1),
+            (_, Key::Char('l') | Key::Right | Key::Tab) => te.col = (te.col + 1).min(last_col),
+            (_, Key::Char('h') | Key::Left) => te.col = te.col.saturating_sub(1),
+            (_, Key::Char('0') | Key::Home) => te.col = 0,
+            (_, Key::Char('$') | Key::End) => te.col = last_col,
+            (_, Key::Ctrl('d')) => te.row = (te.row + half).min(last_row),
+            (_, Key::Ctrl('u')) => te.row = te.row.saturating_sub(half),
+            (_, Key::Char('G')) => te.row = last_row,
+            (_, Key::Char('i') | Key::Enter | Key::F(2)) if !te.cols.is_empty() && te.len() > 0 => {
+                if te.at(te.row).0 == RowState::Deleted {
+                    svc.notify.warn("消す行は直せません（dd で取り消し）");
+                } else {
+                    te.editing = Some(VimField::new(&te.value(te.row, te.col).unwrap_or_default(), false));
+                }
+            }
+            // c: 空にしてから直す（値を入れ替える）
+            (_, Key::Char('c')) if !te.cols.is_empty() && te.len() > 0 => {
+                if te.at(te.row).0 == RowState::Deleted {
+                    svc.notify.warn("消す行は直せません（dd で取り消し）");
+                } else {
+                    te.editing = Some(VimField::new("", false));
+                }
+            }
+            (_, Key::Char('x')) if !te.cols.is_empty() && te.len() > 0 => {
+                let (d, c) = (te.row, te.col);
+                te.set_value(d, c, None);
+            }
+            (_, Key::Char('o')) if !te.cols.is_empty() => {
+                te.added.insert(0, vec![None; te.cols.len()]);
+                te.undo.push(Change::Add);
+                te.row = 0;
+            }
+            (_, Key::Char('u') | Key::Ctrl('z')) => {
+                if !te.undo_one() {
+                    svc.notify.info("戻す変更はありません");
+                }
+            }
+            (_, Key::Ctrl('m')) => match te.statements() {
+                Ok(s) if s.is_empty() => svc.notify.info("送る変更はありません"),
+                Ok(s) => {
+                    let n = s.len();
+                    te.preview = Some(s);
+                    return TableAction::AskSend(n);
+                }
+                Err(e) => svc.notify.error(e),
+            },
+            (_, Key::Char('f') | Key::Char('F')) if !dirty => {
+                let field = if key == Key::Char('f') { Field::Where } else { Field::Order };
+                te.filter_edit = Some((field, VimField::new(if field == Field::Where { &te.where_ } else { &te.order }, false)));
+            }
+            (_, Key::Char('s')) if !dirty && !te.cols.is_empty() => {
+                let c = te.dialect.ident(&te.cols[te.col]);
+                te.order = if te.order == format!("{c} ASC") {
+                    format!("{c} DESC")
+                } else if te.order == format!("{c} DESC") {
+                    String::new()
+                } else {
+                    format!("{c} ASC")
+                };
+                te.offset = 0;
+                return TableAction::Reload;
+            }
+            (_, Key::Char('>')) if !dirty && te.more => {
+                te.offset += MAX_ROWS;
+                te.row = 0;
+                return TableAction::Reload;
+            }
+            (_, Key::Char('<')) if !dirty && te.offset > 0 => {
+                te.offset = te.offset.saturating_sub(MAX_ROWS);
+                te.row = 0;
+                return TableAction::Reload;
+            }
+            (_, Key::Char('R')) => {
+                if dirty && !te.quit_armed {
+                    te.quit_armed = true;
+                    svc.notify.info("未送信の変更があります。もう一度 R で捨てて読み直す");
+                } else {
+                    return TableAction::Reload;
+                }
+            }
+            (_, Key::Char('f' | 'F' | 's' | '>' | '<')) => svc.notify.info("未送信の変更があります（Ctrl+Enter で送るか、u で戻す）"),
+            (_, Key::Char('q') | Key::Esc) => {
+                if dirty && !te.quit_armed {
+                    te.quit_armed = true;
+                    svc.notify.info(format!("未送信の変更が {} 件あります。もう一度 q で捨てて閉じる", te.changes()));
+                } else {
+                    return TableAction::Close;
+                }
+            }
+            (_, Key::Char(':')) => return TableAction::Command,
+            _ => {}
+        }
+        TableAction::None
+    }
+}
+
 impl Editor {
     /// テーブル（ビュー）のデータを開く
     pub(crate) fn db_open_table(&mut self, i: usize, schema: &str, table: &str) {
@@ -410,164 +577,27 @@ impl Editor {
             self.set_state(State::Normal);
             return;
         };
-        // 値の入力中（Vim 風。Enter か Tab で決める、ノーマルの Esc でやめる）
-        if te.editing.is_some() {
-            let out = if key == Key::Tab { FieldOut::Submit } else { self.feed_field(key, |e| e.panels.db_table.as_mut().and_then(|t| t.editing.as_mut())) };
-            let Some(te) = &mut self.panels.db_table else { return };
-            match out {
-                FieldOut::Cancel => te.editing = None,
-                FieldOut::Submit => {
-                    self.db_table_commit_edit();
-                    if let Some(te) = self.panels.db_table.as_mut().filter(|_| key == Key::Tab) {
-                        te.col = (te.col + 1).min(te.cols.len().saturating_sub(1));
+        // テーブルの中で済むことは TableEditor::key が行い、外に及ぶことを返す（ADR 0018 の §5）
+        match te.key(key, half, &mut self.svc) {
+            TableAction::None => {}
+            TableAction::CommitEdit(next) => {
+                self.db_table_commit_edit();
+                if let Some(te) = self.panels.db_table.as_mut().filter(|_| next) {
+                    te.col = (te.col + 1).min(te.cols.len().saturating_sub(1));
+                }
+            }
+            TableAction::Reload => self.db_table_reload(),
+            TableAction::AskSend(n) => {
+                let q = format!("{n} 件の変更を送りますか（送る文は上に出ています）");
+                self.ask_or(q, |e| e.db_table_send(), |e| {
+                    if let Some(te) = &mut e.panels.db_table {
+                        te.preview = None;
                     }
-                }
-                _ => {}
+                    e.svc.notify.info("送信をやめました（変更は残っています）");
+                });
             }
-            return;
-        }
-        // 絞り込みの欄の入力中
-        if te.filter_edit.is_some() {
-            let out = self.feed_field(key, |e| e.panels.db_table.as_mut().and_then(|t| t.filter_edit.as_mut()).map(|x| &mut x.1));
-            let Some(te) = &mut self.panels.db_table else { return };
-            match out {
-                FieldOut::Cancel => te.filter_edit = None,
-                FieldOut::Submit => {
-                    let (field, f) = te.filter_edit.take().unwrap();
-                    let text = f.text();
-                    match field {
-                        Field::Where => te.where_ = text,
-                        Field::Order => te.order = text,
-                    }
-                    te.offset = 0;
-                    te.total = None;
-                    self.db_table_reload();
-                }
-                _ => {}
-            }
-            return;
-        }
-        let pending = te.pending.take();
-        let last_row = te.len().saturating_sub(1);
-        let last_col = te.cols.len().saturating_sub(1);
-        if key != Key::Char('q') {
-            te.quit_armed = false;
-        }
-        let dirty = te.changes() > 0;
-        match (pending, key) {
-            (Some('d'), Key::Char('d')) => match te.at(te.row) {
-                (RowState::Added, a) => {
-                    te.added.remove(a);
-                    te.row = te.row.min(te.len().saturating_sub(1));
-                }
-                (_, r) => {
-                    if !te.deleted.remove(&r) {
-                        te.deleted.insert(r);
-                    }
-                    te.undo.push(Change::Delete(r));
-                }
-            },
-            (Some('g'), Key::Char('g')) => te.row = 0,
-            (_, Key::Char(c @ ('d' | 'g'))) => te.pending = Some(c),
-            (_, Key::Char('j') | Key::Down) => te.row = (te.row + 1).min(last_row),
-            (_, Key::Char('k') | Key::Up) => te.row = te.row.saturating_sub(1),
-            (_, Key::Char('l') | Key::Right | Key::Tab) => te.col = (te.col + 1).min(last_col),
-            (_, Key::Char('h') | Key::Left) => te.col = te.col.saturating_sub(1),
-            (_, Key::Char('0') | Key::Home) => te.col = 0,
-            (_, Key::Char('$') | Key::End) => te.col = last_col,
-            (_, Key::Ctrl('d')) => te.row = (te.row + half).min(last_row),
-            (_, Key::Ctrl('u')) => te.row = te.row.saturating_sub(half),
-            (_, Key::Char('G')) => te.row = last_row,
-            (_, Key::Char('i') | Key::Enter | Key::F(2)) if !te.cols.is_empty() && te.len() > 0 => {
-                if te.at(te.row).0 == RowState::Deleted {
-                    self.svc.notify.warn("消す行は直せません（dd で取り消し）");
-                } else {
-                    te.editing = Some(VimField::new(&te.value(te.row, te.col).unwrap_or_default(), false));
-                }
-            }
-            // c: 空にしてから直す（値を入れ替える）
-            (_, Key::Char('c')) if !te.cols.is_empty() && te.len() > 0 => {
-                if te.at(te.row).0 == RowState::Deleted {
-                    self.svc.notify.warn("消す行は直せません（dd で取り消し）");
-                } else {
-                    te.editing = Some(VimField::new("", false));
-                }
-            }
-            (_, Key::Char('x')) if !te.cols.is_empty() && te.len() > 0 => {
-                let (d, c) = (te.row, te.col);
-                te.set_value(d, c, None);
-            }
-            (_, Key::Char('o')) if !te.cols.is_empty() => {
-                te.added.insert(0, vec![None; te.cols.len()]);
-                te.undo.push(Change::Add);
-                te.row = 0;
-            }
-            (_, Key::Char('u') | Key::Ctrl('z')) => {
-                if !te.undo_one() {
-                    self.svc.notify.info("戻す変更はありません");
-                }
-            }
-            (_, Key::Ctrl('m')) => match te.statements() {
-                Ok(s) if s.is_empty() => self.svc.notify.info("送る変更はありません"),
-                Ok(s) => {
-                    let q = format!("{} 件の変更を送りますか（送る文は上に出ています）", s.len());
-                    te.preview = Some(s);
-                    self.ask_or(q, |e| e.db_table_send(), |e| {
-                        if let Some(te) = &mut e.panels.db_table {
-                            te.preview = None;
-                        }
-                        e.svc.notify.info("送信をやめました（変更は残っています）");
-                    });
-                }
-                Err(e) => self.svc.notify.error(e),
-            },
-            (_, Key::Char('f') | Key::Char('F')) if !dirty => {
-                let field = if key == Key::Char('f') { Field::Where } else { Field::Order };
-                te.filter_edit = Some((field, VimField::new(if field == Field::Where { &te.where_ } else { &te.order }, false)));
-            }
-            (_, Key::Char('s')) if !dirty && !te.cols.is_empty() => {
-                let c = te.dialect.ident(&te.cols[te.col]);
-                te.order = if te.order == format!("{c} ASC") {
-                    format!("{c} DESC")
-                } else if te.order == format!("{c} DESC") {
-                    String::new()
-                } else {
-                    format!("{c} ASC")
-                };
-                te.offset = 0;
-                self.db_table_reload();
-            }
-            (_, Key::Char('>')) if !dirty && te.more => {
-                te.offset += MAX_ROWS;
-                te.row = 0;
-                self.db_table_reload();
-            }
-            (_, Key::Char('<')) if !dirty && te.offset > 0 => {
-                te.offset = te.offset.saturating_sub(MAX_ROWS);
-                te.row = 0;
-                self.db_table_reload();
-            }
-            (_, Key::Char('R')) => {
-                if dirty && !te.quit_armed {
-                    te.quit_armed = true;
-                    self.svc.notify.info("未送信の変更があります。もう一度 R で捨てて読み直す");
-                } else {
-                    self.db_table_reload();
-                }
-            }
-            (_, Key::Char('f' | 'F' | 's' | '>' | '<')) => self.svc.notify.info("未送信の変更があります（Ctrl+Enter で送るか、u で戻す）"),
-            (_, Key::Char('q') | Key::Esc) => {
-                if dirty && !te.quit_armed {
-                    te.quit_armed = true;
-                    self.svc.notify.info(format!("未送信の変更が {} 件あります。もう一度 q で捨てて閉じる", te.changes()));
-                } else {
-                    self.close_db_table();
-                }
-            }
-            (_, Key::Char(':')) => {
-                self.enter_command("");
-            }
-            _ => {}
+            TableAction::Close => self.close_db_table(),
+            TableAction::Command => self.enter_command(""),
         }
     }
 }
