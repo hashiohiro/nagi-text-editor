@@ -176,6 +176,125 @@ impl RunDialog {
     }
 }
 
+impl RunDialog {
+    /// ダイアログのキー（構成の一覧・種類・入力欄。入力欄は `svc` で動かす）。押したことになるボタンを返す
+    pub fn key(&mut self, key: Key, svc: &mut crate::editor::Services) -> Option<DialogButton> {
+        let d = self;
+        // どこからでも: Ctrl+Enter で保存して閉じる
+        if key == Key::Ctrl('m') {
+            return Some(DialogButton::Save);
+        }
+        let confirm = std::mem::take(&mut d.confirm_close);
+        match d.focus {
+            Focus::List => {
+                let n = d.configs.len();
+                let moved = nagi_ui::list::step(key, d.selected, n, 10);
+                match key {
+                    _ if moved.is_some() => d.select(moved.unwrap_or(d.selected)),
+                    Key::Char('g') => d.select(0),
+                    Key::Enter | Key::Tab | Key::Char('l') | Key::Char('i') => {
+                        d.focus = Focus::Name;
+                        d.name.reinsert();
+                    }
+                    Key::Char('a' | '+') => {
+                        d.commit();
+                        let name = d.unique("新しい構成");
+                        d.configs.push(RunConfig { name, kind: Kind::new("shell"), from: "nagi" });
+                        d.selected = d.configs.len() - 1;
+                        d.load_fields();
+                        // 名前はすぐ打てるように空の欄から（打たなければ「新しい構成」のまま）
+                        d.name = VimField::new("", false);
+                        d.focus = Focus::Name;
+                        d.dirty = true;
+                    }
+                    Key::Char('c') => {
+                        d.commit();
+                        if let Some(mut c) = d.current().cloned() {
+                            c.name = d.unique(&format!("{} のコピー", c.name));
+                            c.from = "nagi";
+                            d.configs.insert(d.selected + 1, c);
+                            d.selected += 1;
+                            d.load_fields();
+                            d.dirty = true;
+                        }
+                    }
+                    Key::Char('d' | '-' | 'x') | Key::Delete => match d.current() {
+                        Some(c) if c.from == "nagi" => {
+                            d.configs.remove(d.selected);
+                            d.selected = d.selected.min(d.configs.len().saturating_sub(1));
+                            d.load_fields();
+                            d.dirty = true;
+                        }
+                        Some(_) => svc.notify.warn("IntelliJ の構成は nagi からは消せません（IntelliJ で消してください）"),
+                        None => {}
+                    },
+                    Key::Char('r') => return Some(DialogButton::Run),
+                    Key::Esc | Key::Char('q') => {
+                        if d.dirty && !confirm {
+                            d.confirm_close = true;
+                            svc.notify.info("保存していない変更があります。もう一度 Esc で捨てて閉じる、Ctrl+Enter で保存して閉じる");
+                        } else {
+                            return Some(DialogButton::Cancel);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Focus::Kind => match key {
+                Key::Char('h') | Key::Left => d.cycle_kind(-1),
+                Key::Char('l') | Key::Right | Key::Char(' ') => d.cycle_kind(1),
+                Key::Tab | Key::Enter | Key::Down | Key::Char('j') => d.move_focus(1),
+                Key::Up | Key::Char('k') => d.move_focus(-1),
+                Key::Esc => {
+                    d.commit();
+                    d.focus = Focus::List;
+                }
+                _ => {}
+            },
+            focus => {
+                let normal = d.field(focus).is_some_and(|f| !f.is_insert());
+                match key {
+                    Key::Tab | Key::Down => {
+                        d.commit();
+                        d.move_focus(1);
+                        return None;
+                    }
+                    Key::Up => {
+                        d.commit();
+                        d.move_focus(-1);
+                        return None;
+                    }
+                    Key::Char('j') if normal => {
+                        d.commit();
+                        d.move_focus(1);
+                        return None;
+                    }
+                    Key::Char('k') if normal => {
+                        d.commit();
+                        d.move_focus(-1);
+                        return None;
+                    }
+                    _ => {}
+                }
+                let Some(f) = d.field_mut(focus) else { return None };
+                match f.feed(key, svc) {
+                    FieldOut::Changed => d.dirty = true,
+                    FieldOut::Submit => {
+                        d.commit();
+                        d.move_focus(1);
+                    }
+                    FieldOut::Cancel => {
+                        d.commit();
+                        d.focus = Focus::List;
+                    }
+                    FieldOut::None => {}
+                }
+            }
+        }
+        None
+    }
+}
+
 impl Editor {
     /// 実行の構成の画面を開く（`select` の名前の構成を選んで）
     pub(crate) fn open_run_dialog(&mut self, select: Option<&str>) {
@@ -286,122 +405,9 @@ impl Editor {
             self.set_state(State::Normal);
             return;
         };
-        // どこからでも: Ctrl+Enter で保存して閉じる
-        if key == Key::Ctrl('m') {
-            self.run_dialog_button(DialogButton::Save);
-            return;
-        }
-        let confirm = std::mem::take(&mut d.confirm_close);
-        match d.focus {
-            Focus::List => {
-                let n = d.configs.len();
-                let moved = nagi_ui::list::step(key, d.selected, n, 10);
-                match key {
-                    _ if moved.is_some() => d.select(moved.unwrap_or(d.selected)),
-                    Key::Char('g') => d.select(0),
-                    Key::Enter | Key::Tab | Key::Char('l') | Key::Char('i') => {
-                        d.focus = Focus::Name;
-                        d.name.reinsert();
-                    }
-                    Key::Char('a' | '+') => {
-                        d.commit();
-                        let name = d.unique("新しい構成");
-                        d.configs.push(RunConfig { name, kind: Kind::new("shell"), from: "nagi" });
-                        d.selected = d.configs.len() - 1;
-                        d.load_fields();
-                        // 名前はすぐ打てるように空の欄から（打たなければ「新しい構成」のまま）
-                        d.name = VimField::new("", false);
-                        d.focus = Focus::Name;
-                        d.dirty = true;
-                    }
-                    Key::Char('c') => {
-                        d.commit();
-                        if let Some(mut c) = d.current().cloned() {
-                            c.name = d.unique(&format!("{} のコピー", c.name));
-                            c.from = "nagi";
-                            d.configs.insert(d.selected + 1, c);
-                            d.selected += 1;
-                            d.load_fields();
-                            d.dirty = true;
-                        }
-                    }
-                    Key::Char('d' | '-' | 'x') | Key::Delete => match d.current() {
-                        Some(c) if c.from == "nagi" => {
-                            d.configs.remove(d.selected);
-                            d.selected = d.selected.min(d.configs.len().saturating_sub(1));
-                            d.load_fields();
-                            d.dirty = true;
-                        }
-                        Some(_) => self.svc.notify.warn("IntelliJ の構成は nagi からは消せません（IntelliJ で消してください）"),
-                        None => {}
-                    },
-                    Key::Char('r') => self.run_dialog_button(DialogButton::Run),
-                    Key::Esc | Key::Char('q') => {
-                        if d.dirty && !confirm {
-                            d.confirm_close = true;
-                            self.svc.notify.info("保存していない変更があります。もう一度 Esc で捨てて閉じる、Ctrl+Enter で保存して閉じる");
-                        } else {
-                            self.run_dialog_button(DialogButton::Cancel);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            Focus::Kind => match key {
-                Key::Char('h') | Key::Left => d.cycle_kind(-1),
-                Key::Char('l') | Key::Right | Key::Char(' ') => d.cycle_kind(1),
-                Key::Tab | Key::Enter | Key::Down | Key::Char('j') => d.move_focus(1),
-                Key::Up | Key::Char('k') => d.move_focus(-1),
-                Key::Esc => {
-                    d.commit();
-                    d.focus = Focus::List;
-                }
-                _ => {}
-            },
-            focus => {
-                let normal = d.field(focus).is_some_and(|f| !f.is_insert());
-                match key {
-                    Key::Tab | Key::Down => {
-                        d.commit();
-                        d.move_focus(1);
-                        return;
-                    }
-                    Key::Up => {
-                        d.commit();
-                        d.move_focus(-1);
-                        return;
-                    }
-                    Key::Char('j') if normal => {
-                        d.commit();
-                        d.move_focus(1);
-                        return;
-                    }
-                    Key::Char('k') if normal => {
-                        d.commit();
-                        d.move_focus(-1);
-                        return;
-                    }
-                    _ => {}
-                }
-                let out = self.feed_field(key, |e| {
-                    let d = e.panels.run_dialog.as_mut()?;
-                    let f = d.focus;
-                    d.field_mut(f)
-                });
-                let Some(d) = &mut self.panels.run_dialog else { return };
-                match out {
-                    FieldOut::Changed => d.dirty = true,
-                    FieldOut::Submit => {
-                        d.commit();
-                        d.move_focus(1);
-                    }
-                    FieldOut::Cancel => {
-                        d.commit();
-                        d.focus = Focus::List;
-                    }
-                    FieldOut::None => {}
-                }
-            }
+        // ダイアログの中で済むことは RunDialog::key が行い、ボタン（保存・実行・閉じる）だけを返す（ADR 0018 の §5）
+        if let Some(button) = d.key(key, &mut self.svc) {
+            self.run_dialog_button(button);
         }
     }
 
