@@ -473,6 +473,159 @@ fn probe_tools(root: &std::path::Path, info: std::sync::Arc<std::sync::Mutex<std
     });
 }
 
+/// 設定のダイアログのキーで、外に及ぶこと（Editor が行う。ADR 0018 の §5）
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SettingsAction {
+    None,
+    /// OK（保存して閉じる）
+    Ok,
+    /// コンボで選んだもの（JDK・ツールなど）のダウンロードを始める
+    Download(String),
+    /// 閉じる（true なら、保存していない変更を捨てる確認を済ませた）
+    Close(bool),
+}
+
+impl SettingsDialog {
+    /// 設定のダイアログのキー（分類・項目・絞り込み・値の入力・コンボ・キーマップ。入力欄は `svc` で動かす）。
+    /// `maps_base` はキーマップを元に戻すときの既定。外に及ぶことを返す
+    pub fn key(&mut self, key: Key, svc: &mut crate::editor::Services, maps_base: &[crate::vim_maps::MapRow]) -> SettingsAction {
+        let d = self;
+        if key == Key::Ctrl('m') {
+            return SettingsAction::Ok;
+        }
+        let confirm = std::mem::take(&mut d.confirm_close);
+        match d.focus {
+            SFocus::Combo => {
+                let n = d.combo.as_ref().map_or(0, |c| c.shown().len());
+                let normal = d.combo.as_ref().is_some_and(|c| !c.filter.is_insert());
+                // 打って絞り込む一覧: ↑↓ Ctrl+n/p など。ノーマルでは j・k も
+                let sel = d.combo.as_ref().map_or(0, |c| c.sel);
+                let moved = nagi_ui::list::step_typing(key, sel, n).or_else(|| if normal { nagi_ui::list::step(key, sel, n, 10) } else { None });
+                match key {
+                    _ if moved.is_some() => {
+                        if let Some(c) = &mut d.combo {
+                            c.sel = moved.unwrap_or(c.sel);
+                        }
+                    }
+                    Key::Enter => {
+                        if let Some(v) = d.choose_combo(None) {
+                            return SettingsAction::Download(v);
+                        }
+                    }
+                    Key::Esc if normal || d.combo.as_ref().is_some_and(|c| c.filter.text().is_empty()) => {
+                        d.combo = None;
+                        d.focus = SFocus::Items;
+                    }
+                    _ => {
+                        if let Some(c) = &mut d.combo {
+                            c.filter.feed(key, svc);
+                            c.sel = 0;
+                            c.top = 0;
+                        }
+                    }
+                }
+            }
+            SFocus::Edit => {
+                let Some(f) = &mut d.field else { return SettingsAction::None };
+                match f.feed(key, svc) {
+                    FieldOut::Submit => {
+                        if let Some(e) = d.commit_edit() {
+                            svc.notify.error(e);
+                        }
+                    }
+                    FieldOut::Cancel => {
+                        d.field = None;
+                        d.focus = SFocus::Items;
+                    }
+                    _ => {}
+                }
+            }
+            SFocus::Filter => {
+                let out = d.filter.feed(key, svc);
+                d.selected = 0;
+                d.top = 0;
+                match out {
+                    FieldOut::Submit | FieldOut::Cancel => d.focus = SFocus::Items,
+                    _ => {}
+                }
+                if matches!(key, Key::Down | Key::Tab) {
+                    d.focus = SFocus::Items;
+                }
+            }
+            SFocus::Cats => match key {
+                Key::Char('j') | Key::Down => {
+                    d.cat = (d.cat + 1).min(CATEGORIES.len() - 1);
+                    d.selected = 0;
+                    d.top = 0;
+                }
+                Key::Char('k') | Key::Up => {
+                    d.cat = d.cat.saturating_sub(1);
+                    d.selected = 0;
+                    d.top = 0;
+                }
+                Key::Char('l') | Key::Enter | Key::Tab | Key::Right => d.focus = SFocus::Items,
+                Key::Char('/') => {
+                    d.focus = SFocus::Filter;
+                    d.filter.reinsert();
+                }
+                Key::Char('p') => d.project_scope = !d.project_scope,
+                Key::Esc | Key::Char('q') => return SettingsAction::Close(confirm),
+                _ => {}
+            },
+            SFocus::Items if d.is_maps() => {
+                let n = d.maps.len() + 1;
+                let moved = nagi_ui::list::step(key, d.selected, n, 10);
+                match key {
+                    _ if moved.is_some() => d.selected = moved.unwrap_or(d.selected),
+                    Key::Char('g') => d.selected = 0,
+                    Key::Tab | Key::Char('h') | Key::Left => d.focus = SFocus::Cats,
+                    Key::Char(' ') | Key::Enter | Key::Char('i') => d.map_edit(),
+                    Key::Char('o') => {
+                        d.selected = d.maps.len();
+                        d.map_edit();
+                    }
+                    Key::Char('a') => d.map_choose(),
+                    Key::Char('d') | Key::Char('x') | Key::Delete => d.map_delete(),
+                    Key::Char('r') => d.map_revert(maps_base),
+                    Key::Char('/') => {
+                        d.focus = SFocus::Filter;
+                        d.filter.reinsert();
+                    }
+                    Key::Esc | Key::Char('q') => return SettingsAction::Close(confirm),
+                    _ => {}
+                }
+            }
+            SFocus::Items => {
+                let n = d.items().len();
+                let moved = nagi_ui::list::step(key, d.selected, n, 10);
+                match key {
+                    _ if moved.is_some() => d.selected = moved.unwrap_or(d.selected),
+                    Key::Char('g') => d.selected = 0,
+                    Key::Tab => d.focus = SFocus::Cats,
+                    Key::Char('h') | Key::Left => {
+                        if d.current().is_some_and(|i| matches!(i.kind, SKind::Choice(_))) {
+                            d.cycle(-1);
+                        } else {
+                            d.focus = SFocus::Cats;
+                        }
+                    }
+                    Key::Char('l') | Key::Right => d.cycle(1),
+                    Key::Char(' ') | Key::Enter | Key::Char('i') => d.edit(),
+                    Key::Char('r') => d.reset(),
+                    Key::Char('p') => d.project_scope = !d.project_scope,
+                    Key::Char('/') => {
+                        d.focus = SFocus::Filter;
+                        d.filter.reinsert();
+                    }
+                    Key::Esc | Key::Char('q') => return SettingsAction::Close(confirm),
+                    _ => {}
+                }
+            }
+        }
+        SettingsAction::None
+    }
+}
+
 impl Editor {
     /// コンボボックスで選んだダウンロードを始める（数なら JDK の版、tool:種類 なら言語のツール）
     pub(crate) fn start_download(&mut self, what: &str) {
@@ -783,145 +936,12 @@ impl Editor {
             self.set_state(State::Normal);
             return;
         };
-        if key == Key::Ctrl('m') {
-            self.settings_button(SButton::Ok);
-            return;
-        }
-        let confirm = std::mem::take(&mut d.confirm_close);
-        match d.focus {
-            SFocus::Combo => {
-                let n = d.combo.as_ref().map_or(0, |c| c.shown().len());
-                let normal = d.combo.as_ref().is_some_and(|c| !c.filter.is_insert());
-                // 打って絞り込む一覧: ↑↓ Ctrl+n/p など。ノーマルでは j・k も
-                let sel = d.combo.as_ref().map_or(0, |c| c.sel);
-                let moved = nagi_ui::list::step_typing(key, sel, n).or_else(|| if normal { nagi_ui::list::step(key, sel, n, 10) } else { None });
-                match key {
-                    _ if moved.is_some() => {
-                        if let Some(c) = &mut d.combo {
-                            c.sel = moved.unwrap_or(c.sel);
-                        }
-                    }
-                    Key::Enter => {
-                        if let Some(v) = d.choose_combo(None) {
-                            self.start_download(&v);
-                        }
-                    }
-                    Key::Esc if normal || d.combo.as_ref().is_some_and(|c| c.filter.text().is_empty()) => {
-                        d.combo = None;
-                        d.focus = SFocus::Items;
-                    }
-                    _ => {
-                        self.feed_field(key, |e| Some(&mut e.panels.settings_dialog.as_mut()?.combo.as_mut()?.filter));
-                        if let Some(c) = self.panels.settings_dialog.as_mut().and_then(|d| d.combo.as_mut()) {
-                            c.sel = 0;
-                            c.top = 0;
-                        }
-                    }
-                }
-            }
-            SFocus::Edit => {
-                let out = self.feed_field(key, |e| e.panels.settings_dialog.as_mut()?.field.as_mut());
-                let Some(d) = &mut self.panels.settings_dialog else { return };
-                match out {
-                    FieldOut::Submit => {
-                        if let Some(e) = d.commit_edit() {
-                            self.svc.notify.error(e);
-                        }
-                    }
-                    FieldOut::Cancel => {
-                        d.field = None;
-                        d.focus = SFocus::Items;
-                    }
-                    _ => {}
-                }
-            }
-            SFocus::Filter => {
-                let out = self.feed_field(key, |e| Some(&mut e.panels.settings_dialog.as_mut()?.filter));
-                let Some(d) = &mut self.panels.settings_dialog else { return };
-                d.selected = 0;
-                d.top = 0;
-                match out {
-                    FieldOut::Submit | FieldOut::Cancel => d.focus = SFocus::Items,
-                    _ => {}
-                }
-                if matches!(key, Key::Down | Key::Tab) {
-                    d.focus = SFocus::Items;
-                }
-            }
-            SFocus::Cats => match key {
-                Key::Char('j') | Key::Down => {
-                    d.cat = (d.cat + 1).min(CATEGORIES.len() - 1);
-                    d.selected = 0;
-                    d.top = 0;
-                }
-                Key::Char('k') | Key::Up => {
-                    d.cat = d.cat.saturating_sub(1);
-                    d.selected = 0;
-                    d.top = 0;
-                }
-                Key::Char('l') | Key::Enter | Key::Tab | Key::Right => d.focus = SFocus::Items,
-                Key::Char('/') => {
-                    d.focus = SFocus::Filter;
-                    d.filter.reinsert();
-                }
-                Key::Char('p') => d.project_scope = !d.project_scope,
-                Key::Esc | Key::Char('q') => self.close_settings(confirm),
-                _ => {}
-            },
-            SFocus::Items if d.is_maps() => {
-                let n = d.maps.len() + 1;
-                let moved = nagi_ui::list::step(key, d.selected, n, 10);
-                match key {
-                    _ if moved.is_some() => d.selected = moved.unwrap_or(d.selected),
-                    Key::Char('g') => d.selected = 0,
-                    Key::Tab | Key::Char('h') | Key::Left => d.focus = SFocus::Cats,
-                    Key::Char(' ') | Key::Enter | Key::Char('i') => d.map_edit(),
-                    Key::Char('o') => {
-                        d.selected = d.maps.len();
-                        d.map_edit();
-                    }
-                    Key::Char('a') => d.map_choose(),
-                    Key::Char('d') | Key::Char('x') | Key::Delete => d.map_delete(),
-                    Key::Char('r') => {
-                        let base = self.vim_maps_base.clone();
-                        if let Some(d) = &mut self.panels.settings_dialog {
-                            d.map_revert(&base);
-                        }
-                    }
-                    Key::Char('/') => {
-                        d.focus = SFocus::Filter;
-                        d.filter.reinsert();
-                    }
-                    Key::Esc | Key::Char('q') => self.close_settings(confirm),
-                    _ => {}
-                }
-            }
-            SFocus::Items => {
-                let n = d.items().len();
-                let moved = nagi_ui::list::step(key, d.selected, n, 10);
-                match key {
-                    _ if moved.is_some() => d.selected = moved.unwrap_or(d.selected),
-                    Key::Char('g') => d.selected = 0,
-                    Key::Tab => d.focus = SFocus::Cats,
-                    Key::Char('h') | Key::Left => {
-                        if d.current().is_some_and(|i| matches!(i.kind, SKind::Choice(_))) {
-                            d.cycle(-1);
-                        } else {
-                            d.focus = SFocus::Cats;
-                        }
-                    }
-                    Key::Char('l') | Key::Right => d.cycle(1),
-                    Key::Char(' ') | Key::Enter | Key::Char('i') => d.edit(),
-                    Key::Char('r') => d.reset(),
-                    Key::Char('p') => d.project_scope = !d.project_scope,
-                    Key::Char('/') => {
-                        d.focus = SFocus::Filter;
-                        d.filter.reinsert();
-                    }
-                    Key::Esc | Key::Char('q') => self.close_settings(confirm),
-                    _ => {}
-                }
-            }
+        // ダイアログの中で済むことは SettingsDialog::key が行い、外に及ぶことを返す（ADR 0018 の §5）
+        match d.key(key, &mut self.svc, &self.vim_maps_base) {
+            SettingsAction::None => {}
+            SettingsAction::Ok => self.settings_button(SButton::Ok),
+            SettingsAction::Download(v) => self.start_download(&v),
+            SettingsAction::Close(confirm) => self.close_settings(confirm),
         }
     }
 
