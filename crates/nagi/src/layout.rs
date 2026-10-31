@@ -121,12 +121,22 @@ pub fn layer(l: Layer) -> &'static [&'static dyn View] {
 
 /// 層の部品を下から描く
 pub fn draw(l: Layer, ed: &Editor, p: &mut Painter, s: Screen) {
-    for v in layer(l) {
+    // NAGI_DEBUG_BUILD: 部品ごとの描く時間（表の番号と µs）を標準エラーへ
+    let debug = std::env::var_os("NAGI_DEBUG_BUILD").is_some();
+    let mut times = Vec::new();
+    for (i, v) in layer(l).iter().enumerate() {
         if let Some(r) = v.rect(ed, s) {
+            let t = std::time::Instant::now();
             p.ui = !v.mono();
             v.draw(ed, p, r, s);
             p.ui = false;
+            if debug {
+                times.push((i, t.elapsed().as_micros()));
+            }
         }
+    }
+    if debug {
+        eprintln!("draw-views {times:?}");
     }
 }
 

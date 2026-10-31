@@ -288,6 +288,10 @@ pub struct Syntax {
     pub waker: Option<Arc<dyn Fn() + Send + Sync>>,
     /// HTML の <script> <style> の中のハイライトの覚え（中身 → 中身の中の範囲）
     injected: std::sync::Mutex<Vec<(Lang, String, Vec<(Range<usize>, Hl)>)>>,
+    /// 構文木が変わるたびに上がる数（ハイライトの覚えの鍵）
+    tree_gen: u64,
+    /// 直前のハイライト（木の数・バッファの版・範囲が同じなら使い回す。カーソルを動かすだけなら問い合わせ直さない）
+    hl_cache: std::sync::Mutex<Option<(u64, u64, Range<usize>, Vec<(Range<usize>, Hl)>)>>,
 }
 
 // Parser と Tree は別スレッドへ移せる（初回のパースを読み込みスレッドで行う）
@@ -308,7 +312,7 @@ impl Syntax {
     pub fn new(lang: Lang) -> Option<Self> {
         let mut parser = Parser::new();
         parser.set_language(&lang.language()?).ok()?;
-        Some(Self { lang, parser: Some(parser), tree: None, stale: false, job: None, last_parse: Duration::ZERO, waker: None, injected: Default::default() })
+        Some(Self { lang, parser: Some(parser), tree: None, stale: false, job: None, last_parse: Duration::ZERO, waker: None, injected: Default::default(), tree_gen: 0, hl_cache: Default::default() })
     }
 
     /// バッファ全体をその場でパースする（初回）
@@ -323,6 +327,7 @@ impl Syntax {
         self.tree = parse_with(parser, buf, self.tree.as_ref());
         self.last_parse = t.elapsed();
         self.stale = false;
+        self.tree_gen += 1;
     }
 
     /// 編集を構文木に反映する。戻り値は色が変わりうるか（描き直す）。
@@ -343,6 +348,7 @@ impl Syntax {
                 }
             }
             self.stale = true;
+            self.tree_gen += 1;
             changed = true;
         }
         if self.stale && self.job.is_none() {
@@ -379,6 +385,7 @@ impl Syntax {
                 t.edit(ie);
             }
             self.tree = Some(t);
+            self.tree_gen += 1;
         }
         // 解析中に入った編集は、届いた木ではまだ位置をずらしただけ
         self.stale |= !since.is_empty();
@@ -392,6 +399,20 @@ impl Syntax {
 
     /// `range`（絶対 byte）にかかるハイライト。返す範囲は重ならないよう、後から来た内側のキャプチャで上書きした結果
     pub fn highlight(&self, buf: &Buffer, range: Range<usize>) -> Vec<(Range<usize>, Hl)> {
+        let key = (self.tree_gen, buf.version, range.clone());
+        if let Ok(c) = self.hl_cache.lock() {
+            if let Some((.., spans)) = c.as_ref().filter(|c| c.0 == key.0 && c.1 == key.1 && c.2 == key.2) {
+                return spans.clone();
+            }
+        }
+        let spans = self.highlight_uncached(buf, range);
+        if let Ok(mut c) = self.hl_cache.lock() {
+            *c = Some((key.0, key.1, key.2, spans.clone()));
+        }
+        spans
+    }
+
+    fn highlight_uncached(&self, buf: &Buffer, range: Range<usize>) -> Vec<(Range<usize>, Hl)> {
         let (Some(tree), Ok(query)) = (&self.tree, self.lang.highlights()) else { return Vec::new() };
         let names = query.capture_names();
         let mut cursor = QueryCursor::new();

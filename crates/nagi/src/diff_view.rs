@@ -391,8 +391,13 @@ pub(crate) mod draw {
         p.out.push(Instance::fill(x0, y0, r.w as f32 * cell.w, r.h as f32 * cell.h, BG));
         let half = r.w.saturating_sub(1) / 2;
         let rx = r.x + half + 1;
+        // 題名はそれぞれの半分で切る（長いパスで左が右へはみ出していた）
+        let saved = p.cols;
+        p.cols = r.x + half;
         p.text(&format!(" {}", d.left_title), r.x, y0, STATUS_FG);
+        p.cols = r.x + r.w;
         p.text(&format!(" {}", d.right_title), rx, y0, FG);
+        p.cols = saved;
         p.out.push(Instance::fill(x0, y0 + cell.h - 1.0, r.w as f32 * cell.w, 1.0, LINE_NO));
         let body = r.h.saturating_sub(1);
         let mod_bg = rgb(0x17202e);

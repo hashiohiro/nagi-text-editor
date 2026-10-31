@@ -1001,6 +1001,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     // 見えている窓のバッファの git の差分（版が変わったときだけ計算し直す）
     ed.prepare_git();
     let ed: &Editor = ed;
+    let t_windows = std::time::Instant::now();
     let split = ed.is_split();
     let rects = ed.window_rects();
     for &(win, rect) in &rects {
@@ -1059,8 +1060,12 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             p.cols = saved;
         }
     }
+    let t_panels = std::time::Instant::now();
     // 欄・小窓（layout.rs の表の順に下から）
     crate::layout::draw(crate::layout::Layer::Panels, ed, &mut p, crate::layout::Screen { rows, cols });
+    if std::env::var_os("NAGI_DEBUG_BUILD").is_some() {
+        eprintln!("build-parts windows={}us panels={}us", (t_panels - t_windows).as_micros(), t_panels.elapsed().as_micros());
+    }
     draw_toggle_buttons(&mut p, ed, cols, false);
     // ---- 最下行: 左にモード・メッセージ・入力欄、右に位置（Vim の showmode と ruler と同じ形）
     // 右端の 2 列は設定のボタン（⚙）
