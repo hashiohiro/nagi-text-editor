@@ -110,7 +110,17 @@ impl<M> Drop for Task<M> {
     }
 }
 
-/// `name` のスレッドで `f` を動かす
+/// 今のスレッドの優先度を UI より下げる。裏の仕事（索引・検索・git など）が UI のスレッドと CPU を取り合って、
+/// 打った字の表示が遅れないように（2026-10-31 の計測: 裏の仕事が動いている間は画面の組み立てが 3〜4 倍遅くなった）
+pub fn background_priority() {
+    #[cfg(windows)]
+    unsafe {
+        use windows_sys::Win32::System::Threading::{GetCurrentThread, SetThreadPriority, THREAD_PRIORITY_BELOW_NORMAL};
+        SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+    }
+}
+
+/// `name` のスレッドで `f` を動かす（優先度は UI より下）
 pub fn spawn<M: Send + 'static>(name: &str, waker: Waker, f: impl FnOnce(&Ctx<M>) + Send + 'static) -> Task<M> {
     let (tx, rx) = channel();
     let cancel = Arc::new(AtomicBool::new(false));
@@ -118,6 +128,7 @@ pub fn spawn<M: Send + 'static>(name: &str, waker: Waker, f: impl FnOnce(&Ctx<M>
     let fin = finished.clone();
     let ctx = Ctx { tx, waker, cancel: cancel.clone() };
     let spawned = std::thread::Builder::new().name(name.into()).spawn(move || {
+        background_priority();
         f(&ctx);
         // 送り口を閉じてから起こす（受け取る側は「届き終えた」= Disconnected・finished で分かる）
         let waker = ctx.waker.clone();
@@ -140,6 +151,7 @@ pub fn manual<M>() -> (Sender<M>, Task<M>) {
 /// 多くの処理が 1 つの受け口へ送る形（manual で作った口へ）: `f` の結果を `tx` へ送って UI を起こす
 pub fn spawn_to<M: Send + 'static>(name: &str, tx: Sender<M>, waker: Waker, f: impl FnOnce() -> M + Send + 'static) {
     let _ = std::thread::Builder::new().name(name.into()).spawn(move || {
+        background_priority();
         if tx.send(f()).is_ok() {
             waker();
         }
@@ -148,7 +160,10 @@ pub fn spawn_to<M: Send + 'static>(name: &str, tx: Sender<M>, waker: Waker, f: i
 
 /// 結果を待たない後始末（保存・書き出し）を裏で動かす
 pub fn detach(name: &str, f: impl FnOnce() + Send + 'static) {
-    let _ = std::thread::Builder::new().name(name.into()).spawn(f);
+    let _ = std::thread::Builder::new().name(name.into()).spawn(move || {
+        background_priority();
+        f();
+    });
 }
 
 /// 裏の仕事と、終わったら UI スレッドで呼ぶ受け取り（ADR 0018 の §4）。受け口をフィールドに持って poll で受け取る代わりに使う。

@@ -400,12 +400,33 @@ impl Syntax {
     /// `range`（絶対 byte）にかかるハイライト。返す範囲は重ならないよう、後から来た内側のキャプチャで上書きした結果
     pub fn highlight(&self, buf: &Buffer, range: Range<usize>) -> Vec<(Range<usize>, Hl)> {
         let key = (self.tree_gen, buf.version, range.clone());
+        let mut reuse = None;
         if let Ok(c) = self.hl_cache.lock() {
-            if let Some((.., spans)) = c.as_ref().filter(|c| c.0 == key.0 && c.1 == key.1 && c.2 == key.2) {
-                return spans.clone();
+            if let Some((_, _, r, spans)) = c.as_ref().filter(|c| c.0 == key.0 && c.1 == key.1) {
+                if *r == range {
+                    return spans.clone();
+                }
+                // 送って範囲がずれただけ（本文も木も同じ）: 重なる所は前の結果を使い、新しく見えた所だけを問い合わせる
+                if r.start < range.end && range.start < r.end && self.lang != Lang::Html {
+                    reuse = Some((r.clone(), spans.iter().filter(|(x, _)| x.end > range.start && x.start < range.end).cloned().collect::<Vec<_>>()));
+                }
             }
         }
-        let spans = self.highlight_uncached(buf, range);
+        let spans = match reuse {
+            Some((r, mut out)) => {
+                if range.start < r.start {
+                    out.extend(self.highlight_uncached(buf, range.start..r.start));
+                }
+                if r.end < range.end {
+                    out.extend(self.highlight_uncached(buf, r.end..range.end));
+                }
+                // 全体を問い合わせたときと同じく始まりの順に（同じ始まりなら前の順のまま。後のものが内側を上書きする）
+                out.sort_by_key(|(x, _)| x.start);
+                out.dedup();
+                out
+            }
+            None => self.highlight_uncached(buf, range.clone()),
+        };
         if let Ok(mut c) = self.hl_cache.lock() {
             *c = Some((key.0, key.1, key.2, spans.clone()));
         }
@@ -1047,6 +1068,33 @@ mod tests {
         assert_eq!(s.tree.as_ref().unwrap().root_node().to_sexp(), fresh.tree.as_ref().unwrap().root_node().to_sexp());
         let hl = s.highlight(&buf, 0..buf.len_bytes());
         assert!(hl.iter().any(|(r, h)| *h == Hl::Keyword && buf.slice_string(r.start, r.end) == "const"), "{hl:?}");
+    }
+
+    /// 送って範囲がずれたときは前の結果を使い回すが、色は全体を問い合わせたときと同じ（複数行のコメント・文字列の中の印も）
+    #[test]
+    fn highlight_reuse_on_scroll() {
+        let src = (0..80).map(|i| format!("/* 長い\n   コメント {i} */\nfn f{i}(x: u32) -> String {{ let s = \"a\\n{i}\"; s.to_string() }}\n")).collect::<String>();
+        let mut buf = Buffer::from_str(&src);
+        let mut s = Syntax::new(Lang::Rust).unwrap();
+        s.parse(&mut buf);
+        let line = |l: usize| buf.line_start(l);
+        let fresh = |r: std::ops::Range<usize>| {
+            let mut t = Syntax::new(Lang::Rust).unwrap();
+            let mut b = Buffer::from_str(&src);
+            t.parse(&mut b);
+            let mut v = t.highlight(&b, r);
+            v.sort_by_key(|(x, _)| x.start);
+            v.dedup();
+            v
+        };
+        // 下へ・上へ送る（コメントの途中から始まる範囲も）
+        for (a, b) in [(10, 40), (11, 41), (14, 44), (13, 43), (1, 31), (50, 80)] {
+            let r = line(a)..line(b);
+            let mut got = s.highlight(&buf, r.clone());
+            got.sort_by_key(|(x, _)| x.start);
+            got.dedup();
+            assert_eq!(got, fresh(r), "{a}..{b}");
+        }
     }
 
     #[test]

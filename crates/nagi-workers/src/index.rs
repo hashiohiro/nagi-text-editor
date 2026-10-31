@@ -318,6 +318,7 @@ pub fn build_with(root: &Path, bf: BuildFiles, waker: Waker) -> nagi_core::task:
             for _ in 0..n {
                 let (queue, done, tx, waker) = (queue.clone(), done.clone(), tx.clone(), waker.clone());
                 s.spawn(move || {
+                    nagi_core::task::background_priority();
                     let mut parser = DefParser::default();
                     loop {
                         let Some((rel, p)) = queue.lock().ok().and_then(|mut q| q.pop()) else { break };
