@@ -475,13 +475,13 @@ impl Editor {
     fn output_view_key(&mut self, key: Key) -> crate::editor::Effect {
         use crate::read_view::ViewOut;
         self.sync_output_view();
-        let clip = self.clipboard;
-        let mut regs = std::mem::take(&mut self.registers);
+        let clip = self.svc.clipboard;
+        let mut regs = std::mem::take(&mut self.svc.registers);
         let out = match self.panels.grep.as_mut().and_then(|g| g.view.as_mut()) {
             Some(v) => v.key(key, &mut regs, clip),
             None => ViewOut::None,
         };
-        self.registers = regs;
+        self.svc.registers = regs;
         match out {
             ViewOut::Leave => self.set_state(State::Normal),
             ViewOut::Quit => self.close_grep(),
@@ -629,10 +629,10 @@ impl Editor {
     pub(crate) fn panel_copy(&mut self) {
         // ログ: 読み取り専用の画面の選び（無ければ今の行）
         if self.panels.grep.as_ref().is_some_and(|g| g.view.is_some() && g.title.is_some()) {
-            let clip = self.clipboard;
-            let mut regs = std::mem::take(&mut self.registers);
+            let clip = self.svc.clipboard;
+            let mut regs = std::mem::take(&mut self.svc.registers);
             let n = self.panels.grep.as_mut().and_then(|g| g.view.as_mut()).map_or(0, |v| v.copy(&mut regs, clip));
-            self.registers = regs;
+            self.svc.registers = regs;
             if n > 0 {
                 self.svc.notify.info(format!("{n} 行をコピーしました"));
             }
@@ -645,7 +645,7 @@ impl Editor {
         let (a, b) = g.sel_range();
         let text = g.copy_text();
         g.anchor = None;
-        match &self.clipboard {
+        match &self.svc.clipboard {
             Some(cb) => (cb.set)(&text),
             None => crate::clipboard::set(&text),
         }
@@ -1170,7 +1170,7 @@ mod tests {
         thread_local! { static CLIP: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) }; }
         fn set(t: &str) { CLIP.with(|c| *c.borrow_mut() = t.to_string()); }
         fn get() -> Option<String> { CLIP.with(|c| Some(c.borrow().clone())) }
-        e.clipboard = Some(crate::editor::Clipboard { set, get });
+        e.svc.clipboard = Some(crate::editor::Clipboard { set, get });
         keys(&mut e, "<C-w>jggVjy");
         assert_eq!(get().unwrap(), "src/a.rs:2: let needle = 1;\r\nsrc/b.rs:1: // Needle here");
         assert!(e.panels.grep.as_ref().unwrap().anchor.is_none());
@@ -1197,7 +1197,7 @@ mod tests {
         fn get() -> Option<String> { CLIP.with(|c| Some(c.borrow().clone())) }
         let mut e = Editor::new(Buffer::from_str(""), None);
         e.set_screen(100, 40);
-        e.clipboard = Some(crate::editor::Clipboard { set, get });
+        e.svc.clipboard = Some(crate::editor::Clipboard { set, get });
         e.open_result_panel("Maven: install");
         for t in ["[INFO] Scanning for projects...", "[INFO] Building shop 1.0", "[ERROR] 失敗しました: OrderTest"] {
             e.panels.grep.as_mut().unwrap().hits.push(Hit { path: String::new(), line: 0, range: (0, 0), text: t.into() });

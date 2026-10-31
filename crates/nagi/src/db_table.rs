@@ -881,7 +881,7 @@ mod tests {
         thread_local! { static CLIP: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) }; }
         fn set(t: &str) { CLIP.with(|c| *c.borrow_mut() = t.to_string()); }
         fn get() -> Option<String> { CLIP.with(|c| Some(c.borrow().clone())) }
-        e.clipboard = Some(crate::editor::Clipboard { set, get });
+        e.svc.clipboard = Some(crate::editor::Clipboard { set, get });
         keys(&mut e, "jl");
         e.key(Key::Ctrl('c'));
         assert_eq!(get().as_deref(), Some("z"));

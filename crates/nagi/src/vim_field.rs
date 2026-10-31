@@ -130,10 +130,10 @@ impl VimField {
             _ => {}
         }
         let before = self.text();
-        std::mem::swap(&mut self.ed.registers, regs);
-        self.ed.clipboard = clip;
+        std::mem::swap(&mut self.ed.svc.registers, regs);
+        self.ed.svc.clipboard = clip;
         self.ed.key(key);
-        std::mem::swap(&mut self.ed.registers, regs);
+        std::mem::swap(&mut self.ed.svc.registers, regs);
         if self.ed.state() == State::Command {
             self.ed.set_state(State::Normal);
         }
@@ -169,11 +169,31 @@ impl VimField {
     }
 }
 
+impl VimField {
+    /// 欄にキーを渡す（レジスタ・クリップボードと、モードが変わったときの知らせは `svc`）。部品の状態と Services だけで入力欄を動かせる（ADR 0018 の §5）
+    pub(crate) fn feed(&mut self, key: Key, svc: &mut crate::editor::Services) -> FieldOut {
+        let before = self.mode_label();
+        let out = self.key(key, &mut svc.registers, svc.clipboard);
+        mode_notice(svc, before, self.mode_label(), out);
+        out
+    }
+}
+
+/// 欄の中でモードが変わったら最下行に出す（すぐ書き換わるので履歴に残さない）
+fn mode_notice(svc: &mut crate::editor::Services, before: &str, after: &str, out: FieldOut) {
+    if before != after && matches!(out, FieldOut::None | FieldOut::Changed) {
+        svc.notify.mode(match after {
+            "NORMAL" => "-- NORMAL --（入力欄。Enter で決める・もう一度 Esc で閉じる）".into(),
+            m => format!("-- {m} --"),
+        });
+    }
+}
+
 impl Editor {
     /// `pick` で選んだ入力欄にキーを流す（レジスタとクリップボードはエディタと共有）
     pub(crate) fn feed_field(&mut self, key: Key, pick: fn(&mut Editor) -> Option<&mut VimField>) -> FieldOut {
-        let mut regs = std::mem::take(&mut self.registers);
-        let clip = self.clipboard;
+        let mut regs = std::mem::take(&mut self.svc.registers);
+        let clip = self.svc.clipboard;
         let (out, modes) = match pick(self) {
             Some(f) => {
                 let before = f.mode_label();
@@ -182,16 +202,9 @@ impl Editor {
             }
             None => (FieldOut::None, None),
         };
-        self.registers = regs;
-        // 欄の中でモードが変わったら最下行に出す
-        if let (Some((a, b)), FieldOut::None | FieldOut::Changed) = (modes, out) {
-            if a != b {
-                // モードの表示はすぐ書き換わるので履歴に残さない
-                self.svc.notify.mode(match b {
-                    "NORMAL" => "-- NORMAL --（入力欄。Enter で決める・もう一度 Esc で閉じる）".into(),
-                    m => format!("-- {m} --"),
-                });
-            }
+        self.svc.registers = regs;
+        if let Some((a, b)) = modes {
+            mode_notice(&mut self.svc, a, b, out);
         }
         out
     }

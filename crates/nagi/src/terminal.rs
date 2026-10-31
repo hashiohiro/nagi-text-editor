@@ -367,7 +367,7 @@ impl Editor {
         if key != Key::Paste {
             self.panels.terminals.sel = None;
         }
-        let clip = self.clipboard;
+        let clip = self.svc.clipboard;
         let Some(t) = self.panels.terminals.current_mut() else { return };
         if t.exited {
             if key == Key::Enter {
@@ -409,7 +409,7 @@ impl Editor {
         let Some((a, b)) = self.panels.terminals.sel_ordered() else { return false };
         let Some(t) = self.panels.terminals.current() else { return false };
         let text = t.term.with_screen_mut(|s| copy_lines(s, a, b));
-        match &self.clipboard {
+        match &self.svc.clipboard {
             Some(cb) => (cb.set)(&text),
             None => crate::clipboard::set(&text),
         }
@@ -1120,7 +1120,7 @@ Start-Sleep 30
         thread_local! { static CLIP: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) }; }
         fn set(t: &str) { CLIP.with(|c| *c.borrow_mut() = t.to_string()); }
         fn get() -> Option<String> { CLIP.with(|c| Some(c.borrow().clone())) }
-        e.clipboard = Some(crate::editor::Clipboard { set, get });
+        e.svc.clipboard = Some(crate::editor::Clipboard { set, get });
         e.key(Key::Ctrl('c'));
         let got = get().unwrap();
         assert!(got.contains("echo nagi-tab-ok"), "{got:?}");

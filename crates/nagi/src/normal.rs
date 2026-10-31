@@ -737,7 +737,7 @@ impl Editor {
             // 無名と + はクリップボードを通る: 自分が入れた内容のままなら、矩形の印も引き継ぐ
             _ => {
                 let (t, _) = self.get_register(reg);
-                let mine = self.registers.get(&'"').is_some_and(|(u, _)| u.replace("\r\n", "\n") == t.replace("\r\n", "\n"));
+                let mine = self.svc.registers.get(&'"').is_some_and(|(u, _)| u.replace("\r\n", "\n") == t.replace("\r\n", "\n"));
                 if mine { self.reg_blocks.get(&'"').copied() } else { None }
             }
         }
@@ -752,11 +752,11 @@ impl Editor {
         let mut written = vec!['"'];
         match reg {
             Some(c @ 'a'..='z') => {
-                self.registers.insert(c, (text.clone(), linewise));
+                self.svc.registers.insert(c, (text.clone(), linewise));
                 written.push(c);
             }
             Some(c @ 'A'..='Z') => {
-                let e = self.registers.entry(c.to_ascii_lowercase()).or_default();
+                let e = self.svc.registers.entry(c.to_ascii_lowercase()).or_default();
                 e.0.push_str(&text);
                 e.1 |= linewise;
                 written.push(c.to_ascii_lowercase());
@@ -764,23 +764,23 @@ impl Editor {
             _ => {}
         }
         if yank {
-            self.registers.insert('0', (text.clone(), linewise));
+            self.svc.registers.insert('0', (text.clone(), linewise));
             written.push('0');
         } else if linewise || text.contains('\n') || block.is_some() {
             for i in (1..9).rev() {
                 let (from, to) = (char::from(b'0' + i), char::from(b'0' + i + 1));
-                if let Some(v) = self.registers.get(&from).cloned() {
-                    self.registers.insert(to, v);
+                if let Some(v) = self.svc.registers.get(&from).cloned() {
+                    self.svc.registers.insert(to, v);
                 }
                 match self.reg_blocks.get(&from).copied() {
                     Some(w) => self.reg_blocks.insert(to, w),
                     None => self.reg_blocks.remove(&to),
                 };
             }
-            self.registers.insert('1', (text.clone(), linewise));
+            self.svc.registers.insert('1', (text.clone(), linewise));
             written.push('1');
         } else {
-            self.registers.insert('-', (text.clone(), linewise));
+            self.svc.registers.insert('-', (text.clone(), linewise));
             written.push('-');
         }
         for c in written {
@@ -790,9 +790,9 @@ impl Editor {
             };
         }
         // 無名レジスタ。clipboard=unnamedplus なら OS のクリップボードも
-        self.registers.insert('"', (text.clone(), linewise));
+        self.svc.registers.insert('"', (text.clone(), linewise));
         // "+ と "* はいつも OS のクリップボードへ（clipboard=unnamed でなくても）
-        let cb = if matches!(reg, Some('+') | Some('*')) { self.plus_clipboard() } else { self.clipboard };
+        let cb = if matches!(reg, Some('+') | Some('*')) { self.plus_clipboard() } else { self.svc.clipboard };
         if let Some(cb) = cb {
             if matches!(reg, None | Some('+') | Some('*')) {
                 (cb.set)(&text.replace("\r\n", "\n").replace('\n', "\r\n"));
@@ -804,7 +804,7 @@ impl Editor {
         let from_clip = |t: String| {
             let t = t.replace("\r\n", "\n");
             // 自分が入れた内容なら、行単位かどうかも引き継ぐ
-            let lw = match self.registers.get(&'"') {
+            let lw = match self.svc.registers.get(&'"') {
                 Some((u, lw)) if u.replace("\r\n", "\n") == t => *lw,
                 _ => t.ends_with('\n'),
             };
@@ -812,10 +812,10 @@ impl Editor {
         };
         match reg {
             Some('+') | Some('*') => self.plus_clipboard().and_then(|cb| (cb.get)()).map(from_clip).unwrap_or_default(),
-            Some(c) => self.registers.get(&c.to_ascii_lowercase()).cloned().unwrap_or_default(),
-            None => match self.clipboard.as_ref().and_then(|cb| (cb.get)()) {
+            Some(c) => self.svc.registers.get(&c.to_ascii_lowercase()).cloned().unwrap_or_default(),
+            None => match self.svc.clipboard.as_ref().and_then(|cb| (cb.get)()) {
                 Some(t) => from_clip(t),
-                None => self.registers.get(&'"').cloned().unwrap_or_default(),
+                None => self.svc.registers.get(&'"').cloned().unwrap_or_default(),
             },
         }
     }
@@ -1235,7 +1235,7 @@ mod ts_textobj_tests {
         let mut e = ed(RS, nagi_syntax::Lang::Rust);
         keys(&mut e, "4Gdaf");
         assert_eq!(e.core.buf.text(), "use x;\n\n\nstruct P {\n    x: i32,\n}\n");
-        assert_eq!(e.registers.get(&'"').map(|r| r.1), Some(true), "行単位");
+        assert_eq!(e.svc.registers.get(&'"').map(|r| r.1), Some(true), "行単位");
         // if: 本体の中の行
         let mut e = ed(RS, nagi_syntax::Lang::Rust);
         keys(&mut e, "4Gdif");

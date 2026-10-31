@@ -71,9 +71,9 @@ impl ReadView {
     }
 
     fn rebuild(&mut self) {
-        let (screen, registers) = (self.ed.screen, std::mem::take(&mut self.ed.registers));
+        let (screen, registers) = (self.ed.screen, std::mem::take(&mut self.ed.svc.registers));
         self.ed.core.buf = nagi_core::Buffer::from_str(&self.text);
-        self.ed.registers = registers;
+        self.ed.svc.registers = registers;
         self.ed.screen = screen;
     }
 
@@ -112,10 +112,10 @@ impl ReadView {
         }
         let version = self.ed.core.buf.version;
         let yank_before = regs.get(&'0').cloned();
-        std::mem::swap(&mut self.ed.registers, regs);
-        self.ed.clipboard = clip;
+        std::mem::swap(&mut self.ed.svc.registers, regs);
+        self.ed.svc.clipboard = clip;
         self.ed.key(key);
-        std::mem::swap(&mut self.ed.registers, regs);
+        std::mem::swap(&mut self.ed.svc.registers, regs);
         // 読み取り専用: 挿入・置き換え・コマンドラインには入らない。中身が変わったら戻す
         let mut out = ViewOut::None;
         if matches!(self.ed.state(), State::Insert | State::Command | State::Replace) {

@@ -17,11 +17,11 @@ impl Editor {
         let text: String = keys.iter().map(Key::notation).collect();
         let lower = reg.to_ascii_lowercase();
         let text = if reg.is_ascii_uppercase() {
-            format!("{}{text}", self.registers.get(&lower).map_or("", |(t, _)| t.as_str()))
+            format!("{}{text}", self.svc.registers.get(&lower).map_or("", |(t, _)| t.as_str()))
         } else {
             text
         };
-        self.registers.insert(lower, (text, false));
+        self.svc.registers.insert(lower, (text, false));
     }
 
     /// `@{reg}` を `count` 回
@@ -85,15 +85,15 @@ mod tests {
         // 行頭に # を足して次の行へ、を記録し、3 回再生する
         keys(&mut e, "qaI# <Esc>jq");
         assert!(e.recording.is_none());
-        assert_eq!(e.registers.get(&'a').map(|r| r.0.as_str()), Some("I# <Esc>j"));
+        assert_eq!(e.svc.registers.get(&'a').map(|r| r.0.as_str()), Some("I# <Esc>j"));
         keys(&mut e, "2@a@@");
         let lines: Vec<String> = (0..5).map(|i| e.core.buf.line(i)).collect();
         assert_eq!(lines, vec!["# a1", "# a2", "# a3", "# a4", "a5"]);
         // 大文字は追記。<lt> と Ctrl も読み戻せる
         keys(&mut e, "qAx<C-a>q");
-        assert_eq!(e.registers.get(&'a').map(|r| r.0.as_str()), Some("I# <Esc>jx<C-a>"));
+        assert_eq!(e.svc.registers.get(&'a').map(|r| r.0.as_str()), Some("I# <Esc>jx<C-a>"));
         keys(&mut e, "qbi<lt><Esc>q");
-        assert_eq!(e.registers.get(&'b').map(|r| r.0.as_str()), Some("i<lt><Esc>"));
+        assert_eq!(e.svc.registers.get(&'b').map(|r| r.0.as_str()), Some("i<lt><Esc>"));
         // 自分を呼ぶマクロも、深さの上限で止まる（行末に達して j が止まっても続けて呼ぶ）
         keys(&mut e, "qcx@cq");
         keys(&mut e, "gg@c");

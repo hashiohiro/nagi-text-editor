@@ -673,15 +673,15 @@ impl crate::editor::Editor {
             return;
         }
         let on = self.settings.get("vim.clipboard") == "unnamed";
-        self.clipboard = on.then_some(crate::editor::Clipboard { get: crate::clipboard::get, set: crate::clipboard::set });
+        self.svc.clipboard = on.then_some(crate::editor::Clipboard { get: crate::clipboard::get, set: crate::clipboard::set });
     }
 
     /// "+ と "* のクリップボード（いつも OS。試験では入れた偽物だけ）
     pub(crate) fn plus_clipboard(&self) -> Option<crate::editor::Clipboard> {
         if cfg!(test) {
-            return self.clipboard;
+            return self.svc.clipboard;
         }
-        Some(self.clipboard.unwrap_or(crate::editor::Clipboard { get: crate::clipboard::get, set: crate::clipboard::set }))
+        Some(self.svc.clipboard.unwrap_or(crate::editor::Clipboard { get: crate::clipboard::get, set: crate::clipboard::set }))
     }
 }
 

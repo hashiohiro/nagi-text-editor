@@ -423,11 +423,11 @@ impl Editor {
                 (s, e, t)
             }
         };
-        match &self.clipboard {
+        match &self.svc.clipboard {
             Some(cb) => (cb.set)(&text),
             None => crate::clipboard::set(&text),
         }
-        self.registers.insert('"', (text, false));
+        self.svc.registers.insert('"', (text, false));
         if cut && s < e {
             self.core.hist.begin();
             self.edit(s, e, "");
@@ -439,7 +439,7 @@ impl Editor {
 
     /// クリップボードを貼る（選んでいれば置き換える）
     pub(crate) fn plain_paste(&mut self) {
-        let text = match &self.clipboard {
+        let text = match &self.svc.clipboard {
             Some(cb) => (cb.get)(),
             None => crate::clipboard::get(),
         };
@@ -624,7 +624,7 @@ mod tests {
         e.plain_select_all();
         e.plain_copy(true);
         assert_eq!(e.core.buf.text(), "");
-        assert_eq!(e.registers.get(&'"').map(|r| r.0.as_str()), Some("abcdef\n"));
+        assert_eq!(e.svc.registers.get(&'"').map(|r| r.0.as_str()), Some("abcdef\n"));
     }
 
     #[test]

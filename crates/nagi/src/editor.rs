@@ -263,6 +263,10 @@ pub struct Services {
     /// ドラッグで変えた大きさ（欄の幅・高さ、履歴の列の幅。名前は resize.rs。無ければ既定の大きさ）
     pub sizes: nagi_ui::Sizes,
     pub(crate) git: crate::git_ui::GitState,
+    /// レジスタ（文字列, 行単位か）。本文と入力欄で共有する
+    pub(crate) registers: HashMap<char, (String, bool)>,
+    /// クリップボードの使い方（unnamed など）
+    pub clipboard: Option<Clipboard>,
 }
 
 /// 編集の部分（ADR 0018 の §5）: 今のバッファと履歴・カーソル・表示位置・Vim の状態・開いているファイル・窓の並び
@@ -367,9 +371,6 @@ pub struct Editor {
     /// IME の変換中の文字列と、その中のカーソル（byte 範囲）
     pub preedit: String,
     pub preedit_cursor: Option<(usize, usize)>,
-    /// レジスタ（文字列, 行単位か）
-    pub(crate) registers: HashMap<char, (String, bool)>,
-    pub clipboard: Option<Clipboard>,
     /// 最後に変更した位置（絶対 byte。g; 用）
     pub(crate) last_change: Option<usize>,
     /// 最近の編集箇所（ファイル, 行。新しいものが後ろ。IntelliJ の RecentLocations）
@@ -740,8 +741,6 @@ impl Editor {
             search: Search::default(),
             preedit: String::new(),
             preedit_cursor: None,
-            registers: HashMap::new(),
-            clipboard: None,
             last_change: None,
             recent_edits: Vec::new(),
             easy: None,
@@ -1892,7 +1891,7 @@ impl Editor {
 
     /// クリップボードの文字を、今の入力欄に入れる（コミットメッセージ以外は 1 行にする）
     pub(crate) fn paste_clipboard(&mut self) {
-        let text = match &self.clipboard {
+        let text = match &self.svc.clipboard {
             Some(cb) => (cb.get)(),
             None => crate::clipboard::get(),
         };

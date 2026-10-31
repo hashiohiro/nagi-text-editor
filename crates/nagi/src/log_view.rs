@@ -404,7 +404,21 @@ impl LogView {
 
     /// 絞り込みの欄の外のキー（`rows` は見える行数）。部品の中で済むこと（選び・複数選び・ファイルへ移る・絞り込みを開く）は
     /// ここで行い、部品の外に及ぶこと（本文へ・欄を隠す・閉じる・差分・確認・`:` の行・コピー）を返す（ADR 0018 の §5）
-    pub fn key(&mut self, key: Key, rows: usize) -> LogAction {
+    pub fn key(&mut self, key: Key, rows: usize, svc: &mut crate::editor::Services) -> LogAction {
+        // 絞り込みの欄（Vim 風の入力欄）
+        if let Some(f) = &mut self.filter {
+            use crate::vim_field::FieldOut;
+            match f.feed(key, svc) {
+                FieldOut::Changed => {
+                    self.filter_text = f.text();
+                    self.refilter();
+                    self.detail = None;
+                }
+                FieldOut::Submit | FieldOut::Cancel => self.filter = None,
+                FieldOut::None => {}
+            }
+            return LogAction::None;
+        }
         // 複数選んでいれば、Esc はまず選びを外す
         if key == Key::Esc && !self.focus_files && !self.marked.is_empty() {
             self.marked.clear();
@@ -735,24 +749,8 @@ impl Editor {
             self.set_state(State::Normal);
             return;
         };
-        // 絞り込みの欄（Vim 風の入力欄。Editor の feed_field を使う）
-        if l.filter.is_some() {
-            use crate::vim_field::FieldOut;
-            let out = self.feed_field(key, |e| e.panels.log.as_mut().and_then(|l| l.filter.as_mut()));
-            let Some(l) = &mut self.panels.log else { return };
-            match out {
-                FieldOut::Changed => {
-                    l.filter_text = l.filter.as_ref().map(|f| f.text()).unwrap_or_default();
-                    l.refilter();
-                    l.detail = None;
-                }
-                FieldOut::Submit | FieldOut::Cancel => l.filter = None,
-                FieldOut::None => {}
-            }
-            return;
-        }
-        // 部品の中で済むことは LogView::key が行い、外に及ぶことを返す（ADR 0018 の §5）
-        match l.key(key, rows) {
+        // 部品の中で済むこと（絞り込みの欄を含む）は LogView::key が部品の状態と Services で行い、外に及ぶことを返す（ADR 0018 の §5）
+        match l.key(key, rows, &mut self.svc) {
             LogAction::None => {}
             LogAction::ToText => self.set_state(State::Normal),
             LogAction::HideBottom => self.hide_bottom(),
@@ -1689,16 +1687,25 @@ mod tests {
     /// 部品のキーは Editor を作らずに確かめられる（部品の中で済むことは行い、外に及ぶことは Action で返す）
     #[test]
     fn keys_without_editor() {
+        let mut svc = crate::editor::Services::default();
         let mut l = view("*\x1fa1\x1f\x1f一\x1fA\x1f1\x1fa1\n|\n*\x1fb2\x1f\x1f二\x1fA\x1f2\x1fb2\n", &[], Some(parse_detail("a1\x1fA\x1f1\x1fp\x1f件名\x1e\n\nM\ta.rs\nA\tb.rs\n")));
-        assert_eq!(l.key(Key::Char('j'), 10), LogAction::None);
+        assert_eq!(l.key(Key::Char('j'), 10, &mut svc), LogAction::None);
         assert_eq!(l.selected, 2, "グラフだけの行は飛ばす");
-        assert_eq!(l.key(Key::Char('o'), 10), LogAction::AskCheckout("b2".into()));
-        assert_eq!(l.key(Key::Tab, 10), LogAction::None);
+        assert_eq!(l.key(Key::Char('o'), 10, &mut svc), LogAction::AskCheckout("b2".into()));
+        assert_eq!(l.key(Key::Tab, 10, &mut svc), LogAction::None);
         assert!(l.focus_files);
-        assert_eq!(l.key(Key::Char('j'), 10), LogAction::FitDetail);
-        assert_eq!((l.file_sel, l.key(Key::Enter, 10)), (1, LogAction::OpenFileDiff));
-        assert_eq!(l.key(Key::Esc, 10), LogAction::None);
-        assert_eq!(l.key(Key::Esc, 10), LogAction::ToText, "下の欄に収めているときの Esc は本文へ");
+        assert_eq!(l.key(Key::Char('j'), 10, &mut svc), LogAction::FitDetail);
+        assert_eq!((l.file_sel, l.key(Key::Enter, 10, &mut svc)), (1, LogAction::OpenFileDiff));
+        assert_eq!(l.key(Key::Esc, 10, &mut svc), LogAction::None);
+        assert_eq!(l.key(Key::Esc, 10, &mut svc), LogAction::ToText, "下の欄に収めているときの Esc は本文へ");
+        // 絞り込みの欄も部品の中で（打つと絞り込む。Enter で決めて欄を閉じる）
+        l.key(Key::Char('/'), 10, &mut svc);
+        assert!(l.filter.is_some());
+        l.key(Key::Char('二'), 10, &mut svc);
+        assert_eq!(l.filter_text, "二");
+        assert_eq!(l.visible.iter().filter(|&&i| l.rows[i].commit.is_some()).count(), 1);
+        l.key(Key::Enter, 10, &mut svc);
+        assert!(l.filter.is_none());
     }
 
     /// 試験用の履歴（下の欄に収めて出す）

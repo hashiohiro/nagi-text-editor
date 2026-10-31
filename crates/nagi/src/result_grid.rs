@@ -448,11 +448,11 @@ impl Editor {
     }
 
     pub(crate) fn copy_text(&mut self, s: String, what: &str) {
-        if let Some(cb) = &self.clipboard {
+        if let Some(cb) = &self.svc.clipboard {
             (cb.set)(&s);
         }
         let n = s.lines().count();
-        self.registers.insert('"', (s, false));
+        self.svc.registers.insert('"', (s, false));
         self.svc.notify.info(format!("{what}をコピーしました{}", if n > 1 { format!("（{n} 行）") } else { String::new() }));
     }
 
@@ -624,7 +624,7 @@ impl Editor {
 
     /// クリップボードの文字を、表のセルに分ける（行は改行、列はタブ。最後の改行は外す）
     pub(crate) fn clipboard_cells(&mut self) -> Option<Vec<Vec<String>>> {
-        let text = match &self.clipboard {
+        let text = match &self.svc.clipboard {
             Some(cb) => (cb.get)(),
             None => crate::clipboard::get(),
         };
@@ -1217,7 +1217,7 @@ mod tests {
         thread_local! { static CLIP: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) }; }
         fn set(t: &str) { CLIP.with(|c| *c.borrow_mut() = t.to_string()); }
         fn get() -> Option<String> { CLIP.with(|c| Some(c.borrow().clone())) }
-        e.clipboard = Some(crate::editor::Clipboard { set, get });
+        e.svc.clipboard = Some(crate::editor::Clipboard { set, get });
         keys(&mut e, "kl");
         e.key(Key::Ctrl('c'));
         assert_eq!(get().as_deref(), Some("z"));
