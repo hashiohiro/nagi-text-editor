@@ -334,6 +334,8 @@ pub struct Renderer {
     instances: Option<ID3D11Buffer>,
     capacity: usize,
     atlas: Atlas,
+    /// アトラスを空にした回数（字形の位置を覚えて使う側が、覚えを捨てる目印にする）
+    glyph_gen: u64,
     /// 次に描いたフレームを読み戻す（試験の画面の写し）。読んだものは `captured`（幅, 高さ, BGRA の画素）
     pub capture: bool,
     pub captured: Option<(u32, u32, Vec<u8>)>,
@@ -361,7 +363,7 @@ impl Renderer {
         unsafe { swap_chain.SetMaximumFrameLatency(1)? };
         let waitable = unsafe { swap_chain.GetFrameLatencyWaitableObject() };
         let atlas = Atlas::new(&gpu.device)?;
-        let mut r = Self { gpu, swap_chain, waitable, flags, rtv: None, size: (desc.Width, desc.Height), instances: None, capacity: 0, atlas, capture: false, captured: None };
+        let mut r = Self { gpu, swap_chain, waitable, flags, rtv: None, size: (desc.Width, desc.Height), instances: None, capacity: 0, atlas, glyph_gen: 0, capture: false, captured: None };
         r.create_rtv()?;
         Ok(r)
     }
@@ -417,11 +419,17 @@ impl Renderer {
 
     /// アトラスを空にする（文字の大きさが変わったとき）。テクスチャはそのまま上書きして使う
     pub fn clear_glyphs(&mut self) {
+        self.glyph_gen += 1;
         let a = &mut self.atlas;
         a.map.clear();
         for shelf in [&mut a.mono_shelf, &mut a.color_shelf] {
             (shelf.x, shelf.y, shelf.row_h) = (0, 0, 0);
         }
+    }
+
+    /// アトラスの版（clear_glyphs のたびに変わる。それまでに返した字形の位置はそのあいだ使える）
+    pub fn glyph_gen(&self) -> u64 {
+        self.glyph_gen
     }
 
     /// 前回取り出してから、描画中にその場でラスタライズした (時間, 個数)

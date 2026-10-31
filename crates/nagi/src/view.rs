@@ -610,6 +610,7 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
             (s, pane.buf.line_start(ln), cut)
         })
         .collect();
+    let t_heads = t0.elapsed();
     let md = ed.custom_spans(pane.buf);
     let spans = match pane.syntax {
         // Markdown・Sass: 文章全体を解析した覚えから、見えている範囲だけ
@@ -658,7 +659,13 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
     let show_zen = ed.settings.bool("editor.show_fullwidth_space");
     let cursorline = ed.settings.bool("editor.cursorline") && pane.active;
     let flash = ed.yank_flash.filter(|_| pane.active).map(|f| (f.0, f.1));
+    let line_numbers = ed.settings.get("editor.line_numbers");
+    // 飾りのない行は前のフレームで描いた結果を使う（line_cache.rs）
+    let frame = crate::line_cache::Frame { x0: rect.x + gutter, cols: p.cols, left: pane.left, tab: nagi_core::tab_width(), wide: p.fonts.ambiguous_wide || nagi_core::ambiguous_wide(), show_ws: show_ws.clone(), show_zen, cell: (cell.w.to_bits(), cell.h.to_bits()), atlas: p.r.glyph_gen() };
+    let mut lines = ed.line_cache.borrow_mut();
 
+    let draw0 = p.prof.map(|p| p.1);
+    let mut t_items = std::time::Duration::ZERO;
     let mut vrow = 0usize;
     let mut next = 0usize;
     while vrow < drawn {
@@ -699,7 +706,7 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
             p.out.push(Instance::fill((rect.x + bw) as f32 * cell.w - cell.w * 0.5, y, 1.0, cell.h, MATCH_BG));
         }
         // 行番号（設定: 絶対・相対（今の行は絶対）・出さない）
-        match ed.settings.get("editor.line_numbers").as_str() {
+        match line_numbers.as_str() {
             "off" => {}
             "relative" if ln != pane.cursor.line => {
                 p.text(&format!("{:>5} ", ln.abs_diff(pane.cursor.line)), rect.x + bw, y, num_color);
@@ -779,12 +786,7 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
                 }
             }
         }
-        // byte ごとの文字色。外側のキャプチャの後に内側が来るので、後から塗ったものが勝つ
-        let mut colors = vec![FG; line.len()];
-        for (rg, hl) in spans_of[i].iter().map(|&j| &spans[j]) {
-            let (a, b) = (rg.start.max(abs) - abs, rg.end.min(abs + line.len()) - abs);
-            colors[a..b].fill(hl_color(*hl));
-        }
+        let ti = debug.then(std::time::Instant::now);
         // この行にかかる一致（一致は位置順に並んでいる）。改行の位置にかかる一致も含める
         let first = all_matches.partition_point(|&(_, e)| e <= abs);
         let last = all_matches.partition_point(|&(s, _)| s <= abs + line.len());
@@ -796,10 +798,43 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
         };
         let is_cursor_line = pane.active && ln == pane.cursor.line;
         let block_span = block.filter(|b| ln >= b.l1 && ln <= b.l2).map(|b| crate::block::span_in_line(line, b.left, b.right));
+        // 飾りのない行（カーソル・一致・選択・ヤンクの光りがかからない。改行の位置にかかるものも見る）は覚えた結果で描く
+        let eol = abs + line.len();
+        let plain = wrapw == 0
+            && !is_cursor_line
+            && line_matches.is_empty()
+            && block_span.is_none()
+            && flash.is_none_or(|(fs, fe)| fe <= abs || fs > eol)
+            && visual.is_none_or(|(vs, ve, lw)| if lw { !line_selected } else { ve <= abs || vs > eol });
+        let mut pending = None;
+        if plain {
+            let line_spans = spans_of[i].iter().map(|&j| &spans[j]).map(|(rg, hl)| (rg.start.max(abs) - abs, rg.end.min(eol) - abs, *hl));
+            match lines.draw(&frame, line, line_spans, y, &mut p.out) {
+                Ok(text) => {
+                    if let Some(t) = &mut p.texts {
+                        t.push(((y / cell.h).round() as usize, frame.x0, text.to_string()));
+                    }
+                    p.end_y = y;
+                    if let Some(ti) = ti {
+                        t_items += ti.elapsed();
+                    }
+                    continue;
+                }
+                Err(k) => pending = Some(k),
+            }
+        }
+        // byte ごとの文字色。外側のキャプチャの後に内側が来るので、後から塗ったものが勝つ
+        let mut colors = vec![FG; line.len()];
+        for (rg, hl) in spans_of[i].iter().map(|&j| &spans[j]) {
+            let (a, b) = (rg.start.max(abs) - abs, rg.end.min(eol) - abs);
+            colors[a..b].fill(hl_color(*hl));
+        }
         let mut items: Vec<Item> = Vec::with_capacity(line.len());
         // 並べた列（タブは次のタブの位置まで）
         let mut col_at = 0usize;
         let mut cursor_item = None;
+        // 行末の空白の始まり（list の trailing）
+        let trail_at = line.trim_end_matches([' ', '\t', '\u{3000}']).len();
         let mut gs = line.grapheme_indices(true).peekable();
         while let Some((b, g)) = gs.next() {
             let a = abs + b;
@@ -824,7 +859,7 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
             let width = if g == "\t" { nagi_core::width_at(g, col_at, false) } else { p.cell_width(g) };
             col_at += width;
             let mut it = Item { g: Cow::Borrowed(g), width, fg: colors.get(b).copied().unwrap_or(FG), bg: None, underline: false };
-            let trailing = b >= line.trim_end_matches([' ', '\t', '\u{3000}']).len();
+            let trailing = b >= trail_at;
             match g {
                 "\t" if show_ws != "off" => (it.g, it.fg) = (Cow::Borrowed("→"), LINE_NO),
                 " " if show_ws == "all" || show_ws == "trailing" && trailing => (it.g, it.fg) = (Cow::Borrowed("·"), LINE_NO),
@@ -871,8 +906,17 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
             let width: usize = items.iter().map(|i| i.width).sum();
             cursor_gone = skip_cols(&mut items, pane.left, &mut cursor_item) || (cursor_item.is_none() && width < pane.left);
         }
+        if let Some(ti) = ti {
+            t_items += ti.elapsed();
+        }
         if cursorline && is_cursor_line {
             p.out.push(Instance::fill((rect.x + gutter) as f32 * cell.w, y, rect.w.saturating_sub(gutter) as f32 * cell.w, cell.h * line_rows as f32, CURSOR_LINE_BG));
+        }
+        if let Some(k) = pending {
+            let start = p.out.len();
+            p.draw(&items, frame.x0, y);
+            lines.store(k, &p.out[start..], y, items.iter().map(|i| i.g.as_ref()).collect());
+            continue;
         }
         if !is_cursor_line || matches!(ed.state(), State::Command | State::Search | State::Replace | State::Finder | State::GrepPrompt | State::List | State::CommitMsg | State::Diff | State::Log | State::Branches | State::DbTable) {
             p.draw(&items, rect.x + gutter, y);
@@ -954,12 +998,15 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
     }
     let t_lines = t0.elapsed();
     if debug {
-        eprintln!("build matches={:?} highlight={:?} lines={:?} n_matches={}", t_matches, t_hl - t_matches, t_lines - t_hl, all_matches.len());
+        let pane_draw = p.prof.zip(draw0).map(|(p, d)| p.1 - d);
+        eprintln!("build matches={:?} highlight={:?} lines={:?} n_matches={} line_items={:?} line_draw={:?} heads={:?}", t_matches, t_hl - t_matches, t_lines - t_hl, all_matches.len(), t_items, pane_draw, t_heads - t_matches);
     }
     p.cols = saved_cols;
 }
 
 pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instance> {
+    let t_start = std::time::Instant::now();
+    ed.line_cache.borrow_mut().next_frame();
     let cell = fonts.cell();
     let (w, h) = r.size();
     let cols = (w as f32 / cell.w) as usize;
@@ -1029,6 +1076,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         // 選んでいる候補が見える範囲に入るように送る
         nagi_ui::list::fit(f.selected, &mut f.scroll, finder_height(rows));
     }
+    let t_fit = std::time::Instant::now();
     // 見えている窓のバッファの git の差分（版が変わったときだけ計算し直す）
     ed.prepare_git();
     let ed: &Editor = ed;
@@ -1094,9 +1142,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     let t_panels = std::time::Instant::now();
     // 欄・小窓（layout.rs の表の順に下から）
     crate::layout::draw(crate::layout::Layer::Panels, ed, &mut p, crate::layout::Screen { rows, cols });
-    if std::env::var_os("NAGI_DEBUG_BUILD").is_some() {
-        eprintln!("build-parts windows={}us panels={}us text-items={:?}", (t_panels - t_windows).as_micros(), t_panels.elapsed().as_micros(), p.prof);
-    }
+    let t_status = std::time::Instant::now();
     draw_toggle_buttons(&mut p, ed, cols, false);
     // ---- 最下行: 左にモード・メッセージ・入力欄、右に位置（Vim の showmode と ruler と同じ形）
     // 右端の 2 列は設定のボタン（⚙）
@@ -1265,8 +1311,13 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     p.ui = false;
     // 状態行のボタン（⚙）は状態行を描いた後に
     draw_toggle_buttons(&mut p, ed, cols, true);
+    let t_overlays = std::time::Instant::now();
     // 画面を覆うダイアログ（layout.rs）
     crate::layout::draw(crate::layout::Layer::Overlays, ed, &mut p, crate::layout::Screen { rows, cols });
+    if std::env::var_os("NAGI_DEBUG_BUILD").is_some() {
+        let us = |a: std::time::Instant, b: std::time::Instant| (b - a).as_micros();
+        eprintln!("build-parts pre={}us git={}us windows={}us panels={}us status={}us overlays={}us text-items={:?}", us(t_start, t_fit), us(t_fit, t_windows), us(t_windows, t_panels), us(t_panels, t_status), us(t_status, t_overlays), t_overlays.elapsed().as_micros(), p.prof);
+    }
     // タブのアイコンにマウスを載せていれば、その下に名前
     if let Some((row, col, label)) = ed.hover_tab.as_ref().filter(|_| ed.panels.run_dialog.is_none() && ed.panels.launcher.is_none()) {
         let cell = p.fonts.cell();

@@ -216,7 +216,7 @@ impl Lang {
 }
 
 /// ハイライトの種類。色数を絞るため、キャプチャ名をこの数種類にまとめる
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum Hl {
     Keyword,
     String,

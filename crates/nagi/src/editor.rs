@@ -499,6 +499,8 @@ pub struct Editor {
     pub search_bar: bool,
     /// nav_root の覚え（(開いているファイル, 今のフォルダ) → 根）
     pub(crate) nav_root_cache: std::cell::RefCell<Option<((Option<PathBuf>, PathBuf), PathBuf)>>,
+    /// 本文の行を描いた結果（line_cache.rs）
+    pub(crate) line_cache: std::cell::RefCell<crate::line_cache::LineCache>,
     /// 全文検索の小窓のプレビューに読んだファイル（パス, 行）
     pub grep_preview: std::cell::RefCell<Option<(std::path::PathBuf, std::sync::Arc<Vec<String>>)>>,
     /// 部品を左クリックしている間の修飾キー（Ctrl・Shift+クリックで一覧の複数を選ぶ）。押した間だけ App が入れる
@@ -671,7 +673,8 @@ impl Editor {
     /// 試験: 裏の仕事が全部終わって受け取りを呼び終えるまで待つ（10 秒まで）
     #[cfg(test)]
     pub(crate) fn wait_jobs(&mut self) {
-        for _ in 0..2000 {
+        // 裏の仕事は優先度を下げて動かすので、ほかの試験や計測と並ぶと 10 秒を超えることがある（60 秒まで待つ）
+        for _ in 0..12000 {
             self.poll_background();
             if self.svc.jobs.is_empty() {
                 return;
@@ -791,6 +794,7 @@ impl Editor {
             hover_chrome: None,
             search_bar: false,
             nav_root_cache: Default::default(),
+            line_cache: Default::default(),
             grep_preview: Default::default(),
             click_mods: Default::default(),
             hover_tab: None,

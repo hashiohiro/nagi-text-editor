@@ -79,6 +79,7 @@ mod view;
 mod menu;
 mod buffer_tabs;
 mod plain;
+mod line_cache;
 mod layout;
 mod component;
 mod commands;

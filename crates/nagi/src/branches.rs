@@ -809,8 +809,8 @@ mod tests {
     }
 
     fn wait(e: &mut Editor) {
-        // ほかの試験と並ぶと 2 秒を超えることがある（10 秒まで待つ）
-        for _ in 0..2000 {
+        // ほかの試験と並ぶと 2 秒を超えることがある（裏の仕事は優先度を下げて動かすので、混んでいると 10 秒を超えたこともある。60 秒まで待つ）
+        for _ in 0..12000 {
             e.poll_branches();
             e.poll_git();
             if e.panels.branch_popup.as_ref().is_none_or(|p| p.rx.is_none()) {

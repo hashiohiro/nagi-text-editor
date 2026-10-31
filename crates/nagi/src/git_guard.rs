@@ -222,7 +222,8 @@ mod tests {
     fn pull_asks_and_retries() {
         let (dir, mut e) = repo("pull");
         let wait = |e: &mut Editor, until: &dyn Fn(&Editor) -> bool| {
-            for _ in 0..2000 {
+            // 裏の仕事は優先度を下げて動かすので、ほかの試験や計測と並ぶと 10 秒を超えることがある（60 秒まで待つ）
+            for _ in 0..12000 {
                 e.poll_branches();
                 if until(e) {
                     return;

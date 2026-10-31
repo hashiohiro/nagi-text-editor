@@ -270,7 +270,10 @@ pub fn items() -> &'static [Item] {
 }
 
 pub fn schema(key: &str) -> Option<&'static Item> {
-    items().iter().find(|i| i.key == key)
+    // 名前から引く表（項目は数百あり、設定は描くたびに何度も引くので、頭から比べていくと手間になる）
+    static BY_KEY: std::sync::OnceLock<HashMap<&'static str, usize>> = std::sync::OnceLock::new();
+    let by_key = BY_KEY.get_or_init(|| items().iter().enumerate().rev().map(|(n, i)| (i.key, n)).collect());
+    by_key.get(key).map(|&n| &items()[n])
 }
 
 /// `key`（キーの項目）と同じキーの組み合わせを付けたほかの項目
