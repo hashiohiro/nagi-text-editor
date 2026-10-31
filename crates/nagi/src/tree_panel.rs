@@ -171,6 +171,84 @@ fn rel_parts(p: &Path, root: &Path) -> Option<Vec<String>> {
     Some(it.map(|c| c.as_os_str().to_string_lossy().into_owned()).collect())
 }
 
+/// 木のキーで、部品の外に及ぶこと（Editor が行う。ADR 0018 の §5）
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TreeAction {
+    None,
+    /// 本文へ戻る
+    ToText,
+    /// 木を閉じる
+    Close,
+    /// 下の欄へ移る（Ctrl-w j。下の欄が無ければ本文へ）
+    FocusBottom,
+    /// ファイルを開く（true なら木に残る）
+    Open(PathBuf, bool),
+    /// `:` の行へ
+    Command,
+}
+
+impl TreePanel {
+    /// 木のキー（`half` は半画面の行数）。部品の中で済むこと（移動・開閉・読み直し）はここで行い、外に及ぶことを返す
+    pub fn key(&mut self, key: Key, half: usize, waker: &nagi_workers::Waker) -> TreeAction {
+        let g_pending = std::mem::take(&mut self.pending_g);
+        if std::mem::take(&mut self.pending_w) {
+            return match key {
+                Key::Char('c' | 'q') | Key::Ctrl('c' | 'q') => TreeAction::Close,
+                Key::Char('h') | Key::Ctrl('h') => TreeAction::None,
+                Key::Char('j') | Key::Ctrl('j') => TreeAction::FocusBottom,
+                _ => TreeAction::ToText,
+            };
+        }
+        let moved = nagi_ui::list::step(key, self.selected, self.rows.len(), half * 2);
+        match key {
+            _ if moved.is_some() => self.selected = moved.unwrap_or(self.selected),
+            Key::Ctrl('w') => self.pending_w = true,
+            Key::Char('g') if g_pending => self.selected = 0,
+            Key::Char('g') => self.pending_g = true,
+            Key::Enter | Key::Char('l') | Key::Right | Key::Char('o') => {
+                let Some(row) = self.rows.get(self.selected).cloned() else { return TreeAction::None };
+                if row.dir {
+                    if self.folds.is_open(&row.path) {
+                        // l・→ は開いているフォルダでは何もしない（Enter と o は畳む）
+                        if !matches!(key, Key::Char('l') | Key::Right) {
+                            self.folds.set_open(&row.path, false);
+                            self.rebuild();
+                        }
+                    } else {
+                        self.expand(&row.path, waker);
+                    }
+                } else if key != Key::Right {
+                    // → はフォルダを開くだけ（ファイルは Enter・l・o・ダブルクリックで開く）
+                    return TreeAction::Open(row.path, key == Key::Char('o'));
+                }
+            }
+            // 開いたフォルダなら畳む、それ以外は親のフォルダへ（木の共通の動き。nagi-ui）
+            Key::Char('h') | Key::Left => match nagi_ui::tree::left(&self.rows, self.selected, &self.folds) {
+                nagi_ui::Step::Fold(k, open) => {
+                    self.folds.set_open(&k, open);
+                    self.rebuild();
+                }
+                nagi_ui::Step::Select(i) => self.selected = i,
+                nagi_ui::Step::None => {}
+            },
+            Key::Char('R') => {
+                self.children.clear();
+                let root = self.root.clone();
+                self.load(&root, waker);
+                let open: Vec<PathBuf> = self.folds.flipped().cloned().collect();
+                for d in open {
+                    self.load(&d, waker);
+                }
+            }
+            Key::Char('q') => return TreeAction::Close,
+            Key::Esc => return TreeAction::ToText,
+            Key::Char(':') => return TreeAction::Command,
+            _ => {}
+        }
+        TreeAction::None
+    }
+}
+
 impl Editor {
     /// 開いているファイルに木を合わせる（IntelliJ の Always Select Opened File）。木が出ていて、木にいないとき、
     /// 開いているファイルが変わっていたら、そこまで展開して選ぶ（描く前に呼ぶ）
@@ -365,65 +443,23 @@ impl Editor {
             self.set_state(State::Normal);
             return Effect::None;
         };
-        let g_pending = std::mem::take(&mut t.pending_g);
-        if std::mem::take(&mut t.pending_w) {
-            match key {
-                Key::Char('c' | 'q') | Key::Ctrl('c' | 'q') => self.close_tree(),
-                Key::Char('h') | Key::Ctrl('h') => {}
-                Key::Char('j') | Key::Ctrl('j') if self.panels.grep.is_some() => self.focus_panel(),
-                _ => self.set_state(State::Normal),
-            }
-            return Effect::None;
-        }
-        let moved = nagi_ui::list::step(key, t.selected, t.rows.len(), half * 2);
-        match key {
-            _ if moved.is_some() => t.selected = moved.unwrap_or(t.selected),
-            Key::Ctrl('w') => t.pending_w = true,
-            Key::Char('g') if g_pending => t.selected = 0,
-            Key::Char('g') => t.pending_g = true,
-            Key::Enter | Key::Char('l') | Key::Right | Key::Char('o') => {
-                let stay = key == Key::Char('o');
-                let Some(row) = t.rows.get(t.selected).cloned() else { return Effect::None };
-                if row.dir {
-                    if t.folds.is_open(&row.path) {
-                        // l・→ は開いているフォルダでは何もしない（Enter と o は畳む）
-                        if !matches!(key, Key::Char('l') | Key::Right) {
-                            t.folds.set_open(&row.path, false);
-                            t.rebuild();
-                        }
-                    } else {
-                        t.expand(&row.path, &waker);
-                    }
-                } else if key != Key::Right {
-                    // → はフォルダを開くだけ（ファイルは Enter・l・o・ダブルクリックで開く）
-                    self.edit_file(row.path);
-                    self.set_state(if stay { State::List } else { State::Normal });
+        // 部品の中で済むことは TreePanel::key が行い、外に及ぶことを返す（ADR 0018 の §5）
+        match t.key(key, half, &waker) {
+            TreeAction::None => {}
+            TreeAction::ToText => self.set_state(State::Normal),
+            TreeAction::Close => self.close_tree(),
+            TreeAction::FocusBottom => {
+                if self.panels.grep.is_some() {
+                    self.focus_panel();
+                } else {
+                    self.set_state(State::Normal);
                 }
             }
-            // 開いたフォルダなら畳む、それ以外は親のフォルダへ（木の共通の動き。nagi-ui）
-            Key::Char('h') | Key::Left => match nagi_ui::tree::left(&t.rows, t.selected, &t.folds) {
-                nagi_ui::Step::Fold(k, open) => {
-                    t.folds.set_open(&k, open);
-                    t.rebuild();
-                }
-                nagi_ui::Step::Select(i) => t.selected = i,
-                nagi_ui::Step::None => {}
-            },
-            Key::Char('R') => {
-                t.children.clear();
-                let root = t.root.clone();
-                t.load(&root, &waker);
-                let open: Vec<PathBuf> = t.folds.flipped().cloned().collect();
-                for d in open {
-                    t.load(&d, &waker);
-                }
+            TreeAction::Open(path, stay) => {
+                self.edit_file(path);
+                self.set_state(if stay { State::List } else { State::Normal });
             }
-            Key::Char('q') => self.close_tree(),
-            Key::Esc => self.set_state(State::Normal),
-            Key::Char(':') => {
-                self.enter_command("");
-            }
-            _ => {}
+            TreeAction::Command => self.enter_command(""),
         }
         Effect::None
     }
