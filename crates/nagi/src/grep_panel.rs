@@ -796,13 +796,14 @@ impl crate::layout::View for GrepPopupView {
         }
     }
 
-    fn click(&self, ed: &mut Editor, r: Rect, row: usize, col: usize, clicks: u32) -> crate::layout::Click {
+    fn click(&self, ed: &mut Editor, r: Rect, at: crate::layout::At, clicks: u32) -> crate::layout::Click {
+        let (row, col) = at.screen;
         ed.grep_popup_click(row, col, r.w, r.h, clicks);
         crate::layout::Click::Done
     }
 
-    fn wheel(&self, ed: &mut Editor, r: Rect, row: usize, col: usize, dy: isize, dx: isize) -> bool {
-        let _ = (r, row, col, dx);
+    fn wheel(&self, ed: &mut Editor, r: Rect, at: crate::layout::At, dy: isize, dx: isize) -> bool {
+        let _ = (at, r, dx);
         let key = if dy > 0 { Key::Down } else { Key::Up };
         for _ in 0..dy.unsigned_abs() {
             ed.grep_prompt_key(key);

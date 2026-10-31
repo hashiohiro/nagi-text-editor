@@ -186,16 +186,16 @@ impl crate::layout::View for RightView {
         draw::draw_right_panel(p, ed, r);
     }
 
-    fn click(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, clicks: u32) -> crate::layout::Click {
-        let _ = (r, row, col, clicks);
-        ed.right_click(row - r.y, col - r.x, clicks);
+    fn click(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At, clicks: u32) -> crate::layout::Click {
+        let _ = r;
+        ed.right_click(at.row, at.col, clicks);
         crate::layout::Click::Done
     }
 
     /// データベースの木の右クリック: 押した行（接続先・スキーマ・テーブル・列など）のメニュー
 
-    fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, dy: isize, dx: isize) -> bool {
-        let _ = (row, col, dx);
+    fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At, dy: isize, dx: isize) -> bool {
+        let _ = (at, dx);
         // 1 行目はタブ、2 行目は見出し（view.rs の build と同じ高さ）
         let h = r.h.saturating_sub(2);
         match ed.right_visible() {
@@ -221,18 +221,18 @@ impl crate::layout::View for RightView {
         true
     }
 
-    fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize) -> bool {
+    fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At) -> bool {
+        let _ = r;
         use nagi_vim::Key::*;
-        let _ = (r, row, col);
         // 押した行を選ぶだけ（1 回のクリックのように開け閉めしない）
-        let row = row - r.y;
+        let row = at.row;
         if row == 0 {
             return false;
         }
-        let m = crate::menu::Menu::new(row + r.y, col);
+        let m = crate::menu::Menu::new(at.screen.0, at.screen.1);
         let m = match ed.right_visible() {
             // データベースは接続先・テーブルごとの詳しいメニュー（db_panel.rs）
-            Some(RightTab::Database) => return ed.db_context(row, (row + r.y, col)),
+            Some(RightTab::Database) => return ed.db_context(row, at.screen),
             Some(RightTab::Maven) => {
                 let Some(mv) = &mut ed.maven else { return false };
                 let len = mv.rows.len();

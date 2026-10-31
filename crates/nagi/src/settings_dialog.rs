@@ -1025,14 +1025,15 @@ impl crate::layout::View for SettingsView {
         }
     }
 
-    fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, dy: isize, dx: isize) -> bool {
-        let _ = (r, row, col, dx);
+    fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At, dy: isize, dx: isize) -> bool {
+        let _ = (at, r, dx);
         crate::layout::wheel_keys(ed, dy)
     }
 
-    fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize) -> bool {
-        use nagi_vim::Key::*;
+    fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At) -> bool {
         let _ = r;
+        let (row, col) = at.screen;
+        use nagi_vim::Key::*;
         // 押した項目を選んでから（1 回のクリックは選ぶだけ）
         ed.settings_click(row, col, 1);
         if ed.settings_dialog.as_ref().is_some_and(|d| d.is_maps()) {

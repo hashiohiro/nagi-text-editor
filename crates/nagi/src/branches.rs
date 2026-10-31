@@ -233,6 +233,13 @@ pub fn parse_refs(out: &str) -> Vec<Branch> {
         .collect()
 }
 
+/// git の操作ができたら、ブランチのポップアップを閉じる
+fn close_if_ok(e: &mut Editor, ok: bool) {
+    if ok {
+        e.close_branches();
+    }
+}
+
 impl Editor {
     /// `:Gbranches`（Git.Branches）
     pub(crate) fn open_branches(&mut self) {
@@ -281,30 +288,50 @@ impl Editor {
         changed | self.poll_git_job()
     }
 
-    /// 裏で動かしたフェッチ・pull の結果
+    /// 裏で動かしたフェッチ・pull の結果。pull で作業中の変更が上書きされる（リベースなら、作業中の変更がある）ので止まったら、
+    /// 退避・破棄・中止を確かめてもう一度
     fn poll_git_job(&mut self) -> bool {
-        let Some((label, rx)) = &self.git_job else { return false };
+        use nagi_workers::git;
+        let Some((label, args, rx)) = &self.git_job else { return false };
         let Ok(r) = rx.try_recv() else { return false };
-        match r {
-            Ok(_) => self.notify.info(format!("{label}しました")),
-            Err(e) => self.notify.error(format!("{label}できません: {}", nagi_workers::git::reason(&e))),
-        }
+        let (label, args) = (label.clone(), args.clone());
         self.git_job = None;
+        match r {
+            Ok(w) if w.is_empty() => self.notify.info(format!("{label}しました")),
+            Ok(w) => self.notify.warn(format!("{label}しました。{w}")),
+            Err(e) => match git::blocked(&e).or_else(|| git::dirty_refused(&e).then(git::Blocked::default)) {
+                Some(b) => self.ask_blocked(b, move |e, b, how| e.spawn_git_job(&label, &args, Some((b.clone(), how)))),
+                None => self.notify.error(format!("{label}できません: {}", git::reason(&e))),
+            },
+        }
         self.refresh_git();
         true
     }
 
     /// フェッチ・pull を裏で動かす
     pub(crate) fn run_git_job(&mut self, label: &str, args: &[&str]) {
-        let Some(root) = self.git.root.clone() else { return };
         let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        self.spawn_git_job(label, &args, None);
+    }
+
+    /// `fix` があれば、止めたファイルを退避（終わったら戻す）か破棄してから動かす
+    fn spawn_git_job(&mut self, label: &str, args: &[String], fix: Option<(nagi_workers::git::Blocked, crate::git_guard::Resolve)>) {
+        use crate::git_guard::Resolve;
+        use nagi_workers::git;
+        let Some(root) = self.git.root.clone() else { return };
+        let a = args.to_vec();
         let rx = nagi_core::task::spawn("git-net", self.waker(), move |ctx| {
-            let a: Vec<&str> = args.iter().map(String::as_str).collect();
-            let r = nagi_workers::git::git(&root, &a).map(|b| String::from_utf8_lossy(&b).into_owned());
+            let a: Vec<&str> = a.iter().map(String::as_str).collect();
+            // 成功したら、知らせに書き足すこと（退避を戻せなかったなど）を返す
+            let r = match fix {
+                None => git::git(&root, &a).map(|_| String::new()),
+                Some((b, Resolve::Discard)) => git::discard(&root, &b).and_then(|_| git::git(&root, &a)).map(|_| String::new()),
+                Some((b, Resolve::Stash)) => git::with_stash(&root, &b, || git::git(&root, &a)).map(|(_, w)| w.unwrap_or_default()),
+            };
             ctx.send(r);
         });
         self.notify.info(format!("{label}しています…"));
-        self.git_job = Some((label.to_string(), rx));
+        self.git_job = Some((label.to_string(), args.to_vec(), rx));
     }
 
     /// git をその場で動かして結果を知らせる（チェックアウトなど、手元だけで済むもの）
@@ -326,22 +353,27 @@ impl Editor {
         }
         let local = b.name.split_once('/').map_or(b.name.as_str(), |(_, n)| n).to_string();
         let exists = self.branch_popup.as_ref().is_some_and(|p| p.branches.iter().any(|x| !x.remote && x.name == local));
-        if self.checkout_ref(&b.name, b.remote, exists) {
-            self.close_branches();
-        }
+        self.checkout_ref(&b.name, b.remote, exists, close_if_ok);
     }
 
-    /// ブランチをチェックアウトする。リモートの origin/x なら x（`local_exists` でなければ作って追跡する）
-    pub(crate) fn checkout_ref(&mut self, name: &str, remote: bool, local_exists: bool) -> bool {
-        if !remote {
-            return self.git_now(&["checkout", "-q", name], format!("{name} をチェックアウトしました"));
-        }
+    /// ブランチをチェックアウトする。リモートの origin/x なら x（`local_exists` でなければ作って追跡する）。
+    /// 作業中の変更が上書きされるなら、退避・破棄・中止を確かめる。終わったら `then`（できたか）
+    pub(crate) fn checkout_ref(&mut self, name: &str, remote: bool, local_exists: bool, then: impl FnOnce(&mut Editor, bool) + 'static) {
         let local = name.split_once('/').map_or(name, |(_, n)| n).to_string();
-        if local_exists {
-            self.git_now(&["checkout", "-q", &local], format!("{local} をチェックアウトしました"))
+        let (args, ok) = if !remote {
+            (vec!["checkout", "-q", name], format!("{name} をチェックアウトしました"))
+        } else if local_exists {
+            (vec!["checkout", "-q", &local], format!("{local} をチェックアウトしました"))
         } else {
-            self.git_now(&["checkout", "-q", "--track", name], format!("{local} を作って {name} を追跡します"))
-        }
+            (vec!["checkout", "-q", "--track", name], format!("{local} を作って {name} を追跡します"))
+        };
+        self.git_guarded_args(&args, ok, then);
+    }
+
+    /// git_guarded の、引数を渡して git を動かすだけのもの
+    pub(crate) fn git_guarded_args(&mut self, args: &[&str], ok: String, then: impl FnOnce(&mut Editor, bool) + 'static) {
+        let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        self.git_guarded(move |root| nagi_workers::git::git(root, &args.iter().map(String::as_str).collect::<Vec<_>>()).map(|_| ok.clone()), then);
     }
 
     fn run_op(&mut self, op: Op, b: Branch) {
@@ -353,15 +385,11 @@ impl Editor {
                     p.naming = Some((Naming::New(Some(b.name.clone())), crate::vim_field::VimField::new("", false)));
                 }
             }
-            Op::Merge => {
-                if self.git_now(&["merge", "--no-edit", &b.name], format!("{} を {cur} にマージしました", b.name)) {
-                    self.close_branches();
-                }
-            }
+            Op::Merge => self.git_guarded_args(&["merge", "--no-edit", &b.name], format!("{} を {cur} にマージしました", b.name), close_if_ok),
             Op::Rebase => {
-                if self.git_now(&["rebase", &b.name], format!("{cur} を {} の上へリベースしました", b.name)) {
-                    self.close_branches();
-                }
+                // 作業中の変更は退避して戻す（履歴のリベースと同じ）
+                let (n, ok) = (b.name.clone(), format!("{cur} を {} の上へリベースしました", b.name));
+                self.git_guarded(move |root| nagi_workers::git::rebase_onto(root, &n).map(|_| ok.clone()), close_if_ok);
             }
             Op::Compare => {
                 self.close_branches();
@@ -421,18 +449,19 @@ impl Editor {
                     if name.is_empty() {
                         return;
                     }
-                    let done = match kind {
+                    match kind {
                         Naming::New(from) => {
                             let mut args = vec!["checkout", "-q", "-b", name.as_str()];
                             if let Some(f) = from.as_deref() {
                                 args.push(f);
                             }
-                            self.git_now(&args, format!("ブランチ {name} を作ってチェックアウトしました"))
+                            self.git_guarded_args(&args, format!("ブランチ {name} を作ってチェックアウトしました"), close_if_ok);
                         }
-                        Naming::Rename(old) => self.git_now(&["branch", "-m", &old, &name], format!("{old} を {name} に変えました")),
-                    };
-                    if done {
-                        self.close_branches();
+                        Naming::Rename(old) => {
+                            if self.git_now(&["branch", "-m", &old, &name], format!("{old} を {name} に変えました")) {
+                                self.close_branches();
+                            }
+                        }
                     }
                 }
                 _ => {}
@@ -599,20 +628,21 @@ impl crate::layout::View for BranchPopupView {
         }
     }
 
-    fn click(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, clicks: u32) -> crate::layout::Click {
+    fn click(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At, clicks: u32) -> crate::layout::Click {
+        let (row, col) = at.screen;
         // 小窓は画面全体を持つ（r は本文の大きさ）
         ed.branches_click(row, col, r.h, r.w, clicks);
         crate::layout::Click::Done
     }
 
-    fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, dy: isize, dx: isize) -> bool {
-        let _ = (r, row, col, dx);
+    fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At, dy: isize, dx: isize) -> bool {
+        let _ = (at, r, dx);
         crate::layout::wheel_keys(ed, dy)
     }
 
-    fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize) -> bool {
+    fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At) -> bool {
+        let (row, col) = at.screen;
         use nagi_vim::Key::*;
-        let _ = (r, row, col);
         // 押した行を選んで、その操作の一覧を出す（→ と同じ）
         ed.branches_click(row, col, r.h, r.w, 1);
         ed.panel_keys(&[Right]);

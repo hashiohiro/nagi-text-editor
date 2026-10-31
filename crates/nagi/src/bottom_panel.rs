@@ -285,24 +285,24 @@ impl crate::layout::View for BottomView {
         draw::draw_bottom_panel(p, ed, r);
     }
 
-    fn click(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, clicks: u32) -> crate::layout::Click {
-        let _ = (r, row, col, clicks);
+    fn click(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At, clicks: u32) -> crate::layout::Click {
+        let (row, col) = at.screen;
+        let _ = r;
         // ターミナルの画面: 押して選び始める（ドラッグで範囲）
         if ed.bottom_kind == BottomKind::Terminal && ed.terminals.chooser.is_none() && ed.terminal_rect().is_some_and(|t| t.contains(row, col)) && ed.terminal_press(row, col) {
             return crate::layout::Click::SelectTerminal;
         }
         // 1 行目はタブ、2 行目から中身
-        ed.bottom_click(row - r.y, col.saturating_sub(r.x), clicks);
+        ed.bottom_click(at.row, at.col, clicks);
         // 検索・ログの行を押したら、そのままドラッグで範囲を選べる
-        if clicks == 1 && row > r.y + 1 && matches!(ed.bottom_kind, BottomKind::Grep | BottomKind::Output) {
+        if clicks == 1 && at.row > 1 && matches!(ed.bottom_kind, BottomKind::Grep | BottomKind::Output) {
             crate::layout::Click::SelectList
         } else {
             crate::layout::Click::Done
         }
     }
 
-    fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, dy: isize, dx: isize) -> bool {
-        let _ = (row, col);
+    fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At, dy: isize, dx: isize) -> bool {
         // 1 行目はタブ（ターミナルは main.rs が先に受け取る）
         let h = r.h.saturating_sub(1);
         match ed.bottom_kind {
@@ -337,7 +337,7 @@ impl crate::layout::View for BottomView {
                     crate::result_grid::grid_hwheel(&mut t.col, &mut t.hscroll, &t.widths, r.w, dx);
                 }
             }
-            BottomKind::Git => ed.log_wheel(dy, dx, r.w, col.saturating_sub(r.x)),
+            BottomKind::Git => ed.log_wheel(dy, dx, r.w, at.col),
             BottomKind::Problems => {
                 let n = ed.problem_rows().len();
                 let p = &mut ed.problems;
@@ -354,13 +354,15 @@ impl crate::layout::View for BottomView {
         true
     }
 
-    fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize) -> bool {
+    fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At) -> bool {
+        let _ = r;
+        let (row, col) = at.screen;
         use nagi_vim::Key::*;
         // 1 行目はタブなので、2 行目から中身
-        if row <= r.y {
+        if at.row == 0 {
             return false;
         }
-        let (prow, pcol) = (row - r.y - 1, col.saturating_sub(r.x));
+        let (prow, pcol) = (at.row - 1, at.col);
         let m = crate::menu::Menu::new(row, col);
         let m = match ed.bottom_kind {
             BottomKind::Git => {
@@ -496,7 +498,7 @@ pub(crate) mod draw {
             },
             BottomKind::Problems => draw_problems(p, ed, c, focused),
             BottomKind::Git => match &ed.log {
-                Some(l) if l.docked => draw_log_view(p, l, c, ed.log_cols_for(c.w), &ed.preedit, ed.git.status.as_ref().map(|s| (s.branch.as_str(), s.ahead as usize, s.behind as usize))),
+                Some(l) if l.docked => draw_log_view(p, l, c, ed.log_cols_for(c.w), ed.log_right_cols(), &ed.preedit, ed.git.status.as_ref().map(|s| (s.branch.as_str(), s.ahead as usize, s.behind as usize))),
                 _ => empty(p, "git のリポジトリではありません"),
             },
             BottomKind::Terminal => draw_terminal(p, ed, c, focused),

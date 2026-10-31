@@ -45,9 +45,102 @@ pub fn log_cols(w: usize, branch_w: Option<usize>, detail_w: Option<usize>) -> (
     (bw, dw)
 }
 
-/// 履歴の真ん中の列で、横に送る部分の見える幅（右の作者・日時・ハッシュの分を除いた、だいたいの幅）
-pub fn log_text_w(w: usize, (bw, dw): (usize, usize)) -> usize {
-    w.saturating_sub(bw + dw + 2).saturating_sub(32).max(1)
+/// 作者・日時・ハッシュの列の、中身に合わせた幅（作者と日時は長すぎるものに引きずられないよう 16 列まで）
+fn auto_cols(rows: &[LogRow]) -> (usize, usize, usize) {
+    let w = |s: &str| nagi_core::display_col(s, s.len(), false);
+    let cs = rows.iter().filter_map(|r| r.commit.as_ref());
+    let (mut a, mut d, mut h) = (4, 4, 7);
+    for c in cs {
+        a = a.max(w(&c.author).min(16));
+        d = d.max(w(&c.date).min(16));
+        h = h.max(c.short.len());
+    }
+    (a, d, h)
+}
+
+/// 履歴の真ん中の列で、横に送る部分の見える幅（右の作者・日時・ハッシュの列 `(aw, tw, hw)` の分を除く）
+pub fn log_text_w(w: usize, (bw, dw): (usize, usize), (aw, tw, hw): (usize, usize, usize)) -> usize {
+    w.saturating_sub(bw + dw + 2).saturating_sub(aw + tw + hw + 4).max(1)
+}
+
+/// 右の中身の列の 1 行
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DetailLine {
+    /// ハッシュ・作者・日時・親（薄い字）
+    Info(String),
+    /// メッセージ（true は 1 行目。題名）
+    Message(String, bool),
+    Gap,
+    /// 「変えたファイル（n）」
+    FilesHead(usize),
+    /// 変えたファイル（files の番号）
+    File(usize),
+}
+
+/// 右の中身の列の行（描き方と押した位置の割り付けに使う）。ファイルのほかは幅 `w` で折り返す（メッセージは全部出す）
+pub fn detail_lines(d: &Detail, w: usize) -> Vec<DetailLine> {
+    let short = |h: &str| h[..7.min(h.len())].to_string();
+    let mut out = Vec::new();
+    let info = |out: &mut Vec<DetailLine>, s: String| out.extend(wrap(&s, w).into_iter().map(DetailLine::Info));
+    if let Some(b) = &d.base {
+        info(&mut out, format!("比較  {} → {}", short(b), short(&d.hash)));
+        info(&mut out, "左が古い方、右が新しい方".into());
+    } else {
+        info(&mut out, format!("{}   {}   {}", short(&d.hash), d.author, d.date));
+        info(&mut out, format!("親 {}", d.parents.split(' ').map(short).collect::<Vec<_>>().join(" ")));
+    }
+    out.push(DetailLine::Gap);
+    for (k, m) in d.message.lines().enumerate() {
+        out.extend(wrap(m, w).into_iter().map(|l| DetailLine::Message(l, k == 0)));
+    }
+    out.push(DetailLine::Gap);
+    out.push(DetailLine::FilesHead(d.files.len()));
+    out.extend((0..d.files.len()).map(DetailLine::File));
+    out
+}
+
+/// 変えたファイルの行の字（状態の文字・名前・フォルダ。IntelliJ と同じく名前を先に、フォルダは後ろに薄く）
+pub fn file_line(st: char, path: &str) -> (String, String) {
+    let (dir, name) = path.rsplit_once('/').map_or(("", path), |(d, n)| (d, n));
+    (format!("{st}  {name}"), if dir.is_empty() { String::new() } else { format!("  {dir}") })
+}
+
+/// 表示の幅 `w` で折り返す（空白があればそこで切る。全角は 2 セル）
+pub fn wrap(s: &str, w: usize) -> Vec<String> {
+    let cw = |t: &str| nagi_core::display_col(t, t.len(), false);
+    if w == 0 || cw(s) <= w {
+        return vec![s.to_string()];
+    }
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    for ch in s.chars() {
+        let mut b = [0u8; 4];
+        if !cur.is_empty() && cw(&cur) + cw(ch.encode_utf8(&mut b)) > w {
+            match cur.rfind(' ').filter(|&i| i > 0 && ch != ' ') {
+                Some(i) => {
+                    let rest = cur[i + 1..].to_string();
+                    cur.truncate(i);
+                    out.push(std::mem::replace(&mut cur, rest));
+                }
+                None => out.push(std::mem::take(&mut cur)),
+            }
+            if ch == ' ' {
+                continue;
+            }
+        }
+        cur.push(ch);
+    }
+    out.push(cur);
+    out
+}
+
+/// ブランチの列の 1 行
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BranchRow {
+    /// 区分（depth 0）か、名前の / で分けたフォルダ。`key` は区分からの道筋（ローカル/feature）
+    Folder { key: String, name: String, depth: usize },
+    /// ブランチ（branches の番号）
+    Branch { i: usize, depth: usize },
 }
 
 #[derive(Clone, Debug, Default)]
@@ -92,6 +185,25 @@ pub enum Confirm {
 
 type Rx<T> = Option<nagi_core::task::Task<nagi_core::Result<T>>>;
 
+/// 確かめた操作のうち、手元で済むもの（成功したら知らせる文）
+fn log_op(root: &std::path::Path, c: &Confirm) -> nagi_core::Result<String> {
+    use nagi_workers::git;
+    match c {
+        Confirm::Checkout(h) => git::git(root, &["checkout", "-q", h]).map(|_| "チェックアウトしました".into()),
+        Confirm::CherryPick(h) => git::cherry_pick(root, h).map(|_| "チェリーピックしました".into()),
+        Confirm::Revert(h) => git::revert(root, h).map(|_| "取り消すコミットを足しました".into()),
+        Confirm::CherryPickMany(hs) => git::cherry_pick_many(root, hs).map(|_| format!("{} 件をチェリーピックしました", hs.len())),
+        Confirm::RevertMany(hs) => git::revert_many(root, hs).map(|_| format!("{} 件を取り消すコミットを足しました", hs.len())),
+        Confirm::Undo(_) => git::git(root, &["reset", "--soft", "HEAD~1"]).map(|_| "コミットを取り消しました（変更は残っています）".into()),
+        Confirm::Squash(h, keep) => git::squash_into_parent(root, h, *keep).map(|_| "1 つ前のコミットにまとめました".into()),
+        Confirm::Drop(h) => git::drop_commit(root, h).map(|_| "コミットを消しました".into()),
+        Confirm::Reset(h, m) => git::git(root, &["reset", m, h]).map(|_| format!("リセットしました（{m}）")),
+        Confirm::Rebase(h) => git::rebase_onto(root, h).map(|_| "リベースしました".into()),
+        Confirm::CheckoutRebase(b, onto) => git::git(root, &["checkout", "-q", b]).and_then(|_| git::rebase_onto(root, onto)).map(|_| format!("{b} を {onto} の上へリベースしました")),
+        Confirm::PushTo(..) | Confirm::DeleteBranch(..) => unreachable!("log_do で扱う"),
+    }
+}
+
 pub struct LogView {
     /// 下の欄の「Git」タブに収めている（全画面でない）
     pub docked: bool,
@@ -121,6 +233,13 @@ pub struct LogView {
     pub branch_sel: Option<usize>,
     /// ブランチの列の先頭に見せている行（見出しの行も数える）
     pub branch_top: usize,
+    /// ブランチの列で畳んでいる区分・フォルダ（BranchRow::Folder の key）
+    pub branch_folded: std::collections::HashSet<String>,
+    /// 右の中身の列の先頭に見せている行と、変えたファイルの左端の列（長いパスを横に送って見る）
+    pub detail_top: usize,
+    pub detail_left: usize,
+    /// 中身に合わせた作者・日時・ハッシュの列の幅（履歴が届いたときに測る）
+    pub auto_cols: (usize, usize, usize),
     /// 読み直すための元（ファイルの履歴のパス・比べる範囲）
     src_path: Option<String>,
     src_range: Option<String>,
@@ -190,23 +309,64 @@ fn spawn<T: Send + 'static>(waker: Option<std::sync::Arc<dyn Fn() + Send + Sync>
 }
 
 impl LogView {
-    /// ブランチの列の行（見出しの下を 0 とする）→ ブランチの番号（区分の見出しの行は None）
+    /// ブランチの列の行（見出しの下を 0 とする）→ ブランチの番号（区分・フォルダの行は None）
     pub fn branch_at(&self, row: usize) -> Option<usize> {
-        self.branch_rows().get(self.branch_top + row).copied().flatten()
+        match self.branch_rows().get(self.branch_top + row) {
+            Some(BranchRow::Branch { i, .. }) => Some(*i),
+            _ => None,
+        }
     }
 
-    /// ブランチの列の行（見出しは None、ブランチは branches の番号）
-    pub fn branch_rows(&self) -> Vec<Option<usize>> {
+    /// ブランチの列の行。区分（ローカル・リモート・タグ）の下に、名前を / で分けたフォルダの木（IntelliJ と同じ）。
+    /// 畳んだ区分・フォルダの中は出さない。フォルダはその段のブランチより先に並べる
+    pub fn branch_rows(&self) -> Vec<BranchRow> {
         let mut out = Vec::new();
-        let mut last = "";
-        for (i, (sec, _, _)) in self.branches.iter().enumerate() {
-            if sec != last {
-                out.push(None);
-                last = sec;
+        let mut secs: Vec<&str> = Vec::new();
+        for (sec, _, _) in &self.branches {
+            if !secs.contains(&sec.as_str()) {
+                secs.push(sec);
             }
-            out.push(Some(i));
+        }
+        for sec in secs {
+            let items: Vec<(usize, Vec<&str>)> = self.branches.iter().enumerate().filter(|(_, b)| b.0 == sec).map(|(i, b)| (i, b.1.split('/').collect())).collect();
+            out.push(BranchRow::Folder { key: sec.to_string(), name: sec.to_string(), depth: 0 });
+            if !self.branch_folded.contains(sec) {
+                self.push_branch_level(sec, &items, 0, 1, &mut out);
+            }
         }
         out
+    }
+
+    /// `items`（ブランチの番号と、名前を / で分けたもの）の `at` 段目から下を、字下げ `depth` で並べる
+    fn push_branch_level(&self, key: &str, items: &[(usize, Vec<&str>)], at: usize, depth: usize, out: &mut Vec<BranchRow>) {
+        let mut folders: Vec<&str> = Vec::new();
+        for (_, parts) in items {
+            if parts.len() > at + 1 && !folders.contains(&parts[at]) {
+                folders.push(parts[at]);
+            }
+        }
+        for f in folders {
+            let k = format!("{key}/{f}");
+            out.push(BranchRow::Folder { key: k.clone(), name: f.to_string(), depth });
+            if !self.branch_folded.contains(&k) {
+                let sub: Vec<(usize, Vec<&str>)> = items.iter().filter(|(_, p)| p.len() > at + 1 && p[at] == f).cloned().collect();
+                self.push_branch_level(&k, &sub, at + 1, depth + 1, out);
+            }
+        }
+        for (i, parts) in items {
+            if parts.len() == at + 1 {
+                out.push(BranchRow::Branch { i: *i, depth });
+            }
+        }
+    }
+
+    /// 区分・フォルダを畳む・開く
+    pub fn toggle_branch_folder(&mut self, key: &str) {
+        if !self.branch_folded.remove(key) {
+            self.branch_folded.insert(key.to_string());
+        }
+        let n = self.branch_rows().len();
+        self.branch_top = self.branch_top.min(n.saturating_sub(1));
     }
 
     /// 名前（ブランチ・タグ）の指すコミットの行（見せている行の番号）
@@ -370,6 +530,10 @@ impl Editor {
             docked,
             branch_sel: None,
             branch_top: 0,
+            branch_folded: Default::default(),
+            detail_top: 0,
+            detail_left: 0,
+            auto_cols: (10, 10, 7),
             src_path: path.clone(),
             src_range: range.clone(),
             rows: Vec::new(),
@@ -402,6 +566,7 @@ impl Editor {
             l.loading = false;
             match r {
                 Ok(rows) => {
+                    l.auto_cols = auto_cols(&rows);
                     l.rows = rows;
                     l.refilter();
                 }
@@ -424,6 +589,8 @@ impl Editor {
                 if l.current().is_some_and(|c| c.hash == d.hash) {
                     l.detail = Some(d);
                     l.file_sel = 0;
+                    l.detail_top = 0;
+                    l.detail_left = 0;
                 }
             }
             changed = true;
@@ -497,8 +664,14 @@ impl Editor {
         if l.focus_files {
             let n = l.detail.as_ref().map_or(0, |d| d.files.len());
             match key {
-                Key::Char('j') | Key::Down => l.file_sel = (l.file_sel + 1).min(n.saturating_sub(1)),
-                Key::Char('k') | Key::Up => l.file_sel = l.file_sel.saturating_sub(1),
+                Key::Char('j') | Key::Down => {
+                    l.file_sel = (l.file_sel + 1).min(n.saturating_sub(1));
+                    self.log_fit_detail();
+                }
+                Key::Char('k') | Key::Up => {
+                    l.file_sel = l.file_sel.saturating_sub(1);
+                    self.log_fit_detail();
+                }
                 Key::Tab | Key::Esc | Key::Char('h') => l.focus_files = false,
                 Key::Enter => self.log_open_file_diff(),
                 Key::Char('q') => self.close_log(),
@@ -546,6 +719,18 @@ impl Editor {
         }
     }
 
+    /// 選んでいるファイルの行が、右の中身の列の見える範囲に入るように送る
+    fn log_fit_detail(&mut self) {
+        let rows = self.log_rows();
+        let Some(w) = self.log_rect().map(|r| r.w) else { return };
+        let dw = self.log_cols_for(w).1;
+        let Some(l) = &mut self.log else { return };
+        let Some(d) = &l.detail else { return };
+        if let Some(k) = detail_lines(d, dw.saturating_sub(1)).iter().position(|x| *x == DetailLine::File(l.file_sel)) {
+            crate::list::fit(k, &mut l.detail_top, rows);
+        }
+    }
+
     /// 下の欄の Git を押した（欄の中身の行・列・幅。0 行目は絞り込みの見出し）。
     /// 真ん中はコミットを選ぶ（ダブルクリックで変えたファイルへ）、右は変えたファイルを選ぶ（ダブルクリックで差分）
     pub(crate) fn log_click(&mut self, row: usize, col: usize, w: usize, clicks: u32) {
@@ -583,11 +768,13 @@ impl Editor {
                 l.focus_files = true;
             }
         } else if col >= dx {
-            // 右: 見出し 2 行・本文（8 行まで）・「変えたファイル」の後にファイル
+            // 右: 中身の行（detail_lines。描き方と同じ割り付け）のうち、ファイルの行
             let Some(d) = &l.detail else { return };
-            let first = 5 + d.message.lines().count().min(8);
-            let n = d.files.len();
-            let pick = crate::list::pick(&mut l.file_sel, row.checked_sub(first).filter(|&k| k < n), clicks, 2);
+            let hit = match detail_lines(d, dw.saturating_sub(1)).get(l.detail_top + row - 1) {
+                Some(DetailLine::File(k)) => Some(*k),
+                _ => None,
+            };
+            let pick = crate::list::pick(&mut l.file_sel, hit, clicks, 2);
             if pick.is_some() {
                 l.focus_files = true;
             }
@@ -598,6 +785,11 @@ impl Editor {
             // 左: ブランチ。押すとそのブランチの指すコミットへ、ダブルクリックでそのブランチの履歴だけを出す
             // （IntelliJ と同じ。チェックアウトは右クリックのメニューから）
             l.focus_files = false;
+            // 区分・フォルダは 1 回のクリックで畳む・開く（プロジェクトの木と同じ）
+            if let Some(BranchRow::Folder { key, .. }) = l.branch_rows().get(l.branch_top + row - 1).cloned() {
+                l.toggle_branch_folder(&key);
+                return;
+            }
             let mut i = l.branch_sel.unwrap_or(0);
             let Some(pick) = crate::list::pick(&mut i, l.branch_at(row - 1), clicks, 2) else { return };
             l.branch_sel = Some(i);
@@ -663,44 +855,35 @@ impl Editor {
         self.ask(q, move |e| e.log_do(c));
     }
 
-    /// 確かめた操作を行い、git の状態と履歴を読み直す
+    /// 確かめた操作を行い、git の状態と履歴を読み直す。作業中の変更が上書きされるなら、退避・破棄・中止を確かめてもう一度
     fn log_do(&mut self, c: Confirm) {
         use nagi_workers::git;
         let Some(root) = self.git.root.clone() else { return };
-        let r: nagi_core::Result<String> = match &c {
-            Confirm::Checkout(h) => git::git(&root, &["checkout", "-q", h]).map(|_| "チェックアウトしました".into()),
-            Confirm::CherryPick(h) => git::cherry_pick(&root, h).map(|_| "チェリーピックしました".into()),
-            Confirm::Revert(h) => git::revert(&root, h).map(|_| "取り消すコミットを足しました".into()),
-            Confirm::CherryPickMany(hs) => git::cherry_pick_many(&root, hs).map(|_| format!("{} 件をチェリーピックしました", hs.len())),
-            Confirm::RevertMany(hs) => git::revert_many(&root, hs).map(|_| format!("{} 件を取り消すコミットを足しました", hs.len())),
-            Confirm::Undo(_) => git::git(&root, &["reset", "--soft", "HEAD~1"]).map(|_| "コミットを取り消しました（変更は残っています）".into()),
-            Confirm::Squash(h, keep) => git::squash_into_parent(&root, h, *keep).map(|_| "1 つ前のコミットにまとめました".into()),
-            Confirm::Drop(h) => git::drop_commit(&root, h).map(|_| "コミットを消しました".into()),
-            Confirm::Reset(h, m) => git::git(&root, &["reset", m, h]).map(|_| format!("リセットしました（{m}）")),
-            Confirm::Rebase(h) => git::rebase_onto(&root, h).map(|_| "リベースしました".into()),
+        match &c {
             Confirm::PushTo(h, up) => {
                 // 送るのはネットワークを使うので裏で
                 let (remote, branch) = up.split_once('/').unwrap_or(("origin", up));
                 let refspec = format!("{h}:refs/heads/{branch}");
                 self.run_git_job("push ", &["push", remote, &refspec]);
-                return;
             }
-            Confirm::DeleteBranch(b, force) => match git::git(&root, &["branch", if *force { "-D" } else { "-d" }, b]) {
-                // マージされていなければ、もう一度確かめてから -D
-                Err(e) if !force && e.to_string().contains("not fully merged") => {
-                    self.log_ask(Confirm::DeleteBranch(b.clone(), true));
-                    return;
+            Confirm::DeleteBranch(b, force) => {
+                let r = match git::git(&root, &["branch", if *force { "-D" } else { "-d" }, b]) {
+                    // マージされていなければ、もう一度確かめてから -D
+                    Err(e) if !force && e.to_string().contains("not fully merged") => {
+                        self.log_ask(Confirm::DeleteBranch(b.clone(), true));
+                        return;
+                    }
+                    r => r,
+                };
+                match r {
+                    Ok(_) => self.notify.info(format!("ブランチ {b} を消しました")),
+                    Err(e) => self.notify.error(format!("git: {}", git::reason(&e))),
                 }
-                r => r.map(|_| format!("ブランチ {b} を消しました")),
-            },
-            Confirm::CheckoutRebase(b, onto) => git::git(&root, &["checkout", "-q", b]).and_then(|_| git::rebase_onto(&root, onto)).map(|_| format!("{b} を {onto} の上へリベースしました")),
-        };
-        match r {
-            Ok(m) => self.notify.info(m),
-            Err(e) => self.notify.error(format!("git: {}", nagi_workers::git::reason(&e))),
+                self.refresh_git();
+                self.reload_log();
+            }
+            _ => self.git_guarded(move |root| log_op(root, &c), |e, _| e.reload_log()),
         }
-        self.refresh_git();
-        self.reload_log();
     }
 
     /// ブランチの列の i 番目をチェックアウトする（右クリックのメニュー）
@@ -717,16 +900,29 @@ impl Editor {
         let remote = sec == "リモート";
         let local = name.split_once('/').map_or(name.as_str(), |(_, n)| n).to_string();
         let exists = self.log.as_ref().is_some_and(|l| l.branches.iter().any(|(s, n, _)| s == "ローカル" && *n == local));
-        self.checkout_ref(&name, remote, exists);
-        self.reload_log();
+        self.checkout_ref(&name, remote, exists, |e, _| e.reload_log());
     }
 
     /// ホイール: 表示だけを送る（選んでいるコミットは動かさない。キーで動かすと見える範囲へ戻る）。
-    /// 横は真ん中の列（グラフ・ref・題名）を送る。`w` は履歴の幅、`col` は履歴の中のマウスの列（左のブランチの列ならそこを送る）
+    /// 横は真ん中の列（グラフ・ref・題名）を送る。`w` は履歴の幅、`col` は履歴の中のマウスの列（左のブランチの列・右の中身の列ならそこを送る）
     pub(crate) fn log_wheel(&mut self, dy: isize, dx: isize, w: usize, col: usize) {
         let rows = self.log_rows();
         let cols = self.log_cols_for(w);
+        let right = self.log_right_cols();
         let Some(l) = &mut self.log else { return };
+        if col + cols.1 + 1 > w {
+            // 右の中身: 縦は中身全体、横は変えたファイルの長いパス
+            let Some(d) = &l.detail else { return };
+            let tw = cols.1.saturating_sub(1);
+            let lines = detail_lines(d, tw);
+            l.detail_top = (l.detail_top as isize + dy).clamp(0, lines.len().saturating_sub(rows) as isize) as usize;
+            if dx != 0 {
+                let cw = |t: &str| nagi_core::display_col(t, t.len(), false);
+                let widest = d.files.iter().map(|(st, p)| file_line(*st, p)).map(|(a, b)| cw(&a) + cw(&b)).max().unwrap_or(0);
+                crate::list::hwheel(&mut l.detail_left, widest + 1, tw, dx);
+            }
+            return;
+        }
         if col < cols.0 {
             let n = l.branch_rows().len();
             l.branch_top = (l.branch_top as isize + dy).clamp(0, n.saturating_sub(rows) as isize) as usize;
@@ -735,13 +931,25 @@ impl Editor {
         l.top = (l.top as isize + dy).clamp(0, l.visible.len().saturating_sub(rows) as isize) as usize;
         if dx != 0 {
             let widest = l.visible.iter().skip(l.top).take(rows).map(|&i| l.rows[i].text_width()).max().unwrap_or(0);
-            crate::list::hwheel(&mut l.left, widest + 1, log_text_w(w, cols), dx);
+            crate::list::hwheel(&mut l.left, widest + 1, log_text_w(w, cols, right), dx);
         }
     }
 
     /// 履歴（幅 `w`）の左のブランチの列と右の中身の列の幅
     pub(crate) fn log_cols_for(&self, w: usize) -> (usize, usize) {
         log_cols(w, self.log_branch_w, self.log_detail_w)
+    }
+
+    /// コミットの作者・日時・ハッシュの列の幅（作者・日時はドラッグで変えていればその幅、でなければ中身に合わせる）
+    pub(crate) fn log_right_cols(&self) -> (usize, usize, usize) {
+        let auto = self.log.as_ref().map_or((10, 10, 7), |l| l.auto_cols);
+        (self.log_author_w.unwrap_or(auto.0).clamp(4, 40), self.log_date_w.unwrap_or(auto.1).clamp(4, 40), auto.2)
+    }
+
+    /// コミットの列（`end` はその右端の次の列）の、題名と作者の境目・作者と日時の境目の列（描き方と同じ割り付け）
+    pub(crate) fn log_commit_seps(&self, end: usize) -> (usize, usize) {
+        let (aw, dw, hw) = self.log_right_cols();
+        (end.saturating_sub(aw + dw + hw + 4), end.saturating_sub(dw + hw + 3))
     }
 
     /// 履歴を出している矩形（窓の領域いっぱいか、下の欄の中身）。区切りをつかむのに使う
@@ -822,11 +1030,7 @@ impl Editor {
                 let n = name.clone();
                 m = m.item(format!("{cur} を {name} の上へリベース"), move |e| e.log_ask(Confirm::Rebase(n)));
                 let n = name.clone();
-                m = m.item(format!("{name} を {cur} へマージ"), move |e| {
-                    if e.git_now(&["merge", "--no-edit", &n], format!("{n} をマージしました")) {
-                        e.reload_log();
-                    }
-                });
+                m = m.item(format!("{name} を {cur} へマージ"), move |e| e.git_guarded_args(&["merge", "--no-edit", &n], format!("{n} をマージしました"), |e, _| e.reload_log()));
             }
             if local {
                 m = m.sep();
@@ -1172,24 +1376,23 @@ impl crate::layout::View for LogScreenView {
     fn draw(&self, ed: &crate::editor::Editor, p: &mut crate::view::Painter, r: crate::panes::Rect, s: crate::layout::Screen) {
         let _ = (r, s);
         if let Some(l) = &ed.log {
-            draw::draw_log_view(p, l, r, ed.log_cols_for(r.w), &ed.preedit, ed.git.status.as_ref().map(|s| (s.branch.as_str(), s.ahead as usize, s.behind as usize)));
+            draw::draw_log_view(p, l, r, ed.log_cols_for(r.w), ed.log_right_cols(), &ed.preedit, ed.git.status.as_ref().map(|s| (s.branch.as_str(), s.ahead as usize, s.behind as usize)));
         }
     }
 
-    fn click(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, clicks: u32) -> crate::layout::Click {
-        let _ = (col, clicks);
+    fn click(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At, clicks: u32) -> crate::layout::Click {
         // 窓を覆って出ている履歴: 下の欄と同じ割り付けで選ぶ
-        ed.log_click(row - r.y, col - r.x, r.w, clicks);
+        ed.log_click(at.row, at.col, r.w, clicks);
         crate::layout::Click::Done
     }
 
-    fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize) -> bool {
-        ed.log_context(row - r.y, col - r.x, r.w, (row, col))
+    fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At) -> bool {
+        let (row, col) = at.screen;
+        ed.log_context(at.row, at.col, r.w, (row, col))
     }
 
-    fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, dy: isize, dx: isize) -> bool {
-        let _ = row;
-        ed.log_wheel(dy, dx, r.w, col - r.x);
+    fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At, dy: isize, dx: isize) -> bool {
+        ed.log_wheel(dy, dx, r.w, at.col);
         true
     }
 }
@@ -1201,8 +1404,8 @@ pub(crate) mod draw {
     use crate::view::*;
 
     /// 履歴（窓の領域全体）。左にブランチ、中央にグラフ付きのコミット、右に選んだコミットの中身
-    /// `ab` は今のブランチの (名前, 送るコミット数, 受け取るコミット数)
-    pub(crate) fn draw_log_view(p: &mut Painter, l: &crate::log_view::LogView, r: Rect, (bw, dw): (usize, usize), preedit: &str, ab: Option<(&str, usize, usize)>) {
+    /// `(aw, tw, hw)` はコミットの作者・日時・ハッシュの列の幅、`ab` は今のブランチの (名前, 送るコミット数, 受け取るコミット数)
+    pub(crate) fn draw_log_view(p: &mut Painter, l: &crate::log_view::LogView, r: Rect, (bw, dw): (usize, usize), (aw, tw, hw): (usize, usize, usize), preedit: &str, ab: Option<(&str, usize, usize)>) {
         const LANES: [[f32; 4]; 5] = [rgb(0x87afd7), rgb(0xd7af87), rgb(0x87af87), rgb(0xd787af), rgb(0xafafd7)];
         // 複数選んだコミットの行
         const MARKED_BG: [f32; 4] = rgb(0x264f78);
@@ -1244,22 +1447,30 @@ pub(crate) mod draw {
         // 左: ブランチ
         let saved = p.cols;
         p.cols = r.x + bw;
-        // 見出し（ローカル・リモート・タグ）とブランチを、先頭の行（branch_top）から
-        let rows = l.branch_rows();
-        for (k, item) in rows.iter().skip(l.branch_top).take(body).enumerate() {
+        // 区分（ローカル・リモート・タグ）・フォルダとブランチを、先頭の行（branch_top）から。字下げ 1 段と ▸ ▾ の幅はアイコンの幅
+        let ind = crate::metrics::icon_cols(crate::metrics::Icon::Small).max(2);
+        let px = crate::metrics::icon(crate::metrics::Icon::Small);
+        for (k, item) in l.branch_rows().iter().skip(l.branch_top).take(body).enumerate() {
             let y = y0 + (1 + k) as f32 * cell.h;
             match item {
-                None => {
-                    // 見出し: 次のブランチの節
-                    let sec = rows[l.branch_top + k + 1..].iter().flatten().next().map_or("", |&i| l.branches[i].0.as_str());
-                    p.text(&format!(" {sec}"), r.x, y, STATUS_FG);
+                BranchRow::Folder { key, name, depth } => {
+                    let icon = if l.branch_folded.contains(key) { "g_chevronRight" } else { "g_chevronDown" };
+                    let x = r.x + depth * ind;
+                    crate::icons::draw(p, icon, x as f32 * cell.w, crate::metrics::centered(y, px), px, None);
+                    p.text(name, x + ind, y, if *depth == 0 { STATUS_FG } else { FG });
                 }
-                Some(i) => {
-                    let (_, name, cur) = &l.branches[*i];
+                BranchRow::Branch { i, depth } => {
+                    let (_, full, cur) = &l.branches[*i];
+                    let name = full.rsplit('/').next().unwrap_or(full);
                     if l.branch_sel == Some(*i) {
                         p.out.push(Instance::fill(x0, y, bw as f32 * cell.w, cell.h, MATCH_BG));
                     }
-                    p.text(&format!(" {} {name}", if *cur { '*' } else { ' ' }), r.x, y, if *cur { FG } else { STATUS_FG });
+                    // 今のブランチは * を字下げの所に
+                    let x = r.x + depth * ind;
+                    if *cur {
+                        p.text("*", x + ind.saturating_sub(2), y, FG);
+                    }
+                    p.text(name, x + ind, y, if *cur { FG } else { STATUS_FG });
                 }
             }
         }
@@ -1304,8 +1515,9 @@ pub(crate) mod draw {
                     let tw = p.width(&t);
                     format!("{t}{}", " ".repeat(w.saturating_sub(tw)))
                 };
-                let right = format!("{} {} {}", pad(p, &cm.author, 10), pad(p, &cm.date, 9), cm.short);
-                let rw = p.width(&right);
+                // 作者・日時・ハッシュの列（幅は log_right_cols。境目は log_commit_seps でつかむ）
+                let right = format!("{} {} {}", pad(p, &cm.author, aw), pad(p, &cm.date, tw), pad(p, &cm.short, hw));
+                let rw = aw + tw + hw + 2;
                 items.extend(p.items(" ", fg).into_iter().map(|i| Item { g: Cow::Owned(i.g.into_owned()), ..i }));
                 if !cm.refs.is_empty() {
                     items.extend(p.items(&format!("{}  ", cm.refs), refc).into_iter().map(|i| Item { g: Cow::Owned(i.g.into_owned()), ..i }));
@@ -1326,48 +1538,47 @@ pub(crate) mod draw {
         let saved = p.cols;
         p.cols = r.x + r.w;
         if let Some(d) = &l.detail {
-            let mut y = y0 + cell.h;
-            let line = |p: &mut Painter, y: &mut f32, s: &str, color: [f32; 4]| {
-                p.text(s, dx + 1, *y, color);
-                *y += cell.h;
-            };
-            let short = |h: &str| h[..7.min(h.len())].to_string();
-            if let Some(b) = &d.base {
-                // 2 つのコミットの比べ（行の数は 1 つのコミットのときと同じ。押した行の数え方を変えない）
-                line(p, &mut y, &format!("比較  {} → {}", short(b), short(&d.hash)), STATUS_FG);
-                line(p, &mut y, "左が古い方、右が新しい方", STATUS_FG);
-            } else {
-                line(p, &mut y, &format!("{}   {}   {}", short(&d.hash), d.author, d.date), STATUS_FG);
-                line(p, &mut y, &format!("親 {}", d.parents.split(' ').map(short).collect::<Vec<_>>().join(" ")), STATUS_FG);
-            }
-            y += cell.h * 0.5;
-            for (k, m) in d.message.lines().enumerate().take(8) {
-                line(p, &mut y, m, if k == 0 { rgb(0xe8e8e8) } else { STATUS_FG });
-            }
-            y += cell.h * 0.5;
-            line(p, &mut y, &format!("変えたファイル（{}）", d.files.len()), STATUS_FG);
-            let limit = y0 + r.h as f32 * cell.h;
-            for (k, (st, path)) in d.files.iter().enumerate() {
-                if y + cell.h > limit {
-                    break;
-                }
-                let sel = l.focus_files && k == l.file_sel;
-                if sel {
-                    selection(p, dx as f32 * cell.w, y, (r.x + r.w - dx) as f32 * cell.w, cell.h, LIST_SEL_BG);
-                }
-                let sc = if sel {
-                    BG
-                } else {
-                    match st {
-                        'A' => GIT_ADD,
-                        'D' => GIT_DEL,
-                        'M' => GIT_MOD,
-                        _ => rgb(0xd7af5f),
+            // 中身の行（detail_lines）を detail_top から。メッセージは折り返し、ファイルは detail_left だけ横に送る
+            let tw = dw.saturating_sub(1);
+            for (k, line) in crate::log_view::detail_lines(d, tw).iter().skip(l.detail_top).take(body).enumerate() {
+                let y = y0 + (1 + k) as f32 * cell.h;
+                match line {
+                    DetailLine::Info(t) => {
+                        p.text(t, dx + 1, y, STATUS_FG);
                     }
-                };
-                let c = p.text(&format!("{st}"), dx + 1, y, sc);
-                p.text(&format!("  {path}"), c, y, if sel { FG_BRIGHT } else { FG });
-                y += cell.h;
+                    DetailLine::Message(t, first) => {
+                        p.text(t, dx + 1, y, if *first { rgb(0xe8e8e8) } else { STATUS_FG });
+                    }
+                    DetailLine::Gap => {}
+                    DetailLine::FilesHead(n) => {
+                        p.text(&format!("変えたファイル（{n}）"), dx + 1, y, STATUS_FG);
+                    }
+                    DetailLine::File(f) => {
+                        let (st, path) = &d.files[*f];
+                        let sel = l.focus_files && *f == l.file_sel;
+                        if sel {
+                            selection(p, dx as f32 * cell.w, y, (r.x + r.w - dx) as f32 * cell.w, cell.h, LIST_SEL_BG);
+                        }
+                        let sc = if sel {
+                            FG_BRIGHT
+                        } else {
+                            match st {
+                                'A' => GIT_ADD,
+                                'D' => GIT_DEL,
+                                'M' => GIT_MOD,
+                                _ => rgb(0xd7af5f),
+                            }
+                        };
+                        let (name, dir) = crate::log_view::file_line(*st, path);
+                        let mut items = p.items(&name, if sel { FG_BRIGHT } else { FG });
+                        if let Some(first) = items.first_mut() {
+                            first.fg = sc;
+                        }
+                        items.extend(p.items(&dir, if sel { FG_BRIGHT } else { STATUS_FG }));
+                        skip_cols(&mut items, l.detail_left, &mut None);
+                        p.draw(&items, dx + 1, y);
+                    }
+                }
             }
         } else if !l.rows.is_empty() {
             p.text("…", dx + 1, y0 + cell.h, STATUS_FG);
@@ -1393,6 +1604,135 @@ mod tests {
         assert_eq!(d.files, vec![('M', "src/a.rs".to_string()), ('R', "new.rs".to_string())]);
     }
 
+    /// 試験用の履歴（下の欄に収めて出す）
+    fn view(log: &str, branches: &[(&str, &str, bool)], detail: Option<Detail>) -> LogView {
+        let rows = parse_log(log);
+        LogView {
+            left: 0,
+            branch_sel: None,
+            branch_top: 0,
+            branch_folded: Default::default(),
+            detail_top: 0,
+            detail_left: 0,
+            auto_cols: auto_cols(&rows),
+            src_path: None,
+            src_range: None,
+            docked: true,
+            visible: (0..rows.len()).collect(),
+            rows,
+            selected: 0,
+            marked: Vec::new(),
+            mark_anchor: None,
+            top: 0,
+            branches: branches.iter().map(|(a, b, c)| (a.to_string(), b.to_string(), *c)).collect(),
+            detail,
+            focus_files: false,
+            file_sel: 0,
+            filter_text: String::new(),
+            filter: None,
+            path: None,
+            loading: false,
+            rx_log: None,
+            rx_branches: None,
+            rx_detail: None,
+        }
+    }
+
+    /// ブランチの列: 名前の / でフォルダに分け（リモートは origin の下）、区分・フォルダを押すと畳む・開く
+    #[test]
+    fn branch_folders() {
+        let mut l = view("", &[("ローカル", "main", true), ("ローカル", "feature/a", false), ("ローカル", "feature/b/c", false), ("リモート", "origin/main", false), ("リモート", "origin/feature/a", false)], None);
+        let show = |l: &LogView| {
+            l.branch_rows()
+                .iter()
+                .map(|r| match r {
+                    BranchRow::Folder { name, depth, .. } => format!("{}{name}/", " ".repeat(*depth)),
+                    BranchRow::Branch { i, depth } => format!("{}{}", " ".repeat(*depth), l.branches[*i].1.rsplit('/').next().unwrap()),
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(show(&l), ["ローカル/", " feature/", "  b/", "   c", "  a", " main", "リモート/", " origin/", "  feature/", "   a", "  main"]);
+        l.toggle_branch_folder("ローカル/feature");
+        assert_eq!(show(&l)[..3], ["ローカル/", " feature/", " main"]);
+        assert_eq!(l.branch_at(2), Some(0), "畳んだ後もブランチの番号で引ける");
+        l.toggle_branch_folder("リモート");
+        assert_eq!(show(&l).len(), 4);
+        // 押して畳む（下の欄: 0 行目はタブ、1 行目は絞り込みの見出し、2 行目から木）
+        let mut e = Editor::new(nagi_core::Buffer::from_str("x"), None);
+        e.set_screen(120, 40);
+        e.log = Some(l);
+        e.select_bottom_tab(crate::result_grid::BottomKind::Git);
+        e.bottom_click(2, 2, 1);
+        assert_eq!(show(e.log.as_ref().unwrap()), ["ローカル/", "リモート/"]);
+        e.bottom_click(2, 2, 1);
+        assert_eq!(show(e.log.as_ref().unwrap()), ["ローカル/", " feature/", " main", "リモート/"], "開くと、中で畳んだフォルダは畳んだまま");
+        e.bottom_click(3, 2, 1);
+        assert_eq!(show(e.log.as_ref().unwrap())[..4], ["ローカル/", " feature/", "  b/", "   c"]);
+    }
+
+    /// コミットの作者・日時の列は中身に合わせた幅で、境目をつかんで変えられる
+    #[test]
+    fn commit_columns() {
+        let mut e = Editor::new(nagi_core::Buffer::from_str("x"), None);
+        e.set_screen(160, 40);
+        e.log = Some(view("*\x1fa1\x1f\x1f一\x1fとても長い名前の作者\x1f12 minutes ago\x1fa1b2c3d4\n", &[], None));
+        e.select_bottom_tab(crate::result_grid::BottomKind::Git);
+        assert_eq!(e.log_right_cols(), (16, 14, 7), "作者は 16 列まで、日時は中身に合わせる（ハッシュは 7 列から）");
+        let r = e.log_rect().unwrap();
+        let (_, dw) = e.log_cols_for(r.w);
+        let end = r.x + r.w - dw - 1;
+        let (a, d) = e.log_commit_seps(end);
+        let sep = e.sep_at(r.y + 2, a).expect("題名と作者の境目");
+        assert!(sep.horizontal_drag());
+        e.drag_sep(&sep, r.y + 2, a - 4);
+        assert_eq!(e.log_right_cols().0, 20, "左へ 4 列で作者が 4 列広がる");
+        let sep = e.sep_at(r.y + 2, d).expect("作者と日時の境目");
+        e.drag_sep(&sep, r.y + 2, d + 4);
+        assert_eq!(e.log_right_cols().1, 10, "右へ 4 列で日時が 4 列狭まる");
+        assert_eq!(e.log_commit_seps(end).1, d + 4);
+        e.reset_sep(&sep);
+        assert_eq!(e.log_right_cols().1, 14);
+    }
+
+    /// 右の中身: メッセージは幅で折り返して全部出し、中身全体をホイールで送れる。押した行のファイルを選ぶ
+    #[test]
+    fn detail_wraps_and_scrolls() {
+        let msg: String = (0..30).map(|k| format!("行 {k} の説明はとても長くて一行に入りきらないので折り返して出します")).collect::<Vec<_>>().join("\n");
+        let files: String = (0..40).map(|k| format!("M\tsrc/very/deep/folder/name/file{k}.rs\n")).collect();
+        let d = parse_detail(&format!("a1\x1fA\x1f1\x1fp\x1f件名\n\n{msg}\x1e\n\n{files}"));
+        let lines = detail_lines(&d, 20);
+        assert!(lines.iter().filter(|l| matches!(l, DetailLine::Message(..))).count() > 60, "30 行を全部、折り返して出す");
+        assert!(lines.iter().all(|l| match l {
+            DetailLine::Message(t, _) | DetailLine::Info(t) => nagi_core::display_col(t, t.len(), false) <= 20,
+            _ => true,
+        }));
+        assert_eq!(wrap("abc def ghi", 7), ["abc def", "ghi"]);
+        let mut e = Editor::new(nagi_core::Buffer::from_str("x"), None);
+        e.set_screen(120, 40);
+        e.log = Some(view("*\x1fa1\x1f\x1f一\x1fA\x1f1\x1fa1\n", &[], Some(d)));
+        e.select_bottom_tab(crate::result_grid::BottomKind::Git);
+        let r = e.log_rect().unwrap();
+        let (_, dw) = e.log_cols_for(r.w);
+        let n = detail_lines(e.log.as_ref().unwrap().detail.as_ref().unwrap(), dw - 1).len();
+        e.log_wheel(1000, 0, r.w, r.w - 2);
+        let rows = e.log_rows();
+        assert_eq!(e.log.as_ref().unwrap().detail_top, n - rows, "最後の行まで送れる");
+        // 送った後に押した行（最後の行）は、最後のファイル
+        e.bottom_click(1 + rows, r.w - 5, 1);
+        let l = e.log.as_ref().unwrap();
+        assert_eq!((l.focus_files, l.file_sel), (true, 39));
+        // 横にも送れる（長いパス）
+        e.log_wheel(0, 5, r.w, r.w - 2);
+        assert!(e.log.as_ref().unwrap().detail_left > 0);
+        // キーで選びを上へ動かすと、見える範囲へ戻る
+        e.log_wheel(-1000, 0, r.w, r.w - 2);
+        e.set_state(State::Log);
+        e.key(nagi_vim::Key::Char('k'));
+        let l = e.log.as_ref().unwrap();
+        let k = detail_lines(l.detail.as_ref().unwrap(), dw - 1).iter().position(|x| *x == DetailLine::File(38)).unwrap();
+        assert!(l.detail_top <= k && k < l.detail_top + rows, "{} {k}", l.detail_top);
+    }
+
     /// 本文へ移った後でも、Git の欄の行を押せば選び直せる
     #[test]
     fn click_selects_commit_and_file() {
@@ -1403,6 +1743,10 @@ mod tests {
             left: 0,
             branch_sel: None,
             branch_top: 0,
+            branch_folded: Default::default(),
+            detail_top: 0,
+            detail_left: 0,
+            auto_cols: (10, 10, 7),
             src_path: None,
             src_range: None,
             docked: true,
@@ -1433,9 +1777,9 @@ mod tests {
         // グラフだけの行は選ばない
         e.bottom_click(3, 60, 1);
         assert_eq!(e.log.as_ref().unwrap().selected, 2);
-        // 本文へ戻ってから、右の変えたファイル（見出し 2 行・件名 1 行・「変えたファイル」の次）を押す
+        // 本文へ戻ってから、右の変えたファイル（見出し 2 行・空き・件名 1 行・空き・「変えたファイル」の次の次）を押す
         e.set_state(State::Normal);
-        e.bottom_click(1 + 5 + 1 + 1, 110, 1);
+        e.bottom_click(1 + 1 + 7, 110, 1);
         let l = e.log.as_ref().unwrap();
         assert_eq!((e.state(), l.focus_files, l.file_sel), (State::Log, true, 1));
         // 真ん中を押せばコミットの選びへ戻る
@@ -1495,7 +1839,7 @@ mod tests {
         let l = e.log.as_ref().unwrap();
         assert_eq!(l.branch_top, 5);
         assert_ne!(l.branch_at(0), first);
-        assert_eq!(l.branch_at(0), l.branch_rows()[5]);
+        assert_eq!(l.branch_at(0), match &l.branch_rows()[5] { BranchRow::Branch { i, .. } => Some(*i), _ => None });
         e.log_wheel(-100, 0, r.w, 1);
         assert_eq!(e.log.as_ref().unwrap().branch_top, 0);
         // 列の間の線をつかんで動かす（ダブルクリックで元に戻す）

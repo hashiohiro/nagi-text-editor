@@ -99,7 +99,8 @@ impl crate::layout::View for SearchBarView {
         draw::draw_search_bar(p, ed, r);
     }
 
-    fn click(&self, ed: &mut Editor, r: Rect, row: usize, col: usize, clicks: u32) -> crate::layout::Click {
+    fn click(&self, ed: &mut Editor, r: Rect, at: crate::layout::At, clicks: u32) -> crate::layout::Click {
+        let (row, col) = at.screen;
         let _ = (r, clicks);
         ed.search_bar_click(row, col);
         crate::layout::Click::Done

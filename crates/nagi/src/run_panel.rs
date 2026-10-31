@@ -200,13 +200,14 @@ impl crate::layout::View for RunPanelView {
         }
     }
 
-    fn click(&self, ed: &mut Editor, r: crate::panes::Rect, row: usize, col: usize, clicks: u32) -> crate::layout::Click {
-        ed.run_panel_click(row - r.y, col - r.x, clicks);
+    fn click(&self, ed: &mut Editor, r: crate::panes::Rect, at: crate::layout::At, clicks: u32) -> crate::layout::Click {
+        let _ = r;
+        ed.run_panel_click(at.row, at.col, clicks);
         crate::layout::Click::Done
     }
 
-    fn wheel(&self, ed: &mut Editor, r: crate::panes::Rect, row: usize, col: usize, dy: isize, dx: isize) -> bool {
-        let _ = (row, col, dx);
+    fn wheel(&self, ed: &mut Editor, r: crate::panes::Rect, at: crate::layout::At, dy: isize, dx: isize) -> bool {
+        let _ = (at, dx);
         if let Some(p) = &mut ed.run_panel {
             let len = p.len();
             crate::list::wheel(&mut p.selected, &mut p.scroll, len, r.h.saturating_sub(HEAD), dy);
@@ -214,13 +215,15 @@ impl crate::layout::View for RunPanelView {
         true
     }
 
-    fn context(&self, ed: &mut Editor, r: crate::panes::Rect, row: usize, col: usize) -> bool {
+    fn context(&self, ed: &mut Editor, r: crate::panes::Rect, at: crate::layout::At) -> bool {
+        let (row, col) = at.screen;
+        let _ = r;
         use nagi_vim::Key::*;
         // 押した行を選ぶ（ボタンの行・タブの行ならメニューを出さない）
-        if row - r.y < HEAD {
+        if at.row < HEAD {
             return false;
         }
-        ed.run_panel_click(row - r.y, col - r.x, 1);
+        ed.run_panel_click(at.row, at.col, 1);
         let Some(c) = ed.run_panel.as_ref().and_then(|p| p.current().cloned()) else {
             let m = crate::menu::Menu::new(row, col).keys("構成を追加…", &[Char('a')]).keys("読み直す", &[Char('r')]).sep().keys("欄を閉じる", &[Char('q')]);
             ed.open_menu(m);

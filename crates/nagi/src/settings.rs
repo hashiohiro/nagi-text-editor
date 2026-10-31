@@ -575,6 +575,8 @@ impl crate::editor::Editor {
             self.bottom_h = self.bottom_h.or(num("state.bottom_height"));
             self.log_branch_w = self.log_branch_w.or(num("state.log_branch_width"));
             self.log_detail_w = self.log_detail_w.or(num("state.log_detail_width"));
+            self.log_author_w = self.log_author_w.or(num("state.log_author_width"));
+            self.log_date_w = self.log_date_w.or(num("state.log_date_width"));
         }
         self.ec_cache.borrow_mut().clear();
         self.sync_clipboard();
@@ -662,6 +664,8 @@ impl crate::editor::Editor {
             ("state.bottom_height", self.bottom_h),
             ("state.log_branch_width", self.log_branch_w),
             ("state.log_detail_width", self.log_detail_w),
+            ("state.log_author_width", self.log_author_w),
+            ("state.log_date_width", self.log_date_w),
         ] {
             if let Some(v) = v {
                 self.settings.global.insert(k.to_string(), v.to_string());

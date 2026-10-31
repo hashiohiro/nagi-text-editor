@@ -538,14 +538,15 @@ impl crate::layout::View for LauncherView {
         }
     }
 
-    fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, dy: isize, dx: isize) -> bool {
-        let _ = (r, row, col, dx);
+    fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At, dy: isize, dx: isize) -> bool {
+        let _ = (at, r, dx);
         crate::layout::wheel_keys(ed, dy)
     }
 
-    fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize) -> bool {
+    fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At) -> bool {
+        let _ = r;
+        let (row, col) = at.screen;
         use nagi_vim::Key::*;
-        let _ = (r, row, col);
         // プロジェクトの行: 選んでから、開く・ピン留め・一覧から外す
         let Some(l) = &mut ed.launcher else { return false };
         let n = l.hits.len();

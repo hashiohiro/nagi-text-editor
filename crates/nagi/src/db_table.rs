@@ -624,7 +624,8 @@ impl crate::layout::View for DbTableView {
         }
     }
 
-    fn click(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, clicks: u32) -> crate::layout::Click {
+    fn click(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At, clicks: u32) -> crate::layout::Click {
+        let _ = r;
         // 窓を覆って出ているテーブル: 押したらテーブルへ向き、押したセルをそのまま直し始める（Insert。Enter と同じ）。下の本文へは通さない
         ed.set_state(crate::editor::State::DbTable);
         let Some(te) = &mut ed.db_table else { return crate::layout::Click::Done };
@@ -633,7 +634,7 @@ impl crate::layout::View for DbTableView {
             return crate::layout::Click::Done;
         }
         // 描き方（draw_db_table）と同じ割り付け: 見出し 2 行（名前・絞り込み）の下に表（表の見出し 2 行）
-        let at_filter = (row - r.y == 1).then(|| crate::result_grid::filter_field_at(col - r.x));
+        let at_filter = (at.row == 1).then(|| crate::result_grid::filter_field_at(at.col));
         // 絞り込みの欄を打っている間（Insert・Visual でも）: 押した所へすぐ移る。打った条件は残し、
         // もう一方の欄ならそのまま移る。表を押したら Enter と同じく決めて読み直す
         if let Some((field, f)) = te.filter_edit.take() {
@@ -646,7 +647,7 @@ impl crate::layout::View for DbTableView {
                 Field::Where => te.where_ = text,
                 Field::Order => te.order = text,
             }
-            if at_filter.is_none() && row - r.y > 1 {
+            if at_filter.is_none() && at.row > 1 {
                 te.offset = 0;
                 te.total = None;
                 ed.db_table_reload();
@@ -669,15 +670,15 @@ impl crate::layout::View for DbTableView {
         let len = te.len();
         // 値を打っている間: 別のセルを押したら、打った値を決めてからそのセルへ移って直し始める。同じセルなら何もしない
         if te.editing.is_some() {
-            let hit = crate::list::row_at(te.scroll, row - r.y, 4, len).zip(crate::result_grid::grid_col_at(te.hscroll, &te.widths, col - r.x));
+            let hit = crate::list::row_at(te.scroll, at.row, 4, len).zip(crate::result_grid::grid_col_at(te.hscroll, &te.widths, at.col));
             if !hit.is_some_and(|h| h != (te.row, te.col)) {
                 return crate::layout::Click::Done;
             }
             ed.db_table_commit_edit();
         }
         let Some(te) = &mut ed.db_table else { return crate::layout::Click::Done };
-        let pick = crate::list::pick_row(&mut te.row, te.scroll, row - r.y, 4, len, clicks);
-        let cell = crate::result_grid::grid_col_at(te.hscroll, &te.widths, col - r.x);
+        let pick = crate::list::pick_row(&mut te.row, te.scroll, at.row, 4, len, clicks);
+        let cell = crate::result_grid::grid_col_at(te.hscroll, &te.widths, at.col);
         if pick.is_some() {
             if let Some(c) = cell {
                 te.col = c;
@@ -690,8 +691,8 @@ impl crate::layout::View for DbTableView {
         crate::layout::Click::Done
     }
 
-    fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, dy: isize, dx: isize) -> bool {
-        let _ = (row, col);
+    fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At, dy: isize, dx: isize) -> bool {
+        let _ = at;
         if let Some(te) = &mut ed.db_table {
             // 上の 4 行は見出し（view.rs の build と同じ高さ）
             let len = te.len();
@@ -701,9 +702,10 @@ impl crate::layout::View for DbTableView {
         true
     }
 
-    fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize) -> bool {
+    fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At) -> bool {
+        let (row, col) = at.screen;
         use nagi_vim::Key::*;
-        let _ = (r, row, col);
+        let _ = r;
         ed.set_state(crate::editor::State::DbTable);
         let m = crate::menu::Menu::new(row, col)
             .keys("値を直す（F2）", &[F(2)])

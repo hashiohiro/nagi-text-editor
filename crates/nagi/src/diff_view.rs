@@ -314,19 +314,19 @@ impl crate::layout::View for DiffScreenView {
         }
     }
 
-    fn click(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, clicks: u32) -> crate::layout::Click {
-        let _ = (col, clicks);
+    fn click(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At, clicks: u32) -> crate::layout::Click {
+        let _ = clicks;
         // 窓を覆って出ている差分: 押したら差分へ向き、押した行・列へカーソルを置く（下の本文へは通さない）
         ed.set_state(crate::editor::State::Diff);
         let tw = ed.diff_text_w();
         if let Some(d) = &mut ed.diff {
             let half = r.w.saturating_sub(1) / 2;
-            let k = (row - r.y).checked_sub(1).map(|k| d.top + k).filter(|&k| k < d.rows.len());
+            let k = at.row.checked_sub(1).map(|k| d.top + k).filter(|&k| k < d.rows.len());
             if let Some(k) = k {
                 d.cursor = k;
-                d.on_left = col < r.x + half;
-                let x0 = if d.on_left { r.x } else { r.x + half + 1 } + NUM_W;
-                d.col = col.saturating_sub(x0) + d.left;
+                d.on_left = at.col < half;
+                let x0 = if d.on_left { 0 } else { half + 1 } + NUM_W;
+                d.col = at.col.saturating_sub(x0) + d.left;
                 d.col = d.shown_col();
                 d.follow(tw);
             }
@@ -334,8 +334,8 @@ impl crate::layout::View for DiffScreenView {
         crate::layout::Click::Done
     }
 
-    fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, dy: isize, dx: isize) -> bool {
-        let _ = (row, col);
+    fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At, dy: isize, dx: isize) -> bool {
+        let _ = at;
         let tw = ed.diff_text_w();
         let Some(d) = &mut ed.diff else { return false };
         // 表示だけを送る（カーソルは動かさない。キーで動かすと見える範囲へ戻る）
@@ -349,9 +349,10 @@ impl crate::layout::View for DiffScreenView {
         true
     }
 
-    fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize) -> bool {
+    fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At) -> bool {
+        let (row, col) = at.screen;
         use nagi_vim::Key::*;
-        let _ = (r, row, col);
+        let _ = r;
         ed.set_state(crate::editor::State::Diff);
         let m = crate::menu::Menu::new(row, col)
             .keys("次の変更", &[Char(']'), Char('c')])

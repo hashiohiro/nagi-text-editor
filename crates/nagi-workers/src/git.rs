@@ -80,16 +80,88 @@ pub fn reason(e: &nagi_core::Error) -> String {
     first.map(String::from).unwrap_or_else(|| e.last_line())
 }
 
-/// いくつかのコミットを、渡した順にチェリーピックする（古い順に渡す）。衝突したら、それまでに取り込んだものも含めてやめて元に戻す
+/// 作業中の変更・未追跡のファイルが上書きされるので git が止めたときの、そのファイル（根からの相対パス）
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Blocked {
+    /// 管理しているファイルの作業中の変更
+    pub changed: Vec<String>,
+    /// 未追跡のファイル
+    pub untracked: Vec<String>,
+}
+
+impl Blocked {
+    pub fn files(&self) -> impl Iterator<Item = &String> {
+        self.changed.iter().chain(&self.untracked)
+    }
+}
+
+/// git の失敗が、上書きされるので止めたものなら、そのファイル（チェックアウト・マージ・チェリーピック・pull で同じ形）
+pub fn blocked(e: &nagi_core::Error) -> Option<Blocked> {
+    let s = e.to_string();
+    let lines: Vec<&str> = s.lines().collect();
+    let mut b = Blocked::default();
+    for (i, l) in lines.iter().enumerate() {
+        let to = if l.contains("Your local changes to the following files would be overwritten") {
+            &mut b.changed
+        } else if l.contains("untracked working tree files would be") {
+            &mut b.untracked
+        } else {
+            continue;
+        };
+        to.extend(lines[i + 1..].iter().take_while(|l| l.starts_with('\t')).map(|l| l.trim().to_string()));
+    }
+    (!b.changed.is_empty() || !b.untracked.is_empty()).then_some(b)
+}
+
+/// 止めたファイルの変更を捨てる（管理しているものはステージも含めて HEAD の版に、未追跡は消す）
+pub fn discard(root: &Path, b: &Blocked) -> nagi_core::Result<()> {
+    if !b.changed.is_empty() {
+        let mut args = vec!["restore", "--staged", "--worktree", "--source=HEAD", "--"];
+        args.extend(b.changed.iter().map(String::as_str));
+        git(root, &args)?;
+    }
+    for f in &b.untracked {
+        std::fs::remove_file(root.join(f)).map_err(|e| format!("{f} を消せません: {e}"))?;
+    }
+    Ok(())
+}
+
+/// 作業中の変更があるので git が始めなかったか（リベースする pull。ファイルは出さない）
+pub fn dirty_refused(e: &nagi_core::Error) -> bool {
+    let s = e.to_string();
+    s.contains("You have unstaged changes") || s.contains("Your index contains uncommitted changes")
+}
+
+/// 止めたファイルを退避して（未追跡のものも。ファイルが無ければ管理しているものの変更を全部）`op` を行い、戻す。
+/// 戻すと衝突したら（退避は残る）、そのことを 2 つ目に返す
+pub fn with_stash<T>(root: &Path, b: &Blocked, op: impl FnOnce() -> nagi_core::Result<T>) -> nagi_core::Result<(T, Option<String>)> {
+    let mut args = vec!["stash", "push", "-m", "nagi: 上書きされる前に退避"];
+    if b.files().next().is_some() {
+        args.extend(["--include-untracked", "--"]);
+        args.extend(b.files().map(String::as_str));
+    }
+    git(root, &args)?;
+    let r = op();
+    let pop = git(root, &["stash", "pop"]);
+    match (r, pop) {
+        (Ok(t), Ok(_)) => Ok((t, None)),
+        (Ok(t), Err(_)) => Ok((t, Some("退避した変更を戻すと衝突しました（直してから git stash drop。退避は stash@{0} に残っています）".into()))),
+        (Err(e), Ok(_)) => Err(e),
+        (Err(e), Err(_)) => Err(format!("{}（退避した変更は stash@{{0}} に残っています）", reason(&e)).into()),
+    }
+}
+
+/// いくつかのコミットを、渡した順にチェリーピックする（古い順に渡す）。衝突したら、それまでに取り込んだものも含めてやめて元に戻す。
+/// 上書きされるので止めたときは、元に戻してから git の失敗をそのまま返す（blocked で読めるように）
 pub fn cherry_pick_many(root: &Path, hs: &[String]) -> nagi_core::Result<()> {
     let args: Vec<&str> = std::iter::once("cherry-pick").chain(hs.iter().map(String::as_str)).collect();
     git(root, &args).map(|_| ()).map_err(|e| {
         let _ = git(root, &["cherry-pick", "--abort"]);
-        format!("{}（チェリーピックをやめて元に戻しました）", reason(&e)).into()
+        if blocked(&e).is_some() { e } else { format!("{}（チェリーピックをやめて元に戻しました）", reason(&e)).into() }
     })
 }
 
-/// いくつかのコミットを、渡した順に取り消す（新しい順に渡す）。衝突したら、それまでのものも含めてやめて元に戻す
+/// いくつかのコミットを、渡した順に取り消す（新しい順に渡す）。衝突したら、それまでのものも含めてやめて元に戻す（上書きで止めたときはチェリーピックと同じ）
 pub fn revert_many(root: &Path, hs: &[String]) -> nagi_core::Result<()> {
     let mut args = vec!["revert", "--no-edit"];
     // マージのコミットがあれば 1 つ目の親を本流とみなす（-m 1 はマージでないコミットにも付けてよい）
@@ -102,7 +174,7 @@ pub fn revert_many(root: &Path, hs: &[String]) -> nagi_core::Result<()> {
     args.extend(hs.iter().map(String::as_str));
     git(root, &args).map(|_| ()).map_err(|e| {
         let _ = git(root, &["revert", "--abort"]);
-        format!("{}（revert をやめて元に戻しました）", reason(&e)).into()
+        if blocked(&e).is_some() { e } else { format!("{}（revert をやめて元に戻しました）", reason(&e)).into() }
     })
 }
 

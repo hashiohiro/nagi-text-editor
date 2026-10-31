@@ -21,6 +21,21 @@ pub struct Screen {
     pub cols: usize,
 }
 
+/// 押した位置。`row`・`col` は部品の中（rect の左上が 0, 0）。`screen` は画面の位置で、メニューを出す所や、
+/// 画面の位置で割り付けを覚えている部品（画面全体を持つ小窓・候補の窓）が使う（ADR 0018 の §1）
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct At {
+    pub row: usize,
+    pub col: usize,
+    pub screen: (usize, usize),
+}
+
+impl At {
+    pub fn new(r: Rect, row: usize, col: usize) -> At {
+        At { row: row - r.y, col: col - r.x, screen: (row, col) }
+    }
+}
+
 /// 押したときの結果
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Click {
@@ -43,21 +58,21 @@ pub trait View: Sync {
         let _ = (ed, p, r, s);
     }
 
-    /// 押された（行・列は画面の位置、`clicks` は連続して押した回数）
-    fn click(&self, ed: &mut Editor, r: Rect, row: usize, col: usize, clicks: u32) -> Click {
-        let _ = (ed, r, row, col, clicks);
+    /// 押された（`at` は部品の中の位置、`clicks` は連続して押した回数）
+    fn click(&self, ed: &mut Editor, r: Rect, at: At, clicks: u32) -> Click {
+        let _ = (ed, r, at, clicks);
         Click::Pass
     }
 
-    /// 右クリック（メニューを開いたら true。`menu::Menu` を作って `open_menu` に渡す）
-    fn context(&self, ed: &mut Editor, r: Rect, row: usize, col: usize) -> bool {
-        let _ = (ed, r, row, col);
+    /// 右クリック（メニューを開いたら true。`menu::Menu` を `at.screen` に作って `open_menu` に渡す）
+    fn context(&self, ed: &mut Editor, r: Rect, at: At) -> bool {
+        let _ = (ed, r, at);
         false
     }
 
     /// ホイール（`dy` は下へ、`dx` は右へ動かす行・列の数。Shift か横のホイール・タッチパッドで横）。受け取ったら true
-    fn wheel(&self, ed: &mut Editor, r: Rect, row: usize, col: usize, dy: isize, dx: isize) -> bool {
-        let _ = (ed, r, row, col, dy, dx);
+    fn wheel(&self, ed: &mut Editor, r: Rect, at: At, dy: isize, dx: isize) -> bool {
+        let _ = (ed, r, at, dy, dx);
         false
     }
 
@@ -133,7 +148,7 @@ pub fn draw(l: Layer, ed: &Editor, p: &mut Painter, s: Screen) {
 pub fn press(ed: &mut Editor, s: Screen, row: usize, col: usize, clicks: impl Fn(usize) -> u32) -> Option<(usize, Click)> {
     for (i, v) in PANELS.iter().enumerate().rev() {
         let Some(r) = v.rect(ed, s).filter(|r| r.contains(row, col)) else { continue };
-        match v.click(ed, r, row, col, clicks(i)) {
+        match v.click(ed, r, At::new(r, row, col), clicks(i)) {
             Click::Pass => {}
             done => return Some((i, done)),
         }
@@ -147,12 +162,12 @@ pub fn context(ed: &mut Editor, s: Screen, row: usize, col: usize) -> bool {
         return false;
     }
     // ダイアログ（上の層）から、次に欄・小窓
-    OVERLAYS.iter().rev().chain(PANELS.iter().rev()).any(|v| v.rect(ed, s).filter(|r| r.contains(row, col)).is_some_and(|r| v.context(ed, r, row, col)))
+    OVERLAYS.iter().rev().chain(PANELS.iter().rev()).any(|v| v.rect(ed, s).filter(|r| r.contains(row, col)).is_some_and(|r| v.context(ed, r, At::new(r, row, col))))
 }
 
 /// ホイールを、マウスの下の部品へ上から渡す（画面を覆うダイアログ、欄・小窓の順）。どれかが受け取ったら true（受け取らなければ本文へ）
 pub fn wheel(ed: &mut Editor, s: Screen, row: usize, col: usize, dy: isize, dx: isize) -> bool {
-    OVERLAYS.iter().chain(PANELS.iter()).rev().any(|v| v.rect(ed, s).filter(|r| r.contains(row, col)).is_some_and(|r| v.wheel(ed, r, row, col, dy, dx)))
+    OVERLAYS.iter().chain(PANELS.iter()).rev().any(|v| v.rect(ed, s).filter(|r| r.contains(row, col)).is_some_and(|r| v.wheel(ed, r, At::new(r, row, col), dy, dx)))
 }
 
 /// 画面を覆う小窓・ダイアログのホイール: 向いている部品へ ↓ / ↑ を行の数だけ送る（選びが動き、見える範囲が付いてくる）

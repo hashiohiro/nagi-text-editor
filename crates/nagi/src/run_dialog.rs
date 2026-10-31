@@ -505,14 +505,15 @@ impl crate::layout::View for RunDialogView {
         }
     }
 
-    fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, dy: isize, dx: isize) -> bool {
-        let _ = (r, row, col, dx);
+    fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At, dy: isize, dx: isize) -> bool {
+        let _ = (at, r, dx);
         crate::layout::wheel_keys(ed, dy)
     }
 
-    fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize) -> bool {
-        use nagi_vim::Key::*;
+    fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At) -> bool {
         let _ = r;
+        let (row, col) = at.screen;
+        use nagi_vim::Key::*;
         // 押した構成を選んでから（1 回のクリックは選ぶだけ）
         ed.run_dialog_click(row, col, 1);
         let m = crate::menu::Menu::new(row, col).keys("実行", &[Char('r')]).keys("この構成を複製", &[Char('c')]).sep().keys("閉じる", &[Esc]);

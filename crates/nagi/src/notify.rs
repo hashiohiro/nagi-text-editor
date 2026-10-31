@@ -198,7 +198,8 @@ impl crate::layout::View for BalloonView {
     }
 
     /// 押した吹き出しを閉じる（吹き出しの間の行は下へ通す）
-    fn click(&self, ed: &mut Editor, r: crate::panes::Rect, row: usize, col: usize, clicks: u32) -> crate::layout::Click {
+    fn click(&self, ed: &mut Editor, r: crate::panes::Rect, at: crate::layout::At, clicks: u32) -> crate::layout::Click {
+        let (row, col) = at.screen;
         let _ = (r, clicks);
         match balloon_layout(ed, ed.screen.1).into_iter().find(|b| b.1.contains(row, col)) {
             Some((i, ..)) => {

@@ -247,7 +247,8 @@ impl crate::layout::View for CompletionView {
         (ed.completion.is_some() && ed.state() == crate::editor::State::Insert).then_some(crate::panes::Rect { x: 0, y: 0, w: s.cols, h: s.rows })
     }
 
-    fn click(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, clicks: u32) -> crate::layout::Click {
+    fn click(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At, clicks: u32) -> crate::layout::Click {
+        let (row, col) = at.screen;
         let _ = r;
         // 一覧の外は本文へ（補完は閉じる）
         let Some((top, x, w, first, n)) = ed.completion.as_ref().and_then(|c| c.drawn.get()) else { return crate::layout::Click::Pass };

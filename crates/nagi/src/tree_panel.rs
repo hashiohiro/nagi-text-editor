@@ -116,34 +116,46 @@ impl TreePanel {
         self.rebuild();
     }
 
-    /// 選びたいファイルまで、届いているフォルダを展開して進める
+    /// 選びたいファイルまで、届いているフォルダを展開して進める。開いているファイルのパスは大文字・小文字が木と違うことがある
+    /// （Windows。打った名前・別の道具から来たパス）ので、根と各段の名前は大文字・小文字を区別せずに合わせ、木の名前で進む
     fn advance_reveal(&mut self, waker: &nagi_workers::Waker) {
         let Some(target) = self.reveal.clone() else { return };
-        let Ok(rel) = target.strip_prefix(&self.root) else {
+        let Some(parts) = rel_parts(&target, &self.root) else {
             self.reveal = None;
             return;
         };
         let mut dir = self.root.clone();
-        let parts: Vec<_> = rel.components().collect();
         for (i, c) in parts.iter().enumerate() {
-            if !self.children.contains_key(&dir) {
+            let Some(list) = self.children.get(&dir) else {
                 self.load(&dir, waker);
                 return;
-            }
-            let next = dir.join(c);
+            };
+            let Some(name) = list.iter().find(|(n, _)| n == c).or_else(|| list.iter().find(|(n, _)| n.to_lowercase() == c.to_lowercase())).map(|(n, _)| n.clone()) else { break };
+            let next = dir.join(name);
             if i + 1 == parts.len() {
                 self.rebuild();
                 if let Some(k) = self.rows.iter().position(|r| r.path == next) {
                     self.selected = k;
                 }
-                self.reveal = None;
-                return;
+                break;
             }
             self.expanded.insert(next.clone());
             dir = next;
         }
         self.reveal = None;
     }
+}
+
+/// `p` の `root` からの名前の並び（大文字・小文字を区別せずに根を合わせる）。根の外なら None
+fn rel_parts(p: &Path, root: &Path) -> Option<Vec<String>> {
+    let low = |c: std::path::Component| c.as_os_str().to_string_lossy().to_lowercase();
+    let mut it = p.components();
+    for r in root.components() {
+        if low(it.next()?) != low(r) {
+            return None;
+        }
+    }
+    Some(it.map(|c| c.as_os_str().to_string_lossy().into_owned()).collect())
 }
 
 impl Editor {
@@ -160,10 +172,8 @@ impl Editor {
             return;
         }
         t.synced = current.clone();
-        if current.as_ref().is_some_and(|c| c.starts_with(&t.root)) {
-            t.reveal = current;
-            t.advance_reveal(&waker);
-        }
+        t.reveal = current;
+        t.advance_reveal(&waker);
     }
 
     /// SelectInProjectView（Alt+F1）: 今のファイルを木で選ぶ（木を出して移る）
@@ -469,14 +479,15 @@ impl crate::layout::View for TreeView {
         }
     }
 
-    fn click(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, clicks: u32) -> crate::layout::Click {
-        let _ = (r, row, col, clicks);
-        ed.tree_click(row, clicks);
+    fn click(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At, clicks: u32) -> crate::layout::Click {
+        let _ = r;
+        // at.row は木の中の行（0 は見出し）
+        ed.tree_click(at.row, clicks);
         crate::layout::Click::Done
     }
 
-    fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, dy: isize, dx: isize) -> bool {
-        let _ = (row, col);
+    fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At, dy: isize, dx: isize) -> bool {
+        let _ = at;
         if let Some(t) = &mut ed.tree {
             // 1 行目は見出し（view.rs の build と同じ高さ）
             let h = r.h.saturating_sub(1);
@@ -490,13 +501,14 @@ impl crate::layout::View for TreeView {
         true
     }
 
-    fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize) -> bool {
+    fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At) -> bool {
+        let (row, col) = at.screen;
         use nagi_vim::Key::*;
-        let _ = (r, row, col);
+        let _ = r;
         // 押した行を選ぶだけ（左クリックと違ってフォルダを開け閉めしない）
         let Some(t) = &mut ed.tree else { return false };
         let len = t.rows.len();
-        if crate::list::pick_row(&mut t.selected, t.scroll, row - r.y, 1, len, 1).is_none() {
+        if crate::list::pick_row(&mut t.selected, t.scroll, at.row, 1, len, 1).is_none() {
             return false;
         }
         let dir = t.rows[t.selected].dir;
@@ -523,8 +535,8 @@ impl crate::layout::View for LeftTabsView {
         ed.left_rect().map(|r| crate::panes::Rect { h: 1, ..r })
     }
 
-    fn click(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, clicks: u32) -> crate::layout::Click {
-        let _ = (r, row, col, clicks);
+    fn click(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At, clicks: u32) -> crate::layout::Click {
+        let _ = (at, r, clicks);
         // 見出しを押したら、その欄へ移る（タブを替えるのは左のアイコンの列）
         if let Some(tab) = ed.left_visible() {
             ed.select_left_tab(tab);
@@ -740,6 +752,56 @@ mod tests {
         assert_eq!(e.cursor.line, 1);
         e.key(nagi_vim::Key::Char('j'));
         assert_eq!(e.cursor.line, 2, "キーは本文へ");
+    }
+
+    /// 画面の位置で押した行を選ぶ（木の上に帯があってもずれない）。タブを替えても木が合う
+    #[test]
+    fn click_by_screen_row_and_follow_tabs() {
+        let dir = std::env::temp_dir().join(format!("nagi-tree-press-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        for f in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(dir.join(f), "x\n").unwrap();
+        }
+        let mut buf = Buffer::open(&dir.join("a.txt")).unwrap();
+        buf.path = Some(dir.join("a.txt"));
+        let mut e = Editor::new(buf, None);
+        e.set_screen(120, 40);
+        e.open_tree();
+        settle(&mut e);
+        let r = e.tree_rect().unwrap();
+        assert!(r.y > 0, "木の上に帯がある前提: {r:?}");
+        let s = crate::layout::Screen { rows: 40, cols: 120 };
+        let name = |e: &Editor| e.tree.as_ref().map(|t| t.rows[t.selected].name.clone()).unwrap();
+        // b.txt の行を押して選び、もう一度押して（ダブルクリック）開く
+        let at = e.tree.as_ref().unwrap().rows.iter().position(|x| x.name == "b.txt").unwrap();
+        crate::layout::press(&mut e, s, r.y + 1 + at, r.x + 3, |_| 1);
+        assert_eq!(name(&e), "b.txt", "押した行を選ぶ");
+        crate::layout::press(&mut e, s, r.y + 1 + at, r.x + 3, |_| 2);
+        assert!(e.buf.path.as_ref().unwrap().ends_with("b.txt"));
+        e.edit_file(dir.join("c.txt"));
+        e.sync_tree();
+        settle(&mut e);
+        assert_eq!(name(&e), "c.txt");
+        // タブで a.txt へ戻ると、木も a.txt へ
+        let a = e.buffer_list().into_iter().find(|t| t.1.as_ref().is_some_and(|p| p.ends_with("a.txt"))).unwrap().0;
+        e.tab_select(a);
+        e.sync_tree();
+        settle(&mut e);
+        assert_eq!(name(&e), "a.txt");
+        // 大文字・小文字の違うパスで開いても、木の行に合わせる
+        e.edit_file(std::path::PathBuf::from(dir.to_string_lossy().to_uppercase()).join("B.TXT"));
+        e.sync_tree();
+        settle(&mut e);
+        assert_eq!(name(&e), "b.txt");
+        // 木の行を押して木にいるまま、タブで c.txt へ移っても、木は c.txt へ
+        crate::layout::press(&mut e, s, r.y + 1 + at, r.x + 3, |_| 1);
+        assert_eq!(e.state(), State::List);
+        let c = e.buffer_list().into_iter().find(|t| t.1.as_ref().is_some_and(|p| p.ends_with("c.txt"))).unwrap().0;
+        e.tab_select(c);
+        e.sync_tree();
+        settle(&mut e);
+        assert_eq!(name(&e), "c.txt");
     }
 
     /// 開いているファイルが変わると、木をそこまで展開して選ぶ（木にいる間は動かさない）

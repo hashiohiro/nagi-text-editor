@@ -279,7 +279,8 @@ impl crate::layout::View for MenuView {
         }
     }
 
-    fn click(&self, ed: &mut Editor, r: Rect, row: usize, col: usize, clicks: u32) -> crate::layout::Click {
+    fn click(&self, ed: &mut Editor, r: Rect, at: crate::layout::At, clicks: u32) -> crate::layout::Click {
+        let (row, col) = at.screen;
         let _ = r;
         let Some(m) = &ed.menu else { return crate::layout::Click::Pass };
         let b = m.rect(ed.screen.0, ed.screen.1);
@@ -306,8 +307,8 @@ impl crate::layout::View for MenuView {
         crate::layout::Click::Done
     }
 
-    fn wheel(&self, ed: &mut Editor, r: Rect, row: usize, col: usize, dy: isize, dx: isize) -> bool {
-        let _ = (r, row, col, dx);
+    fn wheel(&self, ed: &mut Editor, r: Rect, at: crate::layout::At, dy: isize, dx: isize) -> bool {
+        let _ = (at, r, dx);
         crate::layout::wheel_keys(ed, dy)
     }
 }

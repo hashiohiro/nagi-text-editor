@@ -538,25 +538,27 @@ impl crate::layout::View for CommitView {
         }
     }
 
-    fn click(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, clicks: u32) -> crate::layout::Click {
-        let _ = (r, row, col, clicks);
+    fn click(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At, clicks: u32) -> crate::layout::Click {
+        let (row, col) = at.screen;
+        let _ = r;
         // 左の欄の矩形で受け取る（1 行目はタブなので LeftTabsView が先に受け取る）
         let Some(l) = ed.left_rect() else { return crate::layout::Click::Pass };
         ed.commit_click(row - l.y, col - l.x, clicks);
         crate::layout::Click::Done
     }
 
-    fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, dy: isize, dx: isize) -> bool {
-        let _ = (r, row, col, dx);
+    fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At, dy: isize, dx: isize) -> bool {
+        let _ = (at, r, dx);
         if let Some(c) = ed.commit.as_mut().filter(|c| !c.items.is_empty()) {
             c.selected = (c.selected as isize + dy).clamp(0, c.items.len() as isize - 1) as usize;
         }
         true
     }
 
-    fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize) -> bool {
+    fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At) -> bool {
+        let _ = r;
+        let (row, col) = at.screen;
         use nagi_vim::Key::*;
-        let _ = (r, row, col);
         // 押した行を選ぶ（チェックボックスの列は避けて、切り替えない）
         let Some(l) = ed.left_rect() else { return false };
         ed.commit_click(row - l.y, 10, 1);

@@ -456,9 +456,10 @@ impl crate::layout::View for HunkPopupView {
         draw::draw_hunk_popup(p, ed, s.rows, s.cols);
     }
 
-    fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize) -> bool {
+    fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At) -> bool {
+        let (row, col) = at.screen;
         use nagi_vim::Key::*;
-        let _ = (r, row, col);
+        let _ = r;
         let m = crate::menu::Menu::new(row, col)
             .keys("前の変更", &[Char('['), Char('c')])
             .keys("次の変更", &[Char(']'), Char('c')])

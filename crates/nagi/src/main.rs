@@ -53,6 +53,7 @@ mod editor;
 mod ex_cmds;
 mod finder;
 mod git_ui;
+mod git_guard;
 mod folds;
 mod grep_panel;
 mod log_view;
@@ -295,6 +296,8 @@ struct Frame {
     font_px: f64,
     font_names: Vec<String>,
     mouse: (f64, f64),
+    /// マウスのあるセル（行, 列）。ドラッグ中にセルが変わったら描き直す
+    mouse_at: Option<(usize, usize)>,
     /// IME を許可しているか（案1: Insert だけ許可。ADR 0006）
     ime_allowed: bool,
     rc: Rc,
@@ -1081,7 +1084,7 @@ impl Frame {
         ed.hover_tab = tab;
         if hover != ed.hover_button || bar_changed || tab_changed {
             ed.hover_button = hover;
-            self.draw();
+            self.redraw_soon();
         }
     }
 
@@ -1143,8 +1146,6 @@ impl Frame {
                 };
                 if c.click(ed, row, col, clicks) {
                     self.last_click = Some((now, (row, usize::MAX - 2), clicks));
-                    self.sync_ime();
-                    self.draw();
                     return;
                 }
             }
@@ -1165,7 +1166,6 @@ impl Frame {
                     if double {
                         ed.reset_sep(&sep);
                         self.last_click = None;
-                        self.draw();
                         return;
                     }
                     let bottom = sep == resize::Sep::Bottom;
@@ -1192,21 +1192,15 @@ impl Frame {
             if let Some(b) = ed.button_at(row, col) {
                 ed.press_button(b);
                 ed.hover_button = None;
-                self.sync_ime();
-                self.draw();
                 return;
             }
             // 状態行の「▶ 構成の名前」: 実行のメニュー
             if ed.on_run_label(row, col) {
                 ed.run_menu(row, col);
-                self.sync_ime();
-                self.draw();
                 return;
             }
             if ed.on_encoding_label(row, col) {
                 ed.encoding_menu(row, col);
-                self.sync_ime();
-                self.draw();
                 return;
             }
         }
@@ -1228,16 +1222,12 @@ impl Frame {
                 self.last_click = Some((now, (row, usize::MAX - 16 - i), clicks(i)));
                 self.list_select = done == layout::Click::SelectList;
                 self.term_select = done == layout::Click::SelectTerminal;
-                self.sync_ime();
-                self.draw();
                 return;
             }
         }
         let on_text = self.focus_under_mouse();
         let rows = self.sync_screen();
         if !on_text {
-            self.sync_ime();
-            self.draw();
             return;
         }
         let Some((row, col)) = self.mouse_cell() else { return };
@@ -1267,8 +1257,6 @@ impl Frame {
                 ed.goto_definition();
             }
             self.last_click = None;
-            self.sync_ime();
-            self.draw();
             return;
         }
         if clicks == 1 {
@@ -1278,8 +1266,6 @@ impl Frame {
         }
         let anchor = ed.abs();
         self.press = Some(Press { anchor, cell: (ed.top + row, col), selected: clicks > 1 });
-        self.sync_ime();
-        self.draw();
     }
 
     fn on_drag(&mut self) {
@@ -1294,7 +1280,6 @@ impl Frame {
         ed.rows = rows;
         // 画面の上下へはみ出したら端の行で選び、続きは自動スクロールで送る
         let r = row.clamp(0, rows as isize - 1) as usize;
-        let before = (ed.cursor, ed.state());
         let dragging = matches!(ed.state(), State::Visual { .. }) || (ed.top + r, col) != start;
         if dragging {
             ed.drag(anchor, r, col);
@@ -1303,9 +1288,12 @@ impl Frame {
         if outside && self.autoscroll_deadline.is_none() {
             self.autoscroll_deadline = Some(Instant::now());
         }
-        if before != (ed.cursor, ed.state()) {
-            self.sync_ime();
-            self.draw();
+    }
+
+    /// 次のフレームで描き直す（マウスの移動など、続けて来る知らせをまとめる）
+    fn redraw_soon(&mut self) {
+        if let Some(w) = &self.window {
+            w.request_redraw();
         }
     }
 
@@ -1316,12 +1304,7 @@ impl Frame {
         // 区切りの線はセルの真ん中にあるので、マウスのあるセルに区切りを置く（当たり判定と同じ数え方）
         let row = (self.mouse.1.max(0.0) as f32 / cell.h) as usize;
         let col = (self.mouse.0.max(0.0) as f32 / cell.w) as usize;
-        let before = (ed.left_width(), ed.bottom_height(), ed.window_rects());
         ed.drag_sep(sep, row, col);
-        if before != (ed.left_width(), ed.bottom_height(), ed.window_rects()) {
-            self.sync_ime();
-            self.draw();
-        }
     }
 
     /// ドラッグで画面外にいる間、一定間隔で 1 行ずつ送る
@@ -1641,6 +1624,11 @@ impl Frame {
                     eprintln!("[{:.1}] move {:.0},{:.0}", clock::since_process_start_ms(), position.x, position.y);
                 }
                 self.mouse = (position.x, position.y);
+                // ドラッグ中は、マウスのセルが変わったら描き直す（何が変わったかを処理の中で比べない。ADR 0018 の §3）。
+                // 描くのは request_redraw に任せ、1 フレームに 1 回にまとめる（動かす知らせは 1 秒に数百回来る）
+                let cell = self.fonts.as_ref().map(|f| ((position.y.max(0.0) as f32 / f.cell().h) as usize, (position.x.max(0.0) as f32 / f.cell().w) as usize));
+                let new_cell = std::mem::replace(&mut self.mouse_at, cell) != cell;
+                let dragging = self.list_select || self.term_select || self.sep_drag.is_some() || self.press.is_some();
                 if self.list_select {
                     if let (Some(f), Some(ed)) = (&self.fonts, &mut self.ed) {
                         let row = (position.y.max(0.0) as f32 / f.cell().h) as usize;
@@ -1649,19 +1637,20 @@ impl Frame {
                             ed.panel_drag(row.clamp(r.y, r.y + r.h.saturating_sub(1)) - r.y, col.saturating_sub(r.x));
                         }
                     }
-                    self.draw();
                 } else if self.term_select {
                     if let (Some(f), Some(ed)) = (&self.fonts, &mut self.ed) {
                         let cell = f.cell();
                         ed.terminal_drag((position.y as f32 / cell.h) as usize, (position.x.max(0.0) as f32 / cell.w) as usize);
                     }
-                    self.draw();
                 } else if self.sep_drag.is_some() {
                     self.on_sep_drag();
                 } else if self.press.is_some() {
                     self.on_drag();
                 } else {
                     self.update_stripe();
+                }
+                if dragging && new_cell {
+                    self.redraw_soon();
                 }
             }
             WindowEvent::MouseInput { state, button: winit::event::MouseButton::Left, .. } => match state {
@@ -1676,6 +1665,7 @@ impl Frame {
             WindowEvent::MouseWheel { delta, .. } => self.on_wheel(delta),
             WindowEvent::RedrawRequested => {
                 self.draw();
+                self.sync_ime();
             }
             _ => {}
         }
@@ -1708,25 +1698,29 @@ impl Frame {
                 self.autoscroll_deadline = None;
             }
         }
+        // 押した・離したら、いつも描き直す（何が変わったかを処理の中で比べない。ADR 0018 の §3）
+        self.sync_ime();
+        self.draw();
     }
 
     /// 右クリック: 部品のメニュー。ターミナルの上なら、選んでいればコピー、いなければ貼り付け（`--replay` の `<RClick>` も、ここを通る）
     fn on_right_press(&mut self) {
+        self.right_press();
+        // 押したら、いつも描き直す（ADR 0018 の §3）
+        self.sync_ime();
+        self.draw();
+    }
+
+    fn right_press(&mut self) {
         if let (Some(f), Some(ed)) = (&self.fonts, &mut self.ed) {
             let cell = f.cell();
             let (row, col) = ((self.mouse.1 as f32 / cell.h) as usize, (self.mouse.0.max(0.0) as f32 / cell.w) as usize);
             // 部品の右クリックのメニュー（layout.rs の View の context・menu.rs）
             if ed.on_run_label(row, col) {
                 ed.run_menu(row, col);
-                self.sync_ime();
-                self.draw();
             } else if ed.on_encoding_label(row, col) {
                 ed.encoding_menu(row, col);
-                self.sync_ime();
-                self.draw();
             } else if layout::context(ed, layout::Screen { rows: ed.screen.1, cols: ed.screen.0 }, row, col) {
-                self.sync_ime();
-                self.draw();
             } else if ed.window_at(row, col).is_some_and(|(_, r)| row < r.y + ed.text_rows(r)) && !ed.text_click_blocked() {
                 // 本文: 切り取り・コピー・貼り付け・定義へ など
                 if let Some((w, _)) = ed.window_at(row, col).filter(|(w, _)| *w != ed.cur_win) {
@@ -1736,16 +1730,11 @@ impl Frame {
                 let rect = ed.active_rect();
                 let lrow = (self.mouse.1 as f32 / cell.h - rect.y as f32 + ed.frac).floor().max(0.0) as usize;
                 ed.text_context(lrow, col.saturating_sub(rect.x), (row, col));
-                self.sync_ime();
-                self.draw();
             } else if ed.bottom_kind == result_grid::BottomKind::Terminal && ed.terminal_rect().is_some_and(|r| r.contains(row, col)) {
                 ed.terminal_right_click();
-                self.sync_ime();
-                self.draw();
             } else if matches!(ed.bottom_kind, result_grid::BottomKind::Grep | result_grid::BottomKind::Output) && ed.bottom_content_rect().is_some_and(|r| r.contains(row, col)) {
                 // 検索・ログ: 選んでいる行（無ければ今の行）をコピー
                 ed.panel_copy();
-                self.draw();
             }
         }
     }
@@ -2004,6 +1993,7 @@ fn new_frame(opts: Opts, pending: Pending, proxy: winit::event_loop::EventLoopPr
         font_px: FONT_PX,
         font_names: Vec::new(),
         mouse: (0.0, 0.0),
+        mouse_at: None,
         ime_allowed: false,
         rc: Rc::default(),
         matcher: Matcher::default(),

@@ -3,7 +3,8 @@
 //! - 左の欄と窓の間の縦線（左の欄の幅）
 //! - 窓の領域と下のパネルの間（パネルの見出しの行をつかむ。パネルの高さ）
 //! - 左右に並べた窓の間の縦線、上下に並べた窓の間（上の窓の状態行。Vim と同じ）
-//! - Git の履歴の、左のブランチの列と真ん中の間・真ん中と右の中身の列の間の縦線（列の幅）
+//! - Git の履歴の、左のブランチの列と真ん中の間・真ん中と右の中身の列の間の縦線（列の幅）、
+//!   真ん中のコミットの題名と作者・作者と日時の境目（列の幅）
 //!
 //! 線の上ではマウスのカーソルを ↔ / ↕ にする。ダブルクリックで元の大きさ（等分）に戻す。
 
@@ -22,13 +23,16 @@ pub enum Sep {
     LogBranch { x: usize },
     /// 履歴の中身の列の左の線（`end` は履歴の右端の次の列）
     LogDetail { end: usize },
+    /// 履歴のコミットの題名と作者の境目・作者と日時の境目（`end` はコミットの列の右端の次の列）
+    LogAuthor { end: usize },
+    LogDate { end: usize },
 }
 
 impl Sep {
     /// 左右に動かす区切りか（カーソルの形）
     pub fn horizontal_drag(&self) -> bool {
         match self {
-            Sep::Left | Sep::Right | Sep::LogBranch { .. } | Sep::LogDetail { .. } => true,
+            Sep::Left | Sep::Right | Sep::LogBranch { .. } | Sep::LogDetail { .. } | Sep::LogAuthor { .. } | Sep::LogDate { .. } => true,
             Sep::Bottom => false,
             Sep::Split { vertical, .. } => *vertical,
         }
@@ -100,6 +104,14 @@ impl Editor {
             if col + dw + 1 == r.x + r.w {
                 return Some(Sep::LogDetail { end: r.x + r.w });
             }
+            let end = (r.x + r.w).saturating_sub(dw + 1);
+            let (author, date) = self.log_commit_seps(end);
+            if col == author {
+                return Some(Sep::LogAuthor { end });
+            }
+            if col == date {
+                return Some(Sep::LogDate { end });
+            }
         }
         // 全画面の履歴は欄を覆うので区切りは無い（差分・テーブルは窓の範囲だけを覆うので、欄の大きさは変えられる）
         if self.log_fullscreen() {
@@ -143,6 +155,14 @@ impl Editor {
             Sep::Bottom => self.bottom_h = Some(self.screen.1.saturating_sub(row)),
             Sep::LogBranch { x } => self.log_branch_w = Some(col.saturating_sub(*x)),
             Sep::LogDetail { end } => self.log_detail_w = Some(end.saturating_sub(col + 1)),
+            Sep::LogAuthor { end } => {
+                let (_, dw, hw) = self.log_right_cols();
+                self.log_author_w = Some(end.saturating_sub(col + 4 + dw + hw).max(4));
+            }
+            Sep::LogDate { end } => {
+                let (_, _, hw) = self.log_right_cols();
+                self.log_date_w = Some(end.saturating_sub(col + 3 + hw).max(4));
+            }
             Sep::Split { path, idx, vertical, area } => {
                 let Some(Layout::Split { kids, weights, .. }) = node_mut(&mut self.layout, path) else { return };
                 let n = kids.len();
@@ -171,6 +191,8 @@ impl Editor {
             Sep::Bottom => self.bottom_h = None,
             Sep::LogBranch { .. } => self.log_branch_w = None,
             Sep::LogDetail { .. } => self.log_detail_w = None,
+            Sep::LogAuthor { .. } => self.log_author_w = None,
+            Sep::LogDate { .. } => self.log_date_w = None,
             Sep::Split { path, .. } => {
                 if let Some(Layout::Split { weights, .. }) = node_mut(&mut self.layout, path) {
                     *weights = vec![1.0; weights.len()];

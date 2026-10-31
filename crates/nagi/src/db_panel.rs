@@ -2282,9 +2282,9 @@ impl crate::layout::View for ConsoleBarView {
         draw::draw_console_bar(p, ed);
     }
 
-    fn click(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, row: usize, col: usize, clicks: u32) -> crate::layout::Click {
-        let _ = (r, row, col, clicks);
-        if let Some(item) = ed.console_bar(r.w).into_iter().find(|b| col >= r.x + b.1 && col < r.x + b.1 + b.2).map(|b| b.3) {
+    fn click(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At, clicks: u32) -> crate::layout::Click {
+        let _ = clicks;
+        if let Some(item) = ed.console_bar(r.w).into_iter().find(|b| at.col >= b.1 && at.col < b.1 + b.2).map(|b| b.3) {
             ed.console_bar_press(item);
         }
         crate::layout::Click::Done

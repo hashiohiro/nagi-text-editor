@@ -450,6 +450,9 @@ pub struct Editor {
     /// 履歴の左のブランチの列・右の中身の列の幅（ドラッグで変えたとき）
     pub log_branch_w: Option<usize>,
     pub log_detail_w: Option<usize>,
+    /// 履歴のコミットの作者・日時の列の幅（ドラッグで変えたとき。None は中身に合わせる）
+    pub log_author_w: Option<usize>,
+    pub log_date_w: Option<usize>,
     pub bottom_h: Option<usize>,
     /// 最後に描いた入力欄の縦棒カーソル（列, y の px）。IME の候補の窓の位置に使う
     pub prompt_caret: std::cell::Cell<Option<(usize, f32)>>,
@@ -483,8 +486,8 @@ pub struct Editor {
     pub left_tab: crate::tree_panel::LeftTab,
     /// ブランチのポップアップ（開いている間だけ）
     pub branch_popup: Option<crate::branches::BranchPopup>,
-    /// 裏で動かしているフェッチ・pull（見出し, 結果）
-    pub git_job: Option<(String, nagi_core::task::Task<nagi_core::Result<String>>)>,
+    /// 裏で動かしているフェッチ・pull（見出し, 引数（止まったらもう一度動かす）, 結果）
+    pub git_job: Option<(String, Vec<String>, nagi_core::task::Task<nagi_core::Result<String>>)>,
     /// 履歴の画面（開いている間だけ）
     pub log: Option<crate::log_view::LogView>,
     /// blame（出している間だけ）
@@ -754,6 +757,8 @@ impl Editor {
             left_w: None,
             log_branch_w: None,
             log_detail_w: None,
+            log_author_w: None,
+            log_date_w: None,
             db: None,
             maven: None,
             db_results: Default::default(),

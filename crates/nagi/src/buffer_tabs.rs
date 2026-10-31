@@ -181,7 +181,8 @@ impl crate::layout::View for BufferTabsView {
         draw::draw_tabs(p, ed, r);
     }
 
-    fn click(&self, ed: &mut Editor, r: Rect, row: usize, col: usize, clicks: u32) -> crate::layout::Click {
+    fn click(&self, ed: &mut Editor, r: Rect, at: crate::layout::At, clicks: u32) -> crate::layout::Click {
+        let (row, col) = at.screen;
         let _ = (r, clicks);
         match ed.buftab_at(row, col) {
             Some((doc, true)) => ed.tab_close(doc),
@@ -191,7 +192,8 @@ impl crate::layout::View for BufferTabsView {
         crate::layout::Click::Done
     }
 
-    fn context(&self, ed: &mut Editor, r: Rect, row: usize, col: usize) -> bool {
+    fn context(&self, ed: &mut Editor, r: Rect, at: crate::layout::At) -> bool {
+        let (row, col) = at.screen;
         let _ = r;
         let tab = ed.buftab_at(row, col).map(|t| t.0);
         let mut m = crate::menu::Menu::new(row, col);
@@ -203,8 +205,8 @@ impl crate::layout::View for BufferTabsView {
         true
     }
 
-    fn wheel(&self, ed: &mut Editor, r: Rect, row: usize, col: usize, dy: isize, dx: isize) -> bool {
-        let _ = (r, row, col);
+    fn wheel(&self, ed: &mut Editor, r: Rect, at: crate::layout::At, dy: isize, dx: isize) -> bool {
+        let _ = (at, r);
         let d = if dy != 0 { dy } else { dx };
         if d != 0 {
             ed.cycle_buffer(d > 0, 1);
@@ -298,12 +300,12 @@ mod tests {
         let r = crate::buffer_tabs::BufferTabsView.rect(&e, s).unwrap();
         // a.txt を押すとそのバッファへ
         let a = e.buffer_tabs(100).remove(0);
-        crate::buffer_tabs::BufferTabsView.click(&mut e, r, y, r.x + a.x + 1, 1);
+        crate::buffer_tabs::BufferTabsView.click(&mut e, r, crate::layout::At::new(r, y, r.x + a.x + 1), 1);
         assert_eq!(e.buf.path.as_deref(), Some(dir.join("a.txt").as_path()));
         // b.txt の × で閉じる
         let b = e.buffer_tabs(100).remove(1);
         assert_eq!(e.buftab_at(y, r.x + b.close_col()), Some((b.doc, true)));
-        crate::buffer_tabs::BufferTabsView.click(&mut e, r, y, r.x + b.close_col(), 1);
+        crate::buffer_tabs::BufferTabsView.click(&mut e, r, crate::layout::At::new(r, y, r.x + b.close_col()), 1);
         assert_eq!(labels(&e), ["a.txt", "c.txt"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
