@@ -321,7 +321,7 @@ mod tests {
         std::fs::write(dir.join(".nagi/run.conf"), "一 = echo one\n二 = echo two\n").unwrap();
         std::fs::write(dir.join("a.txt"), "x\n").unwrap();
         let mut e = Editor::new(Buffer::open(&dir.join("a.txt")).unwrap(), None);
-        e.buf.path = Some(dir.join("a.txt"));
+        e.core.buf.path = Some(dir.join("a.txt"));
         e.set_screen(120, 40);
         e.toggle_left_tab(crate::tree_panel::LeftTab::Run);
         assert_eq!(e.left_visible(), Some(crate::tree_panel::LeftTab::Run));

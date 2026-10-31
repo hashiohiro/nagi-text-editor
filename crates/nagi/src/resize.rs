@@ -128,7 +128,7 @@ impl Editor {
         let ((x, cols), rows) = (self.windows_x(), self.windows_rows());
         let mut out = Vec::new();
         let top = self.windows_top();
-        collect(&self.layout, Rect { x, y: top, w: cols, h: rows.saturating_sub(top) }, &mut Vec::new(), &mut out);
+        collect(&self.core.layout, Rect { x, y: top, w: cols, h: rows.saturating_sub(top) }, &mut Vec::new(), &mut out);
         out.into_iter()
             .find(|(sep, pos, a, b)| {
                 let Sep::Split { vertical, .. } = sep else { return false };
@@ -142,7 +142,7 @@ impl Editor {
         match sep {
             Sep::Size(s) => s.drag(&mut self.svc.sizes, row, col),
             Sep::Split { path, idx, vertical, area } => {
-                let Some(Layout::Split { kids, weights, .. }) = node_mut(&mut self.layout, path) else { return };
+                let Some(Layout::Split { kids, weights, .. }) = node_mut(&mut self.core.layout, path) else { return };
                 let n = kids.len();
                 let (total, gap, start, pos) = if *vertical { (area.w, 1, area.x, col) } else { (area.h, 0, area.y, row + 1) };
                 let sizes = split_sizes(total.saturating_sub(gap * (n - 1)), weights);
@@ -166,7 +166,7 @@ impl Editor {
         match sep {
             Sep::Size(s) => self.svc.sizes.reset(s.key),
             Sep::Split { path, .. } => {
-                if let Some(Layout::Split { weights, .. }) = node_mut(&mut self.layout, path) {
+                if let Some(Layout::Split { weights, .. }) = node_mut(&mut self.core.layout, path) {
                     *weights = vec![1.0; weights.len()];
                 }
             }

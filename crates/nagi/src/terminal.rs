@@ -251,7 +251,7 @@ impl Editor {
         let (rows, cols) = self.terminal_rect().map_or((10, 80), |r| (r.h as u16, r.w.saturating_sub(1) as u16));
         // 設定の「始めるフォルダ」
         let cwd = match self.settings.get("terminal.start_dir").as_str() {
-            "file" => self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()).and_then(|p| p.parent().map(|d| d.to_path_buf())).unwrap_or_else(|| self.nav_root()),
+            "file" => self.core.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()).and_then(|p| p.parent().map(|d| d.to_path_buf())).unwrap_or_else(|| self.nav_root()),
             "home" => std::env::var_os("USERPROFILE").map(std::path::PathBuf::from).unwrap_or_else(|| self.nav_root()),
             _ => self.nav_root(),
         };
@@ -1136,7 +1136,7 @@ Start-Sleep 30
         e.key(Key::Char('n'));
         assert_eq!(e.state(), State::Normal);
         e.key(Key::Char('x'));
-        assert_eq!(e.buf.line(0), "");
+        assert_eq!(e.core.buf.line(0), "");
         // :Terminal cmd で開く
         for k in nagi_vim::parse_keys(":Terminal cmd<CR>", " ") {
             e.key(k);

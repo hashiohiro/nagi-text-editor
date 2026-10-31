@@ -579,7 +579,7 @@ impl Editor {
             return;
         };
         let path = if file {
-            let Some(p) = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()) else { return };
+            let Some(p) = self.core.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()) else { return };
             p.strip_prefix(&root).ok().map(|r| r.to_string_lossy().replace('\\', "/"))
         } else {
             None

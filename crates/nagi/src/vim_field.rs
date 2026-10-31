@@ -48,7 +48,7 @@ impl VimField {
         ed.set_screen(400, 50);
         if !VIM.with(|v| v.get()) {
             ed.set_vim(false);
-            let end = ed.buf.len_bytes();
+            let end = ed.core.buf.len_bytes();
             ed.set_abs(end);
             return VimField { ed, multiline };
         }
@@ -61,8 +61,8 @@ impl VimField {
 
     /// 中身（1 行の欄は行を空白でつなぐ）
     pub fn text(&self) -> String {
-        let n = self.ed.buf.line_count();
-        let lines: Vec<String> = (0..n).map(|l| self.ed.buf.line(l)).collect();
+        let n = self.ed.core.buf.line_count();
+        let lines: Vec<String> = (0..n).map(|l| self.ed.core.buf.line(l)).collect();
         let mut s = lines.join(if self.multiline { "\n" } else { " " });
         while s.ends_with('\n') {
             s.pop();
@@ -142,7 +142,7 @@ impl VimField {
 
     /// 描く用: カーソルの (行, 行の中の byte)、Visual の範囲（絶対 byte）
     pub fn cursor(&self) -> (usize, usize) {
-        (self.ed.cursor.line, self.ed.cursor.byte)
+        (self.ed.core.cursor.line, self.ed.core.cursor.byte)
     }
 
     pub fn visual(&self) -> Option<(usize, usize)> {
@@ -154,7 +154,7 @@ impl VimField {
 
     /// 行の先頭の絶対 byte
     pub fn line_start(&self, l: usize) -> usize {
-        self.ed.buf.line_start(l)
+        self.ed.core.buf.line_start(l)
     }
 }
 

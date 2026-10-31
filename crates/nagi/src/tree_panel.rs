@@ -178,7 +178,7 @@ impl Editor {
         if !self.tree_sync || self.left_hidden || self.left_tab != LeftTab::Project || (self.state() == State::List && self.list_side == crate::editor::Side::Left) {
             return;
         }
-        let current = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
+        let current = self.core.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
         let waker = self.waker_or_noop();
         let Some(t) = &mut self.panels.tree else { return };
         if current.is_none() || t.synced == current {
@@ -247,7 +247,7 @@ impl Editor {
     /// ツリーを開く（開いていれば移る）。今のファイルを選ぶ
     pub(crate) fn open_tree(&mut self) {
         let waker = self.waker_or_noop();
-        let current = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
+        let current = self.core.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
         if self.panels.tree.is_none() {
             let root = current
                 .as_deref()
@@ -756,9 +756,9 @@ mod tests {
         let r = e.active_rect();
         e.click(1, r.x + e.gutter() + 1);
         assert_eq!(e.state(), State::Normal, "本文に戻る");
-        assert_eq!(e.cursor.line, 1);
+        assert_eq!(e.core.cursor.line, 1);
         e.key(nagi_vim::Key::Char('j'));
-        assert_eq!(e.cursor.line, 2, "キーは本文へ");
+        assert_eq!(e.core.cursor.line, 2, "キーは本文へ");
     }
 
     /// 画面の位置で押した行を選ぶ（木の上に帯があってもずれない）。タブを替えても木が合う
@@ -785,7 +785,7 @@ mod tests {
         crate::layout::press(&mut e, s, r.y + 1 + at, r.x + 3, |_| 1);
         assert_eq!(name(&e), "b.txt", "押した行を選ぶ");
         crate::layout::press(&mut e, s, r.y + 1 + at, r.x + 3, |_| 2);
-        assert!(e.buf.path.as_ref().unwrap().ends_with("b.txt"));
+        assert!(e.core.buf.path.as_ref().unwrap().ends_with("b.txt"));
         e.edit_file(dir.join("c.txt"));
         e.sync_tree();
         settle(&mut e);
@@ -867,7 +867,7 @@ mod tests {
         std::fs::write(dir.join("src/main.rs"), "main\n").unwrap();
         std::fs::write(dir.join("README.md"), "readme\n").unwrap();
         let mut e = Editor::new(Buffer::open(&dir.join("src/view/panes.rs")).unwrap(), None);
-        e.buf.path = Some(dir.join("src/view/panes.rs"));
+        e.core.buf.path = Some(dir.join("src/view/panes.rs"));
         e.set_screen(120, 40);
         e.toggle_tree();
         settle(&mut e);
@@ -889,7 +889,7 @@ mod tests {
         // j で main.rs、Enter で開いて編集画面へ
         keys(&mut e, "j<CR>");
         assert_eq!(e.state(), State::Normal);
-        assert_eq!(e.buf.line(0), "main");
+        assert_eq!(e.core.buf.line(0), "main");
         // Ctrl-w h でツリーへ戻り、q で閉じる
         keys(&mut e, "<C-w>h");
         assert_eq!(e.state(), State::List);

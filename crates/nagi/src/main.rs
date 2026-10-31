@@ -580,7 +580,7 @@ impl Frame {
         let t0 = Instant::now();
         // 構文木の更新は待ちの前に済ませる（待っている間に前のフレームが出る）
         if let Some(s) = &mut ed.syntax {
-            s.sync(&mut ed.buf);
+            s.sync(&mut ed.core.buf);
         }
         let t1 = Instant::now();
         r.wait_frame();
@@ -600,7 +600,7 @@ impl Frame {
         }
         clock::mark_once("first frame built");
         // バッファを切り替えたら題名も変える
-        let key = (ed.buf.path.clone(), Some(ed.nav_root()));
+        let key = (ed.core.buf.path.clone(), Some(ed.nav_root()));
         if self.title_path != key {
             self.title_path = key;
             if let Some(w) = &self.window {
@@ -621,7 +621,7 @@ impl Frame {
             Ok(winit::raw_window_handle::RawWindowHandle::Win32(h)) => h.hwnd.get(),
             _ => 0,
         };
-        let path = ed.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
+        let path = ed.core.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
         let dir = path.as_ref().and_then(|p| p.parent().map(|d| d.to_path_buf())).or_else(|| Some(ed.cwd.clone()));
         let name = path.as_ref().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned());
         self.save_dialog = Some(save_dialog::open(owner, dir, name, ed.waker.clone()));
@@ -1004,9 +1004,9 @@ impl Frame {
                 (lead + nagi_core::display_col(&p.text, p.cursor, false), row)
             } else {
                 // 画面の幅より右は見えないので、そこまでの幅だけ数える（数 MB の行で全体を数えない）
-                let line = ed.buf.line_head(ed.cursor.line, ed.cursor.byte.min(4096) + 4).0;
+                let line = ed.core.buf.line_head(ed.core.cursor.line, ed.core.cursor.byte.min(4096) + 4).0;
                 let rect = ed.active_rect();
-                (rect.x + ed.gutter() + nagi_core::display_col(&line, ed.cursor.byte.min(line.len()), false).saturating_sub(ed.left), rect.y + ed.cursor.line.saturating_sub(ed.top))
+                (rect.x + ed.gutter() + nagi_core::display_col(&line, ed.core.cursor.byte.min(line.len()), false).saturating_sub(ed.core.left), rect.y + ed.core.cursor.line.saturating_sub(ed.core.top))
             };
             w.set_ime_cursor_area(
                 winit::dpi::PhysicalPosition::new((col as f32 * cell.w) as i32, (row as f32 * cell.h) as i32),
@@ -1034,7 +1034,7 @@ impl Frame {
         let (f, ed) = (self.fonts.as_ref()?, self.ed.as_ref()?);
         let cell = f.cell();
         let rect = ed.active_rect();
-        let row = (self.mouse.1 as f32 / cell.h - rect.y as f32 + ed.frac).floor() as isize;
+        let row = (self.mouse.1 as f32 / cell.h - rect.y as f32 + ed.core.frac).floor() as isize;
         let col = (self.mouse.0.max(0.0) as f32 / cell.w) as usize;
         Some((row, col.saturating_sub(rect.x)))
     }
@@ -1122,7 +1122,7 @@ impl Frame {
         let (row, col) = ((self.mouse.1 as f32 / cell.h) as usize, (self.mouse.0.max(0.0) as f32 / cell.w) as usize);
         let Some(ed) = &mut self.ed else { return false };
         let Some((w, rect)) = ed.window_at(row, col) else { return false };
-        if w != ed.cur_win {
+        if w != ed.core.cur_win {
             ed.focus_window(w);
         }
         row < rect.y + ed.text_rows(rect)
@@ -1264,7 +1264,7 @@ impl Frame {
             ed.select_at(row, col, clicks);
         }
         let anchor = ed.abs();
-        self.press = Some(Press { anchor, cell: (ed.top + row, col), selected: clicks > 1 });
+        self.press = Some(Press { anchor, cell: (ed.core.top + row, col), selected: clicks > 1 });
     }
 
     fn on_drag(&mut self) {
@@ -1279,7 +1279,7 @@ impl Frame {
         ed.rows = rows;
         // 画面の上下へはみ出したら端の行で選び、続きは自動スクロールで送る
         let r = row.clamp(0, rows as isize - 1) as usize;
-        let dragging = matches!(ed.state(), State::Visual { .. }) || (ed.top + r, col) != start;
+        let dragging = matches!(ed.state(), State::Visual { .. }) || (ed.core.top + r, col) != start;
         if dragging {
             ed.drag(anchor, r, col);
         }
@@ -1373,7 +1373,7 @@ impl Frame {
             return;
         }
         // 分けた窓: マウスの下の窓を動かす（その窓へ移る）
-        if let Some((w, _)) = ed.window_at(row, col).filter(|(w, _)| *w != ed.cur_win) {
+        if let Some((w, _)) = ed.window_at(row, col).filter(|(w, _)| *w != ed.core.cur_win) {
             self.scroll_anim = None;
             ed.focus_window(w);
             let rows = self.sync_screen();
@@ -1395,7 +1395,7 @@ impl Frame {
             // マウスのホイール: 目盛りごとに設定の行数を、短い時間で滑らかに動かす
             winit::event::MouseScrollDelta::LineDelta(_, y) => {
                 let base = self.scroll_anim.as_ref().map_or(ed.scroll_pos(), |a| a.to);
-                let max = ed.buf.line_count().saturating_sub(1) as f64;
+                let max = ed.core.buf.line_count().saturating_sub(1) as f64;
                 let to = (base - y as f64 * ed.settings.int("editor.wheel_lines") as f64).round().clamp(0.0, max);
                 let dur = Duration::from_millis(ed.settings.int("editor.scroll_ms") as u64);
                 self.scroll_anim = Some(ScrollAnim { from: ed.scroll_pos(), to, start: now, dur });
@@ -1446,7 +1446,7 @@ impl Frame {
         self.scroll_anim = None;
         self.snap_deadline = None;
         if let Some(ed) = &mut self.ed {
-            ed.frac = 0.0;
+            ed.core.frac = 0.0;
         }
     }
 }
@@ -1539,8 +1539,8 @@ impl Frame {
         // 手が空いたら、画面の上下のグリフを先に載せておく（表示位置が変わったときだけ）
         if self.scroll_anim.is_none() {
             if let (Some(ed), Some(f), Some(r)) = (&self.ed, &mut self.fonts, &mut self.renderer) {
-                if self.prefetched_top != Some(ed.top) {
-                    self.prefetched_top = Some(ed.top);
+                if self.prefetched_top != Some(ed.core.top) {
+                    self.prefetched_top = Some(ed.core.top);
                     view::prefetch_around(ed, f, r);
                 }
             }
@@ -1722,12 +1722,12 @@ impl Frame {
             } else if layout::context(ed, layout::Screen { rows: ed.screen.1, cols: ed.screen.0 }, row, col) {
             } else if ed.window_at(row, col).is_some_and(|(_, r)| row < r.y + ed.text_rows(r)) && !ed.text_click_blocked() {
                 // 本文: 切り取り・コピー・貼り付け・定義へ など
-                if let Some((w, _)) = ed.window_at(row, col).filter(|(w, _)| *w != ed.cur_win) {
+                if let Some((w, _)) = ed.window_at(row, col).filter(|(w, _)| *w != ed.core.cur_win) {
                     ed.focus_window(w);
                 }
                 // 窓の中の位置（mouse_cell と同じ基準）
                 let rect = ed.active_rect();
-                let lrow = (self.mouse.1 as f32 / cell.h - rect.y as f32 + ed.frac).floor().max(0.0) as usize;
+                let lrow = (self.mouse.1 as f32 / cell.h - rect.y as f32 + ed.core.frac).floor().max(0.0) as usize;
                 ed.text_context(lrow, col.saturating_sub(rect.x), (row, col));
             } else if ed.bottom_kind == result_grid::BottomKind::Terminal && ed.terminal_rect().is_some_and(|r| r.contains(row, col)) {
                 ed.terminal_right_click();

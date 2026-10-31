@@ -41,7 +41,7 @@ impl Editor {
             self.rows = self.text_rows(self.active_rect());
             return;
         }
-        if !self.buf.path.as_deref().is_some_and(is_markdown) {
+        if !self.core.buf.path.as_deref().is_some_and(is_markdown) {
             self.svc.notify.info("Markdown のファイルではありません");
             return;
         }
@@ -61,12 +61,12 @@ impl Editor {
         let h = self.right_rect().map_or(20, |r| r.h.saturating_sub(1)).max(1);
         let focused = self.right_focused();
         // エディタが Markdown のバッファなら、それを映す（ほかのファイルに移っても最後の Markdown を出したまま）
-        let md = self.buf.path.as_deref().is_some_and(is_markdown);
-        let cur_line = self.cursor.line;
-        let key = (self.buf.path.clone().unwrap_or_default(), self.buf.version, w);
+        let md = self.core.buf.path.as_deref().is_some_and(is_markdown);
+        let cur_line = self.core.cursor.line;
+        let key = (self.core.buf.path.clone().unwrap_or_default(), self.core.buf.version, w);
         let Some(pv) = &mut self.panels.md_preview else { return };
         if md && pv.key != key {
-            pv.lines = render(&self.buf.text(), w);
+            pv.lines = render(&self.core.buf.text(), w);
             pv.key = key;
             pv.selected = pv.selected.min(pv.lines.len().saturating_sub(1));
         }
@@ -251,7 +251,7 @@ mod tests {
         let at = e.panels.md_preview.as_ref().unwrap().lines.iter().position(|l| !l.links.is_empty()).unwrap();
         e.panels.md_preview.as_mut().unwrap().selected = at;
         e.key(Key::Enter);
-        assert!(e.buf.path.as_ref().unwrap().ends_with("setup.md"), "{:?} {}", e.buf.path, e.svc.notify.text);
+        assert!(e.core.buf.path.as_ref().unwrap().ends_with("setup.md"), "{:?} {}", e.core.buf.path, e.svc.notify.text);
         // もう一度で閉じる
         e.set_state(State::Normal);
         e.toggle_md_preview();

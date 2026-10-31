@@ -83,7 +83,7 @@ impl Editor {
 
     /// 選んだ所の文字（選んでいなければ None）
     pub(crate) fn plain_selected_text(&self) -> Option<String> {
-        self.plain_selection().map(|(s, e)| self.buf.slice_string(s, e))
+        self.plain_selection().map(|(s, e)| self.core.buf.slice_string(s, e))
     }
 
     /// 選んだ所を消して、打てる状態へ（消したら true）
@@ -104,9 +104,9 @@ impl Editor {
     /// 取り消しのまとまりを始める・続ける（種類が変わったら区切る）
     fn plain_run(&mut self, run: Run) {
         if self.plain_run != run {
-            self.hist.close();
+            self.core.hist.close();
             if run != Run::None {
-                self.hist.begin();
+                self.core.hist.begin();
             }
             self.plain_run = run;
         }
@@ -176,11 +176,11 @@ impl Editor {
                 true
             }
             (Some(Nav::Tab), _) => {
-                let lines = self.plain_selection().map(|(s, e)| (self.buf.pos_of(s).0, self.buf.pos_of(e.saturating_sub(1).max(s)).0));
+                let lines = self.plain_selection().map(|(s, e)| (self.core.buf.pos_of(s).0, self.core.buf.pos_of(e.saturating_sub(1).max(s)).0));
                 match lines {
                     // 何行かを選んでいれば、その行を字下げ（Shift なら戻す）
                     Some((a, b)) if a != b || mods.shift => self.plain_indent(a, b, !mods.shift),
-                    _ if mods.shift => self.plain_indent(self.cursor.line, self.cursor.line, false),
+                    _ if mods.shift => self.plain_indent(self.core.cursor.line, self.core.cursor.line, false),
                     _ => {
                         self.plain_delete_selection();
                         self.plain_run(Run::Typing);
@@ -213,22 +213,22 @@ impl Editor {
 
     /// `at` の次の書記素の始まり（行末なら改行の後）
     fn plain_next(&self, at: usize) -> usize {
-        let (line, byte) = self.buf.pos_of(at);
-        let text = self.buf.line(line);
+        let (line, byte) = self.core.buf.pos_of(at);
+        let text = self.core.buf.line(line);
         match text[byte.min(text.len())..].graphemes(true).next() {
             Some(g) => at + g.len(),
-            None if line + 1 < self.buf.line_count() => self.buf.line_start(line + 1),
+            None if line + 1 < self.core.buf.line_count() => self.core.buf.line_start(line + 1),
             None => at,
         }
     }
 
     /// `at` の前の書記素の始まり（行頭なら前の行の末尾）
     fn plain_prev(&self, at: usize) -> usize {
-        let (line, byte) = self.buf.pos_of(at);
-        let text = self.buf.line(line);
+        let (line, byte) = self.core.buf.pos_of(at);
+        let text = self.core.buf.line(line);
         match text[..byte.min(text.len())].grapheme_indices(true).next_back() {
-            Some((i, _)) => self.buf.line_start(line) + i,
-            None if line > 0 => self.buf.line_start(line - 1) + self.buf.line_len(line - 1),
+            Some((i, _)) => self.core.buf.line_start(line) + i,
+            None if line > 0 => self.core.buf.line_start(line - 1) + self.core.buf.line_len(line - 1),
             None => at,
         }
     }
@@ -254,7 +254,7 @@ impl Editor {
             (Nav::Right, false) => self.set_abs(self.plain_next(from)),
             (Nav::Left, true) => self.with_motion(|mo, c| mo.word_backward(c, false)),
             (Nav::Right, true) => {
-                let line_end = self.buf.line_start(self.cursor.line) + self.buf.line_len(self.cursor.line);
+                let line_end = self.core.buf.line_start(self.core.cursor.line) + self.core.buf.line_len(self.core.cursor.line);
                 if from == line_end {
                     self.set_abs(self.plain_next(from));
                 } else {
@@ -265,23 +265,23 @@ impl Editor {
                     }
                 }
             }
-            (Nav::Up, _) if self.cursor.line == 0 => self.set_abs(0),
-            (Nav::Down, _) if self.cursor.line + 1 >= self.buf.line_count() => self.set_abs(self.buf.len_bytes()),
+            (Nav::Up, _) if self.core.cursor.line == 0 => self.set_abs(0),
+            (Nav::Down, _) if self.core.cursor.line + 1 >= self.core.buf.line_count() => self.set_abs(self.core.buf.len_bytes()),
             (Nav::Up, _) => self.plain_vertical(-1),
             (Nav::Down, _) => self.plain_vertical(1),
             (Nav::PageUp, _) => self.plain_vertical(-(rows as isize)),
             (Nav::PageDown, _) => self.plain_vertical(rows as isize),
             (Nav::Home, true) => self.set_abs(0),
-            (Nav::End, true) => self.set_abs(self.buf.len_bytes()),
+            (Nav::End, true) => self.set_abs(self.core.buf.len_bytes()),
             // Home は行頭の空白の後へ（そこにいれば行頭へ）
             (Nav::Home, false) => {
-                let byte = self.cursor.byte;
+                let byte = self.core.cursor.byte;
                 self.with_motion(|mo, c| mo.first_non_blank(c));
-                if self.cursor.byte == byte {
+                if self.core.cursor.byte == byte {
                     self.with_motion(|mo, c| mo.line_start(c));
                 }
             }
-            (Nav::End, false) => self.set_abs(self.buf.line_start(self.cursor.line) + self.buf.line_len(self.cursor.line)),
+            (Nav::End, false) => self.set_abs(self.core.buf.line_start(self.core.cursor.line) + self.core.buf.line_len(self.core.cursor.line)),
             _ => {}
         }
         if m.shift {
@@ -296,11 +296,11 @@ impl Editor {
 
     /// 上下に動く（表示の列を保つ。行末より右なら行末）
     fn plain_vertical(&mut self, delta: isize) {
-        let want = self.cursor.want_col;
+        let want = self.core.cursor.want_col;
         self.with_motion(|mo, c| mo.vertical(c, delta));
-        let len = self.buf.line_len(self.cursor.line);
-        self.cursor.byte = self.cursor.byte.min(len);
-        self.cursor.want_col = want;
+        let len = self.core.buf.line_len(self.core.cursor.line);
+        self.core.cursor.byte = self.core.cursor.byte.min(len);
+        self.core.cursor.want_col = want;
     }
 
     /// Ctrl+Backspace・Ctrl+Delete: 単語を消す
@@ -308,13 +308,13 @@ impl Editor {
         self.set_state(State::Normal);
         self.plain_run(Run::Deleting);
         let at = self.abs();
-        let mut c = self.cursor;
+        let mut c = self.core.cursor;
         if forward {
             self.motion().word_forward(&mut c, false);
         } else {
             self.motion().word_backward(&mut c, false);
         }
-        let to = self.buf.line_start(c.line) + c.byte;
+        let to = self.core.buf.line_start(c.line) + c.byte;
         // 動かなければ 1 文字（行の端なら改行）
         let to = if to == at { if forward { self.plain_next(at) } else { self.plain_prev(at) } } else { to };
         let (s, e) = (at.min(to), at.max(to));
@@ -327,30 +327,30 @@ impl Editor {
     /// 行 `a`〜`b` を字下げ（`add` でなければ戻す）。選んだ所は行に合わせて保つ
     fn plain_indent(&mut self, a: usize, b: usize, add: bool) {
         self.plain_break();
-        self.hist.begin();
+        self.core.hist.begin();
         let unit = self.indent_unit();
         let had_sel = matches!(self.state(), State::Visual { .. });
         for l in a..=b {
-            let start = self.buf.line_start(l);
+            let start = self.core.buf.line_start(l);
             if add {
-                if self.buf.line_len(l) > 0 {
+                if self.core.buf.line_len(l) > 0 {
                     self.edit(start, start, &unit);
                 }
             } else {
-                let text = self.buf.line(l);
+                let text = self.core.buf.line(l);
                 let n = if text.starts_with('\t') { 1 } else { text.chars().take(unit.len().max(1)).take_while(|c| *c == ' ').count() };
                 if n > 0 {
                     self.edit(start, start + n, "");
                 }
             }
         }
-        self.hist.close();
+        self.core.hist.close();
         if had_sel {
-            self.anchor = self.buf.line_start(a);
-            self.set_abs(self.buf.line_start(b) + self.buf.line_len(b));
+            self.anchor = self.core.buf.line_start(a);
+            self.set_abs(self.core.buf.line_start(b) + self.core.buf.line_len(b));
         } else {
-            let len = self.buf.line_len(self.cursor.line);
-            self.cursor.byte = self.cursor.byte.min(len);
+            let len = self.core.buf.line_len(self.core.cursor.line);
+            self.core.cursor.byte = self.core.cursor.byte.min(len);
         }
     }
 
@@ -358,17 +358,17 @@ impl Editor {
     pub(crate) fn plain_select_at(&mut self, row: usize, col: usize, clicks: u32) {
         self.plain_break();
         self.set_state(State::Normal);
-        self.cursor = self.pos_at(row, col);
-        let l = self.cursor.line;
-        let start = self.buf.line_start(l);
+        self.core.cursor = self.pos_at(row, col);
+        let l = self.core.cursor.line;
+        let start = self.core.buf.line_start(l);
         let (s, e) = if clicks == 2 {
-            let text = self.buf.line(l);
-            match nagi_core::textops::word_object(&text, self.cursor.byte.min(text.len().saturating_sub(1)), false, false) {
+            let text = self.core.buf.line(l);
+            match nagi_core::textops::word_object(&text, self.core.cursor.byte.min(text.len().saturating_sub(1)), false, false) {
                 Some((a, b)) => (start + a, start + b),
                 None => return,
             }
         } else {
-            (start, start + self.buf.line_len_with_break(l))
+            (start, start + self.core.buf.line_len_with_break(l))
         };
         self.anchor = s;
         self.set_abs(e);
@@ -378,7 +378,7 @@ impl Editor {
     /// 本文の右クリック（窓の中の行・列と、メニューを出す画面の位置）。選んでいる所の外なら、そこへカーソルを移してから
     pub(crate) fn text_context(&mut self, row: usize, col: usize, at: (usize, usize)) {
         let pos = self.pos_at(row, col);
-        let abs = self.buf.line_start(pos.line) + pos.byte;
+        let abs = self.core.buf.line_start(pos.line) + pos.byte;
         let inside = self.plain_selection().is_some_and(|(s, e)| abs >= s && abs < e);
         if !inside {
             self.click(row, col);
@@ -411,12 +411,12 @@ impl Editor {
     pub(crate) fn plain_copy(&mut self, cut: bool) {
         self.plain_break();
         let (s, e, text) = match self.plain_selection() {
-            Some((s, e)) => (s, e, self.buf.slice_string(s, e)),
+            Some((s, e)) => (s, e, self.core.buf.slice_string(s, e)),
             None => {
-                let l = self.cursor.line;
-                let s = self.buf.line_start(l);
-                let e = s + self.buf.line_len_with_break(l);
-                let mut t = self.buf.slice_string(s, e);
+                let l = self.core.cursor.line;
+                let s = self.core.buf.line_start(l);
+                let e = s + self.core.buf.line_len_with_break(l);
+                let mut t = self.core.buf.slice_string(s, e);
                 if !t.ends_with('\n') {
                     t.push('\n');
                 }
@@ -429,9 +429,9 @@ impl Editor {
         }
         self.registers.insert('"', (text, false));
         if cut && s < e {
-            self.hist.begin();
+            self.core.hist.begin();
             self.edit(s, e, "");
-            self.hist.close();
+            self.core.hist.close();
             self.set_abs(s);
             self.set_state(State::Normal);
         }
@@ -445,14 +445,14 @@ impl Editor {
         };
         let Some(text) = text.filter(|t| !t.is_empty()) else { return };
         self.plain_break();
-        self.hist.begin();
+        self.core.hist.begin();
         if let Some((s, e)) = self.plain_selection() {
             self.edit(s, e, "");
             self.set_abs(s);
         }
         self.set_state(State::Normal);
         self.insert_text(&text);
-        self.hist.close();
+        self.core.hist.close();
     }
 
     pub(crate) fn plain_undo(&mut self, redo: bool) {
@@ -469,71 +469,71 @@ impl Editor {
     pub(crate) fn plain_select_all(&mut self) {
         self.plain_break();
         self.anchor = 0;
-        self.set_abs(self.buf.len_bytes());
+        self.set_abs(self.core.buf.len_bytes());
         self.set_state(State::Visual { line: false, block: false });
     }
 
     /// 行を複製する（選んでいれば、その文字を後ろに）
     pub(crate) fn plain_duplicate(&mut self) {
         self.plain_break();
-        self.hist.begin();
+        self.core.hist.begin();
         match self.plain_selection() {
             Some((s, e)) => {
-                let t = self.buf.slice_string(s, e);
+                let t = self.core.buf.slice_string(s, e);
                 self.edit(e, e, &t);
                 self.anchor = e;
                 self.set_abs(e + t.len());
             }
             None => {
-                let l = self.cursor.line;
-                let end = self.buf.line_start(l) + self.buf.line_len(l);
-                let text = format!("{}{}", self.buf.newline(), self.buf.line(l));
+                let l = self.core.cursor.line;
+                let end = self.core.buf.line_start(l) + self.core.buf.line_len(l);
+                let text = format!("{}{}", self.core.buf.newline(), self.core.buf.line(l));
                 self.edit(end, end, &text);
-                self.cursor.line += 1;
+                self.core.cursor.line += 1;
             }
         }
-        self.hist.close();
+        self.core.hist.close();
     }
 
     /// 行を消す（選んでいれば、かかる行をすべて）
     pub(crate) fn plain_delete_lines(&mut self) {
         self.plain_break();
         let (a, b) = match self.plain_selection() {
-            Some((s, e)) => (self.buf.pos_of(s).0, self.buf.pos_of(e.saturating_sub(1).max(s)).0),
-            None => (self.cursor.line, self.cursor.line),
+            Some((s, e)) => (self.core.buf.pos_of(s).0, self.core.buf.pos_of(e.saturating_sub(1).max(s)).0),
+            None => (self.core.cursor.line, self.core.cursor.line),
         };
-        let mut s = self.buf.line_start(a);
-        let mut e = self.buf.line_start(b) + self.buf.line_len_with_break(b);
+        let mut s = self.core.buf.line_start(a);
+        let mut e = self.core.buf.line_start(b) + self.core.buf.line_len_with_break(b);
         // 最後の行なら、前の改行から消す
-        if e == self.buf.len_bytes() && a > 0 && self.buf.line_len_with_break(b) == self.buf.line_len(b) {
-            s = self.buf.line_start(a - 1) + self.buf.line_len(a - 1);
-            e = self.buf.len_bytes();
+        if e == self.core.buf.len_bytes() && a > 0 && self.core.buf.line_len_with_break(b) == self.core.buf.line_len(b) {
+            s = self.core.buf.line_start(a - 1) + self.core.buf.line_len(a - 1);
+            e = self.core.buf.len_bytes();
         }
-        self.hist.begin();
+        self.core.hist.begin();
         self.edit(s, e, "");
-        self.hist.close();
+        self.core.hist.close();
         self.set_state(State::Normal);
-        let line = a.min(self.buf.line_count().saturating_sub(1));
-        self.set_abs(self.buf.line_start(line));
+        let line = a.min(self.core.buf.line_count().saturating_sub(1));
+        self.set_abs(self.core.buf.line_start(line));
     }
 
     /// 行コメントを付ける・外す（選んでいれば、かかる行をすべて。全部に付いていれば外す）
     pub(crate) fn plain_comment(&mut self) {
         self.plain_break();
         let (a, b) = match self.plain_selection() {
-            Some((s, e)) => (self.buf.pos_of(s).0, self.buf.pos_of(e.saturating_sub(1).max(s)).0),
-            None => (self.cursor.line, self.cursor.line),
+            Some((s, e)) => (self.core.buf.pos_of(s).0, self.core.buf.pos_of(e.saturating_sub(1).max(s)).0),
+            None => (self.core.cursor.line, self.core.cursor.line),
         };
         // 付ける・外すのは commentary の gc と同じ（surround.rs）
         if !self.comment_lines(a, b) {
             return;
         }
         if self.plain_selection().is_none() {
-            let len = self.buf.line_len(self.cursor.line);
-            self.cursor.byte = self.cursor.byte.min(len);
+            let len = self.core.buf.line_len(self.core.cursor.line);
+            self.core.cursor.byte = self.core.cursor.byte.min(len);
             // 1 行なら次の行へ（IntelliJ と同じ）
-            if a == b && self.cursor.line + 1 < self.buf.line_count() {
-                self.cursor.line += 1;
+            if a == b && self.core.cursor.line + 1 < self.core.buf.line_count() {
+                self.core.cursor.line += 1;
             }
         }
     }
@@ -576,25 +576,25 @@ mod tests {
         for c in "Hi ".chars() {
             e.key(Key::Char(c));
         }
-        assert_eq!(e.buf.line(0), "Hi hello world");
+        assert_eq!(e.core.buf.line(0), "Hi hello world");
         // End で行末（最後の文字の後ろ）、→ で次の行の頭
         e.key(Key::End);
-        assert_eq!(e.cursor.byte, 14);
+        assert_eq!(e.core.cursor.byte, 14);
         e.key(Key::Right);
-        assert_eq!((e.cursor.line, e.cursor.byte), (1, 0));
+        assert_eq!((e.core.cursor.line, e.core.cursor.byte), (1, 0));
         e.key(Key::Left);
-        assert_eq!((e.cursor.line, e.cursor.byte), (0, 14));
+        assert_eq!((e.core.cursor.line, e.core.cursor.byte), (0, 14));
         // Shift+Home で行頭まで選び、打つと置き換わる
         e.key(Key::Home);
         e.key(Key::Home);
         e.key(shift(Nav::End));
         assert_eq!(e.plain_selected_text().as_deref(), Some("Hi hello world"), "終わりの文字を含まない");
         e.key(Key::Char('X'));
-        assert_eq!(e.buf.line(0), "X");
+        assert_eq!(e.core.buf.line(0), "X");
         assert_eq!(e.state(), State::Insert);
         // Esc は何も動かさない（Vim のように左へ寄らない）
         e.key(Key::Esc);
-        assert_eq!((e.state(), e.cursor.byte), (State::Insert, 1));
+        assert_eq!((e.state(), e.core.cursor.byte), (State::Insert, 1));
         // パネルから戻っても Normal にはならない
         e.set_state(State::Normal);
         assert_eq!(e.state(), State::Insert);
@@ -607,40 +607,40 @@ mod tests {
         for c in "def ghi".chars() {
             e.key(Key::Char(c));
         }
-        assert_eq!(e.buf.line(0), "abcdef ghi");
+        assert_eq!(e.core.buf.line(0), "abcdef ghi");
         // 単語の切れ目で区切る: 1 回目で " ghi"、2 回目で "def" が消える
         e.plain_undo(false);
-        assert_eq!(e.buf.line(0), "abcdef");
+        assert_eq!(e.core.buf.line(0), "abcdef");
         e.plain_undo(false);
-        assert_eq!(e.buf.line(0), "abc");
+        assert_eq!(e.core.buf.line(0), "abc");
         e.plain_undo(true);
-        assert_eq!(e.buf.line(0), "abcdef");
+        assert_eq!(e.core.buf.line(0), "abcdef");
         // 行の複製・削除・コメント（拡張子が無いので分からない）
         e.plain_duplicate();
-        assert_eq!((e.buf.line(0), e.buf.line(1), e.cursor.line), ("abcdef".to_string(), "abcdef".to_string(), 1));
+        assert_eq!((e.core.buf.line(0), e.core.buf.line(1), e.core.cursor.line), ("abcdef".to_string(), "abcdef".to_string(), 1));
         e.plain_delete_lines();
-        assert_eq!(e.buf.text(), "abcdef\n");
+        assert_eq!(e.core.buf.text(), "abcdef\n");
         // 全部を選んで切り取る
         e.plain_select_all();
         e.plain_copy(true);
-        assert_eq!(e.buf.text(), "");
+        assert_eq!(e.core.buf.text(), "");
         assert_eq!(e.registers.get(&'"').map(|r| r.0.as_str()), Some("abcdef\n"));
     }
 
     #[test]
     fn tab_indents_selected_lines_and_comment() {
         let mut e = plain("a\nb\nc\n");
-        e.buf.path = Some(std::path::PathBuf::from("x.py"));
+        e.core.buf.path = Some(std::path::PathBuf::from("x.py"));
         e.key(shift(Nav::Down));
         e.key(shift(Nav::Down));
         e.key(Key::Tab);
-        assert_eq!(e.buf.text(), "    a\n    b\nc\n", "c の行は頭までしか選んでいないので含めない（普通のエディタと同じ）");
+        assert_eq!(e.core.buf.text(), "    a\n    b\nc\n", "c の行は頭までしか選んでいないので含めない（普通のエディタと同じ）");
         e.key(shift(Nav::Tab));
-        assert_eq!(e.buf.text(), "a\nb\nc\n");
+        assert_eq!(e.core.buf.text(), "a\nb\nc\n");
         e.plain_comment();
-        assert!(e.buf.text().starts_with("# a\n# b\n"), "{:?}", e.buf.text());
+        assert!(e.core.buf.text().starts_with("# a\n# b\n"), "{:?}", e.core.buf.text());
         e.plain_comment();
-        assert!(e.buf.text().starts_with("a\nb\n"), "{:?}", e.buf.text());
+        assert!(e.core.buf.text().starts_with("a\nb\n"), "{:?}", e.core.buf.text());
     }
 
     #[test]
@@ -653,7 +653,7 @@ mod tests {
         assert_eq!(e.plain_selected_text().as_deref(), Some("hello world\n"));
         // 打つと置き換わる
         e.key(Key::Char('Z'));
-        assert_eq!(e.buf.text(), "Znext\n");
+        assert_eq!(e.core.buf.text(), "Znext\n");
     }
 
     #[test]
@@ -663,7 +663,7 @@ mod tests {
             e.key(Key::Char(c));
         }
         e.key(shift(Nav::Home));
-        assert_eq!((e.cursor.line, e.cursor.byte), (0, 0));
+        assert_eq!((e.core.cursor.line, e.core.cursor.byte), (0, 0));
         assert_eq!(e.plain_selected_text().as_deref(), Some("abc"));
     }
 

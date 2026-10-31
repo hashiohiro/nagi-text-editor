@@ -1390,7 +1390,7 @@ mod tests {
         std::fs::create_dir_all(dir.join(".git")).unwrap();
         std::fs::write(dir.join("a.txt"), "x\n").unwrap();
         let mut e = Editor::new(Buffer::open(&dir.join("a.txt")).unwrap(), None);
-        e.buf.path = Some(dir.join("a.txt"));
+        e.core.buf.path = Some(dir.join("a.txt"));
         e.set_screen(140, 40);
         e.open_settings("");
         assert_eq!(e.state(), State::Settings);

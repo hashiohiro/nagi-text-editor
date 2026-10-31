@@ -87,7 +87,7 @@ mod tests {
         assert!(e.recording.is_none());
         assert_eq!(e.registers.get(&'a').map(|r| r.0.as_str()), Some("I# <Esc>j"));
         keys(&mut e, "2@a@@");
-        let lines: Vec<String> = (0..5).map(|i| e.buf.line(i)).collect();
+        let lines: Vec<String> = (0..5).map(|i| e.core.buf.line(i)).collect();
         assert_eq!(lines, vec!["# a1", "# a2", "# a3", "# a4", "a5"]);
         // 大文字は追記。<lt> と Ctrl も読み戻せる
         keys(&mut e, "qAx<C-a>q");

@@ -64,7 +64,7 @@ impl Editor {
         let all = downloadable();
         let targets: Vec<&str> = match arg.as_str() {
             "all" => all.iter().filter(|(l, _)| !l.available()).map(|(_, g)| *g).collect(),
-            "" => match self.buf.path.as_deref().and_then(Lang::detect).and_then(|l| l.grammar_id()) {
+            "" => match self.core.buf.path.as_deref().and_then(Lang::detect).and_then(|l| l.grammar_id()) {
                 Some(g) => vec![g],
                 None => {
                     let names: Vec<&str> = all.iter().map(|(_, g)| *g).collect();
@@ -109,7 +109,7 @@ impl Editor {
             match r {
                 Ok(_) => {
                     // 今のバッファがその言語なら、色分けをやり直す（ほかのバッファは戻ったときに作る）
-                    if self.buf.path.as_deref().and_then(Lang::detect).and_then(|l| l.grammar_id()) == Some(id.as_str()) {
+                    if self.core.buf.path.as_deref().and_then(Lang::detect).and_then(|l| l.grammar_id()) == Some(id.as_str()) {
                         self.syntax = None;
                         self.pending_syntax = None;
                         self.start_syntax();

@@ -50,11 +50,11 @@ fn same_file(a: &Path, b: &Path) -> bool {
 impl Editor {
     /// 開いているバッファの (番号, パス, 変更あり, 作業中か)
     pub fn buffer_list(&self) -> Vec<(usize, Option<PathBuf>, bool, bool)> {
-        self.docs
+        self.core.docs
             .iter()
             .enumerate()
             .filter_map(|(i, s)| match s {
-                Slot::Active => Some((i, self.buf.path.clone(), self.buf.dirty, true)),
+                Slot::Active => Some((i, self.core.buf.path.clone(), self.core.buf.dirty, true)),
                 Slot::Parked(d) => Some((i, d.buf.path.clone(), d.buf.dirty, false)),
                 Slot::Deleted => None,
             })
@@ -63,8 +63,8 @@ impl Editor {
 
     /// バッファ `id` のファイル（名前が無ければ None）
     pub(crate) fn doc_path(&self, id: usize) -> Option<PathBuf> {
-        match self.docs.get(id)? {
-            Slot::Active => self.buf.path.clone(),
+        match self.core.docs.get(id)? {
+            Slot::Active => self.core.buf.path.clone(),
             Slot::Parked(d) => d.buf.path.clone(),
             Slot::Deleted => None,
         }
@@ -73,7 +73,7 @@ impl Editor {
 
     /// 作業中のバッファを脇へ置き、`id` を作業中にする
     pub(crate) fn switch_doc(&mut self, id: usize) {
-        if id == self.cur_doc || !matches!(self.docs.get(id), Some(Slot::Parked(_))) {
+        if id == self.core.cur_doc || !matches!(self.core.docs.get(id), Some(Slot::Parked(_))) {
             return;
         }
         // 自動で保存（設定。別のファイルへ移ったとき）
@@ -81,11 +81,11 @@ impl Editor {
         // 別のファイルへ移るのはジャンプ（Ctrl-o で戻れる）
         self.push_jump();
         self.finish_load();
-        let Slot::Parked(next) = std::mem::replace(&mut self.docs[id], Slot::Active) else { unreachable!() };
+        let Slot::Parked(next) = std::mem::replace(&mut self.core.docs[id], Slot::Active) else { unreachable!() };
         let prev = self.swap_in(*next);
-        self.docs[self.cur_doc] = Slot::Parked(Box::new(prev));
-        self.alt_doc = Some(self.cur_doc);
-        self.cur_doc = id;
+        self.core.docs[self.core.cur_doc] = Slot::Parked(Box::new(prev));
+        self.core.alt_doc = Some(self.core.cur_doc);
+        self.core.cur_doc = id;
         // 脇にある間に構文木を手放した（trim_trees）・外部の変更で読み直したバッファは、構文木を作り直す
         if self.syntax.is_none() && self.pending_syntax.is_none() {
             self.restore_syntax();
@@ -95,10 +95,10 @@ impl Editor {
 
     /// 構文木を作り直す。小さいファイルはその場で（色の無い瞬間を作らない）、大きいファイルは裏で
     fn restore_syntax(&mut self) {
-        let lang = self.buf.path.as_deref().and_then(nagi_syntax::Lang::detect).filter(|l| l.available());
-        match lang.filter(|_| self.buf.len_bytes() <= SYNC_REPARSE_BYTES).and_then(nagi_syntax::Syntax::new) {
+        let lang = self.core.buf.path.as_deref().and_then(nagi_syntax::Lang::detect).filter(|l| l.available());
+        match lang.filter(|_| self.core.buf.len_bytes() <= SYNC_REPARSE_BYTES).and_then(nagi_syntax::Syntax::new) {
             Some(mut s) => {
-                s.parse(&mut self.buf);
+                s.parse(&mut self.core.buf);
                 s.waker = self.waker.clone();
                 self.syntax = Some(s);
             }
@@ -109,12 +109,12 @@ impl Editor {
     /// 構文木（1 ファイルあたりソースの約 40 倍。40 ファイルで 37 MB）を持つのは、窓に出ているバッファと最近使った数本だけにする。
     /// ほかは手放し、戻ったときに作り直す（restore_syntax）
     fn trim_trees(&mut self) {
-        let id = self.cur_doc;
-        self.doc_recent.retain(|&d| d != id);
-        self.doc_recent.insert(0, id);
-        let shown: Vec<usize> = (0..self.wins.len()).filter_map(|w| self.win_state(w).map(|s| s.doc)).collect();
-        let keep: Vec<usize> = self.doc_recent.iter().copied().take(KEEP_TREES).chain(shown).collect();
-        for (i, slot) in self.docs.iter_mut().enumerate() {
+        let id = self.core.cur_doc;
+        self.core.doc_recent.retain(|&d| d != id);
+        self.core.doc_recent.insert(0, id);
+        let shown: Vec<usize> = (0..self.core.wins.len()).filter_map(|w| self.win_state(w).map(|s| s.doc)).collect();
+        let keep: Vec<usize> = self.core.doc_recent.iter().copied().take(KEEP_TREES).chain(shown).collect();
+        for (i, slot) in self.core.docs.iter_mut().enumerate() {
             if let Slot::Parked(d) = slot {
                 if !keep.contains(&i) {
                     d.syntax = None;
@@ -122,53 +122,53 @@ impl Editor {
                 }
             }
         }
-        self.doc_recent.retain(|d| matches!(self.docs.get(*d), Some(Slot::Active | Slot::Parked(_))));
+        self.core.doc_recent.retain(|d| matches!(self.core.docs.get(*d), Some(Slot::Active | Slot::Parked(_))));
     }
 
     /// `d` を Editor の欄へ入れ、出ていたものを返す
     fn swap_in(&mut self, d: Doc) -> Doc {
         let prev = Doc {
-            buf: std::mem::replace(&mut self.buf, d.buf),
-            hist: std::mem::replace(&mut self.hist, d.hist),
+            buf: std::mem::replace(&mut self.core.buf, d.buf),
+            hist: std::mem::replace(&mut self.core.hist, d.hist),
             syntax: std::mem::replace(&mut self.syntax, d.syntax),
             pending_syntax: std::mem::replace(&mut self.pending_syntax, d.pending_syntax),
             last_change: std::mem::replace(&mut self.last_change, d.last_change),
             marks: std::mem::replace(&mut self.marks, d.marks),
             folds: std::mem::replace(&mut self.folds, d.folds),
-            cursor: std::mem::replace(&mut self.cursor, d.cursor),
-            top: std::mem::replace(&mut self.top, d.top),
+            cursor: std::mem::replace(&mut self.core.cursor, d.cursor),
+            top: std::mem::replace(&mut self.core.top, d.top),
         };
-        self.frac = 0.0;
+        self.core.frac = 0.0;
         if !matches!(self.state(), State::Normal) {
             self.set_state(State::Normal);
         }
         self.pending_keys.clear();
         self.reset_search_cache();
         self.poll_syntax();
-        let last = self.buf.line_count().saturating_sub(1);
-        self.cursor.line = self.cursor.line.min(last);
+        let last = self.core.buf.line_count().saturating_sub(1);
+        self.core.cursor.line = self.core.cursor.line.min(last);
         self.clamp_normal();
         prev
     }
 
     /// 新しいバッファを足して作業中にする
     fn push_doc(&mut self, buf: Buffer) {
-        let id = self.docs.len();
-        self.docs.push(Slot::Active);
+        let id = self.core.docs.len();
+        self.core.docs.push(Slot::Active);
         self.push_jump();
         let d = Doc { buf, hist: History::default(), syntax: None, pending_syntax: None, last_change: None, marks: Default::default(), folds: Default::default(), cursor: Cursor::default(), top: 0 };
         self.finish_load();
         let prev = self.swap_in(d);
-        self.docs[self.cur_doc] = Slot::Parked(Box::new(prev));
-        self.alt_doc = Some(self.cur_doc);
-        self.cur_doc = id;
+        self.core.docs[self.core.cur_doc] = Slot::Parked(Box::new(prev));
+        self.core.alt_doc = Some(self.core.cur_doc);
+        self.core.cur_doc = id;
         self.start_syntax();
         self.trim_trees();
     }
 
     /// 脇にあるバッファ `id`（作業中・閉じたものは None）
     pub(crate) fn parked_doc_mut(&mut self, id: usize) -> Option<&mut Doc> {
-        match self.docs.get_mut(id)? {
+        match self.core.docs.get_mut(id)? {
             Slot::Parked(d) => Some(d),
             _ => None,
         }
@@ -177,8 +177,8 @@ impl Editor {
     /// ファイルの名前を変えたとき、そのバッファの名前も
     pub(crate) fn repath_doc(&mut self, from: &Path, to: &Path) {
         let Some(id) = self.find_doc(from) else { return };
-        match self.docs.get_mut(id) {
-            Some(Slot::Active) => self.buf.path = Some(to.to_path_buf()),
+        match self.core.docs.get_mut(id) {
+            Some(Slot::Active) => self.core.buf.path = Some(to.to_path_buf()),
             Some(Slot::Parked(d)) => d.buf.path = Some(to.to_path_buf()),
             _ => {}
         }
@@ -186,9 +186,9 @@ impl Editor {
 
     /// `path` のバッファを探す
     pub(crate) fn find_doc(&self, path: &Path) -> Option<usize> {
-        self.docs.iter().enumerate().find_map(|(i, s)| {
+        self.core.docs.iter().enumerate().find_map(|(i, s)| {
             let p = match s {
-                Slot::Active => self.buf.path.as_deref(),
+                Slot::Active => self.core.buf.path.as_deref(),
                 Slot::Parked(d) => d.buf.path.as_deref(),
                 Slot::Deleted => None,
             }?;
@@ -219,10 +219,10 @@ impl Editor {
             }
         };
         // 最初の名前の無い空のバッファは、使わずに置き換える（Vim と同じ）
-        if self.buf.path.is_none() && !self.buf.dirty && self.buf.len_bytes() == 0 && self.docs.len() == 1 {
-            self.docs.clear();
-            self.docs.push(Slot::Active);
-            self.cur_doc = 0;
+        if self.core.buf.path.is_none() && !self.core.buf.dirty && self.core.buf.len_bytes() == 0 && self.core.docs.len() == 1 {
+            self.core.docs.clear();
+            self.core.docs.push(Slot::Active);
+            self.core.cur_doc = 0;
             let d = Doc { buf, hist: History::default(), syntax: None, pending_syntax: None, last_change: None, marks: Default::default(), folds: Default::default(), cursor: Cursor::default(), top: 0 };
             self.swap_in(d);
             self.start_syntax();
@@ -242,7 +242,7 @@ impl Editor {
 
     /// `:e!`。作業中のバッファを読み直す（変更は捨てる）
     pub(crate) fn reload(&mut self) {
-        let Some(path) = self.buf.path.clone() else { return };
+        let Some(path) = self.core.buf.path.clone() else { return };
         match Buffer::open(&path) {
             Ok(b) => self.reload_with(b),
             Err(e) => self.svc.notify.error(format!("{}: {e}", path.display())),
@@ -251,17 +251,17 @@ impl Editor {
 
     /// 読み直したバッファに入れ替える（カーソル・マークは保つ）
     pub(crate) fn reload_with(&mut self, b: Buffer) {
-        let d = Doc { buf: b, hist: History::default(), syntax: None, pending_syntax: None, last_change: None, marks: std::mem::take(&mut self.marks), folds: Default::default(), cursor: self.cursor, top: self.top };
+        let d = Doc { buf: b, hist: History::default(), syntax: None, pending_syntax: None, last_change: None, marks: std::mem::take(&mut self.marks), folds: Default::default(), cursor: self.core.cursor, top: self.core.top };
         self.swap_in(d);
         self.start_syntax();
-        let line = self.cursor.line.min(self.buf.line_count().saturating_sub(1));
-        self.cursor.line = line;
-        self.cursor.byte = self.cursor.byte.min(self.buf.line(line).len());
+        let line = self.core.cursor.line.min(self.core.buf.line_count().saturating_sub(1));
+        self.core.cursor.line = line;
+        self.core.cursor.byte = self.core.cursor.byte.min(self.core.buf.line(line).len());
     }
 
     /// 開いたファイルの改行が混ざっていれば知らせる
     pub(crate) fn note_mixed_newlines(&mut self) {
-        if self.buf.mixed_newlines {
+        if self.core.buf.mixed_newlines {
             self.svc.notify.info("このファイルは CRLF と LF が混ざっています。状態の行の「混在」を押すか :set ff=dos・ff=unix で揃える（保存で書く）");
         }
     }
@@ -270,9 +270,9 @@ impl Editor {
     pub(crate) fn goto_buffer(&mut self, arg: &str) {
         let arg = arg.trim();
         let id = if arg == "#" {
-            self.alt_doc.filter(|&i| matches!(self.docs.get(i), Some(Slot::Parked(_))))
+            self.core.alt_doc.filter(|&i| matches!(self.core.docs.get(i), Some(Slot::Parked(_))))
         } else if let Ok(n) = arg.parse::<usize>() {
-            n.checked_sub(1).filter(|&i| !matches!(self.docs.get(i), None | Some(Slot::Deleted)))
+            n.checked_sub(1).filter(|&i| !matches!(self.core.docs.get(i), None | Some(Slot::Deleted)))
         } else {
             // 名前の一部（大文字小文字を区別しない）。1 つに決まらなければエラー
             let low = arg.to_lowercase();
@@ -300,7 +300,7 @@ impl Editor {
     /// `:bn` / `:bp`（端では反対側へ回る）
     pub(crate) fn cycle_buffer(&mut self, forward: bool, count: usize) {
         let list: Vec<usize> = self.buffer_list().into_iter().map(|(i, ..)| i).collect();
-        let Some(pos) = list.iter().position(|&i| i == self.cur_doc) else { return };
+        let Some(pos) = list.iter().position(|&i| i == self.core.cur_doc) else { return };
         let n = list.len();
         let to = if forward { (pos + count) % n } else { (pos + n - count % n) % n };
         self.switch_doc(list[to]);
@@ -309,17 +309,17 @@ impl Editor {
     /// `:bd[!] [N]`。作業中のバッファを消したら、別のバッファへ移る（最後の 1 本なら空のバッファにする）
     pub(crate) fn delete_buffer(&mut self, arg: &str, force: bool) {
         let id = match arg.trim() {
-            "" => self.cur_doc,
+            "" => self.core.cur_doc,
             a => match a.parse::<usize>().ok().and_then(|n| n.checked_sub(1)) {
-                Some(i) if !matches!(self.docs.get(i), None | Some(Slot::Deleted)) => i,
+                Some(i) if !matches!(self.core.docs.get(i), None | Some(Slot::Deleted)) => i,
                 _ => {
                     self.svc.notify.error(format!("E516: バッファ {a} はありません"));
                     return;
                 }
             },
         };
-        let dirty = match &self.docs[id] {
-            Slot::Active => self.buf.dirty,
+        let dirty = match &self.core.docs[id] {
+            Slot::Active => self.core.buf.dirty,
             Slot::Parked(d) => d.buf.dirty,
             Slot::Deleted => false,
         };
@@ -328,8 +328,8 @@ impl Editor {
             return;
         }
         // 閉じたファイルを覚える（ReopenClosedTab で開き直す）
-        let closed = match &self.docs[id] {
-            Slot::Active => self.buf.path.clone().map(|p| (p, self.cursor.line, self.cursor.byte)),
+        let closed = match &self.core.docs[id] {
+            Slot::Active => self.core.buf.path.clone().map(|p| (p, self.core.cursor.line, self.core.cursor.byte)),
             Slot::Parked(d) => d.buf.path.clone().map(|p| (p, 0, 0)),
             Slot::Deleted => None,
         };
@@ -339,36 +339,36 @@ impl Editor {
         }
         // 消すバッファを出しているほかの窓は閉じる（Vim と同じ）
         self.close_windows_of(id);
-        if id != self.cur_doc {
-            self.docs[id] = Slot::Deleted;
+        if id != self.core.cur_doc {
+            self.core.docs[id] = Slot::Deleted;
             return;
         }
         // 移る先: 直前のバッファ、無ければ次のバッファ
         let next = self
-            .alt_doc
-            .filter(|&i| matches!(self.docs.get(i), Some(Slot::Parked(_))))
-            .or_else(|| self.docs.iter().position(|s| matches!(s, Slot::Parked(_))));
+            .core.alt_doc
+            .filter(|&i| matches!(self.core.docs.get(i), Some(Slot::Parked(_))))
+            .or_else(|| self.core.docs.iter().position(|s| matches!(s, Slot::Parked(_))));
         match next {
             Some(n) => {
                 self.switch_doc(n);
-                self.docs[id] = Slot::Deleted;
+                self.core.docs[id] = Slot::Deleted;
             }
             None => {
                 self.push_doc(Buffer::from_str(""));
-                self.docs[id] = Slot::Deleted;
+                self.core.docs[id] = Slot::Deleted;
             }
         }
-        self.alt_doc = None;
+        self.core.alt_doc = None;
     }
 
     /// `root` の下の開いているファイルと、そのカーソル（行, 文字の数）。作業中のものに current
     pub(crate) fn open_file_positions(&self, root: &Path) -> Vec<nagi_workers::project::OpenFile> {
         let root = std::path::absolute(root).unwrap_or_else(|_| root.to_path_buf());
-        self.docs
+        self.core.docs
             .iter()
             .filter_map(|s| {
                 let (b, c, current) = match s {
-                    Slot::Active => (&self.buf, self.cursor, true),
+                    Slot::Active => (&self.core.buf, self.core.cursor, true),
                     Slot::Parked(d) => (&d.buf, d.cursor, false),
                     Slot::Deleted => return None,
                 };
@@ -405,7 +405,7 @@ impl Editor {
         let root = self.nav_root();
         let (mut items, mut locs) = (Vec::new(), Vec::new());
         for (p, l) in self.recent_edits.iter().rev() {
-            let text = if self.buf.path.as_ref() == Some(p) { self.buf.line(*l) } else { std::fs::read_to_string(p).ok().and_then(|t| t.lines().nth(*l).map(String::from)).unwrap_or_default() };
+            let text = if self.core.buf.path.as_ref() == Some(p) { self.core.buf.line(*l) } else { std::fs::read_to_string(p).ok().and_then(|t| t.lines().nth(*l).map(String::from)).unwrap_or_default() };
             let rel = p.strip_prefix(&root).map_or_else(|_| p.display().to_string(), |r| r.to_string_lossy().replace('\\', "/"));
             items.push(format!("{rel}:{}  {}", l + 1, text.trim()));
             locs.push((p.clone(), *l, 0));
@@ -425,7 +425,7 @@ impl Editor {
             .buffer_list()
             .into_iter()
             .map(|(i, p, dirty, active)| {
-                let mark = if active { "%" } else if Some(i) == self.alt_doc { "#" } else { " " };
+                let mark = if active { "%" } else if Some(i) == self.core.alt_doc { "#" } else { " " };
                 let name = p.map_or("[No Name]".into(), |p| p.file_name().map_or(p.display().to_string(), |n| n.to_string_lossy().into_owned()));
                 format!("{}{mark}{} {name}", i + 1, if dirty { "+" } else { "" })
             })
@@ -443,7 +443,7 @@ impl Editor {
         let mut ok = true;
         let mut n = 0;
         let mut failed = Vec::new();
-        for slot in self.docs.iter_mut() {
+        for slot in self.core.docs.iter_mut() {
             if let Slot::Parked(d) = slot {
                 if d.buf.dirty && d.buf.path.is_some() {
                     // 保存時の処理（裏のバッファは取り消しの履歴には残さない）
@@ -463,9 +463,9 @@ impl Editor {
         for m in failed {
             self.svc.notify.error(m);
         }
-        if self.buf.dirty && self.buf.path.is_some() {
+        if self.core.buf.dirty && self.core.buf.path.is_some() {
             self.tidy_before_save();
-            match self.buf.save() {
+            match self.core.buf.save() {
                 Ok(_) => n += 1,
                 Err(e) => {
                     self.svc.notify.error(format!("E212: 書き込めません: {e}"));
@@ -523,13 +523,13 @@ mod tests {
             }
             assert!(e.syntax.is_some(), "f{i}.json の構文木");
         }
-        let parked_trees = e.docs.iter().filter(|s| matches!(s, Slot::Parked(d) if d.syntax.is_some())).count();
+        let parked_trees = e.core.docs.iter().filter(|s| matches!(s, Slot::Parked(d) if d.syntax.is_some())).count();
         assert_eq!(parked_trees, KEEP_TREES - 1, "作業中のほかに最近の {} 本", KEEP_TREES - 1);
         // いちばん古い f0 へ戻ると、待たずに色が付く
         let f0 = e.find_doc(&dir.join("f0.json")).unwrap();
         e.switch_doc(f0);
         assert!(e.syntax.is_some() && e.pending_syntax.is_none());
-        let parked_trees = e.docs.iter().filter(|s| matches!(s, Slot::Parked(d) if d.syntax.is_some())).count();
+        let parked_trees = e.core.docs.iter().filter(|s| matches!(s, Slot::Parked(d) if d.syntax.is_some())).count();
         assert_eq!(parked_trees, KEEP_TREES - 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -541,22 +541,22 @@ mod tests {
         let mut e = Editor::new(Buffer::from_str(""), None);
         e.rows = 5;
         keys(&mut e, &format!(":e {}<CR>", a.display()));
-        assert_eq!(e.docs.len(), 1, "最初の空のバッファは置き換える");
+        assert_eq!(e.core.docs.len(), 1, "最初の空のバッファは置き換える");
         keys(&mut e, "jx");
-        assert_eq!(e.buf.line(1), "2");
+        assert_eq!(e.core.buf.line(1), "2");
         keys(&mut e, &format!(":e {}<CR>", b.display()));
-        assert_eq!(e.buf.line(0), "b1");
-        assert_eq!((e.cursor.line, e.cursor.byte), (0, 0));
+        assert_eq!(e.core.buf.line(0), "b1");
+        assert_eq!((e.core.cursor.line, e.core.cursor.byte), (0, 0));
         keys(&mut e, "<C-^>");
-        assert_eq!(e.buf.line(1), "2", "変更は保たれる");
-        assert_eq!(e.cursor.line, 1, "カーソルも戻る");
-        assert!(e.buf.dirty);
+        assert_eq!(e.core.buf.line(1), "2", "変更は保たれる");
+        assert_eq!(e.core.cursor.line, 1, "カーソルも戻る");
+        assert!(e.core.buf.dirty);
         keys(&mut e, ":bn<CR>");
-        assert_eq!(e.buf.line(0), "b1");
+        assert_eq!(e.core.buf.line(0), "b1");
         keys(&mut e, ":b a.t<CR>");
-        assert_eq!(e.buf.line(0), "a1");
+        assert_eq!(e.core.buf.line(0), "a1");
         keys(&mut e, &format!(":e {}<CR>", b.display()));
-        assert_eq!(e.docs.len(), 2, "開いているファイルは開き直さない");
+        assert_eq!(e.core.docs.len(), 2, "開いているファイルは開き直さない");
         keys(&mut e, ":ls<CR>");
         assert!(e.svc.notify.text.contains("1#+ a.txt") && e.svc.notify.text.contains("2% b.txt"), "{}", e.svc.notify.text);
     }
@@ -579,7 +579,7 @@ mod tests {
         // 最後の 1 本を消すと空のバッファになる
         keys(&mut e, ":bd<CR>");
         assert_eq!(e.buffer_list().len(), 1);
-        assert_eq!(e.buf.len_bytes(), 0);
+        assert_eq!(e.core.buf.len_bytes(), 0);
     }
 
     /// `:q` `:wq` は今のバッファを閉じるだけで、nagi は終えない（最後の 1 つなら空のバッファになる）
@@ -598,16 +598,16 @@ mod tests {
         // b を閉じて a（変更あり）へ
         assert!(matches!(keys(&mut e, ":q<CR>"), Some(Effect::None)));
         assert_eq!(e.buffer_list().len(), 1);
-        assert_eq!(e.buf.path.as_deref(), Some(a.as_path()));
+        assert_eq!(e.core.buf.path.as_deref(), Some(a.as_path()));
         // 変更があれば止める
         assert!(matches!(keys(&mut e, ":q<CR>"), Some(Effect::None)));
         assert!(e.svc.notify.text.starts_with("E37"), "{}", e.svc.notify.text);
-        assert_eq!(e.buf.path.as_deref(), Some(a.as_path()));
+        assert_eq!(e.core.buf.path.as_deref(), Some(a.as_path()));
         // :wq は保存して閉じる（最後の 1 つなので空のバッファになる）
         assert!(matches!(keys(&mut e, ":wq<CR>"), Some(Effect::None)));
         assert_eq!(std::fs::read_to_string(&a).unwrap(), "1\na2\na3\n");
         assert_eq!(e.buffer_list().len(), 1);
-        assert_eq!(e.buf.len_bytes(), 0);
+        assert_eq!(e.core.buf.len_bytes(), 0);
         // :q! は捨てて閉じる
         keys(&mut e, &format!(":e {}<CR>", b.display()));
         keys(&mut e, "x");
@@ -637,14 +637,14 @@ mod write_as_tests {
         let mut e = Editor::new(Buffer::from_str(""), None);
         keys(&mut e, &format!("ihello<Esc>:w {}<CR>", a.display()));
         assert_eq!(std::fs::read_to_string(&a).unwrap(), "hello");
-        assert_eq!(e.buf.path.as_deref(), Some(a.as_path()));
-        assert!(!e.buf.dirty);
+        assert_eq!(e.core.buf.path.as_deref(), Some(a.as_path()));
+        assert!(!e.core.buf.dirty);
         // 名前のあるバッファの :w 別名 → 書き出すだけ（名前は a のまま）。既にあるファイルは ! が要る
         let b = dir.join("b.txt");
         keys(&mut e, &format!("A!<Esc>:w {}<CR>", b.display()));
         assert_eq!(std::fs::read_to_string(&b).unwrap(), "hello!");
-        assert_eq!(e.buf.path.as_deref(), Some(a.as_path()));
-        assert!(e.buf.dirty, "a にはまだ書いていない");
+        assert_eq!(e.core.buf.path.as_deref(), Some(a.as_path()));
+        assert!(e.core.buf.dirty, "a にはまだ書いていない");
         keys(&mut e, &format!(":w {}<CR>", b.display()));
         assert!(e.svc.notify.text.starts_with("E13"), "{}", e.svc.notify.text);
         keys(&mut e, &format!(":w! {}<CR>", b.display()));
@@ -652,7 +652,7 @@ mod write_as_tests {
         // :saveas は名前ごと変える
         let c = dir.join("c.txt");
         keys(&mut e, &format!(":saveas {}<CR>", c.display()));
-        assert_eq!(e.buf.path.as_deref(), Some(c.as_path()));
+        assert_eq!(e.core.buf.path.as_deref(), Some(c.as_path()));
         assert_eq!(std::fs::read_to_string(&c).unwrap(), "hello!");
     }
 

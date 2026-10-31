@@ -81,11 +81,11 @@ impl Editor {
     }
 
     pub fn block_sel(&self) -> BlockSel {
-        let a = self.anchor.min(self.buf.len_bytes());
-        let (al, ab) = self.buf.pos_of(a);
-        let (cl, cb) = (self.cursor.line, self.cursor.byte);
+        let a = self.anchor.min(self.core.buf.len_bytes());
+        let (al, ab) = self.core.buf.pos_of(a);
+        let (cl, cb) = (self.core.cursor.line, self.core.cursor.byte);
         let cell = |l: usize, b: usize| {
-            let line = self.buf.line(l);
+            let line = self.core.buf.line(l);
             let b = b.min(line.len());
             let c = display_col(&line, b, false);
             let w = line[b..].graphemes(true).next().map_or(1, |g| width(g, c));
@@ -93,18 +93,18 @@ impl Editor {
         };
         let (ca, wa) = cell(al, ab);
         let (cc, wc) = cell(cl, cb);
-        let right = if self.cursor.want_col == usize::MAX { None } else { Some((ca + wa).max(cc + wc) - 1) };
+        let right = if self.core.cursor.want_col == usize::MAX { None } else { Some((ca + wa).max(cc + wc) - 1) };
         BlockSel { l1: al.min(cl), l2: al.max(cl), left: ca.min(cc), right }
     }
 
     /// 行ごとの (行, 始まり, 終わり)（絶対 byte。終わりは含まない）
     pub fn block_spans(&self) -> Vec<(usize, usize, usize)> {
         let s = self.block_sel();
-        (s.l1..=s.l2.min(self.buf.line_count().saturating_sub(1)))
+        (s.l1..=s.l2.min(self.core.buf.line_count().saturating_sub(1)))
             .map(|l| {
-                let line = self.buf.line(l);
+                let line = self.core.buf.line(l);
                 let (a, b) = span_in_line(&line, s.left, s.right);
-                let ls = self.buf.line_start(l);
+                let ls = self.core.buf.line_start(l);
                 (l, ls + a, ls + b)
             })
             .collect()
@@ -114,8 +114,8 @@ impl Editor {
         match sel.right {
             Some(r) => r + 1 - sel.left,
             None => spans.iter().map(|&(l, s, e)| {
-                let line = self.buf.line(l);
-                let ls = self.buf.line_start(l);
+                let line = self.core.buf.line(l);
+                let ls = self.core.buf.line_start(l);
                 nagi_core::display_col(&line, e - ls, false) - nagi_core::display_col(&line, s - ls, false)
             }).max().unwrap_or(0),
         }
@@ -123,10 +123,10 @@ impl Editor {
 
     /// カーソルを矩形の左上へ
     fn to_block_top_left(&mut self, sel: &BlockSel) {
-        self.cursor.line = sel.l1.min(self.buf.line_count().saturating_sub(1));
-        let line = self.buf.line(self.cursor.line);
-        self.cursor.byte = byte_at(&line, sel.left).unwrap_or(line.len());
-        self.cursor.want_col = sel.left;
+        self.core.cursor.line = sel.l1.min(self.core.buf.line_count().saturating_sub(1));
+        let line = self.core.buf.line(self.core.cursor.line);
+        self.core.cursor.byte = byte_at(&line, sel.left).unwrap_or(line.len());
+        self.core.cursor.want_col = sel.left;
     }
 
     /// 矩形に対するオペレーター（d y c > <）
@@ -141,17 +141,17 @@ impl Editor {
         }
         // 矩形を囲む: 行ごとに囲む（vim-surround と同じ）
         if let Op::Surround(c) = op {
-            self.hist.begin();
+            self.core.hist.begin();
             for &(_, s, e) in spans.iter().rev() {
                 if e > s {
                     self.surround_add(s, e, false, c);
                 }
             }
-            self.hist.close();
+            self.core.hist.close();
             self.to_block_top_left(&sel);
             return;
         }
-        let text: Vec<String> = spans.iter().map(|&(_, s, e)| self.buf.slice_string(s, e)).collect();
+        let text: Vec<String> = spans.iter().map(|&(_, s, e)| self.core.buf.slice_string(s, e)).collect();
         let w = self.block_width(&sel, &spans);
         self.reg_block_next = Some(w);
         self.set_register_pub(reg, text.join("\n"), op == Op::Yank);
@@ -159,7 +159,7 @@ impl Editor {
             self.to_block_top_left(&sel);
             return;
         }
-        self.hist.begin();
+        self.core.hist.begin();
         for &(_, s, e) in spans.iter().rev() {
             if e > s {
                 self.edit(s, e, "");
@@ -173,7 +173,7 @@ impl Editor {
             self.set_state(State::Insert);
             return;
         }
-        self.hist.close();
+        self.core.hist.close();
         self.to_block_top_left(&sel);
         self.clamp_normal();
     }
@@ -183,16 +183,16 @@ impl Editor {
         let sel = self.block_sel();
         self.set_state(State::Normal);
         let corner = {
-            let line = self.buf.line(sel.l1);
-            self.buf.line_start(sel.l1) + byte_at(&line, sel.left).unwrap_or(line.len())
+            let line = self.core.buf.line(sel.l1);
+            self.core.buf.line_start(sel.l1) + byte_at(&line, sel.left).unwrap_or(line.len())
         };
         let eol = append && sel.right.is_none();
         let col = if append { sel.right.map_or(0, |r| r + 1) } else { sel.left };
-        self.hist.begin();
+        self.core.hist.begin();
         // 1 行目に打つ位置。A で行が短ければ空白で埋める
-        self.cursor.line = sel.l1;
-        let line = self.buf.line(sel.l1);
-        let ls = self.buf.line_start(sel.l1);
+        self.core.cursor.line = sel.l1;
+        let line = self.core.buf.line(sel.l1);
+        let ls = self.core.buf.line_start(sel.l1);
         let at = if eol {
             ls + line.len()
         } else {
@@ -215,20 +215,20 @@ impl Editor {
     pub(crate) fn finish_block_insert(&mut self) -> bool {
         let Some(bi) = self.block_insert.take() else { return false };
         let end = self.abs();
-        if end <= bi.start || self.buf.pos_of(bi.start).0 != self.cursor.line {
+        if end <= bi.start || self.core.buf.pos_of(bi.start).0 != self.core.cursor.line {
             return false;
         }
-        let text = self.buf.slice_string(bi.start, end);
+        let text = self.core.buf.slice_string(bi.start, end);
         if text.contains('\n') {
             return false;
         }
         // 下の行から入れる（上の行の位置がずれないように）
         for l in bi.lines.clone().rev() {
-            if l >= self.buf.line_count() {
+            if l >= self.core.buf.line_count() {
                 continue;
             }
-            let line = self.buf.line(l);
-            let ls = self.buf.line_start(l);
+            let line = self.core.buf.line(l);
+            let ls = self.core.buf.line_start(l);
             if bi.eol {
                 self.edit(ls + line.len(), ls + line.len(), &text);
                 continue;
@@ -256,17 +256,17 @@ impl Editor {
         let sel = self.block_sel();
         let spans = self.block_spans();
         self.set_state(State::Normal);
-        self.hist.begin();
+        self.core.hist.begin();
         for &(_, s, e) in spans.iter().rev() {
             if e > s {
-                let old = self.buf.slice_string(s, e);
+                let old = self.core.buf.slice_string(s, e);
                 let new: String = old.graphemes(true).map(&f).collect();
                 if new != old {
                     self.edit(s, e, &new);
                 }
             }
         }
-        self.hist.close();
+        self.core.hist.close();
         self.to_block_top_left(&sel);
         self.clamp_normal();
     }
@@ -281,39 +281,39 @@ impl Editor {
     /// 矩形の `O`（同じ行の反対の角へ）
     pub(crate) fn block_swap_corner(&mut self) {
         let sel = self.block_sel();
-        let (al, _) = self.buf.pos_of(self.anchor.min(self.buf.len_bytes()));
+        let (al, _) = self.core.buf.pos_of(self.anchor.min(self.core.buf.len_bytes()));
         let right = sel.right.unwrap_or(sel.left);
-        let cur_col = display_col(&self.buf.line(self.cursor.line), self.cursor.byte, false);
+        let cur_col = display_col(&self.core.buf.line(self.core.cursor.line), self.core.cursor.byte, false);
         let (new_cur, new_anchor) = if cur_col <= sel.left { (right, sel.left) } else { (sel.left, right) };
         let put = |ed: &Editor, l: usize, col: usize| {
-            let line = ed.buf.line(l);
-            ed.buf.line_start(l) + byte_at(&line, col).unwrap_or(line.len())
+            let line = ed.core.buf.line(l);
+            ed.core.buf.line_start(l) + byte_at(&line, col).unwrap_or(line.len())
         };
         self.anchor = put(self, al, new_anchor);
-        let at = put(self, self.cursor.line, new_cur);
+        let at = put(self, self.core.cursor.line, new_cur);
         self.set_abs(at);
-        self.cursor.want_col = new_cur;
+        self.core.cursor.want_col = new_cur;
     }
 
     /// 矩形で取ったレジスタを、カーソルの列から下の行へ矩形のまま貼る（`after` なら次の列から）
     pub(crate) fn put_block(&mut self, text: &str, w: usize, after: bool) {
-        let line0 = self.buf.line(self.cursor.line);
-        let mut col = display_col(&line0, self.cursor.byte, false);
+        let line0 = self.core.buf.line(self.core.cursor.line);
+        let mut col = display_col(&line0, self.core.cursor.byte, false);
         if after && !line0.is_empty() {
-            col += line0[self.cursor.byte.min(line0.len())..].graphemes(true).next().map_or(0, |g| width(g, col));
+            col += line0[self.core.cursor.byte.min(line0.len())..].graphemes(true).next().map_or(0, |g| width(g, col));
         }
-        let nl = self.buf.newline().to_string();
-        let top = self.cursor.line;
-        self.hist.begin();
+        let nl = self.core.buf.newline().to_string();
+        let top = self.core.cursor.line;
+        self.core.hist.begin();
         for (i, piece) in text.split('\n').enumerate() {
             let l = top + i;
             // ファイルの終わりを越えたら行を足す
-            while l >= self.buf.line_count() {
-                let end = self.buf.len_bytes();
+            while l >= self.core.buf.line_count() {
+                let end = self.core.buf.len_bytes();
                 self.edit(end, end, &nl);
             }
-            let line = self.buf.line(l);
-            let ls = self.buf.line_start(l);
+            let line = self.core.buf.line(l);
+            let ls = self.core.buf.line_start(l);
             let pw: usize = piece.graphemes(true).fold(0, |c, g| c + width(g, col + c));
             match byte_at(&line, col) {
                 Some(b) => {
@@ -327,10 +327,10 @@ impl Editor {
                 }
             }
         }
-        self.hist.close();
-        self.cursor.line = top;
-        let line = self.buf.line(top);
-        self.cursor.byte = byte_at(&line, col).unwrap_or(line.len());
+        self.core.hist.close();
+        self.core.cursor.line = top;
+        let line = self.core.buf.line(top);
+        self.core.cursor.byte = byte_at(&line, col).unwrap_or(line.len());
         self.clamp_normal();
     }
 }
@@ -352,13 +352,13 @@ mod tests {
         let mut e = Editor::new(Buffer::from_str("あいう\nabcd\nxyz\n"), None);
         // あ（0〜1 列）から下の b（1 列）まで: 0〜1 列の矩形
         keys(&mut e, "<C-v>jld");
-        assert_eq!((e.buf.line(0), e.buf.line(1)), ("いう".to_string(), "cd".to_string()));
+        assert_eq!((e.core.buf.line(0), e.core.buf.line(1)), ("いう".to_string(), "cd".to_string()));
         // 矩形で取って貼ると、行ごとに同じ列へ入る
         keys(&mut e, "ugg<C-v>jly");
         assert_eq!(e.reg_blocks.get(&'"'), Some(&2));
         keys(&mut e, "Gp");
-        assert_eq!(e.buf.line(2), "xあyz");
-        assert_eq!(e.buf.line(3), " ab");
+        assert_eq!(e.core.buf.line(2), "xあyz");
+        assert_eq!(e.core.buf.line(3), " ab");
         assert!(e.svc.notify.text.is_empty() || !e.svc.notify.text.starts_with('E'));
         assert_eq!(e.state(), State::Normal);
     }

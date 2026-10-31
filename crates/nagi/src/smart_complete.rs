@@ -68,11 +68,11 @@ fn subsequence(p: &str, s: &str) -> bool {
 impl Editor {
     /// Ctrl+Space: 候補を集めて一覧を出す
     pub(crate) fn start_smart_completion(&mut self) {
-        let line = self.buf.line(self.cursor.line);
-        let b = self.cursor.byte.min(line.len());
+        let line = self.core.buf.line(self.core.cursor.line);
+        let b = self.core.cursor.byte.min(line.len());
         let ws = line[..b].char_indices().rev().take_while(|(_, c)| word_char(*c)).last().map_or(b, |(i, _)| i);
         let prefix = line[ws..b].to_string();
-        let start = self.buf.line_start(self.cursor.line) + ws;
+        let start = self.core.buf.line_start(self.core.cursor.line) + ws;
         let all = if self.console_source().is_some() { self.sql_smart_candidates(start, &prefix) } else { self.smart_candidates(&line, ws, start) };
         if all.is_empty() {
             self.svc.notify.info("-- 補完の候補はありません");
@@ -84,7 +84,7 @@ impl Editor {
 
     /// 今のファイルの言語（色付けがまだでもパスから）
     pub(crate) fn file_lang(&self) -> Option<nagi_syntax::Lang> {
-        self.syntax.as_ref().map(|s| s.lang).or_else(|| self.buf.path.as_deref().and_then(nagi_syntax::Lang::detect))
+        self.syntax.as_ref().map(|s| s.lang).or_else(|| self.core.buf.path.as_deref().and_then(nagi_syntax::Lang::detect))
     }
 
     /// 今のファイルの言語の差し込み口（SQL のコンソールは SQL）
@@ -97,12 +97,12 @@ impl Editor {
     fn smart_candidates(&mut self, line: &str, ws: usize, start: usize) -> Vec<Cand> {
         // 構文木で見える名前（打っている語そのものは除く）
         self.ensure_syntax();
-        let typed = self.cursor.byte.min(line.len()).saturating_sub(ws);
+        let typed = self.core.cursor.byte.min(line.len()).saturating_sub(ws);
         let kinds = self.syntax.as_ref().and_then(|s| s.kinds_at(start));
-        let visible = self.syntax.as_ref().filter(|_| !line[..ws.min(line.len())].ends_with('.')).and_then(|s| s.visible_names(&self.buf, start, start..start + typed));
-        let src = self.buf.text();
-        let here = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
-        let b = self.cursor.byte.min(line.len());
+        let visible = self.syntax.as_ref().filter(|_| !line[..ws.min(line.len())].ends_with('.')).and_then(|s| s.visible_names(&self.core.buf, start, start..start + typed));
+        let src = self.core.buf.text();
+        let here = self.core.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
+        let b = self.core.cursor.byte.min(line.len());
         let prefix = line.get(ws..b).unwrap_or("");
         let mut cx = nagi_lang::lang::Cx::new(self.language(), &src, here.as_deref(), line, ws, start, prefix, self.nav.index.as_ref(), &self.nav.libs);
         cx.visible = visible;
@@ -130,8 +130,8 @@ impl Editor {
         let abs = self.abs();
         // カーソルが同じ語の中にいるときだけ
         let lx = self.language().lexis();
-        let same_line = self.buf.line_start(self.cursor.line) <= start && start <= abs;
-        if !same_line || self.buf.slice_string(start, abs).chars().any(|c| !lx.is_word(c)) {
+        let same_line = self.core.buf.line_start(self.core.cursor.line) <= start && start <= abs;
+        if !same_line || self.core.buf.slice_string(start, abs).chars().any(|c| !lx.is_word(c)) {
             self.data_wait = None;
             return;
         }
@@ -165,7 +165,7 @@ impl Editor {
             self.panels.completion = None;
             return;
         }
-        let prefix = self.buf.slice_string(c.start, abs);
+        let prefix = self.core.buf.slice_string(c.start, abs);
         let q = Query::new(&prefix);
         let mut scored: Vec<(u8, u8, i32, usize, usize)> = st
             .all
@@ -225,7 +225,7 @@ impl Editor {
                     self.panels.completion = None;
                     return false;
                 }
-                let prev = self.buf.slice_string(start, abs).chars().last().map_or(1, char::len_utf8);
+                let prev = self.core.buf.slice_string(start, abs).chars().last().map_or(1, char::len_utf8);
                 self.edit(abs - prev, abs, "");
                 self.set_abs(abs - prev);
                 self.refilter_smart();
@@ -248,8 +248,8 @@ impl Editor {
             return;
         }
         let Key::Char(c) = key else { return };
-        let line = self.buf.line(self.cursor.line);
-        let b = self.cursor.byte.min(line.len());
+        let line = self.core.buf.line(self.core.cursor.line);
+        let b = self.core.cursor.byte.min(line.len());
         let n = line[..b].chars().rev().take_while(|c| word_char(*c)).count();
         // SQL コンソール: FROM・JOIN などの後の空白でも（テーブルの一覧）
         let sql_table = c == ' '
@@ -286,10 +286,10 @@ impl Editor {
         let cand = &st.all[i];
         let abs = self.abs();
         // すでに後ろに ( があれば括弧は足さない
-        let after = self.buf.slice_string(abs, (abs + 1).min(self.buf.len_bytes()));
+        let after = self.core.buf.slice_string(abs, (abs + 1).min(self.core.buf.len_bytes()));
         let name = cand.insert.clone().unwrap_or_else(|| cand.name.clone());
         // import を足す（足せなければ言語が決めた別の書き方で。Java は完全な名前）
-        let plan = cand.import.as_deref().map(|key| self.language().import_plan(&self.buf.text(), &name, key));
+        let plan = cand.import.as_deref().map(|key| self.language().import_plan(&self.core.buf.text(), &name, key));
         let name = match &plan {
             Some(nagi_lang::lang::Import::Qualified(q)) => q.clone(),
             _ => name,
@@ -338,7 +338,7 @@ mod tests {
         let main = "public class App {\n  void run(User user) {\n    user.\n  }\n}\n";
         std::fs::write(dir.join("src/App.java"), main).unwrap();
         let mut e = Editor::new(Buffer::open(&dir.join("src/App.java")).unwrap(), None);
-        e.buf.path = Some(dir.join("src/App.java"));
+        e.core.buf.path = Some(dir.join("src/App.java"));
         e.set_screen(120, 40);
         e.start_index();
         for _ in 0..500 {
@@ -361,11 +361,11 @@ mod tests {
         assert_eq!(e.panels.completion.as_ref().unwrap().items[0], "getName");
         // Enter で決める（引数なしは () の後へ）
         keys(&mut e, "<CR>");
-        assert_eq!(e.buf.line(2), "    user.getName()");
+        assert_eq!(e.core.buf.line(2), "    user.getName()");
         assert!(e.panels.completion.is_none());
         // setName は引数があるので括弧の中へ
         keys(&mut e, ";<CR>user.<C-Space>setN<Tab>x");
-        assert_eq!(e.buf.line(3), "    user.setName(x)");
+        assert_eq!(e.core.buf.line(3), "    user.setName(x)");
         // Esc は一覧だけ閉じる
         keys(&mut e, "<Esc>o<C-Space><Esc>");
         assert_eq!(e.state(), crate::editor::State::Insert);
@@ -406,7 +406,7 @@ mod tests {
             s.parse(&mut buf);
         }
         let mut e = Editor::new(buf, syn);
-        e.buf.path = Some(std::path::PathBuf::from("App.java"));
+        e.core.buf.path = Some(std::path::PathBuf::from("App.java"));
         e.set_screen(120, 40);
         keys(&mut e, "10GA<C-Space>");
         let names = e.panels.completion.as_ref().map(|c| c.items.clone()).unwrap_or_default();
@@ -425,13 +425,13 @@ mod tests {
     fn keywords_follow_the_place() {
         let lang = |e: &mut Editor, src: &str, at_line: usize, typed: &str| -> Vec<String> {
             let mut buf = Buffer::from_str(src);
-            let mut syn = nagi_syntax::Syntax::new(if e.buf.path.as_ref().is_some_and(|p| p.extension().is_some_and(|x| x == "ts")) { nagi_syntax::Lang::TypeScript } else { nagi_syntax::Lang::Java });
+            let mut syn = nagi_syntax::Syntax::new(if e.core.buf.path.as_ref().is_some_and(|p| p.extension().is_some_and(|x| x == "ts")) { nagi_syntax::Lang::TypeScript } else { nagi_syntax::Lang::Java });
             if let Some(s) = &mut syn {
                 s.parse(&mut buf);
             }
-            let path = e.buf.path.clone();
+            let path = e.core.buf.path.clone();
             *e = Editor::new(buf, syn);
-            e.buf.path = path;
+            e.core.buf.path = path;
             e.set_screen(120, 40);
             keys(e, &format!("{at_line}GA{typed}<C-Space>"));
             let v = e.panels.completion.as_ref().map(|c| c.items.clone()).unwrap_or_default();
@@ -439,7 +439,7 @@ mod tests {
             v
         };
         let mut e = Editor::new(Buffer::from_str(""), None);
-        e.buf.path = Some(std::path::PathBuf::from("A.java"));
+        e.core.buf.path = Some(std::path::PathBuf::from("A.java"));
         let java = "class A {\n  void f(boolean x) {\n    for (int i = 0; i < 3; i++) {\n      \n    }\n    if (x) {\n      f(x);\n    }\n    \n  }\n  \n}\n";
         let has = |v: &[String], k: &str| v.iter().any(|x| x == k);
         let v = lang(&mut e, java, 4, "br");
@@ -455,7 +455,7 @@ mod tests {
         let v = lang(&mut e, java, 9, "Object o = n");
         assert!(has(&v, "new") && has(&v, "null") && !has(&v, "native"), "{v:?}");
         // TypeScript
-        e.buf.path = Some(std::path::PathBuf::from("a.ts"));
+        e.core.buf.path = Some(std::path::PathBuf::from("a.ts"));
         let ts = "class A {\n  \n  f(x: boolean) {\n    for (const i of [1]) {\n      \n    }\n    try {\n      g();\n    }\n    \n  }\n}\n";
         let v = lang(&mut e, ts, 5, "co");
         assert!(has(&v, "continue") && has(&v, "const"), "{v:?}");
@@ -479,7 +479,7 @@ mod tests {
             s.parse(&mut buf);
         }
         let mut e = Editor::new(buf, syn);
-        e.buf.path = Some(std::path::PathBuf::from("svc.ts"));
+        e.core.buf.path = Some(std::path::PathBuf::from("svc.ts"));
         e.set_screen(120, 40);
         keys(&mut e, "11GA<C-Space>");
         let names = e.panels.completion.as_ref().map(|c| c.items.clone()).unwrap_or_default();
@@ -507,16 +507,16 @@ mod tests {
         let ix = JarIndex::load(&[JarSource { path: &ct, keep: &keep, tag: "t" }], &dir.join("jars"));
         std::fs::write(dir.join("App.java"), "package app;\n\nclass App {\n  void f() {\n    \n  }\n}\n").unwrap();
         let mut e = Editor::new(Buffer::open(&dir.join("App.java")).unwrap(), None);
-        e.buf.path = Some(dir.join("App.java"));
+        e.core.buf.path = Some(dir.join("App.java"));
         e.set_screen(120, 40);
         e.nav.libs.set(nagi_lang::eco::JVM, std::sync::Arc::new(ix));
         // 小文字で打っても型を出す。決めると import を足す
         keys(&mut e, "5G$aarrayLi<C-Space>");
-        let c = e.panels.completion.as_ref().unwrap_or_else(|| panic!("{} / {:?}", e.svc.notify.text, e.buf.line(4)));
+        let c = e.panels.completion.as_ref().unwrap_or_else(|| panic!("{} / {:?}", e.svc.notify.text, e.core.buf.line(4)));
         assert_eq!(c.items[0], "ArrayList", "{:?}", c.items);
         keys(&mut e, "<CR>");
-        assert_eq!(e.buf.text(), "package app;\n\nimport java.util.ArrayList;\n\nclass App {\n  void f() {\n    ArrayList\n  }\n}\n");
-        assert_eq!((e.cursor.line, e.cursor.byte), (6, 13), "カーソルは入れた名前の後");
+        assert_eq!(e.core.buf.text(), "package app;\n\nimport java.util.ArrayList;\n\nclass App {\n  void f() {\n    ArrayList\n  }\n}\n");
+        assert_eq!((e.core.cursor.line, e.core.cursor.byte), (6, 13), "カーソルは入れた名前の後");
         // 同じ単純名が 2 つ（java.util.List と java.awt.List）なら両方を出す。2 つ目は名前の順で後ろ
         keys(&mut e, " <Esc>o");
         keys(&mut e, "Lis<C-Space>");
@@ -525,7 +525,7 @@ mod tests {
         assert!(notes.contains(&"java.util".to_string()) && notes.contains(&"java.awt".to_string()), "{notes:?}");
         // java.lang は import しない
         keys(&mut e, "<Esc><Esc>oStringBui<C-Space><CR>");
-        assert!(!e.buf.text().contains("import java.lang"), "{}", e.buf.text());
+        assert!(!e.core.buf.text().contains("import java.lang"), "{}", e.core.buf.text());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -542,7 +542,7 @@ mod tests {
         let ix = JarIndex::load(&[JarSource { path: &ct, keep: &keep, tag: "m" }], &dir.join("jars"));
         std::fs::write(dir.join("App.java"), "package app;\n\nimport java.util.*;\nimport static java.util.Collections.emptyList;\n\nclass App {\n  void f(List<String> names, Map<String, List<Integer>> byName) {\n    var xs = new ArrayList<Integer>();\n    var s = names.get(0);\n  }\n}\n").unwrap();
         let mut e = Editor::new(Buffer::open(&dir.join("App.java")).unwrap(), None);
-        e.buf.path = Some(dir.join("App.java"));
+        e.core.buf.path = Some(dir.join("App.java"));
         e.set_screen(120, 40);
         e.nav.libs.set(nagi_lang::eco::JVM, std::sync::Arc::new(ix));
         // プロジェクトの型のメソッドが返す型引数つきの型（List<String>）
@@ -619,13 +619,13 @@ mod tests {
         assert!(has(&v, &["of"]), "import していない完全な名前: {v:?}");
         // 決めると () を入れる（引数があれば中へ）
         keys(&mut e, "9GA<CR>names.siz<C-Space><CR>");
-        assert_eq!(e.buf.line(9).trim(), "names.size()");
+        assert_eq!(e.core.buf.line(9).trim(), "names.size()");
         // 定義へ（gd）: ライブラリのメソッドは JDK の src.zip のソースへ（無ければ骨組み）
         e.nav.sources_dir = Some(dir.join("sources"));
         keys(&mut e, "<Esc>0fzgd");
-        let p = e.buf.path.clone().unwrap();
+        let p = e.core.buf.path.clone().unwrap();
         assert!(p.ends_with("java/util/List.java") || p.ends_with("java\\util\\List.java"), "{}: {}", p.display(), e.svc.notify.text);
-        assert!(e.buf.line(e.cursor.line).contains("size()"), "{}", e.buf.line(e.cursor.line));
+        assert!(e.core.buf.line(e.core.cursor.line).contains("size()"), "{}", e.core.buf.line(e.core.cursor.line));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -647,7 +647,7 @@ mod tests {
         )
         .unwrap();
         let mut e = Editor::new(Buffer::open(&dir.join("App.kt")).unwrap(), None);
-        e.buf.path = Some(dir.join("App.kt"));
+        e.core.buf.path = Some(dir.join("App.kt"));
         e.set_screen(120, 40);
         e.nav.libs.set(nagi_lang::eco::JVM, std::sync::Arc::new(ix));
         unsafe { std::env::set_var("NAGI_INDEX_DIR", dir.join("cache")) };
@@ -684,14 +684,14 @@ mod tests {
         assert!(pos.is_some(), "{:?}", e.panels.completion.as_ref().map(|c| c.items.clone()));
         e.panels.completion.as_mut().unwrap().sel = pos;
         keys(&mut e, "<CR><Esc>");
-        assert!(e.buf.text().contains("import java.util.UUID\nimport java.util.Optional\n"), "{}", e.buf.text());
+        assert!(e.core.buf.text().contains("import java.util.UUID\nimport java.util.Optional\n"), "{}", e.core.buf.text());
         keys(&mut e, "u");
         // 定義へ（gd）: JDK のソース（無ければ骨組み）の UUID の randomUUID
         e.nav.sources_dir = Some(dir.join("sources"));
         keys(&mut e, "<Esc>8G0frgd");
-        let p = e.buf.path.clone().unwrap();
+        let p = e.core.buf.path.clone().unwrap();
         assert!(p.ends_with("java/util/UUID.java") || p.ends_with("java\\util\\UUID.java"), "{}: {}", p.display(), e.svc.notify.text);
-        assert!(e.buf.line(e.cursor.line).contains("randomUUID"), "{}", e.buf.line(e.cursor.line));
+        assert!(e.core.buf.line(e.core.cursor.line).contains("randomUUID"), "{}", e.core.buf.line(e.core.cursor.line));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -709,7 +709,7 @@ mod tests {
         )
         .unwrap();
         let mut e = Editor::new(Buffer::open(&dir.join("src/lib.rs")).unwrap(), None);
-        e.buf.path = Some(dir.join("src/lib.rs"));
+        e.core.buf.path = Some(dir.join("src/lib.rs"));
         e.set_screen(120, 40);
         unsafe { std::env::set_var("NAGI_INDEX_DIR", dir.join("cache")) };
         e.start_index();
@@ -767,7 +767,7 @@ mod tests {
         std::fs::write(dir.join("src/page.component.html"), "<p>x</p>\n").unwrap();
         let path = dir.join("src/page.component.html");
         let mut e = Editor::new(Buffer::open(&path).unwrap(), None);
-        e.buf.path = Some(path);
+        e.core.buf.path = Some(path);
         e.set_screen(120, 40);
         unsafe { std::env::set_var("NAGI_INDEX_DIR", dir.join("cache")) };
         e.start_index();
@@ -816,7 +816,7 @@ mod tests {
         std::fs::write(lib.join("lib.es5.d.ts"), "interface String {\n  trimEnd(): string;\n}\n").unwrap();
         std::fs::write(dir.join("a.ts"), "export function f(s: string) {\n}\n").unwrap();
         let mut e = Editor::new(Buffer::open(&dir.join("a.ts")).unwrap(), None);
-        e.buf.path = Some(dir.join("a.ts"));
+        e.core.buf.path = Some(dir.join("a.ts"));
         e.set_screen(120, 40);
         e.start_index();
         for _ in 0..500 {
@@ -859,7 +859,7 @@ mod tests {
         std::fs::write(pkg.join("index.d.ts"), "export interface Res<T> { body: T; status: number }\nexport declare class HttpClient {\n  get<T>(url: string): Res<T>;\n}\n").unwrap();
         std::fs::write(dir.join("app.ts"), "import { HttpClient } from '@acme/http';\n\ninterface User { name: string }\n\nexport class App {\n  constructor(private http: HttpClient) {}\n  run(users: User[]) {\n  }\n}\n").unwrap();
         let mut e = Editor::new(Buffer::open(&dir.join("app.ts")).unwrap(), None);
-        e.buf.path = Some(dir.join("app.ts"));
+        e.core.buf.path = Some(dir.join("app.ts"));
         e.set_screen(120, 40);
         e.start_index();
         e.nav.libs.set(nagi_lang::eco::JS, std::sync::Arc::new(nagi_lang::eco::dts::DtsIndex::load(&dir)));
@@ -891,13 +891,13 @@ mod tests {
         assert!(has(&v, &["map", "find"]), "const の初期値: {v:?}");
         // パッケージの名前を決めると import を足す（同じモジュールの import の { } の中へ）
         keys(&mut e, "7GA<CR>let r: Re<C-Space><CR><Esc>");
-        assert_eq!(e.buf.line(0), "import { HttpClient, Res } from '@acme/http';", "{}", e.buf.text());
+        assert_eq!(e.core.buf.line(0), "import { HttpClient, Res } from '@acme/http';", "{}", e.core.buf.text());
         keys(&mut e, "uu");
-        assert_eq!(e.buf.line(0), "import { HttpClient } from '@acme/http';");
+        assert_eq!(e.core.buf.line(0), "import { HttpClient } from '@acme/http';");
         // 定義へ（gd）: パッケージの .d.ts のメソッドの宣言の行
         keys(&mut e, "7GA<CR>this.http.get('/u');<Esc>0fggd");
-        assert!(e.buf.path.as_ref().unwrap().ends_with("index.d.ts"), "{:?} {}", e.buf.path, e.svc.notify.text);
-        assert!(e.buf.line(e.cursor.line).contains("get<T>(url: string)"), "{}", e.buf.line(e.cursor.line));
+        assert!(e.core.buf.path.as_ref().unwrap().ends_with("index.d.ts"), "{:?} {}", e.core.buf.path, e.svc.notify.text);
+        assert!(e.core.buf.line(e.core.cursor.line).contains("get<T>(url: string)"), "{}", e.core.buf.line(e.core.cursor.line));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -978,26 +978,26 @@ mod tests {
         let t0 = std::time::Instant::now();
         for p in rate_files(&root).iter().filter(|p| only.as_ref().is_none_or(|o| p.to_string_lossy().contains(o.as_str()))) {
             let Ok(buf) = Buffer::open(p) else { continue };
-            e.buf = buf;
-            e.buf.path = Some(p.to_path_buf());
+            e.core.buf = buf;
+            e.core.buf.path = Some(p.to_path_buf());
             e.syntax = nagi_syntax::Lang::detect(p).and_then(nagi_syntax::Syntax::new);
             if let Some(s) = &mut e.syntax {
-                s.parse(&mut e.buf);
+                s.parse(&mut e.core.buf);
             }
-            let text = e.buf.text();
+            let text = e.core.buf.text();
             let lx = e.language().lexis();
             let blank = nagi_lang::text::blank_literals(lx, &text);
             let kws = lang_kws(&e);
             // TypeScript はこれらの後が宣言する名前（Java は型）
             let ts = p.extension().is_some_and(|x| x == "ts");
             let rel = p.strip_prefix(&root).unwrap_or(p).to_string_lossy().replace('\\', "/");
-            for li in 0..e.buf.line_count() {
-                let line = e.buf.line(li).to_string();
+            for li in 0..e.core.buf.line_count() {
+                let line = e.core.buf.line(li).to_string();
                 let t = line.trim_start();
                 if ["import", "package", "@"].iter().any(|x| t.starts_with(x)) {
                     continue;
                 }
-                let ls = e.buf.line_start(li);
+                let ls = e.core.buf.line_start(li);
                 let code = &blank[ls..ls + line.len().min(blank.len() - ls)];
                 for m in word.find_iter(code) {
                     let name = m.as_str();
@@ -1021,7 +1021,7 @@ mod tests {
                         continue;
                     }
                     let start = ls + ws;
-                    e.cursor.byte = ws + typed;
+                    e.core.cursor.byte = ws + typed;
                     let t1 = std::time::Instant::now();
                     let c = e.smart_candidates(&line, ws, start);
                     let us = t1.elapsed().as_micros();
@@ -1098,10 +1098,10 @@ mod tests {
         for p in files.iter().step_by(step).filter(|p| only.as_ref().is_none_or(|o| p.to_string_lossy().contains(o.as_str()))) {
             let p = p.as_path();
             let Ok(buf) = Buffer::open(p) else { continue };
-            e.buf = buf;
-            e.buf.path = Some(p.to_path_buf());
-            for li in 0..e.buf.line_count() {
-                let line = e.buf.line(li).to_string();
+            e.core.buf = buf;
+            e.core.buf.path = Some(p.to_path_buf());
+            for li in 0..e.core.buf.line_count() {
+                let line = e.core.buf.line(li).to_string();
                 let t = line.trim_start();
                 if ["import", "package", "//", "*", "/*", "@"].iter().any(|x| t.starts_with(x)) {
                     continue;
@@ -1113,7 +1113,7 @@ mod tests {
                         continue;
                     }
                     let ws = g.start();
-                    let start = e.buf.line_start(li) + ws;
+                    let start = e.core.buf.line_start(li) + ws;
                     let t1 = std::time::Instant::now();
                     let c = e.smart_candidates(&line, ws, start);
                     let us = t1.elapsed().as_micros();
@@ -1136,7 +1136,7 @@ mod tests {
                     }
                     slow.push((us, format!("{}:{} {}", p.file_name().unwrap().to_string_lossy(), li + 1, line.trim())));
                     // 受け手の式（呼び出しの引数は省く）
-                    let before = nagi_lang::text::with_previous_lines(nagi_lang::java::types::LX, &e.buf.text(), e.buf.line_start(li), &line[..ws - 1]);
+                    let before = nagi_lang::text::with_previous_lines(nagi_lang::java::types::LX, &e.core.buf.text(), e.core.buf.line_start(li), &line[..ws - 1]);
                     let before = before.as_str();
                     let recv = match nagi_lang::text::chain_start(nagi_lang::java::types::LX, before) {
                         Some(i) => {

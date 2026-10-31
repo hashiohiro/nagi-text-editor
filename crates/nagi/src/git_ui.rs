@@ -54,7 +54,7 @@ fn abs(p: &Path) -> PathBuf {
 impl Editor {
     /// 作業ツリーの根を決めて、status と今のファイルの HEAD の版を取りに行く（App が表示の後に呼ぶ）
     pub fn start_git(&mut self) {
-        let base = self.buf.path.as_deref().map(abs).or_else(|| Some(self.cwd.clone()));
+        let base = self.core.buf.path.as_deref().map(abs).or_else(|| Some(self.cwd.clone()));
         self.svc.git.root = base.as_deref().and_then(nagi_workers::git::repo_root).map(|r| abs(&r));
         if self.svc.git.root.is_some() {
             self.watch_git_dir();
@@ -246,10 +246,10 @@ impl Editor {
 
     /// 作業中のバッファの差分
     pub(crate) fn current_hunks(&mut self) -> Vec<Hunk> {
-        let Some(p) = self.buf.path.clone() else { return Vec::new() };
-        let buf = std::mem::replace(&mut self.buf, nagi_core::Buffer::from_str(""));
+        let Some(p) = self.core.buf.path.clone() else { return Vec::new() };
+        let buf = std::mem::replace(&mut self.core.buf, nagi_core::Buffer::from_str(""));
         let h = self.hunks_of(&p, &buf);
-        self.buf = buf;
+        self.core.buf = buf;
         h.unwrap_or_default()
     }
 
@@ -259,7 +259,7 @@ impl Editor {
             return;
         }
         self.current_hunks();
-        let parked: Vec<usize> = (0..self.wins.len()).filter_map(|w| self.win_state(w)).map(|s| s.doc).filter(|&d| d != self.cur_doc).collect();
+        let parked: Vec<usize> = (0..self.core.wins.len()).filter_map(|w| self.win_state(w)).map(|s| s.doc).filter(|&d| d != self.core.cur_doc).collect();
         for d in parked {
             let Some(doc) = self.parked_doc(d) else { continue };
             let Some(p) = doc.buf.path.clone() else { continue };
@@ -311,9 +311,9 @@ impl Editor {
             self.svc.notify.info("変更はありません");
             return;
         }
-        let line = self.cursor.line;
+        let line = self.core.cursor.line;
         let mut target = None;
-        let starts: Vec<usize> = hunks.iter().map(|h| h.new.start.min(self.buf.line_count().saturating_sub(1))).collect();
+        let starts: Vec<usize> = hunks.iter().map(|h| h.new.start.min(self.core.buf.line_count().saturating_sub(1))).collect();
         let mut cur = line;
         for _ in 0..count.max(1) {
             let t = if next { starts.iter().copied().find(|&s| s > cur) } else { starts.iter().rev().copied().find(|&s| s < cur) };
@@ -328,7 +328,7 @@ impl Editor {
         match target {
             Some(t) => {
                 self.push_jump();
-                self.cursor.line = t;
+                self.core.cursor.line = t;
                 self.with_motion(|m, c| m.first_non_blank(c));
                 // ポップアップを開いていれば、移った先の変更を見せる
                 if self.svc.git.popup.is_some() {
@@ -340,7 +340,7 @@ impl Editor {
     }
 
     fn hunk_at_cursor(&self, hunks: &[Hunk]) -> Option<usize> {
-        let l = self.cursor.line;
+        let l = self.core.cursor.line;
         hunks.iter().position(|h| (h.kind == HunkKind::Del && h.new.start == l) || h.new.contains(&l)).or_else(|| hunks.iter().position(|h| h.kind == HunkKind::Del && h.new.start == l + 1))
     }
 
@@ -376,12 +376,12 @@ impl Editor {
     /// ポップアップに出す (古い行, 新しい行, まとまりの始まりの行) を作業中のバッファについて
     pub fn popup_lines(&self) -> Option<(Vec<String>, Vec<String>, Hunk)> {
         let i = self.svc.git.popup?;
-        let p = abs(self.buf.path.as_deref()?);
+        let p = abs(self.core.buf.path.as_deref()?);
         let (_, hunks) = self.svc.git.hunks.get(&p)?;
         let h = hunks.get(i)?.clone();
         let head = self.svc.git.heads.get(&p)?.clone();
         let old: Vec<String> = head.as_deref().map(|t| split_lines(t)[h.old.clone()].iter().map(|s| s.to_string()).collect()).unwrap_or_default();
-        let new: Vec<String> = h.new.clone().map(|l| self.buf.line(l)).collect();
+        let new: Vec<String> = h.new.clone().map(|l| self.core.buf.line(l)).collect();
         Some((old, new, h))
     }
 
@@ -398,19 +398,19 @@ impl Editor {
         }) else {
             return;
         };
-        let nl = self.buf.newline().to_string();
-        let total = self.buf.line_count();
-        let start = if h.new.start < total { self.buf.line_start(h.new.start) } else { self.buf.len_bytes() };
-        let end = if h.new.end < total { self.buf.line_start(h.new.end) } else { self.buf.len_bytes() };
+        let nl = self.core.buf.newline().to_string();
+        let total = self.core.buf.line_count();
+        let start = if h.new.start < total { self.core.buf.line_start(h.new.start) } else { self.core.buf.len_bytes() };
+        let end = if h.new.end < total { self.core.buf.line_start(h.new.end) } else { self.core.buf.len_bytes() };
         let mut text: String = old.iter().map(|l| format!("{l}{nl}")).collect();
         // ファイルの最後の行（改行が無い）を置き換えるときは、末尾の改行を付けない
-        if end == self.buf.len_bytes() && !self.buf.slice_string(start, end).ends_with('\n') && text.ends_with(&nl) && h.new.end >= total {
+        if end == self.core.buf.len_bytes() && !self.core.buf.slice_string(start, end).ends_with('\n') && text.ends_with(&nl) && h.new.end >= total {
             text.truncate(text.len() - nl.len());
         }
-        self.hist.begin();
+        self.core.hist.begin();
         self.edit(start, end, &text);
-        self.hist.close();
-        self.cursor.line = h.new.start.min(self.buf.line_count().saturating_sub(1));
+        self.core.hist.close();
+        self.core.cursor.line = h.new.start.min(self.core.buf.line_count().saturating_sub(1));
         self.with_motion(|m, c| m.first_non_blank(c));
         self.svc.git.popup = None;
         self.svc.notify.info("変更を戻しました（u で取り消し）");
@@ -424,7 +424,7 @@ impl Editor {
             return;
         };
         self.svc.git.popup = Some(i);
-        let (Some((old, new, h)), Some(root), Some(path)) = (self.popup_lines(), self.svc.git.root.clone(), self.buf.path.as_deref().map(abs)) else { return };
+        let (Some((old, new, h)), Some(root), Some(path)) = (self.popup_lines(), self.svc.git.root.clone(), self.core.buf.path.as_deref().map(abs)) else { return };
         let Ok(rel) = path.strip_prefix(&root) else { return };
         let rel = rel.to_string_lossy().replace('\\', "/");
         let new_file = self.svc.git.heads.get(&path).is_some_and(Option::is_none);
@@ -489,17 +489,17 @@ pub(crate) mod draw {
         let cell = p.fonts.cell();
         let rect = ed.active_rect();
         let last = if new.is_empty() { h.new.start.saturating_sub(1) } else { h.new.end - 1 };
-        if last < ed.top {
+        if last < ed.core.top {
             return;
         }
-        let below = rect.y + (last - ed.top) + 1;
+        let below = rect.y + (last - ed.core.top) + 1;
         let x0 = rect.x + ed.gutter() - 1;
         let w = rect.w.saturating_sub(ed.gutter()).min(110).max(40).min(cols.saturating_sub(x0));
         let n_old = old.len().min(MAX_LINES);
         let n_new = new.len().min(MAX_LINES);
         let h_rows = 1 + n_old + n_new;
         // 下に入らなければ、まとまりの上に出す
-        let top = if below + h_rows <= rows { below } else { (rect.y + h.new.start.saturating_sub(ed.top)).saturating_sub(h_rows) };
+        let top = if below + h_rows <= rows { below } else { (rect.y + h.new.start.saturating_sub(ed.core.top)).saturating_sub(h_rows) };
         let (x, y0) = (x0 as f32 * cell.w, top as f32 * cell.h);
         popup_frame(p, x, y0, w as f32 * cell.w, h_rows as f32 * cell.h);
         let saved = p.cols;
@@ -576,15 +576,15 @@ mod tests {
         e.start_git();
         settle(&mut e);
         assert_eq!(e.git_branch_label().as_deref(), Some("main"));
-        let m = e.git_markers(e.buf.path.as_deref());
+        let m = e.git_markers(e.core.buf.path.as_deref());
         assert_eq!((m.get(&1), m.get(&4), m.get(&6)), (Some(&Marker::Mod), Some(&Marker::Add), Some(&Marker::DelAbove)));
         // ]c で次の変更へ
         keys(&mut e, "]c");
-        assert_eq!(e.cursor.line, 1);
+        assert_eq!(e.core.cursor.line, 1);
         keys(&mut e, "]c");
-        assert_eq!(e.cursor.line, 4);
+        assert_eq!(e.core.cursor.line, 4);
         keys(&mut e, "[c");
-        assert_eq!(e.cursor.line, 1);
+        assert_eq!(e.core.cursor.line, 1);
         // ポップアップを開いて、2 行目の変更をステージ
         e.open_hunk_popup();
         let (old, new, _) = e.popup_lines().unwrap();
@@ -596,9 +596,9 @@ mod tests {
         keys(&mut e, "5G");
         e.open_hunk_popup();
         keys(&mut e, "u");
-        assert_eq!(e.buf.text(), "1\nTWO\n3\n4\n5\n");
+        assert_eq!(e.core.buf.text(), "1\nTWO\n3\n4\n5\n");
         keys(&mut e, "u");
-        assert_eq!(e.buf.text(), "1\nTWO\n3\n4\nnew\n5\n", "u で取り消せる");
+        assert_eq!(e.core.buf.text(), "1\nTWO\n3\n4\nnew\n5\n", "u で取り消せる");
     }
 
     /// 木の色分け: ファイルの状態と、管理されている変更を含むフォルダ（管理対象外だけのフォルダは含めない）

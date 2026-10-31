@@ -75,7 +75,7 @@ impl Editor {
         if c != 'f' {
             self.ensure_syntax();
         }
-        let line = self.cursor.line;
+        let line = self.core.cursor.line;
         let syntax_folds = |ed: &Editor, all: bool| -> Option<Vec<(usize, usize)>> {
             let s = ed.syntax.as_ref()?;
             Some(if all { s.all_folds() } else { s.folds_at(line) })
@@ -88,11 +88,11 @@ impl Editor {
                     }
                 }
                 self.set_state(State::Normal);
-                self.cursor.line = visual.map_or(line, |v| v.0);
+                self.core.cursor.line = visual.map_or(line, |v| v.0);
             }
             'c' | 'a' if c == 'c' || self.folds.outer_at(line).is_none() => {
                 if let Some(s) = &mut self.syntax {
-                    s.sync(&mut self.buf);
+                    s.sync(&mut self.core.buf);
                 }
                 let Some(cands) = syntax_folds(self, false) else {
                     self.svc.notify.error("E490: 折りたたみがありません（構文木の無いファイルは Visual の zf で作る）");
@@ -116,7 +116,7 @@ impl Editor {
             }
             'M' => {
                 if let Some(s) = &mut self.syntax {
-                    s.sync(&mut self.buf);
+                    s.sync(&mut self.core.buf);
                 }
                 if let Some(all) = syntax_folds(self, true) {
                     for f in all {
@@ -132,18 +132,18 @@ impl Editor {
                 all.extend(self.folds.closed.iter().copied());
                 let to = if c == 'j' { all.iter().map(|f| f.0).filter(|&s| s > line).min() } else { all.iter().map(|f| f.1).filter(|&e| e < line).max() };
                 if let Some(l) = to {
-                    self.cursor.line = l;
+                    self.core.cursor.line = l;
                 }
             }
             _ => {}
         }
-        self.cursor.line = self.folds.snap(self.cursor.line);
+        self.core.cursor.line = self.folds.snap(self.core.cursor.line);
         self.clamp_normal();
     }
 
     /// 行の操作の範囲: 見える行で `n` 本（閉じた折りたたみは丸ごと 1 本）の最後の行
     pub(crate) fn fold_extend(&self, from: usize, n: usize) -> usize {
-        let total = self.buf.line_count();
+        let total = self.core.buf.line_count();
         let mut l = self.folds.snap(from);
         for _ in 1..n {
             match self.folds.next_visible(l, total) {
@@ -156,7 +156,7 @@ impl Editor {
 
     /// 縦の移動の行き先（閉じた折りたたみを 1 行として数える）
     pub(crate) fn fold_vertical(&self, from: usize, d: isize) -> usize {
-        let total = self.buf.line_count();
+        let total = self.core.buf.line_count();
         let mut l = self.folds.snap(from);
         for _ in 0..d.unsigned_abs() {
             let next = if d > 0 { self.folds.next_visible(l, total) } else { self.folds.prev_visible(l) };
@@ -170,20 +170,20 @@ impl Editor {
 
     /// カーソルが閉じた折りたたみの途中にあれば、その折りたたみを開く（跳んだ先を見せる）
     pub(crate) fn open_folds_at_cursor(&mut self) {
-        let line = self.cursor.line;
+        let line = self.core.cursor.line;
         self.folds.closed.retain(|&(s, e)| !(s < line && line <= e));
     }
 
     /// `zz` `zt` `zb`: カーソルの行を画面の中央・上・下へ
     pub(crate) fn scroll_cursor(&mut self, c: char) {
         let rows = self.rows.max(1);
-        let line = self.cursor.line;
-        self.top = match c {
+        let line = self.core.cursor.line;
+        self.core.top = match c {
             't' => line,
             'b' => line.saturating_sub(rows - 1),
             _ => line.saturating_sub(rows / 2),
         };
-        self.frac = 0.0;
+        self.core.frac = 0.0;
     }
 }
 
@@ -215,16 +215,16 @@ mod tests {
         // 関数 a の中で zc → a 全体（0〜3 行）を閉じ、カーソルは頭の行へ
         keys(&mut e, "jzc");
         assert_eq!(e.folds.closed, vec![(0, 3)]);
-        assert_eq!(e.cursor.line, 0);
+        assert_eq!(e.core.cursor.line, 0);
         // j は折りたたみを 1 行として飛ばす
         keys(&mut e, "j");
-        assert_eq!(e.cursor.line, 4);
+        assert_eq!(e.core.cursor.line, 4);
         keys(&mut e, "k");
-        assert_eq!(e.cursor.line, 0);
-        assert_eq!(e.folds.visible_from(0, 10, e.buf.line_count()), vec![0, 4, 5, 6, 7]);
+        assert_eq!(e.core.cursor.line, 0);
+        assert_eq!(e.folds.visible_from(0, 10, e.core.buf.line_count()), vec![0, 4, 5, 6, 7]);
         // dd は折りたたみ全体を消す（折りたたみも消える）
         keys(&mut e, "dd");
-        assert_eq!(e.buf.line(0), "fn b() {");
+        assert_eq!(e.core.buf.line(0), "fn b() {");
         assert!(e.folds.is_empty());
         // zM で全部、zR で全部開く。za で切り替え
         keys(&mut e, "zM");
@@ -232,7 +232,7 @@ mod tests {
         keys(&mut e, "za");
         assert!(e.folds.is_empty());
         keys(&mut e, "zaj");
-        assert_eq!(e.cursor.line, 3, "閉じた b を飛ばして end へ");
+        assert_eq!(e.core.cursor.line, 3, "閉じた b を飛ばして end へ");
         keys(&mut e, "zR");
         assert!(e.folds.is_empty());
     }
@@ -243,7 +243,7 @@ mod tests {
         keys(&mut e, "zc");
         // 検索で中へ跳ぶと開く
         keys(&mut e, "/let y<CR>");
-        assert_eq!(e.cursor.line, 2);
+        assert_eq!(e.core.cursor.line, 2);
         assert!(e.folds.is_empty());
         // 中を編集したら開く（a の頭の行を消すと a だけ開く）
         keys(&mut e, "ggzc5Gzc");
@@ -260,6 +260,6 @@ mod tests {
         keys(&mut e, "jVjzf");
         assert_eq!(e.folds.closed, vec![(1, 2)]);
         keys(&mut e, "ggjj");
-        assert_eq!(e.cursor.line, 3);
+        assert_eq!(e.core.cursor.line, 3);
     }
 }

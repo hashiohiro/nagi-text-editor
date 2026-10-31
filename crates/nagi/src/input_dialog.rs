@@ -54,9 +54,9 @@ impl Editor {
 
     /// 行へ移動（IntelliJ の Go to Line:Column）。`行` か `行:列` を打つ
     pub(crate) fn goto_line_dialog(&mut self) {
-        let total = self.buf.line_count();
-        let col = self.buf.line(self.cursor.line)[..self.cursor.byte.min(self.buf.line_len(self.cursor.line))].chars().count() + 1;
-        let here = format!("{}:{col}", self.cursor.line + 1);
+        let total = self.core.buf.line_count();
+        let col = self.core.buf.line(self.core.cursor.line)[..self.core.cursor.byte.min(self.core.buf.line_len(self.core.cursor.line))].chars().count() + 1;
+        let here = format!("{}:{col}", self.core.cursor.line + 1);
         self.open_input("行へ移動", "行 [:列]", &here, vec![format!("全 {total} 行")], |e, t| {
             let mut it = t.trim().split(':');
             let Some(line) = it.next().and_then(|s| s.trim().parse::<usize>().ok()).filter(|l| *l > 0) else {
@@ -65,13 +65,13 @@ impl Editor {
             };
             let col = it.next().and_then(|s| s.trim().parse::<usize>().ok()).unwrap_or(1).max(1);
             e.push_jump();
-            let line = (line - 1).min(e.buf.line_count().saturating_sub(1));
-            let text = e.buf.line(line);
-            e.cursor.line = line;
-            e.cursor.byte = text.char_indices().nth(col - 1).map_or(text.len(), |(b, _)| b);
-            e.cursor.want_col = nagi_core::display_col(&text, e.cursor.byte, false);
+            let line = (line - 1).min(e.core.buf.line_count().saturating_sub(1));
+            let text = e.core.buf.line(line);
+            e.core.cursor.line = line;
+            e.core.cursor.byte = text.char_indices().nth(col - 1).map_or(text.len(), |(b, _)| b);
+            e.core.cursor.want_col = nagi_core::display_col(&text, e.core.cursor.byte, false);
             e.clamp_normal();
-            e.top = line.saturating_sub(e.rows / 3);
+            e.core.top = line.saturating_sub(e.rows / 3);
         });
     }
 

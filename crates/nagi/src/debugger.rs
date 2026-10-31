@@ -127,11 +127,11 @@ pub fn class_of(path: &Path, text: &str) -> Option<String> {
 impl Editor {
     /// 今の行のブレークポイントを付ける・外す（F9・:Breakpoint・行番号の欄を押す）
     pub(crate) fn toggle_breakpoint(&mut self, line: Option<usize>) {
-        let Some(path) = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()) else {
+        let Some(path) = self.core.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()) else {
             self.svc.notify.info("ファイル名がありません");
             return;
         };
-        let line = line.unwrap_or(self.cursor.line);
+        let line = line.unwrap_or(self.core.cursor.line);
         let set = self.breakpoints.entry(path.clone()).or_default();
         let on = if set.remove(&line) {
             false
@@ -168,7 +168,7 @@ impl Editor {
         if removed == inserted || self.breakpoints.is_empty() {
             return;
         }
-        let Some(p) = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()) else { return };
+        let Some(p) = self.core.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()) else { return };
         let Some(set) = self.breakpoints.get_mut(&p) else { return };
         let moved: BTreeSet<usize> = set
             .iter()
@@ -192,7 +192,7 @@ impl Editor {
         let mut out = Vec::new();
         for (path, lines) in self.breakpoints.iter().filter(|(p, _)| lang_of(p) == Some(lang)) {
             let class = if lang == Lang::Java {
-                let text = if self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()).as_ref() == Some(path) { self.buf.text() } else { std::fs::read_to_string(path).unwrap_or_default() };
+                let text = if self.core.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()).as_ref() == Some(path) { self.core.buf.text() } else { std::fs::read_to_string(path).unwrap_or_default() };
                 let Some(c) = class_of(path, &text) else { continue };
                 c
             } else {
@@ -247,7 +247,7 @@ impl Editor {
         let configs = self.load_run_configs();
         let want = if name.trim().is_empty() { self.run_selected.clone() } else { Some(name.trim().to_string()) };
         // 今のファイルが Python なら、構成が無くてもそのファイルを
-        let here_py = self.buf.path.as_deref().is_some_and(|p| lang_of(p) == Some(Lang::Python));
+        let here_py = self.core.buf.path.as_deref().is_some_and(|p| lang_of(p) == Some(Lang::Python));
         let picked = want.and_then(|w| configs.iter().find(|c| c.name == w).cloned()).or_else(|| if here_py { self.current_file_config() } else { None }).or_else(|| configs.first().cloned()).or_else(|| self.current_file_config());
         let Some(cfg) = picked else {
             self.svc.notify.info("実行の構成がありません（:DebugTest でカーソルの位置のテスト、:DebugBrowser でブラウザ、:DebugAttach 5005 で動いている JVM へ）");
@@ -842,7 +842,7 @@ mod tests {
             .spawn()
             .unwrap();
         let mut e = Editor::new(nagi_core::Buffer::open(&file).unwrap(), None);
-        e.buf.path = Some(file.clone());
+        e.core.buf.path = Some(file.clone());
         e.cwd = dir.clone();
         e.set_screen(120, 40);
         e.toggle_breakpoint(Some(5));
@@ -917,7 +917,7 @@ mod tests {
         let mut child = nagi_workers::cdp::launch_browser(&exe, port, &url, true).unwrap();
         let file = dir.join("src/a.ts");
         let mut e = Editor::new(nagi_core::Buffer::open(&file).unwrap(), None);
-        e.buf.path = Some(file.clone());
+        e.core.buf.path = Some(file.clone());
         e.cwd = dir.clone();
         e.set_screen(120, 40);
         e.toggle_breakpoint(Some(1));
@@ -947,7 +947,7 @@ mod tests {
             .spawn()
             .unwrap();
         let mut e = Editor::new(nagi_core::Buffer::open(&file).unwrap(), None);
-        e.buf.path = Some(file.clone());
+        e.core.buf.path = Some(file.clone());
         e.cwd = dir.clone();
         e.set_screen(120, 40);
         e.toggle_breakpoint(Some(2));
@@ -967,36 +967,36 @@ mod tests {
     #[test]
     fn click_gutter_toggles_breakpoint() {
         let mut e = Editor::new(nagi_core::Buffer::from_str("a\nb\nc\nd\n"), None);
-        e.buf.path = Some(std::env::temp_dir().join("nagi-bp-click/A.java"));
+        e.core.buf.path = Some(std::env::temp_dir().join("nagi-bp-click/A.java"));
         e.set_screen(120, 40);
         assert!(e.active_rect().x > 0, "枠の分だけ右から");
         // 窓の中の位置（main.rs の mouse_cell と同じ）: 2 行目・行番号の欄の真ん中
         e.click(2, e.gutter() - 2);
-        assert_eq!(e.breaks_for(e.buf.path.as_deref()), [2]);
+        assert_eq!(e.breaks_for(e.core.buf.path.as_deref()), [2]);
         e.click(0, e.gutter() - 2);
-        assert_eq!(e.breaks_for(e.buf.path.as_deref()), [0, 2], "1 行目も");
+        assert_eq!(e.breaks_for(e.core.buf.path.as_deref()), [0, 2], "1 行目も");
         e.click(2, e.gutter() - 2);
-        assert_eq!(e.breaks_for(e.buf.path.as_deref()), [0]);
+        assert_eq!(e.breaks_for(e.core.buf.path.as_deref()), [0]);
         // 本文を押したらカーソルが動くだけ
         e.click(3, e.gutter());
-        assert_eq!((e.cursor.line, e.breaks_for(e.buf.path.as_deref())), (3, vec![0]));
+        assert_eq!((e.core.cursor.line, e.breaks_for(e.core.buf.path.as_deref())), (3, vec![0]));
     }
 
     /// ブレークポイントは編集で行がずれれば一緒に動く
     #[test]
     fn breakpoints_follow_edits() {
         let mut e = Editor::new(nagi_core::Buffer::from_str("a\nb\nc\nd\n"), None);
-        e.buf.path = Some(std::env::temp_dir().join("nagi-bp/A.java"));
+        e.core.buf.path = Some(std::env::temp_dir().join("nagi-bp/A.java"));
         e.toggle_breakpoint(Some(2));
         e.toggle_breakpoint(Some(3));
-        assert_eq!(e.breaks_for(e.buf.path.as_deref()), [2, 3]);
+        assert_eq!(e.breaks_for(e.core.buf.path.as_deref()), [2, 3]);
         e.edit(0, 0, "x\ny\n");
-        assert_eq!(e.breaks_for(e.buf.path.as_deref()), [4, 5]);
-        let s = e.buf.line_start(1);
-        let t = e.buf.line_start(5);
+        assert_eq!(e.breaks_for(e.core.buf.path.as_deref()), [4, 5]);
+        let s = e.core.buf.line_start(1);
+        let t = e.core.buf.line_start(5);
         e.edit(s, t, "");
-        assert_eq!(e.breaks_for(e.buf.path.as_deref()), [1], "消えた行の中のものは、編集の行に");
+        assert_eq!(e.breaks_for(e.core.buf.path.as_deref()), [1], "消えた行の中のものは、編集の行に");
         e.toggle_breakpoint(Some(1));
-        assert!(e.breaks_for(e.buf.path.as_deref()).is_empty());
+        assert!(e.breaks_for(e.core.buf.path.as_deref()).is_empty());
     }
 }

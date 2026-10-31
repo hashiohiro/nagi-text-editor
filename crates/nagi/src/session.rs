@@ -132,7 +132,7 @@ impl Editor {
 
     /// 止まって何秒たったら保存するか（設定が idle のとき）
     pub fn autosave_deadline(&self) -> Option<Instant> {
-        (self.settings.get("editor.autosave") == "idle" && self.buf.dirty && self.buf.path.is_some())
+        (self.settings.get("editor.autosave") == "idle" && self.core.buf.dirty && self.core.buf.path.is_some())
             .then(|| self.last_edit_at.map(|t| t + Duration::from_secs(self.settings.int("editor.autosave_secs") as u64)))
             .flatten()
     }
@@ -167,7 +167,7 @@ mod tests {
         e.settings.set("editor.autosave", "focus", false);
         assert!(e.autosave_deadline().is_none());
         e.autosave(AutoSave::Idle);
-        assert!(e.buf.dirty, "focus では止まっても保存しない");
+        assert!(e.core.buf.dirty, "focus では止まっても保存しない");
         e.autosave(AutoSave::FocusLost);
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "yx\n");
         e.settings.set("editor.autosave", "idle", false);
@@ -187,11 +187,11 @@ mod tests {
             std::fs::write(dir.join(n), t).unwrap();
         }
         let mut e = Editor::new(nagi_core::Buffer::open(&dir.join("a.txt")).unwrap(), None);
-        e.buf.path = Some(dir.join("a.txt"));
+        e.core.buf.path = Some(dir.join("a.txt"));
         e.set_screen(120, 40);
         e.split(true);
         e.edit_file(dir.join("b.txt"));
-        e.cursor.line = 1;
+        e.core.cursor.line = 1;
         e.split(false);
         let w = e.windows_to_save().unwrap();
         let text = render_windows(&w);
@@ -200,7 +200,7 @@ mod tests {
         assert_eq!(back.shape, "(v 1 1 : (h 1 1 : 0 1) 2)");
         // 分けていない窓に戻す
         let mut e2 = Editor::new(nagi_core::Buffer::open(&dir.join("a.txt")).unwrap(), None);
-        e2.buf.path = Some(dir.join("a.txt"));
+        e2.core.buf.path = Some(dir.join("a.txt"));
         e2.set_screen(120, 40);
         e2.edit_file(dir.join("b.txt"));
         e2.restore_saved_windows(back);

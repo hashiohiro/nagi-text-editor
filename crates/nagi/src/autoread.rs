@@ -39,7 +39,7 @@ impl Editor {
     pub fn start_watch(&mut self, rc_files: &[PathBuf]) {
         let waker = self.waker();
         let Some(mut w) = Watcher::new(waker) else { return };
-        if let Some(p) = &self.buf.path {
+        if let Some(p) = &self.core.buf.path {
             w.watch_file(p);
         }
         for p in rc_files {
@@ -63,16 +63,16 @@ impl Editor {
 
     /// バッファ `doc` の (変更あり, 覚えている時刻と大きさ)
     fn doc_disk(&self, doc: usize) -> Option<(bool, Option<nagi_core::DiskStamp>)> {
-        match self.docs.get(doc)? {
-            Slot::Active => Some((self.buf.dirty, self.buf.disk)),
+        match self.core.docs.get(doc)? {
+            Slot::Active => Some((self.core.buf.dirty, self.core.buf.disk)),
             Slot::Parked(d) => Some((d.buf.dirty, d.buf.disk)),
             Slot::Deleted => None,
         }
     }
 
     fn set_doc_disk(&mut self, doc: usize, s: Option<nagi_core::DiskStamp>) {
-        match self.docs.get_mut(doc) {
-            Some(Slot::Active) => self.buf.disk = s,
+        match self.core.docs.get_mut(doc) {
+            Some(Slot::Active) => self.core.buf.disk = s,
             Some(Slot::Parked(d)) => d.buf.disk = s,
             _ => {}
         }
@@ -147,25 +147,25 @@ impl Editor {
             return false;
         }
         let name = p.file_name().map_or(p.display().to_string(), |n| n.to_string_lossy().into_owned());
-        match self.docs.get_mut(doc) {
+        match self.core.docs.get_mut(doc) {
             Some(Slot::Active) => {
-                if self.buf.dirty {
+                if self.core.buf.dirty {
                     return false;
                 }
                 // 中身が同じなら（自分の保存の後に遅れて届いた知らせなど）差し替えも知らせもしない
-                if self.buf.text() == b.text() {
-                    self.buf.disk = b.disk;
+                if self.core.buf.text() == b.text() {
+                    self.core.buf.disk = b.disk;
                     return false;
                 }
-                let path = self.buf.path.clone();
-                self.buf = b;
-                self.buf.path = path;
-                self.hist = History::default();
+                let path = self.core.buf.path.clone();
+                self.core.buf = b;
+                self.core.buf.path = path;
+                self.core.hist = History::default();
                 self.syntax = None;
                 self.pending_syntax = None;
-                let last = self.buf.line_count().saturating_sub(1);
-                self.cursor.line = self.cursor.line.min(last);
-                self.top = self.top.min(last);
+                let last = self.core.buf.line_count().saturating_sub(1);
+                self.core.cursor.line = self.core.cursor.line.min(last);
+                self.core.top = self.core.top.min(last);
                 self.clamp_normal();
                 self.reset_search_cache();
                 self.start_syntax();
@@ -231,9 +231,9 @@ mod tests {
         // 外部で書き換え → 変更が無いので読み直す（カーソルの行は保つ）
         std::thread::sleep(std::time::Duration::from_millis(20));
         std::fs::write(&f, "ONE\nTWO\nTHREE\n").unwrap();
-        assert!(wait(&mut e, |e, _| e.buf.line(0) == "ONE"), "読み直されない: {}", e.svc.notify.text);
+        assert!(wait(&mut e, |e, _| e.core.buf.line(0) == "ONE"), "読み直されない: {}", e.svc.notify.text);
         assert!(e.svc.notify.text.contains("読み直しました"));
-        assert_eq!(e.cursor.line, 1);
+        assert_eq!(e.core.cursor.line, 1);
         // 自分の保存では反応しない
         keys(&mut e, "x:w<CR>");
         e.svc.notify.clear();
@@ -243,7 +243,7 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(20));
         std::fs::write(&f, "outside\n").unwrap();
         assert!(wait(&mut e, |e, _| e.svc.notify.text.starts_with("W12")), "{}", e.svc.notify.text);
-        assert_eq!(e.buf.line(1), "O");
+        assert_eq!(e.core.buf.line(1), "O");
         // 設定ファイルの書き換えは App へ知らせる
         std::fs::write(&rc, "set nonumber\n").unwrap();
         assert!(wait(&mut e, |_, rc| rc));

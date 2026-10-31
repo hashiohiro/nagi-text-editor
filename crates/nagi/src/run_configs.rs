@@ -79,7 +79,7 @@ impl Editor {
 
     /// 開いているファイルをそのまま動かす構成（Python・Node.js・PHP・Ruby・Go）
     pub(crate) fn current_file_config(&self) -> Option<RunConfig> {
-        let f = std::path::absolute(self.buf.path.as_ref()?).ok()?;
+        let f = std::path::absolute(self.core.buf.path.as_ref()?).ok()?;
         runconfig::for_file(&f, &self.nav_root())
     }
 
@@ -181,15 +181,15 @@ impl Editor {
 
     /// カーソルの位置のテストを動かす構成（:RunTest・:DebugTest）。分からなければ知らせて None
     pub(crate) fn test_config(&mut self) -> Option<RunConfig> {
-        let Some(file) = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()) else {
+        let Some(file) = self.core.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()) else {
             self.svc.notify.info("ファイル名がありません");
             return None;
         };
         self.ensure_syntax();
-        let line = self.cursor.line;
+        let line = self.core.cursor.line;
         // カーソルより上のいちばん近い関数・メソッド
         let method = self.syntax.as_ref().and_then(|syn| {
-            syn.defs(&self.buf).into_iter().filter(|d| matches!(d.kind, nagi_syntax::defs::DefKind::Function | nagi_syntax::defs::DefKind::Method) && d.line <= line).max_by_key(|d| d.line).map(|d| d.name)
+            syn.defs(&self.core.buf).into_iter().filter(|d| matches!(d.kind, nagi_syntax::defs::DefKind::Function | nagi_syntax::defs::DefKind::Method) && d.line <= line).max_by_key(|d| d.line).map(|d| d.name)
         });
         let stem = file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
         let ext = file.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
@@ -332,7 +332,7 @@ mod tests {
         std::fs::write(dir.join(".nagi/run.conf"), "あいさつ = echo nagi-run-ok\n").unwrap();
         std::fs::write(dir.join("a.txt"), "x\n").unwrap();
         let mut e = Editor::new(Buffer::open(&dir.join("a.txt")).unwrap(), None);
-        e.buf.path = Some(dir.join("a.txt"));
+        e.core.buf.path = Some(dir.join("a.txt"));
         e.set_screen(120, 40);
         e.run_command("");
         assert_eq!(e.run_selected.as_deref(), Some("あいさつ"));
@@ -381,7 +381,7 @@ mod tests {
         std::fs::create_dir_all(dir.join("app")).unwrap();
         std::fs::write(dir.join("app/main.py"), "print('hi')\n").unwrap();
         let mut e = Editor::new(Buffer::open(&dir.join("app/main.py")).unwrap(), None);
-        e.buf.path = Some(dir.join("app/main.py"));
+        e.core.buf.path = Some(dir.join("app/main.py"));
         e.set_screen(120, 40);
         e.open_run_chooser();
         let items = e.run_list_items();

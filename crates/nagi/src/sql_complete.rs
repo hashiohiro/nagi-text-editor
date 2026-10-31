@@ -56,10 +56,10 @@ impl nagi_lang::sql::Catalog for ConnCatalog<'_> {
 impl Editor {
     /// カーソルのある文（空行で区切ったまとまりの中の、`;` で区切った部分）と、その中での `at`（絶対 byte）の位置
     fn sql_statement_around(&self, at: usize) -> (String, usize) {
-        let (l0, l1) = self.console_statement().unwrap_or((self.cursor.line, self.cursor.line + 1));
-        let start = self.buf.line_start(l0);
-        let end = if l1 < self.buf.line_count() { self.buf.line_start(l1) } else { self.buf.len_bytes() };
-        let text = self.buf.slice_string(start, end.max(start));
+        let (l0, l1) = self.console_statement().unwrap_or((self.core.cursor.line, self.core.cursor.line + 1));
+        let start = self.core.buf.line_start(l0);
+        let end = if l1 < self.core.buf.line_count() { self.core.buf.line_start(l1) } else { self.core.buf.len_bytes() };
+        let text = self.core.buf.slice_string(start, end.max(start));
         let cur = at.saturating_sub(start).min(text.len());
         // `;` で区切る（文字列の中の ; は数えない）
         let (mut a, mut b) = (0, text.len());
@@ -85,8 +85,8 @@ impl Editor {
         let Some(p) = self.panels.db.as_ref() else { return Vec::new() };
         let cat = ConnCatalog { conn: &p.conns[i], wants: Default::default() };
         let console = nagi_lang::sql::Console { catalog: &cat, stmt: &stmt, cur };
-        let src = self.buf.text();
-        let line = self.buf.line(self.cursor.line);
+        let src = self.core.buf.text();
+        let line = self.core.buf.line(self.core.cursor.line);
         let mut cx = nagi_lang::lang::Cx::new(self.language(), &src, None, &line, 0, start, prefix, None, &self.nav.libs);
         cx.console = Some(console);
         let out = nagi_lang::template::complete::complete(&cx);
@@ -147,7 +147,7 @@ mod tests {
         e.open_console(i, None);
         // Ctrl-n（前方一致で入れる）は今までどおり
         keys(&mut e, "Goselect * from ord<C-n>");
-        assert!(e.buf.line(e.cursor.line).ends_with("from orders"), "{}", e.buf.line(e.cursor.line));
+        assert!(e.core.buf.line(e.core.cursor.line).ends_with("from orders"), "{}", e.core.buf.line(e.core.cursor.line));
         // . の後は一覧を出す（列はまだ読んでいないので読みに行き、届いたら一覧を出す）
         keys(&mut e, "<C-y> o where o.");
         crate::db_panel::tests::wait(&mut e, &|e| e.panels.completion.as_ref().is_some_and(|c| c.smart.is_some() && !c.items.is_empty()));
@@ -157,7 +157,7 @@ mod tests {
         keys(&mut e, "cid");
         assert_eq!(e.panels.completion.as_ref().unwrap().items[0], "customer_id");
         keys(&mut e, "<CR>");
-        assert!(e.buf.line(e.cursor.line).ends_with("o.customer_id"), "{}", e.buf.line(e.cursor.line));
+        assert!(e.core.buf.line(e.core.cursor.line).ends_with("o.customer_id"), "{}", e.core.buf.line(e.core.cursor.line));
         // 次の文（空行で区切る）: SELECT の後は FROM の表の列が先（関数の strftime より）
         keys(&mut e, "<Esc>o<CR>select st from orders<Esc>02fta");
         e.start_smart_completion();
@@ -168,7 +168,7 @@ mod tests {
         e.start_smart_completion();
         assert_eq!(e.panels.completion.as_ref().unwrap().items[0], "orders");
         keys(&mut e, "<CR>");
-        assert!(e.buf.line(e.cursor.line).ends_with("select * from orders"), "{}", e.buf.line(e.cursor.line));
+        assert!(e.core.buf.line(e.core.cursor.line).ends_with("select * from orders"), "{}", e.core.buf.line(e.core.cursor.line));
     }
 
     /// Oracle はスキーマ・テーブル・列の名前を "" で囲んで入れる（つながずに、読んだことにした名前で）
@@ -194,17 +194,17 @@ mod tests {
         keys(&mut e, "Goselect * from em");
         e.start_smart_completion();
         keys(&mut e, "<CR>");
-        assert!(e.buf.line(e.cursor.line).ends_with("from \"EMP\""), "{}", e.buf.line(e.cursor.line));
+        assert!(e.core.buf.line(e.core.cursor.line).ends_with("from \"EMP\""), "{}", e.core.buf.line(e.core.cursor.line));
         keys(&mut e, " e where e.");
         e.start_smart_completion();
         assert_eq!(e.panels.completion.as_ref().unwrap().items, vec!["EMP_ID"]);
         keys(&mut e, "<CR>");
-        assert!(e.buf.line(e.cursor.line).ends_with("where e.\"EMP_ID\""), "{}", e.buf.line(e.cursor.line));
+        assert!(e.core.buf.line(e.core.cursor.line).ends_with("where e.\"EMP_ID\""), "{}", e.core.buf.line(e.core.cursor.line));
         keys(&mut e, "<Esc>o<CR>select * from sco");
         e.start_smart_completion();
         assert_eq!(e.panels.completion.as_ref().unwrap().items[0], "SCOTT");
         keys(&mut e, "<CR>");
-        assert!(e.buf.line(e.cursor.line).ends_with("from \"SCOTT\""), "{}", e.buf.line(e.cursor.line));
+        assert!(e.core.buf.line(e.core.cursor.line).ends_with("from \"SCOTT\""), "{}", e.core.buf.line(e.core.cursor.line));
     }
 
     /// Salesforce のコンソールは SOQL: リレーションの先の項目・副問い合わせの子のリレーション（つながずに、読んだことにした名前で）。
@@ -233,7 +233,7 @@ mod tests {
         // `|` の所にカーソルを置いて補完する
         let items = |e: &mut Editor, line: &str| -> Vec<String> {
             keys(e, &format!("<Esc>Go{line}<Esc>0f|x"));
-            if e.cursor.byte >= e.buf.line(e.cursor.line).len() {
+            if e.core.cursor.byte >= e.core.buf.line(e.core.cursor.line).len() {
                 keys(e, "a");
             } else {
                 keys(e, "i");

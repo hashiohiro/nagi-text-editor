@@ -48,11 +48,11 @@ fn compile(pat: &str, case: Option<bool>) -> Option<Regex> {
 impl Editor {
     /// 1 つの位置（`.` `$` 数字 `'x` と `+N` `-N`）。何も無ければ None
     fn parse_addr<'a>(&self, s: &'a str) -> nagi_core::Result<(Option<usize>, &'a str)> {
-        let last = self.buf.line_count().saturating_sub(1);
+        let last = self.core.buf.line_count().saturating_sub(1);
         let mut rest = s;
         let mut base: Option<usize> = None;
         if let Some(r) = rest.strip_prefix('.') {
-            base = Some(self.cursor.line);
+            base = Some(self.core.cursor.line);
             rest = r;
         } else if let Some(r) = rest.strip_prefix('$') {
             base = Some(last);
@@ -76,7 +76,7 @@ impl Editor {
             let r = &rest[1..];
             let n = r.find(|c: char| !c.is_ascii_digit()).unwrap_or(r.len());
             let v = if n == 0 { 1 } else { r[..n].parse::<usize>().unwrap_or(1) };
-            let b = base.unwrap_or(self.cursor.line);
+            let b = base.unwrap_or(self.core.cursor.line);
             base = Some(if sign == '+' { b + v } else { b.saturating_sub(v) });
             rest = &r[n..];
         }
@@ -87,7 +87,7 @@ impl Editor {
     pub(crate) fn parse_range<'a>(&self, s: &'a str) -> nagi_core::Result<(Option<(usize, usize)>, &'a str)> {
         let s = s.trim_start();
         if let Some(r) = s.strip_prefix('%') {
-            return Ok((Some((0, self.buf.line_count().saturating_sub(1))), r));
+            return Ok((Some((0, self.core.buf.line_count().saturating_sub(1))), r));
         }
         let (a, rest) = self.parse_addr(s)?;
         let Some(a) = a else { return Ok((None, rest)) };
@@ -130,7 +130,7 @@ impl Editor {
             }
             return None;
         }
-        let cur = (self.cursor.line, self.cursor.line);
+        let cur = (self.core.cursor.line, self.core.cursor.line);
         let name_len = rest.find(|c: char| !c.is_ascii_alphabetic()).unwrap_or(rest.len());
         let (name, arg) = rest.split_at(name_len);
         // `s/…/…/` `g/…/…` のように、名前の直後が区切り文字のもの
@@ -148,7 +148,7 @@ impl Editor {
         if delim_after("g") || delim_after("global") || delim_after("v") || delim_after("vglobal") || name == "g" && arg.starts_with('!') {
             let invert = name.starts_with('v') || arg.starts_with('!');
             let arg = arg.strip_prefix('!').unwrap_or(arg);
-            let all = (0, self.buf.line_count().saturating_sub(1));
+            let all = (0, self.core.buf.line_count().saturating_sub(1));
             return Some(self.global(range.unwrap_or(all), arg, invert));
         }
         let arg = arg.trim();
@@ -164,15 +164,15 @@ impl Editor {
             "y" | "ya" | "yank" => {
                 let reg = arg.chars().next();
                 let (s, e) = self.lines_range(l1, l2);
-                let cur = self.cursor;
+                let cur = self.core.cursor;
                 self.apply(Op::Yank, s, e, true, reg);
-                self.cursor = cur;
+                self.core.cursor = cur;
             }
             "j" | "join" => {
                 // 範囲が 1 行なら次の行と（Vim と同じ）
                 let times = if l2 > l1 { l2 - l1 } else { 1 };
                 self.join(l1, times);
-                self.cursor.line = l1;
+                self.core.cursor.line = l1;
                 self.with_motion(|m, c| m.first_non_blank(c));
             }
             "m" | "move" | "t" | "co" | "copy" => {
@@ -184,7 +184,7 @@ impl Editor {
                     }
                 };
                 // 0 は先頭の前。`:m 0` で 1 行目の上へ
-                let to = if arg.trim() == "0" { None } else { Some(to.unwrap_or(self.cursor.line)) };
+                let to = if arg.trim() == "0" { None } else { Some(to.unwrap_or(self.core.cursor.line)) };
                 self.move_copy(l1, l2, to, name.starts_with('m'));
             }
             "norm" | "normal" | "norm!" | "normal!" => return Some(self.normal_cmd(range.unwrap_or(cur), arg)),
@@ -197,7 +197,7 @@ impl Editor {
                     self.apply(op, s, e, true, None);
                 }
                 // 範囲の最後の行の最初の空白でない文字へ（Vim と同じ）
-                self.cursor.line = l2.min(self.buf.line_count().saturating_sub(1));
+                self.core.cursor.line = l2.min(self.core.buf.line_count().saturating_sub(1));
                 self.with_motion(|m, c| m.first_non_blank(c));
             }
             _ if range.is_some() => {
@@ -214,23 +214,23 @@ impl Editor {
             self.svc.notify.error("E134: 範囲の中へは移せません");
             return;
         }
-        let nl = self.buf.newline().to_string();
-        let mut text: String = (l1..=l2).map(|l| self.buf.line(l) + &nl).collect();
-        let undo = self.hist.len();
-        self.hist.begin();
+        let nl = self.core.buf.newline().to_string();
+        let mut text: String = (l1..=l2).map(|l| self.core.buf.line(l) + &nl).collect();
+        let undo = self.core.hist.len();
+        self.core.hist.begin();
         // 先に入れてから消す（入れる位置が範囲より前でも後でもずれないように）
-        let total = self.buf.line_count();
+        let total = self.core.buf.line_count();
         let at = match to {
             None => 0,
             Some(t) if t + 1 >= total => {
                 // 最終行の後ろ: 改行が無ければ足してから
-                let end = self.buf.len_bytes();
-                if !self.buf.slice_string(end.saturating_sub(1), end).ends_with('\n') {
+                let end = self.core.buf.len_bytes();
+                if !self.core.buf.slice_string(end.saturating_sub(1), end).ends_with('\n') {
                     text = format!("{nl}{}", text.trim_end_matches(['\r', '\n']));
                 }
                 end
             }
-            Some(t) => self.buf.line_start(t + 1),
+            Some(t) => self.core.buf.line_start(t + 1),
         };
         self.edit(at, at, &text);
         let n = l2 - l1 + 1;
@@ -243,10 +243,10 @@ impl Editor {
             let (s, e) = self.lines_range(sl, sl2);
             self.edit(s, e, "");
         }
-        self.hist.close();
-        self.hist.squash_from(undo);
+        self.core.hist.close();
+        self.core.hist.squash_from(undo);
         let last_line = if mv && dest_first > l1 { dest_first - 1 } else { dest_first + n - 1 };
-        self.cursor.line = last_line.min(self.buf.line_count().saturating_sub(1));
+        self.core.cursor.line = last_line.min(self.core.buf.line_count().saturating_sub(1));
         self.with_motion(|m, c| m.first_non_blank(c));
     }
 
@@ -280,15 +280,15 @@ impl Editor {
         let outer = !self.line_anchors.is_empty();
         let level = self.line_anchors.len();
         self.line_anchors.push(lines);
-        let undo = self.hist.len();
+        let undo = self.core.hist.len();
         let mut i = 0;
         let mut effect = Effect::None;
         loop {
             let Some(entry) = self.line_anchors.get(level).and_then(|v| v.get(i).copied()) else { break };
             i += 1;
             let Some(l) = entry else { continue };
-            self.cursor.line = l.min(self.buf.line_count().saturating_sub(1));
-            self.cursor.byte = 0;
+            self.core.cursor.line = l.min(self.core.buf.line_count().saturating_sub(1));
+            self.core.cursor.byte = 0;
             if let Effect::Quit = f(self) {
                 effect = Effect::Quit;
                 break;
@@ -296,7 +296,7 @@ impl Editor {
         }
         self.line_anchors.truncate(level);
         if !outer {
-            self.hist.squash_from(undo);
+            self.core.hist.squash_from(undo);
         }
         self.clamp_normal();
         effect
@@ -316,7 +316,7 @@ impl Editor {
             self.svc.notify.error(format!("E486: パターンが不正です: {pat}"));
             return Effect::None;
         };
-        let lines: Vec<Option<usize>> = (l1..=l2).filter(|&l| re.is_match(&self.buf.line(l)) != invert).map(Some).collect();
+        let lines: Vec<Option<usize>> = (l1..=l2).filter(|&l| re.is_match(&self.core.buf.line(l)) != invert).map(Some).collect();
         if lines.is_empty() {
             self.svc.notify.error(format!("E486: パターンは見つかりませんでした: {pat}"));
             return Effect::None;
@@ -325,7 +325,7 @@ impl Editor {
         if cmd.is_empty() || cmd == "p" || cmd == "print" {
             // 行を並べて出す代わりに、件数と最初の行を知らせる
             let n = lines.len();
-            self.cursor.line = lines.last().copied().flatten().unwrap_or(l1);
+            self.core.cursor.line = lines.last().copied().flatten().unwrap_or(l1);
             self.with_motion(|m, c| m.first_non_blank(c));
             self.svc.notify.info(format!("{n} 行が一致しました"));
             return Effect::None;
@@ -335,12 +335,12 @@ impl Editor {
         self.in_global = true;
         let e = self.for_each_line(lines, |ed| {
             let e = ed.run_ex(&cmd);
-            last = Some(ed.cursor);
+            last = Some(ed.core.cursor);
             e
         });
         self.in_global = false;
         if let Some(c) = last {
-            self.cursor = c;
+            self.core.cursor = c;
             self.clamp_normal();
         }
         e
@@ -415,7 +415,7 @@ impl Editor {
         if flags.contains('n') {
             let (mut n, mut lines) = (0, 0);
             for l in l1..=l2 {
-                let c = if global { re.find_iter(&self.buf.line(l)).count() } else { usize::from(re.is_match(&self.buf.line(l))) };
+                let c = if global { re.find_iter(&self.core.buf.line(l)).count() } else { usize::from(re.is_match(&self.core.buf.line(l))) };
                 n += c;
                 lines += usize::from(c > 0);
             }
@@ -423,28 +423,28 @@ impl Editor {
             return;
         }
         // Vim の置換文字列（\1 と &、\r の改行、\t）を regex の書き方に直す
-        let nl = self.buf.newline().to_string();
+        let nl = self.core.buf.newline().to_string();
         let rep = rep.replace("\\\\", "\u{1}").replace("\\&", "\u{0}").replace('&', "${0}").replace('\u{0}', "&");
         let rep = (1..=9).fold(rep, |r, i| r.replace(&format!("\\{i}"), &format!("${{{i}}}")));
         let rep = rep.replace("\\r", &nl).replace("\\n", &nl).replace("\\t", "\t").replace('\u{1}', "\\");
         let mut count = 0;
         let mut last_hit = None;
-        let undo = self.hist.len();
-        self.hist.begin();
+        let undo = self.core.hist.len();
+        self.core.hist.begin();
         for l in (l1..=l2).rev() {
-            let line = self.buf.line(l);
+            let line = self.core.buf.line(l);
             let new = if global { re.replace_all(&line, rep.as_str()) } else { re.replace(&line, rep.as_str()) };
             if new != line {
                 // 改行を足した置換では、最後の行の頭へ（Vim と同じ）
                 last_hit = last_hit.or(Some(l + new.matches('\n').count()));
                 count += if global { re.find_iter(&line).count() } else { 1 };
-                let start = self.buf.line_start(l);
+                let start = self.core.buf.line_start(l);
                 let new = new.into_owned();
                 self.edit(start, start + line.len(), &new);
             }
         }
-        self.hist.close();
-        self.hist.squash_from(undo);
+        self.core.hist.close();
+        self.core.hist.squash_from(undo);
         if count == 0 {
             if !flags.contains('e') {
                 self.svc.notify.error(format!("E486: パターンは見つかりませんでした: {pat}"));
@@ -453,7 +453,7 @@ impl Editor {
             self.svc.notify.info(format!("{count} 箇所を置換しました"));
         }
         if let Some(l) = last_hit {
-            self.cursor.line = l.min(self.buf.line_count().saturating_sub(1));
+            self.core.cursor.line = l.min(self.core.buf.line_count().saturating_sub(1));
             self.with_motion(|m, c| m.first_non_blank(c));
         }
         self.clamp_normal();

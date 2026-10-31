@@ -39,8 +39,8 @@ impl Editor {
         if path.is_some() || dirty {
             return true;
         }
-        let len = match &self.docs[id] {
-            Slot::Active => self.buf.len_bytes(),
+        let len = match &self.core.docs[id] {
+            Slot::Active => self.core.buf.len_bytes(),
             Slot::Parked(d) => d.buf.len_bytes(),
             Slot::Deleted => 0,
         };
@@ -132,7 +132,7 @@ impl Editor {
                 e.tab_select(doc);
                 e.shortcut("w");
                 // 保存できなかった（名前が無い・書き込めない）ら残す
-                if e.cur_doc == doc && !e.buf.dirty {
+                if e.core.cur_doc == doc && !e.core.buf.dirty {
                     e.delete_buffer("", false);
                 }
             })
@@ -301,7 +301,7 @@ mod tests {
         // a.txt を押すとそのバッファへ
         let a = e.buffer_tabs(100).remove(0);
         crate::buffer_tabs::BufferTabsView.click(&mut e, r, crate::layout::At::new(r, y, r.x + a.x + 1), 1);
-        assert_eq!(e.buf.path.as_deref(), Some(dir.join("a.txt").as_path()));
+        assert_eq!(e.core.buf.path.as_deref(), Some(dir.join("a.txt").as_path()));
         // b.txt の × で閉じる
         let b = e.buffer_tabs(100).remove(1);
         assert_eq!(e.buftab_at(y, r.x + b.close_col()), Some((b.doc, true)));
@@ -314,9 +314,9 @@ mod tests {
     fn closing_a_dirty_tab_asks() {
         let (mut e, dir) = editor(&["d.txt", "e.txt"]);
         // 作業中の e.txt を変える
-        e.buf.edit(0, 0, "x");
-        e.buf.dirty = true;
-        let doc = e.cur_doc;
+        e.core.buf.edit(0, 0, "x");
+        e.core.buf.dirty = true;
+        let doc = e.core.cur_doc;
         e.tab_close(doc);
         assert!(e.menu.is_some(), "保存していなければ窓で確かめる");
         // 保存して閉じる
@@ -324,7 +324,7 @@ mod tests {
         assert_eq!(labels(&e), ["d.txt"]);
         assert_eq!(std::fs::read_to_string(dir.join("e.txt")).unwrap(), "xe.txt\n");
         // 最後のタブを閉じると、タブは無くなる（空のバッファはタブにしない）
-        e.tab_close(e.cur_doc);
+        e.tab_close(e.core.cur_doc);
         assert!(labels(&e).is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }

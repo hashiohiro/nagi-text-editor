@@ -100,7 +100,7 @@ impl Editor {
     /// `:Maven`（ActivateMavenToolWindow）: Maven タブを出して移る
     pub(crate) fn open_maven(&mut self) {
         if self.panels.maven.is_none() {
-            let from = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()).unwrap_or_else(|| self.nav_root());
+            let from = self.core.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()).unwrap_or_else(|| self.nav_root());
             let Some(root) = nagi_workers::maven::find_root(&from).or_else(|| nagi_workers::maven::find_root(&self.nav_root())) else {
                 self.svc.notify.warn("pom.xml が見つかりません（Maven のプロジェクトではありません）");
                 return;
@@ -132,7 +132,7 @@ impl Editor {
         let root = match &self.panels.maven {
             Some(m) => m.root.clone(),
             None => {
-                let from = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()).unwrap_or_else(|| self.nav_root());
+                let from = self.core.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()).unwrap_or_else(|| self.nav_root());
                 match nagi_workers::maven::find_root(&from) {
                     Some(r) => r,
                     None => {

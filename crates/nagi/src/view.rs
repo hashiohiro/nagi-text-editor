@@ -454,10 +454,10 @@ pub fn prefetch_ascii(fonts: &mut Fonts, r: &mut Renderer) {
 /// 代わりに byte 位置を出す（Vim も表示列と byte 位置が違うときは両方出す）
 pub(crate) fn ruler_col(ed: &Editor) -> String {
     const MAX: usize = 1 << 16;
-    if ed.cursor.byte > MAX {
-        return format!("{}-", ed.cursor.byte + 1);
+    if ed.core.cursor.byte > MAX {
+        return format!("{}-", ed.core.cursor.byte + 1);
     }
-    (nagi_core::display_col(&ed.buf.line_head(ed.cursor.line, ed.cursor.byte + 4).0, ed.cursor.byte, false) + 1).to_string()
+    (nagi_core::display_col(&ed.core.buf.line_head(ed.core.cursor.line, ed.core.cursor.byte + 4).0, ed.core.cursor.byte, false) + 1).to_string()
 }
 
 /// 1 行のうち取り出す byte 数。1 文字は最大 4 byte で、少なくとも 1 セル使うので、これで画面の幅を必ず埋められる
@@ -473,7 +473,7 @@ pub(crate) fn screen_rows(fonts: &Fonts, r: &Renderer) -> usize {
 /// 初めて出る漢字をその場でラスタライズすると 1 字 0.5〜1ms かかるため）
 pub fn prefetch_around(ed: &Editor, fonts: &mut Fonts, r: &mut Renderer) {
     let rows = screen_rows(fonts, r);
-    prefetch_lines(ed, fonts, r, ed.top.saturating_sub(rows), ed.top + 2 * rows + 1);
+    prefetch_lines(ed, fonts, r, ed.core.top.saturating_sub(rows), ed.core.top + 2 * rows + 1);
 }
 
 pub(crate) fn prefetch_lines(ed: &Editor, fonts: &mut Fonts, r: &mut Renderer, from: usize, to: usize) {
@@ -484,16 +484,16 @@ pub(crate) fn prefetch_lines(ed: &Editor, fonts: &mut Fonts, r: &mut Renderer, f
 /// 起動時、GPU の準備を待つ間に最初の画面のグリフをラスタライズしておく（アトラスに載せるのは後）
 pub fn rasterize_first_screen(ed: &Editor, fonts: &mut Fonts, height: u32) -> Vec<(nagi_text::GlyphKey, Option<nagi_text::GlyphImage>)> {
     let rows = ((height as f32 / fonts.cell().h) as usize).saturating_sub(1).max(1);
-    let mut keys = glyph_keys(ed, fonts, ed.top, ed.top + rows + 1);
+    let mut keys = glyph_keys(ed, fonts, ed.core.top, ed.core.top + rows + 1);
     keys.sort_by_key(|k| (k.face, k.glyph, k.width));
     keys.dedup();
     fonts.rasterize_many(&keys)
 }
 
 pub(crate) fn glyph_keys(ed: &Editor, fonts: &mut Fonts, from: usize, to: usize) -> Vec<nagi_text::GlyphKey> {
-    let total = ed.buf.line_count();
+    let total = ed.core.buf.line_count();
     let mut keys = Vec::new();
-    let mut lines: Vec<String> = (from.min(total)..to.min(total)).map(|l| ed.buf.line_head(l, line_budget(400)).0).collect();
+    let mut lines: Vec<String> = (from.min(total)..to.min(total)).map(|l| ed.core.buf.line_head(l, line_budget(400)).0).collect();
     lines.push("~ 0123456789,[No Name]-- INSERT VISUAL LINE --/?:→".into());
     for line in &lines {
         let items: Vec<(String, usize)> = nagi_text::graphemes(fonts, line).map(|(g, _, w)| (g.to_string(), w)).collect();
@@ -1005,9 +1005,9 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     let rects = ed.window_rects();
     for &(win, rect) in &rects {
         let Some(st) = ed.win_state(win) else { continue };
-        let active = win == ed.cur_win;
-        let (buf, syntax, folds) = if st.doc == ed.cur_doc {
-            (&ed.buf, ed.syntax.as_ref(), &ed.folds)
+        let active = win == ed.core.cur_win;
+        let (buf, syntax, folds) = if st.doc == ed.core.cur_doc {
+            (&ed.core.buf, ed.syntax.as_ref(), &ed.folds)
         } else {
             match ed.parked_doc(st.doc) {
                 Some(d) => (&d.buf, d.syntax.as_ref(), &d.folds),
@@ -1018,7 +1018,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         let last = buf.line_count().saturating_sub(1);
         let mut cursor = st.cursor;
         cursor.line = cursor.line.min(last);
-        let pane = Pane { buf, marks: ed.git_markers(buf.path.as_deref()), diags: ed.diag_lines(buf.path.as_deref()), squiggles: if ed.settings.bool("editor.squiggles") { ed.diag_spans(buf.path.as_deref()) } else { Vec::new() }, folds, syntax, cursor, top: st.top.min(last), left: if ed.settings.bool("editor.wrap") { 0 } else { st.left }, frac: if active { ed.frac } else { 0.0 }, active, breaks: ed.breaks_for(buf.path.as_deref()), exec: ed.exec_line_for(buf.path.as_deref()) };
+        let pane = Pane { buf, marks: ed.git_markers(buf.path.as_deref()), diags: ed.diag_lines(buf.path.as_deref()), squiggles: if ed.settings.bool("editor.squiggles") { ed.diag_spans(buf.path.as_deref()) } else { Vec::new() }, folds, syntax, cursor, top: st.top.min(last), left: if ed.settings.bool("editor.wrap") { 0 } else { st.left }, frac: if active { ed.core.frac } else { 0.0 }, active, breaks: ed.breaks_for(buf.path.as_deref()), exec: ed.exec_line_for(buf.path.as_deref()) };
         draw_pane(&mut p, ed, &pane, Rect { h: ed.text_rows(rect), ..rect });
     }
     // 窓ごとの状態行（分割中だけ。Vim の laststatus=1 と同じ）と、左右の窓の間の 1px の区切り線
@@ -1029,12 +1029,12 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
                 p.out.push(Instance::fill(x, rect.y as f32 * cell.h, 1.0, rect.h as f32 * cell.h, LINE_NO));
             }
             let Some(st) = ed.win_state(win) else { continue };
-            let active = win == ed.cur_win;
+            let active = win == ed.core.cur_win;
             let y = (rect.y + rect.h - 1) as f32 * cell.h;
             // はみ出した本文（スムーズスクロール中の 1 行）を地で隠してから書く
             p.out.push(Instance::fill(rect.x as f32 * cell.w, y, rect.w as f32 * cell.w, cell.h, BG));
-            let (path, dirty, line) = if st.doc == ed.cur_doc {
-                (ed.buf.path.as_ref(), ed.buf.dirty, st.cursor.line)
+            let (path, dirty, line) = if st.doc == ed.core.cur_doc {
+                (ed.core.buf.path.as_ref(), ed.core.buf.dirty, st.cursor.line)
             } else {
                 match ed.parked_doc(st.doc) {
                     Some(d) => (d.buf.path.as_ref(), d.buf.dirty, st.cursor.line),
@@ -1070,7 +1070,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     p.out.push(Instance::fill(0.0, y, w as f32, h as f32 - y, PANEL_BG));
     p.out.push(Instance::fill(0.0, y, w as f32, 1.0, SEPARATOR));
     // ファイルの場所はプロジェクトからのパンくず（IntelliJ の状態の行と同じ。nagi-rn › src › App.java）
-    let name = match ed.buf.path.as_ref() {
+    let name = match ed.core.buf.path.as_ref() {
         None => "[No Name]".to_string(),
         Some(path) => {
             let root = ed.nav_root();
@@ -1106,22 +1106,22 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         format!(
             "{keys}   {}{}   {}{}:{} ",
             name,
-            if ed.buf.dirty { " [+]" } else { "" },
+            if ed.core.buf.dirty { " [+]" } else { "" },
             ed.syntax.as_ref().map(|s| s.lang.name()).or_else(|| {
                 // tree-sitter を使わない言語
-                let ext = ed.buf.path.as_deref()?.extension()?.to_string_lossy().to_ascii_lowercase();
+                let ext = ed.core.buf.path.as_deref()?.extension()?.to_string_lossy().to_ascii_lowercase();
                 match ext.as_str() {
                     "md" | "markdown" | "mdx" => Some("Markdown"),
                     "sass" => Some("Sass"),
                     _ => None,
                 }
-            }).filter(|_| st.bool("appearance.status_lang")).map_or(String::new(), |n| format!("{n}   ")) + &if st.bool("appearance.status_encoding") && ed.buf.path.is_some() { format!("{}   ", ed.encoding_label()) } else { String::new() },
-            ed.cursor.line + 1,
+            }).filter(|_| st.bool("appearance.status_lang")).map_or(String::new(), |n| format!("{n}   ")) + &if st.bool("appearance.status_encoding") && ed.core.buf.path.is_some() { format!("{}   ", ed.encoding_label()) } else { String::new() },
+            ed.core.cursor.line + 1,
             ruler_col(ed)
         )
     };
     // 入りきらなければパスをファイル名だけに（入らないと位置ごと出なくなる）
-    let ruler = match ed.buf.path.as_deref().and_then(|p| p.file_name()) {
+    let ruler = match ed.core.buf.path.as_deref().and_then(|p| p.file_name()) {
         Some(f) if !name.is_empty() && p.width(&ruler) + 2 > scols => ruler.replacen(&name, &f.to_string_lossy(), 1),
         _ => ruler,
     };
@@ -1219,7 +1219,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
                 }
                 // 文字コード・改行の列（押す所）
                 let enc = ed.encoding_label();
-                if let Some(i) = ruler.rfind(&format!("{enc}   ")).filter(|_| st.bool("appearance.status_encoding") && ed.buf.path.is_some()) {
+                if let Some(i) = ruler.rfind(&format!("{enc}   ")).filter(|_| st.bool("appearance.status_encoding") && ed.core.buf.path.is_some()) {
                     let c0 = pc + p.width(&ruler[..i]);
                     ed.enc_hit.set(Some((c0, c0 + p.width(&enc))));
                 }
@@ -1595,7 +1595,7 @@ pub(crate) fn draw_vim_line(p: &mut Painter, f: &crate::vim_field::VimField, l: 
 /// Vim 風の入力欄の 1 行（Insert は縦棒と IME の変換中の文字、ノーマルは四角のカーソル、Visual は選んだ所の地）
 pub(crate) fn draw_vim_line_mono(p: &mut Painter, f: &crate::vim_field::VimField, l: usize, col: usize, y: f32, preedit: &str, active: bool) -> usize {
     let cell = p.fonts.cell();
-    let text = f.ed.buf.line(l);
+    let text = f.ed.core.buf.line(l);
     let (cl, cb) = f.cursor();
     let cb = cb.min(text.len());
     if active && l == cl && f.is_insert() {

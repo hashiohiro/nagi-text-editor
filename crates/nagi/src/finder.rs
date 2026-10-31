@@ -212,7 +212,7 @@ impl Editor {
     /// ファインダーを開く
     pub(crate) fn open_finder(&mut self, source: Source) {
         let root = self
-            .buf
+            .core.buf
             .path
             .as_deref()
             .and_then(|p| std::path::absolute(p).ok())
@@ -254,7 +254,7 @@ impl Editor {
             Source::Buffers => {
                 // 直前のバッファを先頭に、作業中のバッファは最後に（すぐ戻れるように）
                 let mut list = self.buffer_list();
-                list.sort_by_key(|(i, _, _, active)| (*active, Some(*i) != self.alt_doc, *i));
+                list.sort_by_key(|(i, _, _, active)| (*active, Some(*i) != self.core.alt_doc, *i));
                 for (i, p, dirty, _) in list {
                     let name = p.map_or("[No Name]".to_string(), |p| display_path(&p, &root));
                     f.items.push(format!("{}{} {name}", i + 1, if dirty { "+" } else { "" }));
@@ -763,7 +763,7 @@ mod tests {
     fn click_select_and_double_click_open() {
         let dir = project("click");
         let mut e = Editor::new(Buffer::open(&dir.join("README.md")).unwrap(), None);
-        e.buf.path = Some(dir.join("README.md"));
+        e.core.buf.path = Some(dir.join("README.md"));
         e.set_screen(100, 40);
         e.open_finder(Source::Files);
         wait_walk(&mut e);
@@ -778,7 +778,7 @@ mod tests {
         assert_eq!(e.state(), State::Finder, "1 回では開かない");
         crate::layout::press(&mut e, s, row, b.x + 5, |_| 2);
         assert_eq!(e.state(), State::Normal);
-        assert!(e.buf.path.as_ref().unwrap().ends_with(second.replace('/', std::path::MAIN_SEPARATOR_STR)), "{:?} {second}", e.buf.path);
+        assert!(e.core.buf.path.as_ref().unwrap().ends_with(second.replace('/', std::path::MAIN_SEPARATOR_STR)), "{:?} {second}", e.core.buf.path);
         // どこでも検索のタブ: 「ファイル」を押すと、打った語を残してファイルだけに
         e.open_finder(Source::Everywhere);
         e.finder_insert("main");
@@ -797,7 +797,7 @@ mod tests {
     fn search_everywhere() {
         let dir = project("every");
         let mut e = Editor::new(Buffer::open(&dir.join("README.md")).unwrap(), None);
-        e.buf.path = Some(dir.join("README.md"));
+        e.core.buf.path = Some(dir.join("README.md"));
         e.set_screen(100, 40);
         keys(&mut e, ":SearchEverywhere<CR>");
         assert_eq!(e.state(), State::Finder);
@@ -806,7 +806,7 @@ mod tests {
         assert_eq!(f.items.len(), f.every.len());
         assert!(f.items.iter().any(|i| i == "src/view/panes.rs") && f.items.iter().any(|i| i.ends_with(":HideAll")));
         keys(&mut e, "view/pan<CR>");
-        assert!(e.buf.path.as_ref().unwrap().ends_with("panes.rs"), "{:?}", e.buf.path);
+        assert!(e.core.buf.path.as_ref().unwrap().ends_with("panes.rs"), "{:?}", e.core.buf.path);
         // コマンドを選べば動かす
         e.open_finder(Source::Everywhere);
         wait_walk(&mut e);
@@ -819,7 +819,7 @@ mod tests {
     fn files_open_and_split() {
         let dir = project("files");
         let mut e = Editor::new(Buffer::open(&dir.join("README.md")).unwrap(), None);
-        e.buf.path = Some(dir.join("README.md"));
+        e.core.buf.path = Some(dir.join("README.md"));
         e.set_screen(100, 40);
         e.open_finder(Source::Files);
         assert_eq!(e.state(), State::Finder);
@@ -833,13 +833,13 @@ mod tests {
         assert_eq!(f.hits.len(), 1);
         keys(&mut e, "<CR>");
         assert_eq!(e.state(), State::Normal);
-        assert_eq!(e.buf.line(0), "panes");
+        assert_eq!(e.core.buf.line(0), "panes");
         // 2 回目は覚えた一覧をすぐ出す（裏で集め直している間も）。Ctrl-v で左右に分けて開く
         e.open_finder(Source::Files);
         assert_eq!(e.panels.finder.as_ref().unwrap().items.len(), 3);
         keys(&mut e, "main<C-v>");
         assert!(e.is_split());
-        assert_eq!(e.buf.line(0), "main");
+        assert_eq!(e.core.buf.line(0), "main");
         // 作ったファイルは、開き直すと（裏で集め直した後に）一覧に入る
         std::fs::write(dir.join("src/new_file.rs"), "").unwrap();
         e.open_finder(Source::Files);
@@ -860,14 +860,14 @@ mod tests {
         assert_eq!(e.panels.finder.as_ref().unwrap().selected, 0);
         keys(&mut e, "<Esc>");
         assert_eq!(e.state(), State::Normal);
-        assert_eq!(e.buf.line(0), "main");
+        assert_eq!(e.core.buf.line(0), "main");
     }
 
     #[test]
     fn buffers_and_selection() {
         let dir = project("buffers");
         let mut e = Editor::new(Buffer::open(&dir.join("README.md")).unwrap(), None);
-        e.buf.path = Some(dir.join("README.md"));
+        e.core.buf.path = Some(dir.join("README.md"));
         keys(&mut e, &format!(":e {}<CR>", dir.join("src/main.rs").display()));
         keys(&mut e, &format!(":e {}<CR>", dir.join("src/view/panes.rs").display()));
         e.open_finder(Source::Buffers);
@@ -877,7 +877,7 @@ mod tests {
         assert!(f.items[f.hits[2].0 as usize].ends_with("panes.rs"));
         // 下へ 1 つ（次の候補）選んで開く
         keys(&mut e, "<C-n><CR>");
-        assert_eq!(e.buf.line(0), "readme");
+        assert_eq!(e.core.buf.line(0), "readme");
         // IME で確定した文字も検索語に入る
         e.open_finder(Source::Buffers);
         e.ime_commit("pan");

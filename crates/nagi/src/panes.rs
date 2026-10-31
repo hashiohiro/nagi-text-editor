@@ -176,7 +176,7 @@ impl Layout {
 impl Editor {
     /// 窓が 2 つ以上あるか（窓ごとの状態行を出す）
     pub fn is_split(&self) -> bool {
-        matches!(self.layout, Layout::Split { .. })
+        matches!(self.core.layout, Layout::Split { .. })
     }
 
     /// 窓と矩形（画面の本文の範囲 `screen` を分けたもの）
@@ -187,7 +187,7 @@ impl Editor {
         // SQL コンソールの上の帯の分、1 行下げる
         let top = self.windows_top();
         let mut out = Vec::new();
-        self.layout.rects(Rect { x, y: top, w: cols, h: rows.saturating_sub(top) }, &mut out);
+        self.core.layout.rects(Rect { x, y: top, w: cols, h: rows.saturating_sub(top) }, &mut out);
         out
     }
 
@@ -217,7 +217,7 @@ impl Editor {
     }
 
     pub fn active_rect(&self) -> Rect {
-        self.window_rects().into_iter().find(|(w, _)| *w == self.cur_win).map_or(Rect { x: self.windows_x().0, y: self.windows_top(), w: self.windows_x().1, h: self.windows_rows().saturating_sub(self.windows_top()) }, |(_, r)| r)
+        self.window_rects().into_iter().find(|(w, _)| *w == self.core.cur_win).map_or(Rect { x: self.windows_x().0, y: self.windows_top(), w: self.windows_x().1, h: self.windows_rows().saturating_sub(self.windows_top()) }, |(_, r)| r)
     }
 
     /// 窓の本文の行数（分割中は状態行の 1 行を除く）
@@ -237,8 +237,8 @@ impl Editor {
 
     /// 窓 `w` の表示状態 (バッファ番号, カーソル, 表示位置)
     pub(crate) fn win_state(&self, w: usize) -> Option<Win> {
-        match self.wins.get(w)? {
-            WinSlot::Active => Some(Win { doc: self.cur_doc, cursor: self.cursor, top: self.top, left: self.left }),
+        match self.core.wins.get(w)? {
+            WinSlot::Active => Some(Win { doc: self.core.cur_doc, cursor: self.core.cursor, top: self.core.top, left: self.core.left }),
             WinSlot::Parked(win) => Some(*win),
             WinSlot::Closed => None,
         }
@@ -246,14 +246,14 @@ impl Editor {
 
     /// 窓 `w` へ移る
     pub(crate) fn focus_window(&mut self, w: usize) {
-        if w == self.cur_win || !matches!(self.wins.get(w), Some(WinSlot::Parked(_))) {
+        if w == self.core.cur_win || !matches!(self.core.wins.get(w), Some(WinSlot::Parked(_))) {
             return;
         }
-        let WinSlot::Parked(next) = std::mem::replace(&mut self.wins[w], WinSlot::Active) else { unreachable!() };
-        self.wins[self.cur_win] = WinSlot::Parked(Win { doc: self.cur_doc, cursor: self.cursor, top: self.top, left: self.left });
-        self.prev_win = Some(self.cur_win);
-        self.cur_win = w;
-        if next.doc != self.cur_doc {
+        let WinSlot::Parked(next) = std::mem::replace(&mut self.core.wins[w], WinSlot::Active) else { unreachable!() };
+        self.core.wins[self.core.cur_win] = WinSlot::Parked(Win { doc: self.core.cur_doc, cursor: self.core.cursor, top: self.core.top, left: self.core.left });
+        self.core.prev_win = Some(self.core.cur_win);
+        self.core.cur_win = w;
+        if next.doc != self.core.cur_doc {
             // 窓の移動はジャンプにしない
             self.jump_lock = true;
             self.switch_doc(next.doc);
@@ -263,13 +263,13 @@ impl Editor {
             self.set_state(State::Normal);
         }
         self.pending_keys.clear();
-        self.cursor = next.cursor;
-        self.top = next.top;
-        self.left = next.left;
-        self.frac = 0.0;
-        let last = self.buf.line_count().saturating_sub(1);
-        self.cursor.line = self.cursor.line.min(last);
-        self.top = self.top.min(last);
+        self.core.cursor = next.cursor;
+        self.core.top = next.top;
+        self.core.left = next.left;
+        self.core.frac = 0.0;
+        let last = self.core.buf.line_count().saturating_sub(1);
+        self.core.cursor.line = self.core.cursor.line.min(last);
+        self.core.top = self.core.top.min(last);
         self.clamp_normal();
         self.rows = self.text_rows(self.active_rect());
     }
@@ -282,31 +282,31 @@ impl Editor {
             self.svc.notify.error("E36: 分割する余地がありません");
             return;
         }
-        let new = self.wins.len();
-        self.wins.push(WinSlot::Parked(Win { doc: self.cur_doc, cursor: self.cursor, top: self.top, left: self.left }));
+        let new = self.core.wins.len();
+        self.core.wins.push(WinSlot::Parked(Win { doc: self.core.cur_doc, cursor: self.core.cursor, top: self.core.top, left: self.core.left }));
         // 新しい窓は上・左に（Vim と同じ）。設定の splitbelow・splitright なら下・右に
         let after = if vertical { self.settings.bool("editor.split_right") } else { self.settings.bool("editor.split_below") };
-        self.layout.insert(self.cur_win, new, vertical, !after);
+        self.core.layout.insert(self.core.cur_win, new, vertical, !after);
         self.focus_window(new);
     }
 
     /// 窓 `w` を閉じる。最後の 1 つは閉じない（呼ぶ側で終了を扱う）
     pub(crate) fn close_window(&mut self, w: usize) {
-        if !self.is_split() || matches!(self.wins.get(w), None | Some(WinSlot::Closed)) {
+        if !self.is_split() || matches!(self.core.wins.get(w), None | Some(WinSlot::Closed)) {
             return;
         }
-        if w == self.cur_win {
+        if w == self.core.cur_win {
             // 隣（直前の窓があればそこ）へ移ってから閉じる
             let mut order = Vec::new();
-            self.layout.leaves(&mut order);
+            self.core.layout.leaves(&mut order);
             let i = order.iter().position(|&x| x == w).unwrap_or(0);
-            let next = self.prev_win.filter(|p| order.contains(p) && *p != w).unwrap_or(if i + 1 < order.len() { order[i + 1] } else { order[i - 1] });
+            let next = self.core.prev_win.filter(|p| order.contains(p) && *p != w).unwrap_or(if i + 1 < order.len() { order[i + 1] } else { order[i - 1] });
             self.focus_window(next);
         }
-        self.wins[w] = WinSlot::Closed;
-        self.layout.remove(w);
-        if self.prev_win == Some(w) {
-            self.prev_win = None;
+        self.core.wins[w] = WinSlot::Closed;
+        self.core.layout.remove(w);
+        if self.core.prev_win == Some(w) {
+            self.core.prev_win = None;
         }
         self.rows = self.text_rows(self.active_rect());
     }
@@ -314,12 +314,12 @@ impl Editor {
     /// `:only` / `Ctrl-w o`
     pub(crate) fn only_window(&mut self) {
         let mut order = Vec::new();
-        self.layout.leaves(&mut order);
-        for w in order.into_iter().filter(|&w| w != self.cur_win) {
-            self.wins[w] = WinSlot::Closed;
+        self.core.layout.leaves(&mut order);
+        for w in order.into_iter().filter(|&w| w != self.core.cur_win) {
+            self.core.wins[w] = WinSlot::Closed;
         }
-        self.layout = Layout::Leaf(self.cur_win);
-        self.prev_win = None;
+        self.core.layout = Layout::Leaf(self.core.cur_win);
+        self.core.prev_win = None;
         self.rows = self.text_rows(self.active_rect());
     }
 
@@ -329,11 +329,11 @@ impl Editor {
             return None;
         }
         let mut order = Vec::new();
-        self.layout.leaves(&mut order);
+        self.core.layout.leaves(&mut order);
         let wins: Vec<(usize, Cursor, usize, bool)> = order
             .iter()
-            .filter_map(|&w| match self.wins.get(w)? {
-                WinSlot::Active => Some((self.cur_doc, self.cursor, self.top, true)),
+            .filter_map(|&w| match self.core.wins.get(w)? {
+                WinSlot::Active => Some((self.core.cur_doc, self.core.cursor, self.core.top, true)),
                 WinSlot::Parked(p) => Some((p.doc, p.cursor, p.top, false)),
                 WinSlot::Closed => None,
             })
@@ -341,7 +341,7 @@ impl Editor {
         if wins.len() != order.len() {
             return None;
         }
-        let shape = self.layout.render(&|w| order.iter().position(|o| *o == w).unwrap_or(0));
+        let shape = self.core.layout.render(&|w| order.iter().position(|o| *o == w).unwrap_or(0));
         Some((shape, wins))
     }
 
@@ -349,9 +349,9 @@ impl Editor {
     pub(crate) fn restore_windows(&mut self, layout: Layout, docs: Vec<(usize, Cursor, usize)>, active: usize) {
         self.only_window();
         // 今の窓（0 でなくてもよい）は使わずに閉じ、窓を作り直す
-        let base = self.wins.len();
+        let base = self.core.wins.len();
         for (doc, cursor, top) in &docs {
-            self.wins.push(WinSlot::Parked(Win { doc: *doc, cursor: *cursor, top: *top, left: 0 }));
+            self.core.wins.push(WinSlot::Parked(Win { doc: *doc, cursor: *cursor, top: *top, left: 0 }));
         }
         fn shift(l: Layout, by: usize) -> Layout {
             match l {
@@ -359,20 +359,20 @@ impl Editor {
                 Layout::Split { vertical, kids, weights } => Layout::Split { vertical, kids: kids.into_iter().map(|k| shift(k, by)).collect(), weights },
             }
         }
-        let old = self.cur_win;
-        self.layout = shift(layout, base);
+        let old = self.core.cur_win;
+        self.core.layout = shift(layout, base);
         self.focus_window(base + active.min(docs.len().saturating_sub(1)));
-        self.wins[old] = WinSlot::Closed;
-        self.prev_win = None;
+        self.core.wins[old] = WinSlot::Closed;
+        self.core.prev_win = None;
         self.rows = self.text_rows(self.active_rect());
     }
 
     /// `Ctrl-w w` / `W`（順に巡る）
     pub(crate) fn cycle_window(&mut self, forward: bool, count: usize) {
         let mut order = Vec::new();
-        self.layout.leaves(&mut order);
+        self.core.layout.leaves(&mut order);
         let n = order.len();
-        let i = order.iter().position(|&w| w == self.cur_win).unwrap_or(0);
+        let i = order.iter().position(|&w| w == self.core.cur_win).unwrap_or(0);
         let to = if forward { (i + count) % n } else { (i + n - count % n) % n };
         self.focus_window(order[to]);
     }
@@ -381,12 +381,12 @@ impl Editor {
     pub(crate) fn focus_direction(&mut self, dir: char, count: usize) {
         for _ in 0..count.max(1) {
             let rects = self.window_rects();
-            let Some(&(_, cur)) = rects.iter().find(|(w, _)| *w == self.cur_win) else { return };
-            let crow = cur.y + self.cursor.line.saturating_sub(self.top).min(cur.h.saturating_sub(1));
+            let Some(&(_, cur)) = rects.iter().find(|(w, _)| *w == self.core.cur_win) else { return };
+            let crow = cur.y + self.core.cursor.line.saturating_sub(self.core.top).min(cur.h.saturating_sub(1));
             let ccol = cur.x + crate::editor::GUTTER.min(cur.w.saturating_sub(1));
             let pick = rects
                 .iter()
-                .filter(|(w, _)| *w != self.cur_win)
+                .filter(|(w, _)| *w != self.core.cur_win)
                 .filter(|(_, r)| match dir {
                     'h' => r.x + r.w < cur.x + 1 && r.x + r.w + 1 >= cur.x,
                     'l' => r.x > cur.x + cur.w.saturating_sub(1) && r.x <= cur.x + cur.w + 1,
@@ -425,7 +425,7 @@ impl Editor {
             'w' => match count {
                 Some(i) => {
                     let mut order = Vec::new();
-                    self.layout.leaves(&mut order);
+                    self.core.layout.leaves(&mut order);
                     if let Some(&w) = order.get(i.saturating_sub(1)) {
                         self.focus_window(w);
                     }
@@ -435,16 +435,16 @@ impl Editor {
             'W' => self.cycle_window(false, 1),
             't' => {
                 let mut order = Vec::new();
-                self.layout.leaves(&mut order);
+                self.core.layout.leaves(&mut order);
                 self.focus_window(order[0]);
             }
             'b' => {
                 let mut order = Vec::new();
-                self.layout.leaves(&mut order);
+                self.core.layout.leaves(&mut order);
                 self.focus_window(*order.last().unwrap());
             }
             'p' => {
-                if let Some(p) = self.prev_win {
+                if let Some(p) = self.core.prev_win {
                     self.focus_window(p);
                 }
             }
@@ -456,7 +456,7 @@ impl Editor {
             }
             'c' | 'q' => {
                 if self.is_split() {
-                    self.close_window(self.cur_win);
+                    self.close_window(self.core.cur_win);
                 } else if c == 'c' {
                     self.svc.notify.error("E444: 最後のウィンドウは閉じられません");
                 }
@@ -470,13 +470,13 @@ impl Editor {
 
     /// 窓を閉じたときなど、どの窓にも出ていないバッファを数える用。`doc` を表示している窓
     pub(crate) fn windows_showing(&self, doc: usize) -> Vec<usize> {
-        (0..self.wins.len()).filter(|&w| self.win_state(w).is_some_and(|s| s.doc == doc)).collect()
+        (0..self.core.wins.len()).filter(|&w| self.win_state(w).is_some_and(|s| s.doc == doc)).collect()
     }
 
     /// `:bd` で消したバッファを出していたほかの窓を閉じる（Vim と同じ）。残す窓が無ければ作業中の窓を残す
     pub(crate) fn close_windows_of(&mut self, doc: usize) {
         for w in self.windows_showing(doc) {
-            if w != self.cur_win && self.is_split() {
+            if w != self.core.cur_win && self.is_split() {
                 self.close_window(w);
             }
         }
@@ -484,7 +484,7 @@ impl Editor {
 
     /// 脇に置いたバッファの中身（描画用）。作業中のバッファなら None（Editor の欄を使う）
     pub(crate) fn parked_doc(&self, doc: usize) -> Option<&crate::buffers::Doc> {
-        match self.docs.get(doc)? {
+        match self.core.docs.get(doc)? {
             Slot::Parked(d) => Some(d),
             _ => None,
         }
@@ -522,7 +522,7 @@ mod tests {
         let a = e.area();
         assert_eq!((r[0].1.x, r[1].1.x, r[0].1.w + r[1].1.w + 1), (a.x, a.x + r[0].1.w + 1, a.w));
         assert!(r[0].1.w.abs_diff(r[1].1.w) <= 1);
-        assert_eq!(r[0].0, e.cur_win, "新しい窓は左で、そこへ移る");
+        assert_eq!(r[0].0, e.core.cur_win, "新しい窓は左で、そこへ移る");
         keys(&mut e, ":sp<CR>");
         let r = e.window_rects();
         assert_eq!(r.len(), 3);
@@ -535,17 +535,17 @@ mod tests {
         let mut e = ed();
         keys(&mut e, ":vs<CR>");
         keys(&mut e, "10j");
-        assert_eq!(e.cursor.line, 10);
+        assert_eq!(e.core.cursor.line, 10);
         keys(&mut e, "<C-w>l");
-        assert_eq!(e.cursor.line, 0, "右の窓のカーソルはそのまま");
+        assert_eq!(e.core.cursor.line, 0, "右の窓のカーソルはそのまま");
         keys(&mut e, "x");
         keys(&mut e, "<C-w>h");
-        assert_eq!(e.cursor.line, 10);
-        assert_eq!(e.buf.line(0), "ine1", "同じバッファなので編集は両方に出る");
+        assert_eq!(e.core.cursor.line, 10);
+        assert_eq!(e.core.buf.line(0), "ine1", "同じバッファなので編集は両方に出る");
         keys(&mut e, "<C-w>p");
-        assert_eq!(e.cursor.line, 0);
+        assert_eq!(e.core.cursor.line, 0);
         keys(&mut e, "<C-w><C-w>");
-        assert_eq!(e.cursor.line, 10);
+        assert_eq!(e.core.cursor.line, 10);
     }
 
     #[test]
@@ -553,16 +553,16 @@ mod tests {
         let mut e = ed();
         // 左に 1 つ、右を上下に分ける: [A | B/C]
         keys(&mut e, ":vs<CR>");
-        let left = e.cur_win;
+        let left = e.core.cur_win;
         keys(&mut e, "<C-w>l:sp<CR>");
-        let top_right = e.cur_win;
+        let top_right = e.core.cur_win;
         keys(&mut e, "<C-w>j");
-        let bottom_right = e.cur_win;
+        let bottom_right = e.core.cur_win;
         assert_ne!(top_right, bottom_right);
         keys(&mut e, "<C-w>h");
-        assert_eq!(e.cur_win, left);
+        assert_eq!(e.core.cur_win, left);
         keys(&mut e, "<C-w>l<C-w>k");
-        assert_eq!(e.cur_win, top_right);
+        assert_eq!(e.core.cur_win, top_right);
         // :q は窓だけを閉じ、終了しない
         assert!(matches!(keys(&mut e, ":q<CR>"), Some(Effect::None)));
         assert_eq!(e.window_rects().len(), 2);
@@ -581,14 +581,14 @@ mod tests {
         std::fs::write(&f, "other\n").unwrap();
         let mut e = ed();
         keys(&mut e, &format!(":sp {}<CR>", f.display()));
-        assert_eq!(e.buf.line(0), "other");
+        assert_eq!(e.core.buf.line(0), "other");
         keys(&mut e, "<C-w>j");
-        assert_eq!(e.buf.line(0), "line1");
+        assert_eq!(e.core.buf.line(0), "line1");
         keys(&mut e, "<C-w>k");
-        assert_eq!(e.buf.line(0), "other");
+        assert_eq!(e.core.buf.line(0), "other");
         // 別の窓に出ているバッファを :bd すると、その窓も閉じる
         keys(&mut e, "<C-w>j:bd 2<CR>");
         assert_eq!(e.window_rects().len(), 1);
-        assert_eq!(e.buf.line(0), "line1");
+        assert_eq!(e.core.buf.line(0), "line1");
     }
 }

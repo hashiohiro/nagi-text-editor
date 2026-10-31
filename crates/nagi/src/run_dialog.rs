@@ -440,11 +440,11 @@ impl Editor {
             // 押した文字の位置へカーソルを置いて打てるように（値より右なら行末）
             if let Some(v) = d.field_mut(f) {
                 v.reinsert();
-                let text = v.ed.buf.line(0);
+                let text = v.ed.core.buf.line(0);
                 let byte = nagi_core::byte_at_col(&text, col.saturating_sub(x), false).min(text.len());
-                v.ed.cursor.line = 0;
-                v.ed.cursor.byte = byte;
-                v.ed.cursor.want_col = nagi_core::display_col(&text, byte, false);
+                v.ed.core.cursor.line = 0;
+                v.ed.core.cursor.byte = byte;
+                v.ed.core.cursor.want_col = nagi_core::display_col(&text, byte, false);
             }
         }
     }
@@ -691,7 +691,7 @@ mod tests {
         std::fs::write(dir.join(".run/a.run.xml"), r#"<component name="ProjectRunConfigurationManager"><configuration name="IJ" type="ShConfigurationType"><option name="SCRIPT_TEXT" value="echo ij" /><option name="EXECUTE_SCRIPT_FILE" value="false" /></configuration></component>"#).unwrap();
         std::fs::write(dir.join("a.txt"), "x\n").unwrap();
         let mut e = Editor::new(Buffer::open(&dir.join("a.txt")).unwrap(), None);
-        e.buf.path = Some(dir.join("a.txt"));
+        e.core.buf.path = Some(dir.join("a.txt"));
         e.set_screen(140, 40);
         e.open_run_dialog(None);
         assert_eq!(e.state(), State::RunDialog);
@@ -737,7 +737,7 @@ mod tests {
         std::fs::write(dir.join(".nagi/run.conf"), "a = echo abc\nb = echo b\n").unwrap();
         std::fs::write(dir.join("a.txt"), "x\n").unwrap();
         let mut e = Editor::new(Buffer::open(&dir.join("a.txt")).unwrap(), None);
-        e.buf.path = Some(dir.join("a.txt"));
+        e.core.buf.path = Some(dir.join("a.txt"));
         e.set_screen(140, 40);
         e.open_run_dialog(Some("a"));
         // 描いた位置の代わりに入れる（行 10: 名前、行 11: 種類、行 12: コマンド。値は 50 列から）

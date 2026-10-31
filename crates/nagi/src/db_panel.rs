@@ -1135,18 +1135,18 @@ impl Editor {
     }
 
     pub fn console_source(&self) -> Option<usize> {
-        let path = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok())?;
+        let path = self.core.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok())?;
         self.panels.db.as_ref()?.consoles.get(&path).copied()
     }
 
     /// コンソールでカーソルのある文の行の範囲
     pub fn console_statement(&self) -> Option<(usize, usize)> {
         self.console_source()?;
-        let lo = self.cursor.line.saturating_sub(200);
-        let hi = (self.cursor.line + 200).min(self.buf.line_count());
-        let lines: Vec<String> = (lo..hi).map(|l| self.buf.line(l)).collect();
+        let lo = self.core.cursor.line.saturating_sub(200);
+        let hi = (self.core.cursor.line + 200).min(self.core.buf.line_count());
+        let lines: Vec<String> = (lo..hi).map(|l| self.core.buf.line(l)).collect();
         let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
-        statement_lines(&refs, self.cursor.line - lo).map(|(s, e)| (s + lo, e + lo))
+        statement_lines(&refs, self.core.cursor.line - lo).map(|(s, e)| (s + lo, e + lo))
     }
 
     /// Ctrl+Enter（コンソールで）: カーソルのある文、Visual なら選んだ範囲を流す
@@ -1154,12 +1154,12 @@ impl Editor {
         let Some(i) = self.console_source() else { return };
         let sql = if let State::Visual { .. } = self.state() {
             let (a, b, _) = self.visual_range();
-            let s = self.buf.slice_string(a, b);
+            let s = self.core.buf.slice_string(a, b);
             self.set_state(State::Normal);
             s
         } else {
             match self.console_statement() {
-                Some((s, e)) => (s..e).map(|l| self.buf.line(l)).filter(|l| !l.trim_start().starts_with("--")).collect::<Vec<_>>().join("\n").trim().to_string(),
+                Some((s, e)) => (s..e).map(|l| self.core.buf.line(l)).filter(|l| !l.trim_start().starts_with("--")).collect::<Vec<_>>().join("\n").trim().to_string(),
                 None => String::new(),
             }
         };
@@ -1389,14 +1389,14 @@ impl Editor {
         self.edit_file(path);
         self.set_state(State::Normal);
         if let Some(sql) = initial {
-            let end = self.buf.len_bytes();
-            let text = self.buf.text();
+            let end = self.core.buf.len_bytes();
+            let text = self.core.buf.text();
             let nl = if text.is_empty() || text.ends_with("\n\n") { "" } else if text.ends_with('\n') { "\n" } else { "\n\n" };
-            self.hist.begin();
+            self.core.hist.begin();
             self.edit(end, end, &format!("{nl}{sql}\n"));
-            self.hist.close();
-            self.cursor.line = self.buf.line_count().saturating_sub(2);
-            self.cursor.byte = 0;
+            self.core.hist.close();
+            self.core.cursor.line = self.core.buf.line_count().saturating_sub(2);
+            self.core.cursor.byte = 0;
             self.clamp_normal();
         }
     }
@@ -1997,11 +1997,11 @@ pub(crate) mod tests {
             keys(&mut e, k);
             assert!(e.right_focused() && e.panels.db.as_ref().unwrap().filter.is_some(), "{k}");
             e.click(1, 7);
-            assert_eq!((e.state(), e.cursor.line), (State::Normal, 1), "{k}");
+            assert_eq!((e.state(), e.core.cursor.line), (State::Normal, 1), "{k}");
             keys(&mut e, "x");
             assert_eq!(e.panels.db.as_ref().unwrap().filter_text, "or", "{k}: 打ったキーは本文へ");
         }
-        assert_eq!(e.buf.line(1).trim_end().len(), 1, "x を 2 回");
+        assert_eq!(e.core.buf.line(1).trim_end().len(), 1, "x を 2 回");
     }
 
     pub(crate) fn wait(e: &mut Editor, what: &dyn Fn(&Editor) -> bool) {
@@ -2177,7 +2177,7 @@ pub(crate) mod tests {
         wait(&mut e, &|e| e.panels.db.as_ref().unwrap().conns[i].columns.contains_key(&("main".to_string(), "item".to_string())));
         run(&mut e, "SELECT 文を作る（新しいクエリに）");
         assert_eq!(e.console_source(), Some(i), "新しいクエリはこの接続先のコンソール");
-        assert!(e.buf.text().contains("SELECT id,\n       name\nFROM main.item"), "{}", e.buf.text());
+        assert!(e.core.buf.text().contains("SELECT id,\n       name\nFROM main.item"), "{}", e.core.buf.text());
         // 件数は結果のタブに出る（読むだけなので確かめない）
         e.set_state(State::Normal);
         let r = prow(&e, &|r| matches!(r, DbRow::Object(_, _, t, Group::Tables, _) if t == "item"));
@@ -2258,13 +2258,13 @@ pub(crate) mod tests {
         e.panels.db.as_mut().unwrap().selected = e.panels.db.as_ref().unwrap().rows.iter().position(|r| *r == DbRow::Source(i)).unwrap();
         keys(&mut e, "n");
         assert_eq!(e.state(), State::Insert);
-        assert!(e.buf.path.as_ref().unwrap().to_string_lossy().ends_with("shop_query_1.sql"));
+        assert!(e.core.buf.path.as_ref().unwrap().to_string_lossy().ends_with("shop_query_1.sql"));
         keys(&mut e, "select 42 as answer<C-m>");
         wait(&mut e, &|e| e.panels.db_results.active_tab().is_some_and(|t| !t.running && !t.rows.is_empty()));
         assert_eq!(e.panels.db_results.active_tab().unwrap().rows[0][0].as_deref(), Some("42"));
         keys(&mut e, "<Esc>");
         e.db_new_query_command();
-        assert!(e.buf.path.as_ref().unwrap().to_string_lossy().ends_with("shop_query_2.sql"), "番号を進める");
+        assert!(e.core.buf.path.as_ref().unwrap().to_string_lossy().ends_with("shop_query_2.sql"), "番号を進める");
         // 絞り込み
         e.focus_right(RightTab::Database);
         keys(&mut e, "/zzz<CR>");

@@ -878,7 +878,7 @@ mod tests {
         e.open_dropped(dir.join("a.txt"));
         assert!(e.panels.launcher.is_none());
         assert_eq!(e.state(), State::Normal);
-        assert_eq!(e.buf.line(0), "dropped");
+        assert_eq!(e.core.buf.line(0), "dropped");
         e.open_launcher();
         e.open_dropped(dir.join("proj"));
         assert!(e.panels.launcher.is_none());

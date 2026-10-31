@@ -64,15 +64,15 @@ impl Editor {
 
     /// 見えている行の範囲
     fn easy_rows(&self) -> std::ops::Range<usize> {
-        let end = (self.top + self.rows).min(self.buf.line_count());
-        self.top.min(end)..end
+        let end = (self.core.top + self.rows).min(self.core.buf.line_count());
+        self.core.top.min(end)..end
     }
 
     fn easy_targets(&self, kind: EasyKind, q: &str) -> Vec<(usize, usize, String)> {
-        let (cl, cb) = (self.cursor.line, self.cursor.byte);
+        let (cl, cb) = (self.core.cursor.line, self.core.cursor.byte);
         let mut at: Vec<(usize, usize)> = Vec::new();
         for l in self.easy_rows() {
-            let line = self.buf.line(l);
+            let line = self.core.buf.line(l);
             match kind {
                 EasyKind::WordForward => {
                     let mut prev_word = false;
@@ -138,10 +138,10 @@ impl Editor {
         self.easy = None;
         self.svc.notify.clear();
         self.push_jump();
-        self.cursor.line = line;
-        self.cursor.byte = byte;
-        let l = self.buf.line(line);
-        self.cursor.want_col = nagi_core::display_col(&l, byte.min(l.len()), false);
+        self.core.cursor.line = line;
+        self.core.cursor.byte = byte;
+        let l = self.core.buf.line(line);
+        self.core.cursor.want_col = nagi_core::display_col(&l, byte.min(l.len()), false);
     }
 
     /// 印を出している間・文字を待っている間のキー
@@ -203,14 +203,14 @@ mod tests {
         assert_eq!(t.iter().map(|x| (x.0, x.1)).collect::<Vec<_>>(), [(0, 6), (0, 11), (1, 2), (2, 0), (2, 8)]);
         e.key(Key::Char('f'));
         assert!(e.easy.is_none());
-        assert_eq!((e.cursor.line, e.cursor.byte), (2, 0), "4 つ目の印 f");
+        assert_eq!((e.core.cursor.line, e.core.cursor.byte), (2, 0), "4 つ目の印 f");
         e.start_easy(EasyKind::FindChar);
         e.key(Key::Char('b'));
         e.key(Key::Char('s'));
-        assert_eq!((e.cursor.line, e.cursor.byte), (2, 8), "b の 2 つ目");
+        assert_eq!((e.core.cursor.line, e.core.cursor.byte), (2, 8), "b の 2 つ目");
         e.start_easy(EasyKind::LineBackward);
         e.key(Key::Char('a'));
-        assert_eq!(e.cursor.line, 1, "上の近い行から a");
+        assert_eq!(e.core.cursor.line, 1, "上の近い行から a");
         assert_eq!((labels(26)[25].as_str(), labels(30)[27].as_str()), ("m", "ss"), "27 か所からは 2 文字");
     }
 }

@@ -96,7 +96,7 @@ pub fn now_secs() -> i64 {
 impl Editor {
     /// 作業中の窓に blame を出しているか
     pub fn blame_active(&self) -> bool {
-        self.panels.blame.as_ref().is_some_and(|b| self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()).as_ref() == Some(&b.path))
+        self.panels.blame.as_ref().is_some_and(|b| self.core.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()).as_ref() == Some(&b.path))
     }
 
     /// 作業中の窓の、行番号と blame の欄の幅
@@ -118,13 +118,13 @@ impl Editor {
         if self.svc.git.root.is_none() {
             self.start_git();
         }
-        let (Some(root), Some(path)) = (self.svc.git.root.clone(), self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok())) else {
+        let (Some(root), Some(path)) = (self.svc.git.root.clone(), self.core.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok())) else {
             self.svc.notify.info("git のリポジトリのファイルではありません");
             return;
         };
         let Ok(rel) = path.strip_prefix(&root) else { return };
         let rel = rel.to_string_lossy().replace('\\', "/");
-        let text = self.buf.text();
+        let text = self.core.buf.text();
         let rx = nagi_core::task::spawn("git-blame", self.waker(), move |ctx| {
             let r = nagi_workers::git::git_input(&root, &["blame", "--porcelain", "--contents", "-", "--", &rel], Some(text.as_bytes())).map(|b| parse_porcelain(&String::from_utf8_lossy(&b)));
             ctx.send(r);
@@ -184,7 +184,7 @@ impl Editor {
     /// カーソルの行のコミット（枠に出す）
     pub fn blame_at_cursor(&self) -> Option<&CommitInfo> {
         let b = self.panels.blame.as_ref()?;
-        b.lines.get(self.cursor.line).map(|&i| &b.commits[i])
+        b.lines.get(self.core.cursor.line).map(|&i| &b.commits[i])
     }
 }
 
@@ -219,10 +219,10 @@ pub(crate) mod draw {
         }
         let cell = p.fonts.cell();
         let rect = ed.active_rect();
-        if ed.cursor.line < ed.top {
+        if ed.core.cursor.line < ed.core.top {
             return;
         }
-        let row = rect.y + (ed.cursor.line - ed.top) + 1;
+        let row = rect.y + (ed.core.cursor.line - ed.core.top) + 1;
         let lines = [
             format!(" {}   {}   {}", &c.hash[..7], c.author, crate::blame::relative_time(c.time, crate::blame::now_secs())),
             format!(" {}", c.summary),

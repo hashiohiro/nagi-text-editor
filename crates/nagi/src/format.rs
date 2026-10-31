@@ -43,7 +43,7 @@ fn changed_span(old: &str, new: &str) -> Option<(usize, usize, String)> {
 impl Editor {
     /// 今のファイルを整形する（設定の「整形のコマンド」で）
     pub(crate) fn format_buffer(&mut self) {
-        let Some(path) = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()) else {
+        let Some(path) = self.core.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()) else {
             self.svc.notify.info("ファイル名がありません");
             return;
         };
@@ -55,7 +55,7 @@ impl Editor {
         let root = self.nav_root();
         let ex = nagi_workers::exec::Exec::in_dir(&root);
         let line = cmd.replace("{file}", &ex.path(&path));
-        let text = self.buf.text().replace("\r\n", "\n");
+        let text = self.core.buf.text().replace("\r\n", "\n");
         let shown = line.clone();
         let task = nagi_core::task::spawn("format", self.waker(), move |ctx| {
             let run = || -> Result<String, String> {
@@ -81,21 +81,21 @@ impl Editor {
             };
             ctx.send(run());
         });
-        self.format_job = Some(FormatJob { version: self.buf.version, path, task });
+        self.format_job = Some(FormatJob { version: self.core.buf.version, path, task });
         self.svc.notify.info(format!("整形しています: {shown}"));
     }
 
     /// import の整理（Ctrl+Alt+O・:OptimizeImports。nagi_lang::imports）。違う所だけを 1 回の編集で入れる（u で戻せる）
     pub(crate) fn optimize_imports(&mut self) {
-        let path = self.buf.path.clone().unwrap_or_default();
+        let path = self.core.buf.path.clone().unwrap_or_default();
         let ext = path.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_default();
         let Some(kind) = nagi_lang::imports::Kind::of_ext(&ext) else {
             self.svc.notify.info(format!("import の整理は Java・Kotlin・TypeScript・JavaScript・Python だけです（.{ext}）"));
             return;
         };
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        let old = self.buf.text();
-        let nl = self.buf.newline();
+        let old = self.core.buf.text();
+        let nl = self.core.buf.newline();
         match nagi_lang::imports::optimize(kind, &old.replace("\r\n", "\n"), &name) {
             Err(e) => self.svc.notify.warn(e),
             Ok(None) => self.svc.notify.info("整理する import はありません"),
@@ -105,15 +105,15 @@ impl Editor {
                     self.svc.notify.info("整理する import はありません");
                     return;
                 };
-                let (line, byte) = (self.cursor.line, self.cursor.byte);
+                let (line, byte) = (self.core.cursor.line, self.core.cursor.byte);
                 // 上の import の行が減った分、カーソルも上へ
                 let shift = old[..e].matches('\n').count() as isize - old[..s].matches('\n').count() as isize - t.matches('\n').count() as isize;
                 let line = if old[..s].matches('\n').count() < line { (line as isize - shift).max(0) as usize } else { line };
-                self.hist.begin();
+                self.core.hist.begin();
                 self.edit(s, e, &t);
-                self.hist.close();
-                self.cursor.line = line.min(self.buf.line_count().saturating_sub(1));
-                self.cursor.byte = byte.min(self.buf.line(self.cursor.line).len());
+                self.core.hist.close();
+                self.core.cursor.line = line.min(self.core.buf.line_count().saturating_sub(1));
+                self.core.cursor.byte = byte.min(self.core.buf.line(self.core.cursor.line).len());
                 self.clamp_normal();
                 self.svc.notify.info(if removed > 0 { format!("import を整理しました（{removed} 件外した。u で戻せる）") } else { "import を並べ直しました（u で戻せる）".into() });
             }
@@ -130,23 +130,23 @@ impl Editor {
             return false;
         };
         let job = self.format_job.take().unwrap();
-        let here = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
+        let here = self.core.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
         match r {
             Err(e) => self.svc.notify.error(format!("整形できません: {e}")),
-            Ok(_) if here.as_ref() != Some(&job.path) || self.buf.version != job.version => self.svc.notify.info("整形の間に中身が変わったので、入れませんでした"),
+            Ok(_) if here.as_ref() != Some(&job.path) || self.core.buf.version != job.version => self.svc.notify.info("整形の間に中身が変わったので、入れませんでした"),
             Ok(out) => {
-                let nl = self.buf.newline();
+                let nl = self.core.buf.newline();
                 let out = out.replace("\r\n", "\n").replace('\n', nl);
-                let old = self.buf.text();
+                let old = self.core.buf.text();
                 match changed_span(&old, &out) {
                     None => self.svc.notify.info("整形済みです（変わる所はありません）"),
                     Some((s, e, t)) => {
-                        let (line, byte) = (self.cursor.line, self.cursor.byte);
-                        self.hist.begin();
+                        let (line, byte) = (self.core.cursor.line, self.core.cursor.byte);
+                        self.core.hist.begin();
                         self.edit(s, e, &t);
-                        self.hist.close();
-                        self.cursor.line = line.min(self.buf.line_count().saturating_sub(1));
-                        self.cursor.byte = byte.min(self.buf.line(self.cursor.line).len());
+                        self.core.hist.close();
+                        self.core.cursor.line = line.min(self.core.buf.line_count().saturating_sub(1));
+                        self.core.cursor.byte = byte.min(self.core.buf.line(self.core.cursor.line).len());
                         self.clamp_normal();
                         self.svc.notify.info("整形しました（u で戻せる）");
                     }
@@ -186,7 +186,7 @@ mod tests {
         while !e.poll_format() && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        assert_eq!(e.buf.text(), "a\n", "{}", e.svc.notify.text);
+        assert_eq!(e.core.buf.text(), "a\n", "{}", e.svc.notify.text);
         // 無いコマンド
         e.settings.set("tools.formatters", "zz=nagi-no-such-formatter -", false);
         e.format_buffer();
@@ -206,13 +206,13 @@ mod tests {
         let f = dir.join("A.java");
         std::fs::write(&f, "import java.util.Map;\r\nimport java.util.List;\r\n\r\nclass A {\r\n  List<String> xs;\r\n}\r\n").unwrap();
         let mut e = Editor::new(nagi_core::Buffer::open(&f).unwrap(), None);
-        e.cursor.line = 4;
+        e.core.cursor.line = 4;
         e.optimize_imports();
-        assert_eq!(e.buf.text(), "import java.util.List;\r\n\r\nclass A {\r\n  List<String> xs;\r\n}\r\n", "{}", e.svc.notify.text);
+        assert_eq!(e.core.buf.text(), "import java.util.List;\r\n\r\nclass A {\r\n  List<String> xs;\r\n}\r\n", "{}", e.svc.notify.text);
         assert!(e.svc.notify.text.contains("1 件"), "{}", e.svc.notify.text);
-        assert_eq!(e.cursor.line, 3, "カーソルは同じ行に残る");
+        assert_eq!(e.core.cursor.line, 3, "カーソルは同じ行に残る");
         e.key(nagi_vim::Key::Char('u'));
-        assert!(e.buf.text().starts_with("import java.util.Map;"));
+        assert!(e.core.buf.text().starts_with("import java.util.Map;"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

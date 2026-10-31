@@ -42,14 +42,14 @@ impl Editor {
         }
         self.ensure_syntax();
         // ファイルの中の束縛のうち、プロジェクトの索引に無いもの（ローカル変数・引数）。メソッド・フィールドは索引にある
-        if let Some(def) = self.syntax.as_ref().and_then(|s| s.local_definition(&self.buf, word_at)) {
+        if let Some(def) = self.syntax.as_ref().and_then(|s| s.local_definition(&self.core.buf, word_at)) {
             let Some(idx) = &self.nav.index else {
                 self.svc.notify.warn("索引を作っているところです。しばらくしてからもう一度");
                 return;
             };
-            let here = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
+            let here = self.core.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
             let rel = here.as_ref().and_then(|h| h.strip_prefix(&idx.root).ok()).map(|r| r.to_string_lossy().replace('\\', "/"));
-            let at = self.buf.pos_of(def);
+            let at = self.core.buf.pos_of(def);
             let member = rel.is_some_and(|rel| idx.lookup(&name).iter().any(|x| *x.path == *rel && (x.line as usize, x.col as usize) == at));
             if !member {
                 self.rename_local(&name, new, def);
@@ -73,7 +73,7 @@ impl Editor {
 
     /// 今のファイルの中で、`def` の束縛を指す `name` を `new` に（1 回の編集で戻せる）
     fn rename_local(&mut self, name: &str, new: &str, def: usize) {
-        let text = self.buf.text();
+        let text = self.core.buf.text();
         let re = regex::Regex::new(&format!(r"\b{}\b", regex::escape(name))).unwrap();
         let syn = self.syntax.as_ref();
         let at: Vec<usize> = re
@@ -81,17 +81,17 @@ impl Editor {
             .map(|m| m.start())
             // x.name・this.name（メンバー）は除く
             .filter(|&s| !text[..s].trim_end().ends_with('.'))
-            .filter(|&s| s == def || syn.and_then(|y| y.local_definition(&self.buf, s)) == Some(def))
+            .filter(|&s| s == def || syn.and_then(|y| y.local_definition(&self.core.buf, s)) == Some(def))
             .collect();
-        let (line, byte) = (self.cursor.line, self.cursor.byte);
-        self.hist.begin();
+        let (line, byte) = (self.core.cursor.line, self.core.cursor.byte);
+        self.core.hist.begin();
         for &s in at.iter().rev() {
             self.edit(s, s + name.len(), new);
         }
-        self.hist.close();
-        self.cursor.line = line;
-        let delta = at.iter().filter(|&&s| s < self.buf.line_start(line) + byte && s >= self.buf.line_start(line)).count() as isize * (new.len() as isize - name.len() as isize);
-        self.cursor.byte = ((byte as isize + delta).max(0) as usize).min(self.buf.line(line).len());
+        self.core.hist.close();
+        self.core.cursor.line = line;
+        let delta = at.iter().filter(|&&s| s < self.core.buf.line_start(line) + byte && s >= self.core.buf.line_start(line)).count() as isize * (new.len() as isize - name.len() as isize);
+        self.core.cursor.byte = ((byte as isize + delta).max(0) as usize).min(self.core.buf.line(line).len());
         self.clamp_normal();
         self.svc.notify.info(format!("{name} を {new} に変えました（{} か所。u で戻せる）", at.len()));
     }
@@ -150,8 +150,8 @@ impl Editor {
         // どのバッファの u でも、ほかのファイルを一緒に戻せるように、変えたものに同じ札を付ける
         let tag = self.multi_edits.last().map_or(1, |m| m.tag + 1);
         let mut multi = MultiEdit { tag, open: Vec::new(), disk: Vec::new(), moved: None };
-        let cur = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
-        let (line, byte) = (self.cursor.line, self.cursor.byte);
+        let cur = self.core.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
+        let (line, byte) = (self.core.cursor.line, self.core.cursor.byte);
         for (rel, places) in &by_file {
             let path = root.join(rel);
             // 行の中の一致の位置（ヒットの本文は行頭の空白を除いたもの）→ ファイルの中の byte
@@ -172,15 +172,15 @@ impl Editor {
                 v
             };
             if cur.as_ref().is_some_and(|c| crate::buffers::same_path(c, &path)) {
-                let at = starts(&self.buf);
+                let at = starts(&self.core.buf);
                 skipped += places.len() - at.len();
-                self.hist.begin();
+                self.core.hist.begin();
                 for &s in at.iter().rev() {
                     self.edit(s, s + name.len(), new);
                 }
-                self.hist.tag_current(tag);
+                self.core.hist.tag_current(tag);
                 done += at.len();
-                if let Err(e) = self.buf.save() {
+                if let Err(e) = self.core.buf.save() {
                     failed.push(format!("{rel}: {e}"));
                 }
                 multi.open.push(path);
@@ -253,8 +253,8 @@ impl Editor {
             self.multi_edits.remove(0);
         }
         if cur.is_some() {
-            self.cursor.line = line.min(self.buf.line_count().saturating_sub(1));
-            self.cursor.byte = byte.min(self.buf.line(self.cursor.line).len());
+            self.core.cursor.line = line.min(self.core.buf.line_count().saturating_sub(1));
+            self.core.cursor.byte = byte.min(self.core.buf.line(self.core.cursor.line).len());
             self.clamp_normal();
         }
         self.close_grep();
@@ -277,8 +277,8 @@ impl Editor {
 
     /// u・Ctrl-r の 1 回。名前の変更で一緒に変えたもの（同じ札）なら、ほかのファイルも一緒に戻す・進める
     pub(crate) fn undo_step(&mut self, redo: bool) -> Option<usize> {
-        let tag = if redo { self.hist.redo_tag() } else { self.hist.undo_tag() };
-        let at = if redo { self.hist.redo(&mut self.buf) } else { self.hist.undo(&mut self.buf) };
+        let tag = if redo { self.core.hist.redo_tag() } else { self.core.hist.undo_tag() };
+        let at = if redo { self.core.hist.redo(&mut self.core.buf) } else { self.core.hist.undo(&mut self.core.buf) };
         if let (Some(_), Some(t)) = (at, tag) {
             self.follow_multi(t, redo);
         }
@@ -290,11 +290,11 @@ impl Editor {
 
     /// 名前を変えたときに開いていなかったファイル（後から開いたもの）で、自分の履歴に戻すものが無いとき: 変えたときの記録から全部を戻す・進める
     fn follow_from_disk(&mut self, redo: bool) -> bool {
-        if self.buf.dirty {
+        if self.core.buf.dirty {
             return false;
         }
-        let Some(cur) = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()) else { return false };
-        let text = self.buf.text();
+        let Some(cur) = self.core.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()) else { return false };
+        let text = self.core.buf.text();
         let found = self.multi_edits.iter().rev().find(|m| {
             m.disk.iter().any(|(p, before, after)| {
                 // 戻した後は、名前を変えたファイルは前の名前にある
@@ -315,7 +315,7 @@ impl Editor {
     fn follow_multi(&mut self, tag: u64, redo: bool) {
         let Some(m) = self.multi_edits.iter().find(|m| m.tag == tag).cloned() else { return };
         let (mut n, mut stale, mut failed) = (0usize, Vec::new(), Vec::new());
-        let cur = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
+        let cur = self.core.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
         // 戻すときは、先にファイルの名前を戻す（バッファの名前も）
         if let (Some((from, to)), false) = (&m.moved, redo) {
             if to.exists() && !from.exists() && std::fs::rename(to, from).is_ok() {
@@ -329,7 +329,7 @@ impl Editor {
                 _ => p.clone(),
             }
         };
-        if let Err(e) = self.buf.save() {
+        if let Err(e) = self.core.buf.save() {
             failed.push(e.to_string());
         }
         for p in &m.open {
@@ -446,16 +446,16 @@ mod tests {
         }
         keys(&mut e, "4G0ww");
         e.rename_command("count");
-        assert_eq!(e.buf.text(), "class A {\n  int n;\n  void a() {\n    int count = 1;\n    count = count + this.n;\n  }\n  void b() {\n    int n = 2;\n  }\n}\n", "{}", e.svc.notify.text);
+        assert_eq!(e.core.buf.text(), "class A {\n  int n;\n  void a() {\n    int count = 1;\n    count = count + this.n;\n  }\n  void b() {\n    int n = 2;\n  }\n}\n", "{}", e.svc.notify.text);
         keys(&mut e, "u");
-        assert!(e.buf.text().contains("    int n = 1;\n    n = n + this.n;"));
+        assert!(e.core.buf.text().contains("    int n = 1;\n    n = n + this.n;"));
         // 名前を書かなければ、今の名前を入れたダイアログ。打ち直して Enter で変える
         e.rename_command("");
         assert_eq!(e.state(), crate::editor::State::Input);
         assert_eq!(e.panels.input.as_ref().unwrap().field.text, "n");
         keys(&mut e, "<BS>k<CR>");
         assert_eq!(e.state(), crate::editor::State::Normal);
-        assert!(e.buf.text().contains("    int k = 1;\n    k = k + this.n;"), "{}", e.buf.text());
+        assert!(e.core.buf.text().contains("    int k = 1;\n    k = k + this.n;"), "{}", e.core.buf.text());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -492,31 +492,31 @@ mod tests {
         assert_eq!(std::fs::read_to_string(dir.join("p/Use.java")).unwrap(), "package p;\n\nclass Use {\n  Bar f = new Bar();\n  // Foo\n  String s = \"Foo\";\n}\n", "{}", e.svc.notify.text);
         assert!(!dir.join("p/Foo.java").exists());
         assert_eq!(std::fs::read_to_string(dir.join("p/Bar.java")).unwrap(), "package p;\n\npublic class Bar {\n  public Bar() {}\n}\n");
-        assert_eq!(e.buf.text(), std::fs::read_to_string(dir.join("p/Use.java")).unwrap(), "開いているバッファも");
+        assert_eq!(e.core.buf.text(), std::fs::read_to_string(dir.join("p/Use.java")).unwrap(), "開いているバッファも");
         assert!(e.svc.notify.text.contains("ファイルの名前も Bar.java"), "{}", e.svc.notify.text);
         // u で全部のファイルとファイルの名前を戻し、Ctrl-r でやり直す
         let use0 = "package p;\n\nclass Use {\n  Foo f = new Foo();\n  // Foo\n  String s = \"Foo\";\n}\n";
         let foo0 = "package p;\n\npublic class Foo {\n  public Foo() {}\n}\n";
         keys(&mut e, "u");
-        assert_eq!(e.buf.text(), use0);
+        assert_eq!(e.core.buf.text(), use0);
         assert_eq!(std::fs::read_to_string(dir.join("p/Use.java")).unwrap(), use0);
         assert!(!dir.join("p/Bar.java").exists());
         assert_eq!(std::fs::read_to_string(dir.join("p/Foo.java")).unwrap(), foo0, "{}", e.svc.notify.text);
         assert!(e.svc.notify.text.contains("名前の変更を戻しました（2 ファイル）"), "{}", e.svc.notify.text);
         keys(&mut e, "<C-r>");
-        assert!(e.buf.text().contains("Bar f = new Bar();"));
+        assert!(e.core.buf.text().contains("Bar f = new Bar();"));
         assert!(std::fs::read_to_string(dir.join("p/Bar.java")).unwrap().contains("public class Bar"), "{}", e.svc.notify.text);
         assert!(!dir.join("p/Foo.java").exists());
         // 変えたときに開いていなかったファイルを後から開いても、その u・Ctrl-r で全部を戻す・進める
         e.edit_file(dir.join("p/Bar.java"));
         keys(&mut e, "u");
-        assert_eq!(e.buf.text(), foo0, "{}", e.svc.notify.text);
-        assert!(e.buf.path.as_deref().is_some_and(|p| p.ends_with("Foo.java")), "{:?}", e.buf.path);
+        assert_eq!(e.core.buf.text(), foo0, "{}", e.svc.notify.text);
+        assert!(e.core.buf.path.as_deref().is_some_and(|p| p.ends_with("Foo.java")), "{:?}", e.core.buf.path);
         assert_eq!(std::fs::read_to_string(dir.join("p/Use.java")).unwrap(), use0);
         assert!(!dir.join("p/Bar.java").exists());
         keys(&mut e, "<C-r>");
-        assert!(e.buf.text().contains("public class Bar"), "{}", e.svc.notify.text);
-        assert!(e.buf.path.as_deref().is_some_and(|p| p.ends_with("Bar.java")), "{:?}", e.buf.path);
+        assert!(e.core.buf.text().contains("public class Bar"), "{}", e.svc.notify.text);
+        assert!(e.core.buf.path.as_deref().is_some_and(|p| p.ends_with("Bar.java")), "{:?}", e.core.buf.path);
         assert!(std::fs::read_to_string(dir.join("p/Use.java")).unwrap().contains("Bar f = new Bar();"));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -550,14 +550,14 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         keys(&mut e, "<CR>");
-        assert_eq!(e.buf.text(), "class A {\n  void start() {}\n  void use() {\n    start(); start();\n  }\n}\n", "{}", e.svc.notify.text);
+        assert_eq!(e.core.buf.text(), "class A {\n  void start() {}\n  void use() {\n    start(); start();\n  }\n}\n", "{}", e.svc.notify.text);
         assert_eq!(std::fs::read_to_string(dir.join("B.java")).unwrap(), "class B {\n  void run() {}\n  void go(A a) {\n    a.start();\n    run();\n    // run\n    log(\"A.run\");\n  }\n}\n");
         // 脇のバッファも書き換えている
         let id = e.find_doc(&dir.join("B.java")).unwrap();
         assert!(e.parked_doc_mut(id).unwrap().buf.text().contains("a.start();"));
         // 今のバッファの u で、脇のバッファも戻す（ファイルも）
         keys(&mut e, "u");
-        assert!(e.buf.text().contains("void run() {}"));
+        assert!(e.core.buf.text().contains("void run() {}"));
         assert!(e.parked_doc_mut(id).unwrap().buf.text().contains("a.run();"));
         assert!(std::fs::read_to_string(dir.join("B.java")).unwrap().contains("a.run();"));
         // 脇のバッファを後から変えていれば、そこは触らない
@@ -587,8 +587,8 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
-        e.cursor.line = l.parse::<usize>().unwrap() - 1;
-        e.cursor.byte = c.parse::<usize>().unwrap() - 1;
+        e.core.cursor.line = l.parse::<usize>().unwrap() - 1;
+        e.core.cursor.byte = c.parse::<usize>().unwrap() - 1;
         e.rename_command(&to);
         for _ in 0..30000 {
             e.poll_grep();

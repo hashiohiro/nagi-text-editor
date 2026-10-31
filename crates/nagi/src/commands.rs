@@ -120,7 +120,7 @@ pub static COMMANDS: &[Cmd] = &[
         e.new_empty_buffer()
     }),
     cmd!(["only", "on"], "ほかの窓を閉じる", Args::None, |e, c| e.only_window()),
-    cmd!(["close", "clo"], "窓を閉じる", Args::None, |e, c| if e.is_split() { e.close_window(e.cur_win) } else { e.svc.notify.error("E444: 最後のウィンドウは閉じられません") }),
+    cmd!(["close", "clo"], "窓を閉じる", Args::None, |e, c| if e.is_split() { e.close_window(e.core.cur_win) } else { e.svc.notify.error("E444: 最後のウィンドウは閉じられません") }),
     // 範囲を取るもの（Editor::ex_ranged が受け取る。ここは候補と説明）
     cmd_effect!(["s", "substitute"], "置換（:s/検索/置換/フラグ）", Args::Text, |e, c| ranged(e, c)),
     cmd_effect!(["g", "global"], "当たる行ごとに実行（:g/検索/コマンド）", Args::Text, |e, c| ranged(e, c)),
@@ -413,7 +413,7 @@ fn ranged(e: &mut Editor, c: &Call) -> Effect {
 fn write(e: &mut Editor, c: &Call) -> Effect {
     if !c.arg.is_empty() {
         e.write_as(c.arg, c.bang, false);
-    } else if e.buf.path.is_none() {
+    } else if e.core.buf.path.is_none() {
         return Effect::SaveDialog;
     } else {
         e.write();
@@ -425,11 +425,11 @@ fn write(e: &mut Editor, c: &Call) -> Effect {
 /// `:qa` は全体を終える。変更が残っていれば止める（! で破棄）
 fn quit(e: &mut Editor, c: &Call, all: bool) -> Effect {
     if !all && e.is_split() {
-        e.close_window(e.cur_win);
+        e.close_window(e.core.cur_win);
         return NONE;
     }
     if !all {
-        if e.buf.dirty && !c.bang {
+        if e.core.buf.dirty && !c.bang {
             e.svc.notify.error(format!("E37: 変更が保存されていません（:{}! で破棄して閉じる）", c.name));
         } else {
             e.delete_buffer("", true);
@@ -437,7 +437,7 @@ fn quit(e: &mut Editor, c: &Call, all: bool) -> Effect {
         return NONE;
     }
     if !c.bang {
-        if e.buf.dirty {
+        if e.core.buf.dirty {
             e.svc.notify.error(format!("E37: 変更が保存されていません（:{}! で破棄して終了）", c.name));
             return NONE;
         }
@@ -454,12 +454,12 @@ fn write_quit(e: &mut Editor, c: &Call) -> Effect {
     if !c.arg.is_empty() && !e.write_as(c.arg, c.bang, false) {
         return NONE;
     }
-    if c.arg.is_empty() && e.buf.path.is_none() {
+    if c.arg.is_empty() && e.core.buf.path.is_none() {
         return Effect::SaveDialog;
     }
     if e.is_split() {
         if e.write() {
-            e.close_window(e.cur_win);
+            e.close_window(e.core.cur_win);
         }
         return NONE;
     }

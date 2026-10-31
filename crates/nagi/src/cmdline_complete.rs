@@ -213,7 +213,7 @@ impl Editor {
     /// ファインダーと同じプロジェクトの根
     pub(crate) fn finder_root(&self) -> std::path::PathBuf {
         let root = self
-            .buf
+            .core.buf
             .path
             .as_deref()
             .and_then(|p| std::path::absolute(p).ok())

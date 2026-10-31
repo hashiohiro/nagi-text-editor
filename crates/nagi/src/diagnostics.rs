@@ -266,7 +266,7 @@ impl Editor {
     pub(crate) fn make(&mut self, arg: &str) {
         let root = self.nav_root();
         let cmd = if arg.trim().is_empty() {
-            let file = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
+            let file = self.core.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
             match detect_command(&root, file.as_deref()) {
                 Some(c) => c,
                 None => {
@@ -390,8 +390,8 @@ impl Editor {
             }
             return;
         }
-        let here = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
-        let cur = (self.cursor.line, self.cursor.byte);
+        let here = self.core.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
+        let cur = (self.core.cursor.line, self.core.cursor.byte);
         let mut list: Vec<&Diag> = self.diags.iter().collect();
         list.sort_by(|a, b| (&a.path, a.line, a.col).cmp(&(&b.path, b.line, b.col)));
         // 今のファイルの中で次・前、無ければファイルをまたいで
@@ -412,8 +412,8 @@ impl Editor {
         if self.diags.is_empty() {
             return None;
         }
-        let here = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok())?;
-        self.diags.iter().filter(|d| d.path == here && d.line == self.cursor.line).min_by_key(|d| !d.error)
+        let here = self.core.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok())?;
+        self.diags.iter().filter(|d| d.path == here && d.line == self.core.cursor.line).min_by_key(|d| !d.error)
     }
 
     /// `path` のファイルの診断の位置（行, 列（文字）, エラーか）。本文に波線を引く
@@ -441,7 +441,7 @@ impl Editor {
 
     pub(crate) fn nav_root(&self) -> PathBuf {
         let root = self
-            .buf
+            .core.buf
             .path
             .as_deref()
             .and_then(|p| std::path::absolute(p).ok())
@@ -516,13 +516,13 @@ mod tests {
         assert!(e.svc.notify.text.contains("エラー 1 件、警告 1 件"), "{}", e.svc.notify.text);
         // ]e: 次の診断（2 行目の警告）、もう一度で 3 行目のエラー
         e.next_error(true);
-        assert_eq!((e.cursor.line, e.cursor.byte), (1, 0));
+        assert_eq!((e.core.cursor.line, e.core.cursor.byte), (1, 0));
         assert!(e.svc.notify.text.starts_with("warning"));
         e.next_error(true);
-        assert_eq!((e.cursor.line, e.cursor.byte), (2, 3));
+        assert_eq!((e.core.cursor.line, e.core.cursor.byte), (2, 3));
         e.svc.notify.clear();
         assert_eq!(e.diag_at_cursor().map(|d| d.msg.as_str()), Some("boom"));
-        assert_eq!(e.diag_lines(e.buf.path.as_deref()).len(), 2);
+        assert_eq!(e.diag_lines(e.core.buf.path.as_deref()).len(), 2);
     }
 
     /// 言語ごとの出力の形（1 行・複数行）

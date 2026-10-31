@@ -48,11 +48,11 @@ impl ReadView {
     /// 行が増えた・変わったら作り直す。カーソルが最後の行にいれば、新しい最後の行の行末へ追いかけ、表示も合わせる。
     /// カーソルを上へ動かせば追いかけるのをやめ（その場に残す）、最後の行へ戻せばまた追いかける
     pub fn set_lines(&mut self, lines: &[String]) {
-        if lines.len() == self.lines && self.ed.buf.line_count() >= lines.len() {
+        if lines.len() == self.lines && self.ed.core.buf.line_count() >= lines.len() {
             return;
         }
-        let follow = self.ed.cursor.line + 1 >= self.lines.max(1);
-        let (cursor, top, mode, anchor) = (self.ed.cursor, self.ed.top, self.ed.state(), self.ed.anchor);
+        let follow = self.ed.core.cursor.line + 1 >= self.lines.max(1);
+        let (cursor, top, mode, anchor) = (self.ed.core.cursor, self.ed.core.top, self.ed.state(), self.ed.anchor);
         self.text = lines.join("\n");
         self.lines = lines.len();
         self.rebuild();
@@ -62,9 +62,9 @@ impl ReadView {
             self.ed.key(Key::Char('G'));
             self.ed.key(Key::Char('$'));
         } else {
-            self.ed.cursor = cursor;
-            self.ed.top = top;
-            self.ed.cursor.line = self.ed.cursor.line.min(self.ed.buf.line_count().saturating_sub(1));
+            self.ed.core.cursor = cursor;
+            self.ed.core.top = top;
+            self.ed.core.cursor.line = self.ed.core.cursor.line.min(self.ed.core.buf.line_count().saturating_sub(1));
             self.ed.clamp_normal();
         }
         self.ed.scroll_into_view();
@@ -72,7 +72,7 @@ impl ReadView {
 
     fn rebuild(&mut self) {
         let (screen, registers) = (self.ed.screen, std::mem::take(&mut self.ed.registers));
-        self.ed.buf = nagi_core::Buffer::from_str(&self.text);
+        self.ed.core.buf = nagi_core::Buffer::from_str(&self.text);
         self.ed.registers = registers;
         self.ed.screen = screen;
     }
@@ -110,7 +110,7 @@ impl ReadView {
             }
             _ => {}
         }
-        let version = self.ed.buf.version;
+        let version = self.ed.core.buf.version;
         let yank_before = regs.get(&'0').cloned();
         std::mem::swap(&mut self.ed.registers, regs);
         self.ed.clipboard = clip;
@@ -122,12 +122,12 @@ impl ReadView {
             self.ed.set_state(State::Normal);
             out = ViewOut::ReadOnly;
         }
-        if self.ed.buf.version != version {
-            let cursor = self.ed.cursor;
+        if self.ed.core.buf.version != version {
+            let cursor = self.ed.core.cursor;
             self.rebuild();
             self.ed.set_state(State::Normal);
-            self.ed.cursor = cursor;
-            self.ed.cursor.line = cursor.line.min(self.ed.buf.line_count().saturating_sub(1));
+            self.ed.core.cursor = cursor;
+            self.ed.core.cursor.line = cursor.line.min(self.ed.core.buf.line_count().saturating_sub(1));
             self.ed.clamp_normal();
             out = ViewOut::ReadOnly;
         }
@@ -157,18 +157,18 @@ impl ReadView {
     /// ドラッグ: 押した位置からビジュアルで選ぶ
     pub fn drag(&mut self, row: usize, col: usize) {
         if !matches!(self.ed.state(), State::Visual { .. }) {
-            self.ed.anchor = self.ed.buf.line_start(self.ed.cursor.line) + self.ed.cursor.byte;
+            self.ed.anchor = self.ed.core.buf.line_start(self.ed.core.cursor.line) + self.ed.core.cursor.byte;
             self.ed.set_state(State::Visual { line: false, block: false });
         }
         self.place(row, col);
     }
 
     fn place(&mut self, row: usize, col: usize) {
-        let line = (self.ed.top + row).min(self.ed.buf.line_count().saturating_sub(1));
-        let text = self.ed.buf.line(line);
-        self.ed.cursor.line = line;
-        self.ed.cursor.byte = nagi_core::byte_at_col(&text, col, false);
-        self.ed.cursor.want_col = col;
+        let line = (self.ed.core.top + row).min(self.ed.core.buf.line_count().saturating_sub(1));
+        let text = self.ed.core.buf.line(line);
+        self.ed.core.cursor.line = line;
+        self.ed.core.cursor.byte = nagi_core::byte_at_col(&text, col, false);
+        self.ed.core.cursor.want_col = col;
         if self.ed.state() == State::Normal {
             self.ed.clamp_normal();
         }
@@ -186,24 +186,24 @@ impl ReadView {
     /// 描く用: 行 `line` の中のビジュアルの範囲（byte。無ければ None）
     pub fn visual_in(&self, line: usize) -> Option<(usize, usize)> {
         let State::Visual { line: whole, block } = self.ed.state() else { return None };
-        let start = self.ed.buf.line_start(line);
-        let text = self.ed.buf.line(line);
+        let start = self.ed.core.buf.line_start(line);
+        let text = self.ed.core.buf.line(line);
         if block {
             // 矩形: 列の範囲
             let a = self.ed.anchor;
-            let al = line_of(&self.ed.buf, a);
-            let (l0, l1) = (al.min(self.ed.cursor.line), al.max(self.ed.cursor.line));
+            let al = line_of(&self.ed.core.buf, a);
+            let (l0, l1) = (al.min(self.ed.core.cursor.line), al.max(self.ed.core.cursor.line));
             if line < l0 || line > l1 {
                 return None;
             }
-            let ac = nagi_core::display_col(&self.ed.buf.line(al), a - self.ed.buf.line_start(al), false);
-            let cc = nagi_core::display_col(&self.ed.buf.line(self.ed.cursor.line), self.ed.cursor.byte, false);
+            let ac = nagi_core::display_col(&self.ed.core.buf.line(al), a - self.ed.core.buf.line_start(al), false);
+            let cc = nagi_core::display_col(&self.ed.core.buf.line(self.ed.core.cursor.line), self.ed.core.cursor.byte, false);
             let (c0, c1) = (ac.min(cc), ac.max(cc));
             return Some((nagi_core::byte_at_col(&text, c0, false), nagi_core::byte_at_col(&text, c1 + 1, false)));
         }
         let (a, b, _) = self.ed.visual_range();
         if whole {
-            let (la, lb) = (line_of(&self.ed.buf, a), line_of(&self.ed.buf, b.saturating_sub(1).max(a)));
+            let (la, lb) = (line_of(&self.ed.core.buf, a), line_of(&self.ed.core.buf, b.saturating_sub(1).max(a)));
             return (line >= la && line <= lb).then_some((0, text.len().max(1)));
         }
         let (s, e) = (a.max(start), b.min(start + text.len() + 1));
@@ -258,8 +258,8 @@ pub(crate) mod draw {
                     g.title.as_deref().unwrap_or(""),
                     g.hits.len(),
                     if g.searching() { " …" } else { "" },
-                    ed.cursor.line + 1,
-                    ed.buf.line_count()
+                    ed.core.cursor.line + 1,
+                    ed.core.buf.line_count()
                 );
                 p.text(&head, r.x, y0, STATUS_FG);
             }
@@ -267,12 +267,12 @@ pub(crate) mod draw {
         p.cols = saved;
         let n = g.hits.len();
         for k in 0..r.h.saturating_sub(1) {
-            let line = ed.top + k;
-            if line >= n.max(1) || line >= ed.buf.line_count() {
+            let line = ed.core.top + k;
+            if line >= n.max(1) || line >= ed.core.buf.line_count() {
                 break;
             }
             let y = (r.y + 1 + k) as f32 * cell.h;
-            let text = ed.buf.line(line);
+            let text = ed.core.buf.line(line);
             let t = text.trim_start();
             let base = if t.starts_with("[ERROR]") || t.starts_with("error") {
                 DIAG_ERROR
@@ -282,7 +282,7 @@ pub(crate) mod draw {
                 FG
             };
             let vis = v.visual_in(line);
-            let cur = (focused && line == ed.cursor.line).then_some(ed.cursor.byte);
+            let cur = (focused && line == ed.core.cursor.line).then_some(ed.core.cursor.byte);
             let mut items = Vec::new();
             for (b, gr) in text.grapheme_indices(true) {
                 let width = p.cell_width(gr);
@@ -298,10 +298,10 @@ pub(crate) mod draw {
             }
             // 横に送っていれば、左端より左を落とす（行が左端より短ければ、行末のカーソルも隠れている）
             let width: usize = items.iter().map(|i| i.width).sum();
-            skip_cols(&mut items, ed.left, &mut None);
+            skip_cols(&mut items, ed.core.left, &mut None);
             let end = p.draw(&items, r.x, y);
             // 空の行・行末のカーソル
-            if cur.is_some_and(|c| c >= text.len()) && width >= ed.left {
+            if cur.is_some_and(|c| c >= text.len()) && width >= ed.core.left {
                 p.out.push(Instance::fill(end as f32 * cell.w, y, cell.w, cell.h, if vis.is_some() { CURSOR_IN_SELECTION } else { CURSOR }));
             } else if vis.is_some() && text.is_empty() {
                 p.out.push(Instance::fill(end as f32 * cell.w, y, cell.w, cell.h, SEL_BG));

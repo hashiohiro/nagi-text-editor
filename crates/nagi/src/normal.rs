@@ -98,7 +98,7 @@ impl Editor {
         // Visual を抜けたら、選んでいた範囲を '< '> に残す
         if let (Some((s, e, _)), false) = (was_visual, matches!(self.state(), State::Visual { .. })) {
             let at = |a: usize| {
-                let (l, b) = self.buf.pos_of(a.min(self.buf.len_bytes()));
+                let (l, b) = self.core.buf.pos_of(a.min(self.core.buf.len_bytes()));
                 Cursor { line: l, byte: b, want_col: 0 }
             };
             let (a, b) = (at(s), at(e.saturating_sub(1).max(s)));
@@ -157,15 +157,15 @@ impl Editor {
         };
         match cmd.kind {
             Kind::Move(m) => {
-                let from = self.cursor;
-                let doc = self.cur_doc;
+                let from = self.core.cursor;
+                let doc = self.core.cur_doc;
                 if let Some((c, _)) = self.dest(m, cmd.count, false) {
                     // 大きく跳ぶ移動はジャンプリストに残す（別のファイルへのマークは開くときに残している）
                     let jump = matches!(m, M::GotoLine | M::FirstLine | M::MatchPair | M::Paragraph { .. } | M::SearchNext { .. } | M::Mark { .. });
-                    if jump && doc == self.cur_doc && (c.line, c.byte) != (from.line, from.byte) {
+                    if jump && doc == self.core.cur_doc && (c.line, c.byte) != (from.line, from.byte) {
                         self.push_jump_from(from);
                     }
-                    self.cursor = c;
+                    self.core.cursor = c;
                 }
             }
             Kind::Operate(op, t) => self.operate(op, t, cmd.count, cmd.reg),
@@ -198,31 +198,31 @@ impl Editor {
     // ---------------------------------------------------------------- 移動
 
     fn line_len(&self, l: usize) -> usize {
-        self.buf.line_len(l)
+        self.core.buf.line_len(l)
     }
 
     /// 絶対位置 `abs` の書記素の長さ
     fn grapheme_len_at(&self, abs: usize) -> usize {
-        let (l, b) = self.buf.pos_of(abs);
-        let line = self.buf.line(l);
+        let (l, b) = self.core.buf.pos_of(abs);
+        let line = self.core.buf.line(l);
         line.get(b..).and_then(|r| r.graphemes(true).next()).map_or(0, str::len)
     }
 
     fn prev_grapheme(&self, abs: usize) -> usize {
-        let (l, b) = self.buf.pos_of(abs);
+        let (l, b) = self.core.buf.pos_of(abs);
         // 行頭なら、前の行の改行
         if b == 0 && l > 0 {
-            return self.buf.line_start(l - 1) + self.line_len(l - 1);
+            return self.core.buf.line_start(l - 1) + self.line_len(l - 1);
         }
-        let line = self.buf.line(l);
-        let start = self.buf.line_start(l);
+        let line = self.core.buf.line(l);
+        let start = self.core.buf.line_start(l);
         line[..b.min(line.len())].grapheme_indices(true).next_back().map_or(start, |(i, _)| start + i)
     }
 
     /// 移動先のカーソルと、移動の種類。`op` はオペレーターの対象として計算する（l で行末を越えられる等）
     fn dest(&mut self, m: M, count: Option<usize>, op: bool) -> Option<(Cursor, Kd)> {
         let n = count.unwrap_or(1);
-        let mut c = self.cursor;
+        let mut c = self.core.cursor;
         let mo = self.motion();
         let kd = match m {
             M::Left => {
@@ -230,7 +230,7 @@ impl Editor {
                 Kd::Exclusive
             }
             M::Right => {
-                let line = self.buf.line(c.line);
+                let line = self.core.buf.line(c.line);
                 // カーソルから先の n+1 個だけ見る（長い行で行全体を書記素に分けない）
                 let from = if line.is_char_boundary(c.byte.min(line.len())) { c.byte.min(line.len()) } else { 0 };
                 let gs: Vec<usize> = line[from..].grapheme_indices(true).map(|(i, _)| from + i).chain([line.len()]).take(n + 2).collect();
@@ -284,7 +284,7 @@ impl Editor {
             }
             // Neovim の既定（nostartofline）と同じく、列を保ったまま行を移る
             M::GotoLine | M::FirstLine => {
-                let last = self.buf.line_count().saturating_sub(1);
+                let last = self.core.buf.line_count().saturating_sub(1);
                 let target = match (m, count) {
                     (_, Some(n)) => (n - 1).min(last),
                     (M::GotoLine, None) => last,
@@ -304,16 +304,16 @@ impl Editor {
             }
             M::MatchPair => {
                 let abs = self.abs();
-                let end = self.buf.line_start(c.line) + self.line_len(c.line);
-                let to = textops::match_pair(&self.buf, abs, end)?;
-                let (l, b) = self.buf.pos_of(to);
+                let end = self.core.buf.line_start(c.line) + self.line_len(c.line);
+                let to = textops::match_pair(&self.core.buf, abs, end)?;
+                let (l, b) = self.core.buf.pos_of(to);
                 c.line = l;
                 c.byte = b;
                 Kd::Inclusive
             }
             M::Paragraph { forward } => {
-                let total = self.buf.line_count();
-                let blank = |l: usize| self.buf.line(l).trim().is_empty();
+                let total = self.core.buf.line_count();
+                let blank = |l: usize| self.core.buf.line(l).trim().is_empty();
                 let mut l = c.line;
                 for _ in 0..n {
                     if forward {
@@ -335,7 +335,7 @@ impl Editor {
                 c.line = l;
                 c.byte = if forward && !blank(l) { self.line_len(l) } else { 0 };
                 // 末尾まで空行が無いとき、行頭からの d} は行単位になる（Vim の例外）
-                if op && forward && !blank(l) && self.cursor.byte == 0 {
+                if op && forward && !blank(l) && self.core.cursor.byte == 0 {
                     Kd::Linewise
                 } else {
                     Kd::Exclusive
@@ -348,21 +348,21 @@ impl Editor {
                 if exact {
                     Kd::Exclusive
                 } else {
-                    let line = self.buf.line(c.line);
+                    let line = self.core.buf.line(c.line);
                     c.byte = line.len() - line.trim_start_matches([' ', '\t']).len();
                     Kd::Linewise
                 }
             }
             M::SearchNext { reverse } => {
                 let at = self.search_next(reverse, n)?;
-                let (l, b) = self.buf.pos_of(at);
+                let (l, b) = self.core.buf.pos_of(at);
                 c.line = l;
                 c.byte = b;
                 Kd::Exclusive
             }
         };
         if !matches!(m, M::Up | M::Down) {
-            let line = self.buf.line(c.line);
+            let line = self.core.buf.line(c.line);
             if m != M::LineEnd {
                 c.want_col = display_col(&line, c.byte.min(line.len()), false);
             }
@@ -371,8 +371,8 @@ impl Editor {
     }
 
     fn find(&self, ch: char, forward: bool, till: bool, n: usize) -> Option<(Cursor, Kd)> {
-        let mut c = self.cursor;
-        let line = self.buf.line(c.line);
+        let mut c = self.core.cursor;
+        let line = self.core.buf.line(c.line);
         let b = textops::find_in_line(&line, c.byte, ch, forward, till, n)?;
         c.byte = b;
         c.want_col = display_col(&line, b, false);
@@ -383,11 +383,11 @@ impl Editor {
 
     /// 行 l1..=l2 の範囲（改行込み）。最終行で改行が無ければ、前の行の改行を含める
     pub(crate) fn lines_range(&self, l1: usize, l2: usize) -> (usize, usize) {
-        let l2 = l2.min(self.buf.line_count().saturating_sub(1));
-        let start = self.buf.line_start(l1);
-        let end = self.buf.line_start(l2) + self.buf.line_len_with_break(l2);
-        if end == self.buf.len_bytes() && !self.buf.slice_string(start, end).ends_with('\n') && l1 > 0 {
-            let brk = self.buf.line_len_with_break(l1 - 1) - self.buf.line(l1 - 1).len();
+        let l2 = l2.min(self.core.buf.line_count().saturating_sub(1));
+        let start = self.core.buf.line_start(l1);
+        let end = self.core.buf.line_start(l2) + self.core.buf.line_len_with_break(l2);
+        if end == self.core.buf.len_bytes() && !self.core.buf.slice_string(start, end).ends_with('\n') && l1 > 0 {
+            let brk = self.core.buf.line_len_with_break(l1 - 1) - self.core.buf.line(l1 - 1).len();
             (start - brk, end)
         } else {
             (start, end)
@@ -397,47 +397,47 @@ impl Editor {
     /// 行単位の範囲 [s, e)（`text` はその中身）が含む最初と最後の行
     fn lines_of(&self, s: usize, e: usize, text: &str) -> (usize, usize) {
         // 最終行を消す範囲は、前の行の改行から始まる
-        let first = self.buf.pos_of(if text.starts_with(['\r', '\n']) && s > 0 { s + text.len() - text.trim_start_matches(['\r', '\n']).len() } else { s }).0;
-        let last = self.buf.pos_of(if text.ends_with('\n') { e - 1 } else { e }).0;
+        let first = self.core.buf.pos_of(if text.starts_with(['\r', '\n']) && s > 0 { s + text.len() - text.trim_start_matches(['\r', '\n']).len() } else { s }).0;
+        let last = self.core.buf.pos_of(if text.ends_with('\n') { e - 1 } else { e }).0;
         (first, last.max(first))
     }
 
     /// Visual の選択範囲 (start, end, 行単位か)
     pub fn visual_range(&self) -> (usize, usize, bool) {
-        let a = self.anchor.min(self.buf.len_bytes());
+        let a = self.anchor.min(self.core.buf.len_bytes());
         let b = self.abs();
         let (s, e) = (a.min(b), a.max(b));
         match self.state() {
             State::Visual { line: true, .. } => {
-                let (l1, l2) = (self.buf.pos_of(s).0, self.buf.pos_of(e).0);
+                let (l1, l2) = (self.core.buf.pos_of(s).0, self.core.buf.pos_of(e).0);
                 let (s, e) = self.lines_range(l1, l2);
                 (s, e, true)
             }
             // Vim を使わないときは終わりの文字を含まない（普通のエディタの選択。plain.rs）
             _ if !self.vim_on => (s, e, false),
-            _ => (s, e + self.grapheme_len_at(e).max(if e < self.buf.len_bytes() { 1 } else { 0 }), false),
+            _ => (s, e + self.grapheme_len_at(e).max(if e < self.core.buf.len_bytes() { 1 } else { 0 }), false),
         }
     }
 
     /// 範囲が行を丸ごと覆うなら（始まりが行の最初の空白でない文字以前、終わりが行末）行単位にする。
     /// 本体の中身のように `{` の直後の改行から始まるときは、次の行から（Vim の i{ と同じ）
     fn widen_to_lines(&self, mut s: usize, mut e: usize) -> (usize, usize, bool) {
-        let (sl, sb) = self.buf.pos_of(s);
-        if sb == self.line_len(sl) && sl + 1 < self.buf.line_count() && e > s {
-            s = self.buf.line_start(sl + 1);
+        let (sl, sb) = self.core.buf.pos_of(s);
+        if sb == self.line_len(sl) && sl + 1 < self.core.buf.line_count() && e > s {
+            s = self.core.buf.line_start(sl + 1);
         }
-        let (sl, sb) = self.buf.pos_of(s);
-        let (el, eb) = self.buf.pos_of(e);
+        let (sl, sb) = self.core.buf.pos_of(s);
+        let (el, eb) = self.core.buf.pos_of(e);
         let first = {
-            let line = self.buf.line(sl);
+            let line = self.core.buf.line(sl);
             line.len() - line.trim_start_matches([' ', '\t']).len()
         };
         // 終わりが行頭（中身の後ろの閉じ括弧の行）なら、その手前の行まで
-        let before_close = eb > 0 && self.buf.slice_string(self.buf.line_start(el), e).trim().is_empty();
+        let before_close = eb > 0 && self.core.buf.slice_string(self.core.buf.line_start(el), e).trim().is_empty();
         if before_close && el > sl {
-            e = self.buf.line_start(el);
+            e = self.core.buf.line_start(el);
         }
-        let (el, eb) = self.buf.pos_of(e);
+        let (el, eb) = self.core.buf.pos_of(e);
         if sb <= first && (eb == 0 && el > sl || eb >= self.line_len(el)) && el >= sl {
             let last = if eb == 0 && el > sl { el - 1 } else { el };
             let (a, b) = self.lines_range(sl, last);
@@ -448,13 +448,13 @@ impl Editor {
 
     /// text object の範囲 (start, end, 行単位か)
     fn object(&mut self, inner: bool, obj: TextObj, n: usize) -> Option<(usize, usize, bool)> {
-        let ls = self.buf.line_start(self.cursor.line);
+        let ls = self.core.buf.line_start(self.core.cursor.line);
         // 行の文字列は単語と引用符のときだけ作る（括弧と段落は rope の上で探す）
-        let line = || self.buf.line(self.cursor.line);
+        let line = || self.core.buf.line(self.core.cursor.line);
         match obj {
             TextObj::Word { big } => {
                 let line = line();
-                let (mut s, mut e) = textops::word_object(&line, self.cursor.byte.min(line.len()), big, !inner)?;
+                let (mut s, mut e) = textops::word_object(&line, self.core.cursor.byte.min(line.len()), big, !inner)?;
                 for _ in 1..n {
                     if let Some((_, e2)) = textops::word_object(&line, e.min(line.len().saturating_sub(1)), big, !inner) {
                         e = e2;
@@ -468,7 +468,7 @@ impl Editor {
             }
             TextObj::Quote(q) => {
                 let line = line();
-                let (a, b) = textops::enclosing_quote(&line, self.cursor.byte, q)?;
+                let (a, b) = textops::enclosing_quote(&line, self.core.cursor.byte, q)?;
                 if inner {
                     return Some((ls + a + 1, ls + b, false));
                 }
@@ -479,10 +479,10 @@ impl Editor {
             }
             TextObj::Block(open) => {
                 let mut at = self.abs();
-                let mut range = textops::enclosing_block(&self.buf, at, open)?;
+                let mut range = textops::enclosing_block(&self.core.buf, at, open)?;
                 for _ in 1..n {
                     at = range.0.saturating_sub(1);
-                    match textops::enclosing_block(&self.buf, at, open) {
+                    match textops::enclosing_block(&self.core.buf, at, open) {
                         Some(r) => range = r,
                         None => break,
                     }
@@ -494,11 +494,11 @@ impl Editor {
                 let mut s = a + 1;
                 let mut e = b;
                 // 複数行のブロックの内側は、括弧の行を除いた行全体（Vim と同じ）
-                let (al, ab) = self.buf.pos_of(a);
+                let (al, ab) = self.core.buf.pos_of(a);
                 if ab + 1 == self.line_len(al) {
-                    s = self.buf.line_start(al + 1);
-                    let line_start = self.buf.line_start(self.buf.pos_of(e).0);
-                    if self.buf.slice_string(line_start, e).trim().is_empty() && line_start >= s {
+                    s = self.core.buf.line_start(al + 1);
+                    let line_start = self.core.buf.line_start(self.core.buf.pos_of(e).0);
+                    if self.core.buf.slice_string(line_start, e).trim().is_empty() && line_start >= s {
                         e = line_start;
                     }
                 }
@@ -516,14 +516,14 @@ impl Editor {
                     self.svc.notify.error("このファイルには構文木が無いので使えません");
                     return None;
                 };
-                let r = syn.text_object(self.abs(), kind, inner, &self.buf)?;
+                let r = syn.text_object(self.abs(), kind, inner, &self.core.buf)?;
                 Some(self.widen_to_lines(r.start, r.end))
             }
             TextObj::Paragraph => {
-                let total = self.buf.line_count();
-                let blank = |l: usize| self.buf.line(l).trim().is_empty();
-                let kind = blank(self.cursor.line);
-                let (mut l1, mut l2) = (self.cursor.line, self.cursor.line);
+                let total = self.core.buf.line_count();
+                let blank = |l: usize| self.core.buf.line(l).trim().is_empty();
+                let kind = blank(self.core.cursor.line);
+                let (mut l1, mut l2) = (self.core.cursor.line, self.core.cursor.line);
                 while l1 > 0 && blank(l1 - 1) == kind {
                     l1 -= 1;
                 }
@@ -552,13 +552,13 @@ impl Editor {
 
     fn operate(&mut self, op: Op, t: Target, count: Option<usize>, reg: Option<char>) {
         let n = count.unwrap_or(1);
-        let from = self.cursor;
+        let from = self.core.cursor;
         let from_abs = self.abs();
         let (s, e, lw) = match t {
             Target::Lines => {
                 // 閉じた折りたたみの行なら、折りたたみ全体
                 let l2 = if self.folds.is_empty() { from.line + n - 1 } else { self.fold_extend(from.line, n) };
-                if l2 >= self.buf.line_count() && n > 1 {
+                if l2 >= self.core.buf.line_count() && n > 1 {
                     return;
                 }
                 let (s, e) = self.lines_range(from.line, l2);
@@ -568,7 +568,7 @@ impl Editor {
                 Some((s, e, lw)) => {
                     // 複数行のブロックの内側が丸ごとの行になったら、行単位で扱う（Vim の exclusive-linewise）。
                     // 消したときのカーソルは閉じ括弧の行の最初の文字へ
-                    if matches!(obj, TextObj::Block(_)) && inner && s < e && self.buf.pos_of(s).1 == 0 && self.buf.pos_of(e).1 == 0 {
+                    if matches!(obj, TextObj::Block(_)) && inner && s < e && self.core.buf.pos_of(s).1 == 0 && self.core.buf.pos_of(e).1 == 0 {
                         if op == Op::Delete {
                             self.apply(op, s, e, true, reg);
                             self.with_motion(|m, c| m.first_non_blank(c));
@@ -584,7 +584,7 @@ impl Editor {
             Target::Motion(m) => {
                 // cw はカーソルが空白でなければ ce と同じ（Vim の例外）
                 let on_word = {
-                    let line = self.buf.line(from.line);
+                    let line = self.core.buf.line(from.line);
                     line.get(from.byte..).and_then(|r| r.graphemes(true).next()).is_some_and(|g| class(g, false) != Class::Space)
                 };
                 let m = match m {
@@ -592,7 +592,7 @@ impl Editor {
                     m => m,
                 };
                 let Some((to, kd)) = self.dest(m, count, true) else { return };
-                let to_abs = self.buf.line_start(to.line) + to.byte;
+                let to_abs = self.core.buf.line_start(to.line) + to.byte;
                 match kd {
                     Kd::Linewise => {
                         let (s, e) = self.lines_range(from.line.min(to.line), from.line.max(to.line));
@@ -606,20 +606,20 @@ impl Editor {
                         let (a, mut b) = (from_abs.min(to_abs), from_abs.max(to_abs));
                         // dw が次の行へ進んだら、今の行の行末で止める（Vim の例外）
                         if matches!(m, M::WordFwd { .. }) && to.line > from.line {
-                            b = self.buf.line_start(from.line) + self.line_len(from.line);
+                            b = self.core.buf.line_start(from.line) + self.line_len(from.line);
                         }
                         // 終わりが次の行の行頭なら、前の行の行末までにする。始まりが行の最初の空白でない文字以前なら
                         // 行単位にする（Vim の :help exclusive の 2 つの規則）
-                        let ((al, ab), (bl, bb)) = (self.buf.pos_of(a), self.buf.pos_of(b));
+                        let ((al, ab), (bl, bb)) = (self.core.buf.pos_of(a), self.core.buf.pos_of(b));
                         if bb == 0 && bl > al {
-                            let line = self.buf.line(al);
+                            let line = self.core.buf.line(al);
                             let first = line.len() - line.trim_start_matches([' ', '\t']).len();
                             if ab <= first {
                                 let (s, e) = self.lines_range(al, bl - 1);
                                 self.apply(op, s, e, true, reg);
                                 return;
                             }
-                            b = self.buf.line_start(bl - 1) + self.line_len(bl - 1);
+                            b = self.core.buf.line_start(bl - 1) + self.line_len(bl - 1);
                         }
                         (a, b, false)
                     }
@@ -631,14 +631,14 @@ impl Editor {
 
     /// 範囲 [s, e) にオペレーターを適用する
     pub(crate) fn apply(&mut self, op: Op, s: usize, e: usize, lw: bool, reg: Option<char>) {
-        let text = self.buf.slice_string(s, e);
+        let text = self.core.buf.slice_string(s, e);
         match op {
             Op::Comment => {
-                let (a, b) = (self.buf.pos_of(s).0, self.buf.pos_of(e.saturating_sub(1).max(s)).0);
+                let (a, b) = (self.core.buf.pos_of(s).0, self.core.buf.pos_of(e.saturating_sub(1).max(s)).0);
                 if !self.comment_lines(a, b) {
                     return;
                 }
-                self.cursor.line = a;
+                self.core.cursor.line = a;
                 self.with_motion(|m, c| m.first_non_blank(c));
             }
             Op::Surround(c) => self.surround_add(s, e, lw, c),
@@ -650,8 +650,8 @@ impl Editor {
                 if !lw {
                     self.set_abs(s);
                 } else {
-                    let (l, _) = self.buf.pos_of(if text.starts_with(['\r', '\n']) { s + 1 } else { s });
-                    self.cursor.line = self.cursor.line.min(l.max(self.buf.pos_of(s).0));
+                    let (l, _) = self.core.buf.pos_of(if text.starts_with(['\r', '\n']) { s + 1 } else { s });
+                    self.core.cursor.line = self.core.cursor.line.min(l.max(self.core.buf.pos_of(s).0));
                 }
             }
             Op::Delete => {
@@ -659,32 +659,32 @@ impl Editor {
                     return;
                 }
                 self.set_register(reg, normalize(&text, lw), lw, false);
-                self.hist.begin();
+                self.core.hist.begin();
                 self.edit(s, e, "");
-                self.hist.close();
+                self.core.hist.close();
                 if lw {
                     // Neovim の既定（nostartofline）と同じく、列を保つ
-                    let mut line = self.buf.pos_of(s).0;
+                    let mut line = self.core.buf.pos_of(s).0;
                     if text.starts_with(['\r', '\n']) {
                         line += 1;
                     }
-                    let want = self.cursor.want_col;
-                    self.cursor.line = line.min(self.buf.line_count().saturating_sub(1));
-                    let l = self.buf.line(self.cursor.line);
-                    self.cursor.byte = nagi_core::byte_at_col(&l, want, false);
+                    let want = self.core.cursor.want_col;
+                    self.core.cursor.line = line.min(self.core.buf.line_count().saturating_sub(1));
+                    let l = self.core.buf.line(self.core.cursor.line);
+                    self.core.cursor.byte = nagi_core::byte_at_col(&l, want, false);
                 } else {
                     self.set_abs(s);
                 }
             }
             Op::Change => {
                 self.set_register(reg, normalize(&text, lw), lw, false);
-                self.hist.begin();
+                self.core.hist.begin();
                 if lw {
                     // 行の中身を消して、最初の行のインデントは残す（autoindent）
                     let (first, last) = self.lines_of(s, e, &text);
-                    let indent = leading_ws(&self.buf.line(first)).to_string();
-                    let cs = self.buf.line_start(first);
-                    let ce = self.buf.line_start(last) + self.line_len(last);
+                    let indent = leading_ws(&self.core.buf.line(first)).to_string();
+                    let cs = self.core.buf.line_start(first);
+                    let ce = self.core.buf.line_start(last) + self.line_len(last);
                     self.edit(cs, ce, &indent);
                     self.set_abs(cs + indent.len());
                 } else {
@@ -696,14 +696,14 @@ impl Editor {
                 self.svc.notify.clear();
             }
             Op::Indent | Op::Dedent => {
-                let (a, b) = if lw { self.lines_of(s, e, &text) } else { (self.buf.pos_of(s).0, self.buf.pos_of(e.saturating_sub(1).max(s)).0) };
-                self.hist.begin();
+                let (a, b) = if lw { self.lines_of(s, e, &text) } else { (self.core.buf.pos_of(s).0, self.core.buf.pos_of(e.saturating_sub(1).max(s)).0) };
+                self.core.hist.begin();
                 // 1 段は設定のインデント（タブか空白。言語ごとの幅）
                 let unit = self.indent_unit();
                 let width = self.indent_width();
                 for l in a..=b.max(a) {
-                    let line = self.buf.line(l);
-                    let ls = self.buf.line_start(l);
+                    let line = self.core.buf.line(l);
+                    let ls = self.core.buf.line_start(l);
                     if op == Op::Indent {
                         if !line.is_empty() {
                             self.edit(ls, ls, &unit);
@@ -716,9 +716,9 @@ impl Editor {
                         }
                     }
                 }
-                self.hist.close();
+                self.core.hist.close();
                 // 列は保つ（nostartofline）
-                self.cursor.line = a;
+                self.core.cursor.line = a;
             }
         }
     }
@@ -857,11 +857,11 @@ impl Editor {
                 let (l, times) = match visual {
                     Some(_) => {
                         let (s, e, _) = self.visual_range();
-                        let (a, b) = (self.buf.pos_of(s).0, self.buf.pos_of(e.saturating_sub(1)).0);
+                        let (a, b) = (self.core.buf.pos_of(s).0, self.core.buf.pos_of(e.saturating_sub(1)).0);
                         self.set_state(State::Normal);
                         (a, (b - a).max(1))
                     }
-                    None => (self.cursor.line, n.max(2) - 1),
+                    None => (self.core.cursor.line, n.max(2) - 1),
                 };
                 self.join(l, times);
             }
@@ -892,13 +892,13 @@ impl Editor {
             Action::Fold(c) => {
                 let lines = visual.map(|_| {
                     let (s, e, _) = self.visual_range();
-                    (self.buf.pos_of(s).0, self.buf.pos_of(e.saturating_sub(1).max(s)).0)
+                    (self.core.buf.pos_of(s).0, self.core.buf.pos_of(e.saturating_sub(1).max(s)).0)
                 });
                 self.fold_cmd(c, lines);
             }
             Action::ScrollCursor(c) => self.scroll_cursor(c),
             Action::RepeatSub { all } => {
-                let range = if all { (0, self.buf.line_count().saturating_sub(1)) } else { (self.cursor.line, self.cursor.line) };
+                let range = if all { (0, self.core.buf.line_count().saturating_sub(1)) } else { (self.core.cursor.line, self.core.cursor.line) };
                 self.repeat_sub(range, all);
             }
             Action::Jump { older } => self.jump(older, n),
@@ -918,8 +918,8 @@ impl Editor {
             }
             Action::Cmdline(c) => self.start_search(c == '/', false, ""),
             Action::SearchWord { forward } => {
-                let line = self.buf.line(self.cursor.line);
-                if let Some((s, e)) = textops::word_object(&line, self.cursor.byte.min(line.len()), false, false) {
+                let line = self.core.buf.line(self.core.cursor.line);
+                if let Some((s, e)) = textops::word_object(&line, self.core.cursor.byte.min(line.len()), false, false) {
                     let word = &line[s..e];
                     if class(word, false) == Class::Word {
                         let pat = format!(r"\b{}\b", regex_escape(word));
@@ -937,8 +937,8 @@ impl Editor {
                 let amount = if half { (self.rows / 2).max(1) } else { self.rows.saturating_sub(2).max(1) } * n;
                 let d = if down { amount as isize } else { -(amount as isize) };
                 self.with_motion(|m, c| m.vertical(c, d));
-                let max_top = self.buf.line_count().saturating_sub(1) as isize;
-                self.top = (self.top as isize + d).clamp(0, max_top) as usize;
+                let max_top = self.core.buf.line_count().saturating_sub(1) as isize;
+                self.core.top = (self.core.top as isize + d).clamp(0, max_top) as usize;
             }
             Action::LastChange => self.jump_last_change(),
         }
@@ -946,10 +946,10 @@ impl Editor {
     }
 
     fn insert_cmd(&mut self, c: char) {
-        let mut cur = self.cursor;
+        let mut cur = self.core.cursor;
         match c {
             'a' => {
-                let line = self.buf.line(cur.line);
+                let line = self.core.buf.line(cur.line);
                 if let Some(g) = line[cur.byte.min(line.len())..].graphemes(true).next() {
                     cur.byte += g.len();
                 }
@@ -958,18 +958,18 @@ impl Editor {
             'A' => cur.byte = self.line_len(cur.line),
             'o' | 'O' => {
                 // 新しい行のインデントは今の行に合わせ、o で { の後なら 1 段深く（設定の自動インデント）
-                let mut indent = if self.settings.bool("editor.auto_indent") { leading_ws(&self.buf.line(cur.line)).to_string() } else { String::new() };
-                if c == 'o' && self.settings.bool("editor.auto_indent") && self.settings.bool("editor.smart_indent") && self.buf.line(cur.line).trim_end().ends_with(['{', '(', '[']) {
+                let mut indent = if self.settings.bool("editor.auto_indent") { leading_ws(&self.core.buf.line(cur.line)).to_string() } else { String::new() };
+                if c == 'o' && self.settings.bool("editor.auto_indent") && self.settings.bool("editor.smart_indent") && self.core.buf.line(cur.line).trim_end().ends_with(['{', '(', '[']) {
                     indent.push_str(&self.indent_unit());
                 }
-                let nl = self.buf.newline();
+                let nl = self.core.buf.newline();
                 self.enter_insert();
                 if c == 'o' {
-                    let at = self.buf.line_start(cur.line) + self.line_len(cur.line);
+                    let at = self.core.buf.line_start(cur.line) + self.line_len(cur.line);
                     self.edit(at, at, &format!("{nl}{indent}"));
                     self.set_abs(at + nl.len() + indent.len());
                 } else {
-                    let at = self.buf.line_start(cur.line);
+                    let at = self.core.buf.line_start(cur.line);
                     self.edit(at, at, &format!("{indent}{nl}"));
                     self.set_abs(at + indent.len());
                 }
@@ -977,7 +977,7 @@ impl Editor {
             }
             _ => {}
         }
-        self.cursor = cur;
+        self.core.cursor = cur;
         self.enter_insert();
     }
 
@@ -992,24 +992,24 @@ impl Editor {
             self.put_block(&text, w, after);
             return;
         }
-        let nl = self.buf.newline();
-        self.hist.begin();
+        let nl = self.core.buf.newline();
+        self.core.hist.begin();
         if linewise {
             let mut text = if text.ends_with('\n') { text } else { text + "\n" };
             if indent {
-                text = reindent(&text, leading_ws(&self.buf.line(self.cursor.line)));
+                text = reindent(&text, leading_ws(&self.core.buf.line(self.core.cursor.line)));
             }
             let text = text.replace('\n', nl);
-            let line = if after { self.cursor.line + 1 } else { self.cursor.line };
-            let at = if line >= self.buf.line_count() {
+            let line = if after { self.core.cursor.line + 1 } else { self.core.cursor.line };
+            let at = if line >= self.core.buf.line_count() {
                 // 最終行の後ろ: 改行が無ければ先に足す
-                let end = self.buf.len_bytes();
-                if !self.buf.slice_string(end.saturating_sub(1), end).ends_with('\n') {
+                let end = self.core.buf.len_bytes();
+                if !self.core.buf.slice_string(end.saturating_sub(1), end).ends_with('\n') {
                     self.edit(end, end, nl);
                 }
-                self.buf.len_bytes()
+                self.core.buf.len_bytes()
             } else {
-                self.buf.line_start(line)
+                self.core.buf.line_start(line)
             };
             self.edit(at, at, &text);
             self.set_abs(at);
@@ -1017,14 +1017,14 @@ impl Editor {
         } else {
             let text = text.replace('\n', nl);
             let mut at = self.abs();
-            if after && !self.buf.line(self.cursor.line).is_empty() {
+            if after && !self.core.buf.line(self.core.cursor.line).is_empty() {
                 at += self.grapheme_len_at(at);
             }
             self.edit(at, at, &text);
             self.set_abs(at + text.len());
             self.with_motion(|m, c| m.left(c, 1));
         }
-        self.hist.close();
+        self.core.hist.close();
     }
 
     /// Visual で p: 選択範囲をレジスタの内容で置き換える
@@ -1032,35 +1032,35 @@ impl Editor {
         let (text, linewise) = self.get_register(reg);
         let (s, e, lw) = self.visual_range();
         self.set_state(State::Normal);
-        let nl = self.buf.newline();
+        let nl = self.core.buf.newline();
         let mut t = text.replace('\n', nl);
         if lw && !linewise {
             t.push_str(nl);
         } else if !lw && linewise {
             t = format!("{nl}{t}");
         }
-        self.hist.begin();
+        self.core.hist.begin();
         self.edit(s, e, &t);
-        self.hist.close();
+        self.core.hist.close();
         self.set_abs(s);
     }
 
     pub(crate) fn join(&mut self, l: usize, times: usize) {
-        self.hist.begin();
+        self.core.hist.begin();
         let mut pos = None;
         for _ in 0..times {
-            if l + 1 >= self.buf.line_count() {
+            if l + 1 >= self.core.buf.line_count() {
                 break;
             }
-            let cur = self.buf.line(l);
-            let next = self.buf.line(l + 1);
-            let start = self.buf.line_start(l) + cur.len();
-            let end = self.buf.line_start(l + 1) + leading_ws(&next).len();
+            let cur = self.core.buf.line(l);
+            let next = self.core.buf.line(l + 1);
+            let start = self.core.buf.line_start(l) + cur.len();
+            let end = self.core.buf.line_start(l + 1) + leading_ws(&next).len();
             let rest = next.trim_start_matches([' ', '\t']);
             // ideajoin: 注釈の続きは印（// # -- *）を、"a" +\n"b" は引用符と + を外してつなぐ
             if self.settings.bool("vim.ideajoin") {
                 if let Some((s2, e2, sep)) = idea_join(&cur, rest) {
-                    let ls = self.buf.line_start(l);
+                    let ls = self.core.buf.line_start(l);
                     let ns = end;
                     self.edit(ls + s2, ns + e2, sep);
                     pos = Some(ls + s2);
@@ -1069,11 +1069,11 @@ impl Editor {
             }
             let sep = if cur.ends_with([' ', '\t']) || rest.is_empty() || rest.starts_with(')') || cur.is_empty() { "" } else { " " };
             let cur_trimmed = cur.trim_end_matches([' ', '\t']).len();
-            let start2 = if sep.is_empty() { start } else { self.buf.line_start(l) + cur_trimmed };
+            let start2 = if sep.is_empty() { start } else { self.core.buf.line_start(l) + cur_trimmed };
             self.edit(start2, end, sep);
             pos = Some(start2);
         }
-        self.hist.close();
+        self.core.hist.close();
         if let Some(p) = pos {
             self.set_abs(p);
         }
@@ -1087,8 +1087,8 @@ impl Editor {
                 (s, e)
             }
             None => {
-                let line = self.buf.line(self.cursor.line);
-                let gs: Vec<&str> = line[self.cursor.byte.min(line.len())..].graphemes(true).take(n).collect();
+                let line = self.core.buf.line(self.core.cursor.line);
+                let gs: Vec<&str> = line[self.core.cursor.byte.min(line.len())..].graphemes(true).take(n).collect();
                 if gs.len() < n {
                     return;
                 }
@@ -1096,15 +1096,15 @@ impl Editor {
                 (s, s + gs.iter().map(|g| g.len()).sum::<usize>())
             }
         };
-        let old = self.buf.slice_string(s, e);
+        let old = self.core.buf.slice_string(s, e);
         let new: String = if ch == '\n' {
-            self.buf.newline().to_string()
+            self.core.buf.newline().to_string()
         } else {
             old.graphemes(true).map(|g| if g == "\n" || g == "\r\n" { g.to_string() } else { ch.to_string() }).collect()
         };
-        self.hist.begin();
+        self.core.hist.begin();
         self.edit(s, e, &new);
-        self.hist.close();
+        self.core.hist.close();
         if ch == '\n' {
             self.set_abs(s + new.len());
         } else if visual.is_some() {
@@ -1122,21 +1122,21 @@ impl Editor {
                 (s, e)
             }
             None => {
-                let line = self.buf.line(self.cursor.line);
-                let len: usize = line[self.cursor.byte.min(line.len())..].graphemes(true).take(n).map(str::len).sum();
+                let line = self.core.buf.line(self.core.cursor.line);
+                let len: usize = line[self.core.cursor.byte.min(line.len())..].graphemes(true).take(n).map(str::len).sum();
                 let s = self.abs();
                 (s, s + len)
             }
         };
-        let old = self.buf.slice_string(s, e);
+        let old = self.core.buf.slice_string(s, e);
         let new: String = old
             .chars()
             .flat_map(|c| -> Vec<char> { if c.is_lowercase() { c.to_uppercase().collect() } else { c.to_lowercase().collect() } })
             .collect();
         if new != old {
-            self.hist.begin();
+            self.core.hist.begin();
             self.edit(s, e, &new);
-            self.hist.close();
+            self.core.hist.close();
         }
         if visual.is_some() {
             self.set_abs(s);
@@ -1234,26 +1234,26 @@ mod ts_textobj_tests {
         // af: 関数を行ごと
         let mut e = ed(RS, nagi_syntax::Lang::Rust);
         keys(&mut e, "4Gdaf");
-        assert_eq!(e.buf.text(), "use x;\n\n\nstruct P {\n    x: i32,\n}\n");
+        assert_eq!(e.core.buf.text(), "use x;\n\n\nstruct P {\n    x: i32,\n}\n");
         assert_eq!(e.registers.get(&'"').map(|r| r.1), Some(true), "行単位");
         // if: 本体の中の行
         let mut e = ed(RS, nagi_syntax::Lang::Rust);
         keys(&mut e, "4Gdif");
-        assert_eq!(e.buf.text(), "use x;\n\nfn add(a: i32, b: i32) -> i32 {\n}\n\nstruct P {\n    x: i32,\n}\n");
+        assert_eq!(e.core.buf.text(), "use x;\n\nfn add(a: i32, b: i32) -> i32 {\n}\n\nstruct P {\n    x: i32,\n}\n");
         // ia / aa: 引数
         let mut e = ed(RS, nagi_syntax::Lang::Rust);
         keys(&mut e, "3Gfbcian: u8<Esc>");
-        assert_eq!(e.buf.line(2), "fn add(a: i32, n: u8) -> i32 {");
+        assert_eq!(e.core.buf.line(2), "fn add(a: i32, n: u8) -> i32 {");
         keys(&mut e, "Fadaa");
-        assert_eq!(e.buf.line(2), "fn add(n: u8) -> i32 {");
+        assert_eq!(e.core.buf.line(2), "fn add(n: u8) -> i32 {");
         // ac: 構造体を行ごと（Visual でも同じ範囲）
         let mut e = ed(RS, nagi_syntax::Lang::Rust);
         keys(&mut e, "9Gvacd");
-        assert_eq!(e.buf.text(), "use x;\n\nfn add(a: i32, b: i32) -> i32 {\n    let c = a + b;\n    c\n}\n\n");
+        assert_eq!(e.core.buf.text(), "use x;\n\nfn add(a: i32, b: i32) -> i32 {\n    let c = a + b;\n    c\n}\n\n");
         // 構文木の無いファイルでは知らせる
         let mut e = Editor::new(Buffer::from_str("plain\n"), None);
         keys(&mut e, "daf");
         assert!(e.svc.notify.text.contains("構文木"));
-        assert_eq!(e.buf.line(0), "plain");
+        assert_eq!(e.core.buf.line(0), "plain");
     }
 }

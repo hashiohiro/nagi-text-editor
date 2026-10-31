@@ -44,7 +44,7 @@ fn ident_char(c: char) -> bool {
 impl Editor {
     fn project_root(&self) -> PathBuf {
         let root = self
-            .buf
+            .core.buf
             .path
             .as_deref()
             .and_then(|p| std::path::absolute(p).ok())
@@ -173,11 +173,11 @@ impl Editor {
     /// 保存したファイルを索引し直す（裏で）
     pub(crate) fn reindex_saved(&mut self) {
         // ビルドの設定（pom.xml・package.json）なら、それを使う生態系の索引を作り直す
-        if let Some(p) = self.buf.path.clone().filter(|p| self.nav.libs.rebuild_on(p) && self.settings.bool("project.index")) {
+        if let Some(p) = self.core.buf.path.clone().filter(|p| self.nav.libs.rebuild_on(p) && self.settings.bool("project.index")) {
             let root = self.project_root();
             self.start_libraries(&root, Some(&p));
         }
-        let (Some(path), Some(idx)) = (self.buf.path.clone(), &self.nav.index) else { return };
+        let (Some(path), Some(idx)) = (self.core.buf.path.clone(), &self.nav.index) else { return };
         let Ok(abs) = std::path::absolute(&path) else { return };
         let Ok(rel) = abs.strip_prefix(&idx.root) else { return };
         if nagi_syntax::Lang::detect(&abs).is_none() {
@@ -193,11 +193,11 @@ impl Editor {
 
     /// カーソルの下の識別子（と、その始まりの絶対 byte）
     pub(crate) fn word_at_cursor(&self) -> Option<(String, usize)> {
-        let line = self.buf.line(self.cursor.line);
-        let b = self.cursor.byte.min(line.len());
+        let line = self.core.buf.line(self.core.cursor.line);
+        let b = self.core.cursor.byte.min(line.len());
         let start = line[..b].char_indices().rev().take_while(|(_, c)| ident_char(*c)).last().map_or(b, |(i, _)| i);
         let end = line[b..].char_indices().find(|(_, c)| !ident_char(*c)).map_or(line.len(), |(i, _)| b + i);
-        (end > start).then(|| (line[start..end].to_string(), self.buf.line_start(self.cursor.line) + start))
+        (end > start).then(|| (line[start..end].to_string(), self.core.buf.line_start(self.core.cursor.line) + start))
     }
 
     /// (パス, 行, 列) へ跳ぶ（ジャンプリストに残す）
@@ -207,20 +207,20 @@ impl Editor {
         let fixed = PathBuf::from(path.to_string_lossy().replace('/', "\\"));
         #[cfg(windows)]
         let path = fixed.as_path();
-        let same = self.buf.path.as_deref().is_some_and(|p| std::path::absolute(p).ok().as_deref() == Some(path));
+        let same = self.core.buf.path.as_deref().is_some_and(|p| std::path::absolute(p).ok().as_deref() == Some(path));
         if same {
             self.push_jump();
         } else {
             self.edit_file(path.to_path_buf());
         }
-        let line = line.min(self.buf.line_count().saturating_sub(1));
-        self.cursor.line = line;
-        self.cursor.byte = col.min(self.buf.line_len(line));
-        let text = self.buf.line(line);
-        self.cursor.want_col = nagi_core::display_col(&text, self.cursor.byte, false);
+        let line = line.min(self.core.buf.line_count().saturating_sub(1));
+        self.core.cursor.line = line;
+        self.core.cursor.byte = col.min(self.core.buf.line_len(line));
+        let text = self.core.buf.line(line);
+        self.core.cursor.want_col = nagi_core::display_col(&text, self.core.cursor.byte, false);
         self.clamp_normal();
         // 跳んだ先は画面の中ほどに
-        self.top = line.saturating_sub(self.rows / 3);
+        self.core.top = line.saturating_sub(self.rows / 3);
     }
 
     /// `gd`: 定義へ
@@ -231,8 +231,8 @@ impl Editor {
         };
         // 言語が丸ごと決める定義（Angular のテンプレート: 式の名前は部品の .ts（と親クラス）、タグは部品、属性は部品の @Input / @Output）
         let found = {
-            let src = self.buf.text();
-            let here = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
+            let src = self.core.buf.text();
+            let here = self.core.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
             let cx = nagi_lang::lang::Cx::at(self.language(), &src, here.as_deref(), word_at, self.nav.index.as_ref(), &self.nav.libs);
             cx.lang.definition(&cx, &name)
         };
@@ -252,7 +252,7 @@ impl Editor {
         }
         // ファイルの中の束縛
         self.ensure_syntax();
-        if let Some(at) = self.syntax.as_ref().and_then(|s| s.local_definition(&self.buf, word_at)) {
+        if let Some(at) = self.syntax.as_ref().and_then(|s| s.local_definition(&self.core.buf, word_at)) {
             if at != word_at {
                 self.push_jump();
                 self.set_abs(at);
@@ -261,17 +261,17 @@ impl Editor {
             }
         }
         // プロジェクトの索引（まだなら、このファイルの定義から）
-        let here = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
-        let cur = (self.cursor.line, word_at - self.buf.line_start(self.cursor.line));
+        let here = self.core.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
+        let cur = (self.core.cursor.line, word_at - self.core.buf.line_start(self.core.cursor.line));
         // 有力な順に並べる（受け手の型とその親 → import → 同じモジュール）。best はいちばん有力なものの数
         let mut best = 0;
         // 呼び出しなら引数の数（オーバーロードを選ぶ・フィールドを候補から外す）
-        let args = self.syntax.as_ref().and_then(|s| s.call_args(&self.buf, word_at));
+        let args = self.syntax.as_ref().and_then(|s| s.call_args(&self.core.buf, word_at));
         let mut cands: Vec<(PathBuf, usize, usize, DefKind)> = match &self.nav.index {
             Some(idx) => {
                 let rel = here.as_ref().and_then(|h| h.strip_prefix(&idx.root).ok()).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default();
-                let src = self.buf.text();
-                let recv = self.syntax.as_ref().and_then(|s| s.receiver(&self.buf, word_at));
+                let src = self.core.buf.text();
+                let recv = self.syntax.as_ref().and_then(|s| s.receiver(&self.core.buf, word_at));
                 let mut all = idx.lookup(&name).to_vec();
                 // 今いる定義そのものは候補から外す（ほかに候補があれば）
                 if all.len() > 1 {
@@ -295,7 +295,7 @@ impl Editor {
         };
         if cands.is_empty() {
             if let (Some(syn), Some(p)) = (&self.syntax, &here) {
-                cands = syn.defs(&self.buf).into_iter().filter(|d| d.name == name).map(|d| (p.clone(), d.line, d.col, d.kind)).collect();
+                cands = syn.defs(&self.core.buf).into_iter().filter(|d| d.name == name).map(|d| (p.clone(), d.line, d.col, d.kind)).collect();
                 if cands.len() > 1 {
                     cands.retain(|(p, l, c, _)| !(Some(p) == here.as_ref() && (*l, *c) == cur));
                 }
@@ -361,8 +361,8 @@ impl Editor {
 
     /// `word_at` の名前 `name` の、プロジェクトの外の定義
     pub(crate) fn outside_definition(&self, name: &str, word_at: usize) -> Option<nagi_lang::lang::Target> {
-        let src = self.buf.text();
-        let here = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
+        let src = self.core.buf.text();
+        let here = self.core.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
         let mut cx = nagi_lang::lang::Cx::at(self.language(), &src, here.as_deref(), word_at, self.nav.index.as_ref(), &self.nav.libs);
         cx.out_dir = self.nav.sources_dir.as_deref();
         cx.lang.library_definition(&cx, name)
@@ -388,15 +388,15 @@ impl Editor {
                 None => "索引がありません".into(),
             });
         };
-        let here = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
+        let here = self.core.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
         let rel = here.as_ref().and_then(|h| h.strip_prefix(&idx.root).ok()).map(|r| r.to_string_lossy().replace('\\', "/")).unwrap_or_default();
-        let src = self.buf.text();
+        let src = self.core.buf.text();
         let mut r = nagi_lang::project::Ranker::new(Some(idx));
         let is_type = idx.lookup(&name).iter().any(|l| l.kind.is_type()) && name.chars().next().is_some_and(char::is_uppercase);
         let (ty, member) = if is_type {
             (Some(name.clone()), None)
         } else {
-            let recv = self.syntax.as_ref().and_then(|s| s.receiver(&self.buf, word_at));
+            let recv = self.syntax.as_ref().and_then(|s| s.receiver(&self.core.buf, word_at));
             let ty = match recv {
                 Some(rc) => r.receiver_type_name(&rel, &src, word_at, &rc),
                 None => self.language().enclosing_type(&src, word_at),
@@ -426,9 +426,9 @@ impl Editor {
 
     /// カーソルがメソッド・型の定義そのものの上か（gd を実装へ向ける）
     fn on_definition(&self, name: &str, word_at: usize) -> bool {
-        let (Some(idx), Some(here)) = (&self.nav.index, self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok())) else { return false };
+        let (Some(idx), Some(here)) = (&self.nav.index, self.core.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok())) else { return false };
         let Some(rel) = here.strip_prefix(&idx.root).ok().map(|r| r.to_string_lossy().replace('\\', "/")) else { return false };
-        let cur = (self.cursor.line, word_at - self.buf.line_start(self.cursor.line));
+        let cur = (self.core.cursor.line, word_at - self.core.buf.line_start(self.core.cursor.line));
         idx.lookup(name).iter().any(|l| *l.path == *rel && (l.line as usize, l.col as usize) == cur && (l.kind.is_type() || l.kind == DefKind::Method))
     }
 
@@ -445,22 +445,22 @@ impl Editor {
 
     /// 名前 `name`（`word_at` の位置）のプロジェクトの定義が 1 か所に決まれば (根からの相対パス, 行, 列)
     pub(crate) fn definition_target(&mut self, name: &str, word_at: usize) -> Option<(String, usize, usize)> {
-        let here = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok())?;
+        let here = self.core.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok())?;
         self.ensure_syntax();
         let idx = self.nav.index.as_ref()?;
         let rel = here.strip_prefix(&idx.root).ok()?.to_string_lossy().replace('\\', "/");
-        let cur = (self.cursor.line, word_at - self.buf.line_start(self.cursor.line));
+        let cur = (self.core.cursor.line, word_at - self.core.buf.line_start(self.core.cursor.line));
         // 定義の上なら、それ
         if let Some(l) = idx.lookup(name).iter().find(|l| *l.path == *rel && (l.line as usize, l.col as usize) == cur) {
             return Some((l.path.to_string(), l.line as usize, l.col as usize));
         }
         // ファイルの中の束縛（ローカル変数）は名前の一致で足りる
-        if self.syntax.as_ref().and_then(|s| s.local_definition(&self.buf, word_at)).is_some_and(|at| at != word_at) {
+        if self.syntax.as_ref().and_then(|s| s.local_definition(&self.core.buf, word_at)).is_some_and(|at| at != word_at) {
             return None;
         }
-        let recv = self.syntax.as_ref().and_then(|s| s.receiver(&self.buf, word_at));
-        let args = self.syntax.as_ref().and_then(|s| s.call_args(&self.buf, word_at));
-        match nagi_lang::project::Ranker::new(Some(idx)).resolve(&rel, &self.buf.text(), name, recv.as_ref(), args.as_deref(), idx.lookup(name).to_vec()) {
+        let recv = self.syntax.as_ref().and_then(|s| s.receiver(&self.core.buf, word_at));
+        let args = self.syntax.as_ref().and_then(|s| s.call_args(&self.core.buf, word_at));
+        match nagi_lang::project::Ranker::new(Some(idx)).resolve(&rel, &self.core.buf.text(), name, recv.as_ref(), args.as_deref(), idx.lookup(name).to_vec()) {
             nagi_lang::project::Ranked::Locs(v, 1) => Some((v[0].path.to_string(), v[0].line as usize, v[0].col as usize)),
             _ => None,
         }
@@ -611,11 +611,11 @@ impl Editor {
     /// ファイルの構造（このファイルの定義を行の順に）
     pub(crate) fn outline(&mut self) {
         self.ensure_syntax();
-        let (Some(syn), Some(path)) = (&self.syntax, self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok())) else {
+        let (Some(syn), Some(path)) = (&self.syntax, self.core.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok())) else {
             self.svc.notify.error("このファイルには構文木が無いので使えません");
             return;
         };
-        let defs = syn.defs(&self.buf);
+        let defs = syn.defs(&self.core.buf);
         let items = defs.iter().map(|d| format!("{}  {}  :{}", d.name, d.kind.label(), d.line + 1)).collect();
         let locs = defs.into_iter().map(|d| (path.clone(), d.line, d.col)).collect();
         self.open_locations(Source::Outline, items, locs, false);
@@ -625,20 +625,20 @@ impl Editor {
     pub(crate) fn method_jump(&mut self, next: bool) {
         self.ensure_syntax();
         let Some(syn) = &self.syntax else { return };
-        let line = self.cursor.line;
-        let defs = syn.defs(&self.buf);
+        let line = self.core.cursor.line;
+        let defs = syn.defs(&self.core.buf);
         let it = defs.iter().filter(|d| matches!(d.kind, DefKind::Function | DefKind::Method)).map(|d| (d.line, d.col));
         let to = if next { it.filter(|(l, _)| *l > line).min() } else { it.filter(|(l, _)| *l < line).max() };
         if let Some((l, _)) = to {
             self.push_jump();
-            self.cursor.line = l;
+            self.core.cursor.line = l;
             self.with_motion(|m, c| m.first_non_blank(c));
         }
     }
 
     /// `:Idea`: 今のファイルと行を IntelliJ で開く（重いリファクタリング用）
     pub(crate) fn open_in_intellij(&mut self) {
-        let Some(path) = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()) else {
+        let Some(path) = self.core.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()) else {
             self.svc.notify.info("ファイル名がありません");
             return;
         };
@@ -646,7 +646,7 @@ impl Editor {
             self.svc.notify.warn("IntelliJ が見つかりません（NAGI_IDEA に idea64.exe の場所を入れてください）");
             return;
         };
-        let line = (self.cursor.line + 1).to_string();
+        let line = (self.core.cursor.line + 1).to_string();
         match std::process::Command::new(&exe).arg("--line").arg(&line).arg(&path).spawn() {
             Ok(_) => self.svc.notify.info(format!("IntelliJ で開きました: {}:{line}", path.display())),
             Err(e) => self.svc.notify.error(format!("IntelliJ を起動できません: {e}")),
@@ -710,8 +710,8 @@ mod tests {
 
     /// Java: `at` の名前 `name` のライブラリの (型の内部名, メンバー)
     fn library_target(e: &Editor, name: &str, at: usize) -> Option<(String, Option<String>)> {
-        let src = e.buf.text();
-        let here = e.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
+        let src = e.core.buf.text();
+        let here = e.core.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
         nagi_lang::java::lang::library_target(&nagi_lang::lang::Cx::at(&nagi_lang::java::lang::JAVA, &src, here.as_deref(), at, e.nav.index.as_ref(), &e.nav.libs), name)
     }
 
@@ -793,10 +793,10 @@ mod tests {
         let t0 = std::time::Instant::now();
         for p in files.iter().step_by(step) {
             let Ok(buf) = Buffer::open(p) else { continue };
-            e.buf = buf;
-            e.buf.path = Some(p.clone());
-            for li in 0..e.buf.line_count() {
-                let line = e.buf.line(li).to_string();
+            e.core.buf = buf;
+            e.core.buf.path = Some(p.clone());
+            for li in 0..e.core.buf.line_count() {
+                let line = e.core.buf.line(li).to_string();
                 let t = line.trim_start();
                 if ["import", "package", "//", "*", "/*"].iter().any(|x| t.starts_with(x)) {
                     continue;
@@ -816,7 +816,7 @@ mod tests {
                     if !chain.is_empty() && (nagi_lang::java::rules::is_project_package(idx, &chain) || jars.is_package(&chain)) {
                         continue;
                     }
-                    let at = e.buf.line_start(li) + g.start();
+                    let at = e.core.buf.line_start(li) + g.start();
                     let target = library_target(&e, g.as_str(), at);
                     let opened = target.as_ref().and_then(|(owner, member)| nagi_lang::java::source::open(&jars, owner, member.as_deref(), &dir));
                     put(p, li, g.start(), format!("{target:?} {:?}", opened.as_ref().map(|o| (o.path.file_name().map(|x| x.to_string_lossy().into_owned()), o.line, o.col, o.source))));
@@ -846,10 +846,10 @@ mod tests {
         let mut ty_miss: std::collections::HashMap<String, usize> = Default::default();
         for p in files.iter().step_by(step) {
             let Ok(buf) = Buffer::open(p) else { continue };
-            e.buf = buf;
-            e.buf.path = Some(p.clone());
-            for li in 0..e.buf.line_count() {
-                let line = e.buf.line(li).to_string();
+            e.core.buf = buf;
+            e.core.buf.path = Some(p.clone());
+            for li in 0..e.core.buf.line_count() {
+                let line = e.core.buf.line(li).to_string();
                 let t = line.trim_start();
                 if ["import", "package", "//", "*", "/*"].iter().any(|x| t.starts_with(x)) {
                     continue;
@@ -865,7 +865,7 @@ mod tests {
                         continue;
                     }
                     ty_all += 1;
-                    let at = e.buf.line_start(li) + m.start();
+                    let at = e.core.buf.line_start(li) + m.start();
                     let target = library_target(&e, m.as_str(), at);
                     let opened = target.as_ref().and_then(|(owner, member)| nagi_lang::java::source::open(&jars, owner, member.as_deref(), &dir));
                     put(p, li, m.start(), format!("T {target:?} {:?}", opened.as_ref().map(|o| (o.line, o.col, o.source))));
@@ -930,10 +930,10 @@ mod tests {
         let t0 = std::time::Instant::now();
         for p in &files {
             let Ok(buf) = Buffer::open(p) else { continue };
-            e.buf = buf;
-            e.buf.path = Some(p.clone());
-            for li in 0..e.buf.line_count() {
-                let line = e.buf.line(li).to_string();
+            e.core.buf = buf;
+            e.core.buf.path = Some(p.clone());
+            for li in 0..e.core.buf.line_count() {
+                let line = e.core.buf.line(li).to_string();
                 let t = line.trim_start();
                 if ["import", "//", "*", "/*"].iter().any(|x| t.starts_with(x)) {
                     continue;
@@ -944,7 +944,7 @@ mod tests {
                         continue;
                     }
                     all += 1;
-                    let at = e.buf.line_start(li) + g.start();
+                    let at = e.core.buf.line_start(li) + g.start();
                     let decl = e.outside_definition(g.as_str(), at).map(|t| (t.path, t.line, t.col));
                     if let Some(d) = &mut dump {
                         let rel = p.strip_prefix(&root).unwrap_or(p).to_string_lossy().replace('\\', "/");
@@ -1017,8 +1017,8 @@ mod tests {
             let mut e = open(&root.join(&*l.path));
             e.nav.index = Some(nagi_workers::index::Index::clone_for_test(&idx));
             e.nav.libs.set(nagi_lang::eco::JVM, jars.clone());
-            e.cursor.line = l.line as usize;
-            e.cursor.byte = l.col as usize;
+            e.core.cursor.line = l.line as usize;
+            e.core.cursor.byte = l.col as usize;
             let t0 = std::time::Instant::now();
             keys(&mut e, "gr");
             let mut before = 0;
@@ -1111,19 +1111,19 @@ mod tests {
         keys(&mut e, "3Gf(l");
         assert_eq!(e.word_at_cursor().map(|w| w.0).as_deref(), Some("local"));
         keys(&mut e, "gd");
-        assert_eq!(e.cursor.line, 1);
+        assert_eq!(e.core.cursor.line, 1);
         // 別のファイル: helper → b.ts の定義（import の束縛ではなく、索引の定義へ… import 文の中は束縛として扱わない）
         keys(&mut e, "3G0gd");
-        assert!(e.buf.path.as_ref().unwrap().ends_with("b.ts"), "{:?} {}", e.buf.path, e.svc.notify.text);
-        assert_eq!((e.cursor.line, e.cursor.byte), (0, 16));
+        assert!(e.core.buf.path.as_ref().unwrap().ends_with("b.ts"), "{:?} {}", e.core.buf.path, e.svc.notify.text);
+        assert_eq!((e.core.cursor.line, e.core.cursor.byte), (0, 16));
         // Ctrl-o で戻る
         keys(&mut e, "<C-o>");
-        assert!(e.buf.path.as_ref().unwrap().ends_with("a.ts"));
+        assert!(e.core.buf.path.as_ref().unwrap().ends_with("a.ts"));
         // F12 でも（Insert の最中でも）
         keys(&mut e, "3G0<F12>");
-        assert!(e.buf.path.as_ref().unwrap().ends_with("b.ts"), "{:?} {}", e.buf.path, e.svc.notify.text);
+        assert!(e.core.buf.path.as_ref().unwrap().ends_with("b.ts"), "{:?} {}", e.core.buf.path, e.svc.notify.text);
         keys(&mut e, "<C-o>3G0i<F12>");
-        assert!(e.buf.path.as_ref().unwrap().ends_with("b.ts"), "{:?} {}", e.buf.path, e.svc.notify.text);
+        assert!(e.core.buf.path.as_ref().unwrap().ends_with("b.ts"), "{:?} {}", e.core.buf.path, e.svc.notify.text);
         assert_eq!(e.state(), State::Normal);
         keys(&mut e, "<C-o>");
         // 候補が 2 つ（Box）: ファインダーで選ぶ
@@ -1131,7 +1131,7 @@ mod tests {
         assert_eq!(e.state(), State::Finder);
         assert_eq!(e.panels.finder.as_ref().unwrap().hits.len(), 2);
         keys(&mut e, "c.ts<CR>");
-        assert!(e.buf.path.as_ref().unwrap().ends_with("c.ts"));
+        assert!(e.core.buf.path.as_ref().unwrap().ends_with("c.ts"));
         // ファイルの構造とシンボル検索
         keys(&mut e, &format!(":e {}<CR>", dir.join("src/b.ts").display()));
         e.outline();
@@ -1157,20 +1157,20 @@ mod tests {
         wait_index(&mut e);
         // users.find の gd はインタフェースの宣言、gI は実装
         keys(&mut e, "3G0/find<CR>gd");
-        assert!(e.buf.path.as_ref().unwrap().ends_with("UserService.java"), "{:?} {}", e.buf.path, e.svc.notify.text);
+        assert!(e.core.buf.path.as_ref().unwrap().ends_with("UserService.java"), "{:?} {}", e.core.buf.path, e.svc.notify.text);
         keys(&mut e, "<C-o>3G0/find<CR>gI");
-        assert!(e.buf.path.as_ref().unwrap().ends_with("UserServiceImpl.java"), "{:?} {}", e.buf.path, e.svc.notify.text);
-        assert_eq!(e.cursor.line, 1);
+        assert!(e.core.buf.path.as_ref().unwrap().ends_with("UserServiceImpl.java"), "{:?} {}", e.core.buf.path, e.svc.notify.text);
+        assert_eq!(e.core.cursor.line, 1);
         // インタフェースの宣言の上で gI → 実装
         keys(&mut e, &format!(":e {}<CR>2G0/find<CR>gI", dir.join("src/UserService.java").display()));
-        assert!(e.buf.path.as_ref().unwrap().ends_with("UserServiceImpl.java"), "{:?} {}", e.buf.path, e.svc.notify.text);
+        assert!(e.core.buf.path.as_ref().unwrap().ends_with("UserServiceImpl.java"), "{:?} {}", e.core.buf.path, e.svc.notify.text);
         // 宣言の上の gd も実装へ（実装が無ければ従来どおり）
         keys(&mut e, &format!(":e {}<CR>2G0/find<CR>gd", dir.join("src/UserService.java").display()));
-        assert!(e.buf.path.as_ref().unwrap().ends_with("UserServiceImpl.java"), "{:?} {}", e.buf.path, e.svc.notify.text);
+        assert!(e.core.buf.path.as_ref().unwrap().ends_with("UserServiceImpl.java"), "{:?} {}", e.core.buf.path, e.svc.notify.text);
         // 型の上で gI → 実装している型
         keys(&mut e, &format!(":e {}<CR>1G0wgI", dir.join("src/UserService.java").display()));
-        assert!(e.buf.path.as_ref().unwrap().ends_with("UserServiceImpl.java"), "{:?} {}", e.buf.path, e.svc.notify.text);
-        assert_eq!(e.cursor.line, 0);
+        assert!(e.core.buf.path.as_ref().unwrap().ends_with("UserServiceImpl.java"), "{:?} {}", e.core.buf.path, e.svc.notify.text);
+        assert_eq!(e.core.cursor.line, 0);
     }
 
     /// Angular のテンプレート（.html）から部品の .ts へ
@@ -1207,7 +1207,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         e.ensure_syntax();
-        let at = |e: &Editor| (e.buf.path.as_ref().unwrap().file_name().unwrap().to_string_lossy().into_owned(), e.cursor.line);
+        let at = |e: &Editor| (e.core.buf.path.as_ref().unwrap().file_name().unwrap().to_string_lossy().into_owned(), e.core.cursor.line);
         // {{ title }} → 部品のプロパティ
         keys(&mut e, "gg/title<CR>gd");
         assert_eq!(at(&e), ("page.component.ts".into(), 2), "{}", e.svc.notify.text);

@@ -64,7 +64,7 @@ impl Status {
 
 /// 今向いている部品（Vim の編集の状態なら None）。`:` のコマンドラインは Vim の状態だが、候補の窓を持つので部品として扱う
 pub fn focused(ed: &Editor) -> Option<&'static dyn Component> {
-    if ed.vim == Mode::Command {
+    if ed.core.vim == Mode::Command {
         return Some(&crate::cmdline_complete::CommandLineComponent);
     }
     Some(match ed.focus? {

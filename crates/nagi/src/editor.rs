@@ -265,6 +265,34 @@ pub struct Services {
     pub(crate) git: crate::git_ui::GitState,
 }
 
+/// 編集の部分（ADR 0018 の §5）: 今のバッファと履歴・カーソル・表示位置・Vim の状態・開いているファイル・窓の並び
+pub struct Core {
+    pub buf: Buffer,
+    pub(crate) hist: History,
+    pub cursor: Cursor,
+    /// 画面最上段の行
+    pub top: usize,
+    /// スムーズスクロール中の、行に満たない分（0.0〜1.0 行。描画は top + frac から始める）
+    pub frac: f32,
+    /// 画面の左端の列（表示の列。折り返さないとき、長い行の右を見るために送る）
+    pub left: usize,
+    /// Vim の状態（Normal・Insert・Visual・コマンドライン・検索・置換）
+    pub vim: Mode,
+    /// 開いているバッファ（作業中のものは `Slot::Active` で、中身はこの構造体の欄にある）
+    pub(crate) docs: Vec<crate::buffers::Slot>,
+    pub(crate) cur_doc: usize,
+    /// 直前のバッファ（`Ctrl-^` `:b#`）
+    pub(crate) alt_doc: Option<usize>,
+    /// 最近使ったバッファ（先頭が最近。構文木を持つものを選ぶ。buffers.rs の trim_trees）
+    pub(crate) doc_recent: Vec<usize>,
+    /// 窓（作業中のものは `WinSlot::Active` で、カーソルと表示位置はこの構造体の欄にある）
+    pub(crate) wins: Vec<crate::panes::WinSlot>,
+    pub(crate) cur_win: usize,
+    /// 直前の窓（`Ctrl-w p`）
+    pub(crate) prev_win: Option<usize>,
+    pub(crate) layout: crate::panes::Layout,
+}
+
 /// 部品ごとの状態（ADR 0018 の §5）。出していない部品は None
 pub struct Panels {
     /// デバッグ（debugger.rs）と、ブレークポイント（ファイル → 行。0 始まり）
@@ -313,23 +341,14 @@ pub struct Panels {
 }
 
 pub struct Editor {
+    /// 編集の部分
+    pub core: Core,
     /// 部品ごとの状態
     pub panels: Panels,
     /// どの部品からも使うもの
     pub svc: Services,
-    pub buf: Buffer,
-    pub(crate) hist: History,
-    pub cursor: Cursor,
-    /// 画面最上段の行
-    pub top: usize,
-    /// スムーズスクロール中の、行に満たない分（0.0〜1.0 行。描画は top + frac から始める）
-    pub frac: f32,
-    /// 画面の左端の列（表示の列。折り返さないとき、長い行の右を見るために送る）
-    pub left: usize,
     /// 左端をカーソルに合わせたときのカーソル（行, byte）。動いていなければ合わせ直さない（横のホイールで送った位置を保つ）
     left_at: (usize, usize),
-    /// Vim の状態（Normal・Insert・Visual・コマンドライン・検索・置換）
-    pub vim: Mode,
     /// 向いている部品（パネル・ダイアログ。None ならエディタ）。component::focused が引く
     pub focus: Option<Panel>,
     /// 右クリックのメニュー（menu.rs）
@@ -390,19 +409,6 @@ pub struct Editor {
     pub(crate) replaying: bool,
     /// 画面の行数（App が描画前に入れる）
     pub rows: usize,
-    /// 開いているバッファ（作業中のものは `Slot::Active` で、中身はこの構造体の欄にある）
-    pub(crate) docs: Vec<crate::buffers::Slot>,
-    pub(crate) cur_doc: usize,
-    /// 直前のバッファ（`Ctrl-^` `:b#`）
-    pub(crate) alt_doc: Option<usize>,
-    /// 最近使ったバッファ（先頭が最近。構文木を持つものを選ぶ。buffers.rs の trim_trees）
-    pub(crate) doc_recent: Vec<usize>,
-    /// 窓（作業中のものは `WinSlot::Active` で、カーソルと表示位置はこの構造体の欄にある）
-    pub(crate) wins: Vec<crate::panes::WinSlot>,
-    pub(crate) cur_win: usize,
-    /// 直前の窓（`Ctrl-w p`）
-    pub(crate) prev_win: Option<usize>,
-    pub(crate) layout: crate::panes::Layout,
     /// 画面の本文の範囲（列, 行）。最下行は含まない（App が描画前に入れる）
     pub(crate) screen: (usize, usize),
     /// Markdown のハイライトの覚え（(パス, 版) → 範囲）。描くたびに解析し直さない
@@ -587,7 +593,7 @@ impl Editor {
     /// 入力の状態の見え方（Vim の状態と、向いている部品を合わせたもの）
     pub fn state(&self) -> State {
         let Some(p) = self.focus else {
-            return match self.vim {
+            return match self.core.vim {
                 Mode::Normal => State::Normal,
                 Mode::Insert => State::Insert,
                 Mode::Visual { line, block } => State::Visual { line, block },
@@ -615,15 +621,15 @@ impl Editor {
     }
 
     /// 入力の状態を変える（部品へ向くなら Vim の状態は Normal に、Vim の状態にするなら部品から離れる）。
-    /// パネルを借りている途中なら `(self.vim, self.focus) = split_state(…)` と書く（フィールドだけを借りる）
+    /// パネルを借りている途中なら `(self.core.vim, self.focus) = split_state(…)` と書く（フィールドだけを借りる）
     pub fn set_state(&mut self, s: State) {
         // Vim を使わないときは Normal が無い（打てる状態へ。plain.rs）
         let s = if s == State::Normal && !self.vim_on { State::Insert } else { s };
         // 本文に向くとき（木・検索などで開いた・飛んだ、Esc で本文へ）は、本文を覆っている差分・テーブルを閉じる
         // （開いたものが覆いの下に隠れないように）。コマンドの行・検索の行から戻るときは閉じない（cmdline_back）
         let to_text = matches!(s, State::Normal | State::Insert | State::Visual { .. });
-        let s = if to_text && !matches!(self.vim, Mode::Command | Mode::Search | Mode::Replace) && !self.uncover() { State::DbTable } else { s };
-        (self.vim, self.focus) = split_state(s);
+        let s = if to_text && !matches!(self.core.vim, Mode::Command | Mode::Search | Mode::Replace) && !self.uncover() { State::DbTable } else { s };
+        (self.core.vim, self.focus) = split_state(s);
     }
 
     /// 本文を覆っている差分・テーブルを閉じる。テーブルに送っていない変更があれば閉じずに知らせて false（変更を黙って捨てない）
@@ -679,6 +685,23 @@ impl Editor {
 
     pub fn new(buf: Buffer, syntax: Option<nagi_syntax::Syntax>) -> Self {
         Self {
+            core: Core {
+                buf,
+                hist: History::default(),
+                cursor: Cursor::default(),
+                top: 0,
+                frac: 0.0,
+                left: 0,
+                vim: Mode::Normal,
+                docs: vec![crate::buffers::Slot::Active],
+                cur_doc: 0,
+                alt_doc: None,
+                doc_recent: Vec::new(),
+                wins: vec![crate::panes::WinSlot::Active],
+                cur_win: 0,
+                prev_win: None,
+                layout: crate::panes::Layout::Leaf(0),
+            },
             svc: Services::default(),
             panels: Panels {
                 finder: None,
@@ -706,14 +729,7 @@ impl Editor {
                 completion: None,
                 debug: None,
             },
-            buf,
-            hist: History::default(),
-            cursor: Cursor::default(),
-            top: 0,
-            frac: 0.0,
-            left: 0,
             left_at: (usize::MAX, 0),
-            vim: Mode::Normal,
             focus: None,
             menu: None,
             vim_on: true,
@@ -748,14 +764,6 @@ impl Editor {
             dot_rec: None,
             replaying: false,
             rows: 1,
-            docs: vec![crate::buffers::Slot::Active],
-            cur_doc: 0,
-            alt_doc: None,
-            doc_recent: Vec::new(),
-            wins: vec![crate::panes::WinSlot::Active],
-            cur_win: 0,
-            prev_win: None,
-            layout: crate::panes::Layout::Leaf(0),
             screen: (80, 24),
             md_cache: Default::default(),
             tree_sync: true,
@@ -880,7 +888,7 @@ impl Editor {
     fn swap_full_buffer(&mut self, b: Buffer) {
         self.loading = None;
         // 先頭部分は全体の頭と同じ内容なので、カーソルと表示位置はそのまま使える
-        self.buf = b;
+        self.core.buf = b;
         self.reset_search_cache();
         if self.svc.notify.text == LOADING {
             self.svc.notify.clear();
@@ -891,7 +899,7 @@ impl Editor {
     /// 構文解析を裏のスレッドで始める。大きなファイルでは数百 ms〜秒かかるので、表示や入力を待たせない。
     /// 解析は今の内容の複製に対して行い、その間の編集は届いた後の `sync` で差分として反映する
     pub fn start_syntax(&mut self) {
-        let Some(lang) = self.buf.path.as_deref().and_then(nagi_syntax::Lang::detect) else { return };
+        let Some(lang) = self.core.buf.path.as_deref().and_then(nagi_syntax::Lang::detect) else { return };
         // 文法をまだダウンロードしていなければ取ってくる（届いたらもう一度ここへ来る）
         if !lang.available() {
             if let Some(id) = lang.grammar_id() {
@@ -901,7 +909,7 @@ impl Editor {
             }
             return;
         }
-        let mut snap = self.buf.snapshot();
+        let mut snap = self.core.buf.snapshot();
         let rx = nagi_core::task::spawn("syntax", self.waker(), move |ctx| {
             let Some(mut s) = nagi_syntax::Syntax::new(lang) else { return };
             s.parse(&mut snap);
@@ -948,7 +956,7 @@ impl Editor {
             }
         }
         if let Some(s) = &mut self.syntax {
-            s.sync(&mut self.buf);
+            s.sync(&mut self.core.buf);
         }
     }
 
@@ -993,47 +1001,47 @@ impl Editor {
     }
 
     pub(crate) fn motion(&self) -> Motion<'_> {
-        Motion { buf: &self.buf, ambiguous_wide: false }
+        Motion { buf: &self.core.buf, ambiguous_wide: false }
     }
 
     /// Motion を写しのカーソルに適用して戻す（Motion は self を借用するため）
     pub(crate) fn with_motion(&mut self, f: impl FnOnce(&Motion, &mut Cursor)) {
-        let mut c = self.cursor;
+        let mut c = self.core.cursor;
         f(&self.motion(), &mut c);
-        self.cursor = c;
+        self.core.cursor = c;
     }
 
     pub(crate) fn abs(&self) -> usize {
-        self.buf.line_start(self.cursor.line) + self.cursor.byte
+        self.core.buf.line_start(self.core.cursor.line) + self.core.cursor.byte
     }
 
     pub(crate) fn set_abs(&mut self, abs: usize) {
-        let (line, byte) = self.buf.pos_of(abs);
-        self.cursor.line = line;
-        self.cursor.byte = byte;
-        let l = self.buf.line(line);
-        self.cursor.want_col = display_col(&l, byte.min(l.len()), false);
+        let (line, byte) = self.core.buf.pos_of(abs);
+        self.core.cursor.line = line;
+        self.core.cursor.byte = byte;
+        let l = self.core.buf.line(line);
+        self.core.cursor.want_col = display_col(&l, byte.min(l.len()), false);
     }
 
     /// Normal ではカーソルを最後の書記素より右に置かない
     pub(crate) fn clamp_normal(&mut self) {
-        let line = self.buf.line(self.cursor.line);
-        if self.cursor.byte >= line.len() {
-            self.cursor.byte = line.grapheme_indices(true).next_back().map_or(0, |(i, _)| i);
+        let line = self.core.buf.line(self.core.cursor.line);
+        if self.core.cursor.byte >= line.len() {
+            self.core.cursor.byte = line.grapheme_indices(true).next_back().map_or(0, |(i, _)| i);
         }
     }
 
     pub(crate) fn edit(&mut self, start: usize, end: usize, text: &str) {
         self.shift_marks(start, end, text);
-        let (start_line, col) = self.buf.pos_of(start);
-        let c = self.buf.edit(start, end, text);
+        let (start_line, col) = self.core.buf.pos_of(start);
+        let c = self.core.buf.edit(start, end, text);
         // ブレークポイントを一緒に動かす（行の頭に行を足したら、その行のものも下へ）
         let (removed, inserted) = (c.removed.matches('\n').count(), text.matches('\n').count());
         if removed != inserted {
             let base = if col == 0 && removed == 0 { start_line.checked_sub(1) } else { Some(start_line) };
             self.shift_breakpoints(base, removed, inserted);
         }
-        self.hist.record(c);
+        self.core.hist.record(c);
         self.last_change = Some(start);
         self.last_edit_at = Some(std::time::Instant::now());
         self.note_edit_place(start);
@@ -1041,8 +1049,8 @@ impl Editor {
 
     /// 最近の編集箇所に足す（同じファイルの近く（3 行以内）なら置き換える。50 件まで）
     fn note_edit_place(&mut self, at: usize) {
-        let Some(p) = self.buf.path.clone() else { return };
-        let line = self.buf.pos_of(at).0;
+        let Some(p) = self.core.buf.path.clone() else { return };
+        let line = self.core.buf.pos_of(at).0;
         if let Some(last) = self.recent_edits.last_mut().filter(|(lp, ll)| *lp == p && ll.abs_diff(line) <= 3) {
             last.1 = line;
             return;
@@ -1055,7 +1063,7 @@ impl Editor {
     }
 
     pub(crate) fn enter_insert(&mut self) {
-        self.hist.begin();
+        self.core.hist.begin();
         self.set_state(State::Insert);
         self.svc.notify.clear();
     }
@@ -1068,12 +1076,12 @@ impl Editor {
         self.panels.completion = None;
         // 矩形の I A c: 打った文字列をほかの行へ（同じ undo のグループに入れる）
         let placed = self.finish_block_insert();
-        self.hist.close();
+        self.core.hist.close();
         self.set_state(State::Normal);
         self.preedit.clear();
         self.preedit_cursor = None;
         // Vim と同じく、Insert を抜けるとカーソルは 1 つ左へ（矩形の I A は左上の角に置いた）
-        if self.cursor.byte > 0 && !placed {
+        if self.core.cursor.byte > 0 && !placed {
             self.with_motion(|m, c| m.left(c, 1));
         }
         self.clamp_normal();
@@ -1083,7 +1091,7 @@ impl Editor {
     /// 文字列を挿入する。改行はこのファイルの改行コードにする
     pub fn insert_text(&mut self, s: &str) {
         self.finish_load();
-        let nl = self.buf.newline();
+        let nl = self.core.buf.newline();
         let text: String = s.replace("\r\n", "\n").replace('\r', "\n").replace('\n', nl);
         let at = self.abs();
         self.edit(at, at, &text);
@@ -1095,25 +1103,25 @@ impl Editor {
     }
 
     fn backspace(&mut self) {
-        let line = self.buf.line(self.cursor.line);
+        let line = self.core.buf.line(self.core.cursor.line);
         if let Some((s, e)) = self.pair_back() {
-            let ls = self.buf.line_start(self.cursor.line);
+            let ls = self.core.buf.line_start(self.core.cursor.line);
             self.edit(ls + s, ls + e, "");
             self.set_abs(ls + s);
         } else if let Some(to) = self.soft_tab_back() {
-            let ls = self.buf.line_start(self.cursor.line);
+            let ls = self.core.buf.line_start(self.core.cursor.line);
             self.edit(ls + to, self.abs(), "");
             self.set_abs(ls + to);
-        } else if self.cursor.byte > 0 {
-            let prev = line[..self.cursor.byte].grapheme_indices(true).next_back().map_or(0, |(i, _)| i);
-            let start = self.buf.line_start(self.cursor.line) + prev;
+        } else if self.core.cursor.byte > 0 {
+            let prev = line[..self.core.cursor.byte].grapheme_indices(true).next_back().map_or(0, |(i, _)| i);
+            let start = self.core.buf.line_start(self.core.cursor.line) + prev;
             self.edit(start, self.abs(), "");
             self.set_abs(start);
-        } else if self.cursor.line > 0 {
+        } else if self.core.cursor.line > 0 {
             // 前の行と結合する（前の行の改行を消す）
-            let prev = self.cursor.line - 1;
-            let brk = self.buf.line_len_with_break(prev) - self.buf.line(prev).len();
-            let end = self.buf.line_start(self.cursor.line);
+            let prev = self.core.cursor.line - 1;
+            let brk = self.core.buf.line_len_with_break(prev) - self.core.buf.line(prev).len();
+            let end = self.core.buf.line_start(self.core.cursor.line);
             self.edit(end - brk, end, "");
             self.set_abs(end - brk);
         }
@@ -1247,13 +1255,13 @@ impl Editor {
                 let (text, back) = self.newline_text();
                 // 閉じ括弧を次の行へ送るときは、カーソルと閉じ括弧の間の空白を消しておく
                 if back > 0 {
-                    let line = self.buf.line(self.cursor.line);
-                    let ws = line[self.cursor.byte..].len() - line[self.cursor.byte..].trim_start().len();
+                    let line = self.core.buf.line(self.core.cursor.line);
+                    let ws = line[self.core.cursor.byte..].len() - line[self.core.cursor.byte..].trim_start().len();
                     let at = self.abs();
                     self.edit(at, at + ws, "");
                 }
                 self.insert_text(&text);
-                let back = if back > 0 { back - "\n".len() + self.buf.newline().len() } else { 0 };
+                let back = if back > 0 { back - "\n".len() + self.core.buf.newline().len() } else { 0 };
                 self.set_abs(self.abs() - back);
             }
             Key::Backspace => self.backspace(),
@@ -1262,10 +1270,10 @@ impl Editor {
             Key::Up => self.with_motion(|m, c| m.vertical(c, -1)),
             Key::Down => self.with_motion(|m, c| m.vertical(c, 1)),
             Key::Right => {
-                let line = self.buf.line(self.cursor.line);
-                if let Some(g) = line[self.cursor.byte..].graphemes(true).next() {
-                    self.cursor.byte += g.len();
-                    self.cursor.want_col = display_col(&line, self.cursor.byte, false);
+                let line = self.core.buf.line(self.core.cursor.line);
+                if let Some(g) = line[self.core.cursor.byte..].graphemes(true).next() {
+                    self.core.cursor.byte += g.len();
+                    self.core.cursor.want_col = display_col(&line, self.core.cursor.byte, false);
                 }
             }
             Key::Char(c) => {
@@ -1312,7 +1320,7 @@ impl Editor {
                 self.panels.cmd_complete = None;
                 let line = std::mem::take(&mut self.cmdline).text;
                 self.set_state(self.cmdline_back());
-                let doc = self.cur_doc;
+                let doc = self.core.cur_doc;
                 // `|` で区切った複数のコマンド（`source ~/.ideavimrc | echo "..."`）。:s の中の | は区切らない
                 let cmds: Vec<String> = if self.keeps_bar(&line) { vec![line] } else { line.split('|').map(str::to_string).collect() };
                 let mut effect = Effect::None;
@@ -1323,7 +1331,7 @@ impl Editor {
                     }
                 }
                 // 差分・テーブルの上から別のファイルへ移った（:e・:b など）なら、本文を見せる
-                if self.cur_doc != doc && matches!(self.state(), State::Diff | State::DbTable) {
+                if self.core.cur_doc != doc && matches!(self.state(), State::Diff | State::DbTable) {
                     self.set_state(State::Normal);
                 }
                 return effect;
@@ -1361,7 +1369,7 @@ impl Editor {
     }
 
     fn active_key(&self) -> Option<SearchKey> {
-        self.active_pattern().map(|(p, r)| (self.buf.version, p, r))
+        self.active_pattern().map(|(p, r)| (self.core.buf.version, p, r))
     }
 
     /// 全件を（バッファか検索語が変わっていれば）数え直す。大きなファイルでは裏のスレッドで数え、
@@ -1376,14 +1384,14 @@ impl Editor {
         if self.search.computed.as_ref() == Some(&key) || self.search.job.as_ref().is_some_and(|j| j.key == key) {
             return;
         }
-        if self.buf.len_bytes() < SYNC_COUNT_LIMIT || self.waker.is_none() {
-            self.search.matches = find_matches_in(&self.buf, &key.1, key.2);
+        if self.core.buf.len_bytes() < SYNC_COUNT_LIMIT || self.waker.is_none() {
+            self.search.matches = find_matches_in(&self.core.buf, &key.1, key.2);
             self.search.computed = Some(key);
             self.search.job = None;
             return;
         }
         // 裏では今の内容の複製（rope の複製は O(1)）を数える
-        let snap = self.buf.snapshot();
+        let snap = self.core.buf.snapshot();
         let (pattern, regex) = (key.1.clone(), key.2);
         let rx = nagi_core::task::spawn("search-count", self.waker(), move |ctx| {
             if let Some(ms) = find_matches_cancellable(&snap, &pattern, regex, &ctx.cancel_flag()) {
@@ -1426,13 +1434,13 @@ impl Editor {
     /// 今の検索語で、`at` の近く（INCSEARCH_REACH 以内）の一致
     fn find_near(&self, at: usize, forward: bool, include_at: bool) -> Option<(usize, usize)> {
         let (pattern, regex) = self.active_pattern()?;
-        Finder::new(&pattern, regex)?.next_near(&self.buf, at, forward, include_at, INCSEARCH_REACH)
+        Finder::new(&pattern, regex)?.next_near(&self.core.buf, at, forward, include_at, INCSEARCH_REACH)
     }
 
     /// 今の検索語で、`at` から最寄りの一致
     fn find_next(&mut self, at: usize, forward: bool, include_at: bool) -> Option<(usize, usize)> {
         let (pattern, regex) = self.active_pattern()?;
-        let version = self.buf.version;
+        let version = self.core.buf.version;
         // 一致の無かった語を打ち足しただけなら、探さなくても一致しない（大きなファイルを 1 打ごとになめない）
         let extends_failed = |(v, p): &(u64, String)| *v == version && pattern.len() >= p.len() && pattern.as_bytes()[..p.len()].eq_ignore_ascii_case(p.as_bytes());
         if !regex && self.search.no_match.as_ref().is_some_and(extends_failed) {
@@ -1443,7 +1451,7 @@ impl Editor {
             let ms = &self.search.matches;
             return next_match(ms, at, forward, include_at).map(|i| ms[i]);
         }
-        let found = Finder::new(&pattern, regex)?.next(&self.buf, at, forward, include_at);
+        let found = Finder::new(&pattern, regex)?.next(&self.core.buf, at, forward, include_at);
         if found.is_none() && !regex {
             self.search.no_match = Some((version, pattern));
         }
@@ -1460,7 +1468,7 @@ impl Editor {
 
     pub(crate) fn start_search(&mut self, forward: bool, replace: bool, initial: &str) {
         self.search_bar = false;
-        self.search.origin = Some((self.cursor, self.top));
+        self.search.origin = Some((self.core.cursor, self.core.top));
         self.search.forward = forward;
         self.search.current = None;
         self.query.set(initial);
@@ -1479,7 +1487,7 @@ impl Editor {
         }
         let Some((origin, top)) = self.search.origin else { return };
         self.refresh_matches();
-        let at = self.buf.line_start(origin.line) + origin.byte;
+        let at = self.core.buf.line_start(origin.line) + origin.byte;
         let include_at = self.state() == State::Replace;
         self.search.move_when_counted = false;
         self.search.current = if self.search.job.is_some() {
@@ -1500,16 +1508,16 @@ impl Editor {
         match self.search.current {
             Some((s, _)) => self.set_abs(s),
             None => {
-                self.cursor = origin;
-                self.top = top;
+                self.core.cursor = origin;
+                self.core.top = top;
             }
         }
     }
 
     fn cancel_search(&mut self) {
         if let Some((c, top)) = self.search.origin.take() {
-            self.cursor = c;
-            self.top = top;
+            self.core.cursor = c;
+            self.core.top = top;
         }
         self.set_state(State::Normal);
         self.clamp_normal();
@@ -1547,11 +1555,11 @@ impl Editor {
             self.update_incsearch();
             return;
         };
-        let (line, byte) = self.buf.pos_of(s);
+        let (line, byte) = self.core.buf.pos_of(s);
         if let Some((c, top)) = &mut self.search.origin {
             c.line = line;
             c.byte = byte;
-            *top = self.top;
+            *top = self.core.top;
         }
         self.search.forward = forward;
         self.update_incsearch();
@@ -1676,9 +1684,9 @@ impl Editor {
             Key::Enter => {
                 let Some((s, e)) = self.search.current else { return };
                 let rep = self.replacement(s, e);
-                self.hist.begin();
+                self.core.hist.begin();
                 self.edit(s, e, &rep);
-                self.hist.close();
+                self.core.hist.close();
                 self.refresh_matches();
                 let after = s + rep.len();
                 self.search.current = self.find_next(after, true, true);
@@ -1697,18 +1705,18 @@ impl Editor {
                 // 全件置換は全件が要る。裏で数え終えていなければ、ここで数える
                 let ms = match (self.match_count(), self.active_pattern()) {
                     (Some(_), _) => self.search.matches.clone(),
-                    (None, Some((p, r))) => find_matches_in(&self.buf, &p, r),
+                    (None, Some((p, r))) => find_matches_in(&self.core.buf, &p, r),
                     (None, None) => Vec::new(),
                 };
                 if ms.is_empty() {
                     return;
                 }
                 let reps: Vec<String> = ms.iter().map(|&(s, e)| self.replacement(s, e)).collect();
-                self.hist.begin();
+                self.core.hist.begin();
                 for (&(s, e), rep) in ms.iter().zip(&reps).rev() {
                     self.edit(s, e, rep);
                 }
-                self.hist.close();
+                self.core.hist.close();
                 self.svc.notify.info(format!("{} 箇所を置換しました", ms.len()));
                 self.set_state(State::Normal);
                 self.search.origin = None;
@@ -1730,7 +1738,7 @@ impl Editor {
         if !self.search.regex {
             return self.repl.text.clone();
         }
-        let matched = self.buf.slice_string(s, e);
+        let matched = self.core.buf.slice_string(s, e);
         let (pat, _) = self.case_pattern(self.query.text.clone(), true);
         match compile_search(&pat, true) {
             Some(re) => re.replace(&matched, self.repl.text.as_str()).into_owned(),
@@ -1751,7 +1759,7 @@ impl Editor {
 
     pub(crate) fn write_as(&mut self, name: &str, force: bool, rename: bool) -> bool {
         let target = self.resolve(name.trim().trim_matches('"'));
-        let same = self.buf.path.as_ref().is_some_and(|p| std::path::absolute(p).ok() == std::path::absolute(&target).ok());
+        let same = self.core.buf.path.as_ref().is_some_and(|p| std::path::absolute(p).ok() == std::path::absolute(&target).ok());
         if same {
             return self.write();
         }
@@ -1759,9 +1767,9 @@ impl Editor {
             self.svc.notify.error(format!("E13: ファイルが既にあります（:w! {name} で上書き）"));
             return false;
         }
-        if self.buf.path.is_none() || rename {
-            self.buf.path = Some(target.clone());
-            self.buf.disk = None;
+        if self.core.buf.path.is_none() || rename {
+            self.core.buf.path = Some(target.clone());
+            self.core.buf.disk = None;
             self.watch_file(&target);
             crate::finder::remember_recent(&target);
             if self.syntax.is_none() {
@@ -1770,20 +1778,20 @@ impl Editor {
             return self.write();
         }
         // 名前はそのまま、中身を別のファイルへ（変更ありの印も変えない）
-        let (path, dirty, disk) = (self.buf.path.replace(target.clone()), self.buf.dirty, self.buf.disk);
+        let (path, dirty, disk) = (self.core.buf.path.replace(target.clone()), self.core.buf.dirty, self.core.buf.disk);
         let ok = self.write();
-        self.buf.path = path;
-        self.buf.dirty = dirty;
-        self.buf.disk = disk;
+        self.core.buf.path = path;
+        self.core.buf.dirty = dirty;
+        self.core.buf.disk = disk;
         ok
     }
 
     pub(crate) fn write(&mut self) -> bool {
         self.tidy_before_save();
-        match self.buf.save() {
+        match self.core.buf.save() {
             Ok(n) => {
-                let name = self.buf.path.as_ref().map(|p| p.display().to_string()).unwrap_or_default();
-                self.svc.notify.info(format!("\"{name}\" {}L, {n}B 書き込み", self.buf.line_count()));
+                let name = self.core.buf.path.as_ref().map(|p| p.display().to_string()).unwrap_or_default();
+                self.svc.notify.info(format!("\"{name}\" {}L, {n}B 書き込み", self.core.buf.line_count()));
                 // 保存したファイルの定義を索引し直す（裏で）。git の状態も取り直す
                 self.reindex_saved();
                 self.refresh_status();
@@ -1801,9 +1809,9 @@ impl Editor {
 
     /// `g-` / `g+` / `:earlier` / `:later`
     pub(crate) fn undo_time(&mut self, later: bool, count: usize) {
-        match self.hist.travel(&mut self.buf, later, count) {
+        match self.core.hist.travel(&mut self.core.buf, later, count) {
             Some(at) => {
-                self.set_abs(at.min(self.buf.len_bytes()));
+                self.set_abs(at.min(self.core.buf.len_bytes()));
                 self.clamp_normal();
             }
             None => self.svc.notify.info(if later { "これ以上は進めません" } else { "これ以上は戻せません" }),
@@ -1838,7 +1846,7 @@ impl Editor {
     pub(crate) fn jump_last_change(&mut self) {
         match self.last_change {
             Some(at) => {
-                self.set_abs(at.min(self.buf.len_bytes()));
+                self.set_abs(at.min(self.core.buf.len_bytes()));
                 self.clamp_normal();
             }
             None => self.svc.notify.error("E664: 変更履歴がありません"),
@@ -1847,11 +1855,11 @@ impl Editor {
 
     /// 現在行の下に空行を足す（ideavimrc の `O` = `:call append(expand('.'), '')`）。カーソルは動かさない
     pub(crate) fn append_blank_line(&mut self) {
-        let at = self.buf.line_start(self.cursor.line) + self.buf.line(self.cursor.line).len();
-        let nl = self.buf.newline();
-        self.hist.begin();
+        let at = self.core.buf.line_start(self.core.cursor.line) + self.core.buf.line(self.core.cursor.line).len();
+        let nl = self.core.buf.newline();
+        self.core.hist.begin();
         self.edit(at, at, nl);
-        self.hist.close();
+        self.core.hist.close();
     }
 
     // ---------------------------------------------------------------- IME・マウス
@@ -1965,13 +1973,13 @@ impl Editor {
     pub fn pos_at(&self, row: usize, col: usize) -> Cursor {
         // 折り返している: 上の行から使う画面の行を数えて、押した行とその中の位置を求める
         if let Some(w) = self.wrap_width().filter(|_| self.folds.is_empty()) {
-            let n = self.buf.line_count();
-            let (mut r, mut ln) = (0, self.top.min(n.saturating_sub(1)));
+            let n = self.core.buf.line_count();
+            let (mut r, mut ln) = (0, self.core.top.min(n.saturating_sub(1)));
             loop {
                 let lr = self.line_rows(ln, w);
                 if row < r + lr || ln + 1 >= n {
                     let seg = row.saturating_sub(r).min(lr - 1);
-                    let text = self.buf.line(ln);
+                    let text = self.core.buf.line(ln);
                     let c = seg * w + col.saturating_sub(self.gutter()).min(w.saturating_sub(1));
                     let byte = if self.state() == State::Insert && c >= display_col(&text, text.len(), false) { text.len() } else { byte_at_col(&text, c, false) };
                     return Cursor { line: ln, byte, want_col: display_col(&text, byte, false) };
@@ -1981,13 +1989,13 @@ impl Editor {
             }
         }
         let line = if self.folds.is_empty() {
-            (self.top + row).min(self.buf.line_count().saturating_sub(1))
+            (self.core.top + row).min(self.core.buf.line_count().saturating_sub(1))
         } else {
-            let shown = self.folds.visible_from(self.top, row + 1, self.buf.line_count());
+            let shown = self.folds.visible_from(self.core.top, row + 1, self.core.buf.line_count());
             shown.last().copied().unwrap_or(0)
         };
-        let text = self.buf.line(line);
-        let col = col.saturating_sub(self.gutter()) + self.left;
+        let text = self.core.buf.line(line);
+        let col = col.saturating_sub(self.gutter()) + self.core.left;
         let byte = if self.state() == State::Insert && col >= display_col(&text, text.len(), false) {
             text.len()
         } else {
@@ -2020,7 +2028,7 @@ impl Editor {
         }
         // デバッグできるファイル（Java・Kotlin・TypeScript・JavaScript・Python）の行番号の欄を押したら、その行のブレークポイントを付ける・外す（IntelliJ と同じ）
         // （row・col は作業中の窓の中の位置。窓の左上が 0, 0）
-        let java = self.buf.path.as_deref().and_then(crate::debugger::lang_of).is_some();
+        let java = self.core.buf.path.as_deref().and_then(crate::debugger::lang_of).is_some();
         if java && row < self.rows && col < self.gutter() && col + GUTTER >= self.gutter() {
             let line = self.pos_at(row, self.gutter()).line;
             self.toggle_breakpoint(Some(line));
@@ -2030,7 +2038,7 @@ impl Editor {
         if matches!(self.state(), State::Visual { .. }) {
             self.set_state(State::Normal);
         }
-        self.cursor = self.pos_at(row, col);
+        self.core.cursor = self.pos_at(row, col);
         if self.state() == State::Normal {
             self.clamp_normal();
         }
@@ -2050,7 +2058,7 @@ impl Editor {
             self.anchor = anchor;
             self.set_state(State::Visual { line: false, block: false });
         }
-        self.cursor = self.pos_at(row, col);
+        self.core.cursor = self.pos_at(row, col);
         self.clamp_normal();
     }
 
@@ -2068,7 +2076,7 @@ impl Editor {
             self.key(Key::Esc);
         }
         self.set_state(State::Normal);
-        self.cursor = self.pos_at(row, col);
+        self.core.cursor = self.pos_at(row, col);
         self.clamp_normal();
         if clicks == 2 {
             self.key(Key::Char('v'));
@@ -2081,22 +2089,22 @@ impl Editor {
 
     /// ホイール: 表示を動かし、カーソルは画面内に留める（Vim と同じ）
     pub fn scroll(&mut self, lines: isize) {
-        let pos = self.top as f64 + lines as f64;
+        let pos = self.core.top as f64 + lines as f64;
         self.scroll_to(pos);
-        self.frac = 0.0;
+        self.core.frac = 0.0;
     }
 
     /// 表示位置を行単位の小数で決める（スムーズスクロール）。カーソルは見えている行に留める
     pub fn scroll_to(&mut self, pos: f64) {
         let rows = self.rows.max(1);
-        let max = self.buf.line_count().saturating_sub(1) as f64;
+        let max = self.core.buf.line_count().saturating_sub(1) as f64;
         let pos = pos.clamp(0.0, max);
-        self.top = pos.floor() as usize;
-        self.frac = (pos - pos.floor()) as f32;
+        self.core.top = pos.floor() as usize;
+        self.core.frac = (pos - pos.floor()) as f32;
         // 上端が欠けている行には置かない
-        let first = self.top + usize::from(self.frac > 0.0);
-        let last = (self.top + rows).saturating_sub(1).max(first);
-        let mut c = self.cursor;
+        let first = self.core.top + usize::from(self.core.frac > 0.0);
+        let last = (self.core.top + rows).saturating_sub(1).max(first);
+        let mut c = self.core.cursor;
         if c.line < first {
             let d = (first - c.line) as isize;
             self.motion().vertical(&mut c, d);
@@ -2104,7 +2112,7 @@ impl Editor {
             let d = -((c.line - last) as isize);
             self.motion().vertical(&mut c, d);
         }
-        self.cursor = c;
+        self.core.cursor = c;
         if self.state() == State::Normal {
             self.clamp_normal();
         }
@@ -2116,26 +2124,26 @@ impl Editor {
             return;
         }
         let w = self.active_rect().w.saturating_sub(self.gutter()).max(1);
-        let total = self.buf.line_count();
+        let total = self.core.buf.line_count();
         // 長い行も、今の左端から少し先までを見れば足りる（数 MB の 1 行を毎回全部数えない）
-        let widest = (self.top..(self.top + self.rows.max(1)).min(total))
+        let widest = (self.core.top..(self.core.top + self.rows.max(1)).min(total))
             .map(|l| {
-                let (h, _) = self.buf.line_head(l, (self.left + w * 2) * 4);
+                let (h, _) = self.core.buf.line_head(l, (self.core.left + w * 2) * 4);
                 display_col(&h, h.len(), false)
             })
             .max()
             .unwrap_or(0);
-        nagi_ui::list::hwheel(&mut self.left, widest + 1, w, cols);
-        self.left_at = (self.cursor.line, self.cursor.byte);
+        nagi_ui::list::hwheel(&mut self.core.left, widest + 1, w, cols);
+        self.left_at = (self.core.cursor.line, self.core.cursor.byte);
     }
 
     /// カーソルが動いたら、カーソルの列が見えるように左端を送る（折り返すときは 0）
     fn follow_left(&mut self) {
         if self.wrap_width().is_some() {
-            self.left = 0;
+            self.core.left = 0;
             return;
         }
-        let at = (self.cursor.line, self.cursor.byte);
+        let at = (self.core.cursor.line, self.core.cursor.byte);
         if at == self.left_at {
             return;
         }
@@ -2144,20 +2152,20 @@ impl Editor {
         if w < 2 {
             return;
         }
-        let (head, _) = self.buf.line_head(self.cursor.line, self.cursor.byte + 4);
-        let col = display_col(&head, self.cursor.byte.min(head.len()), false);
+        let (head, _) = self.core.buf.line_head(self.core.cursor.line, self.core.cursor.byte + 4);
+        let col = display_col(&head, self.core.cursor.byte.min(head.len()), false);
         // 端に着いたら少し余分に送る（1 文字ずつ送り続けないように）
         let step = (w / 4).max(1);
-        if col < self.left {
-            self.left = col.saturating_sub(step);
-        } else if col >= self.left + w {
-            self.left = col + 1 + step - w;
+        if col < self.core.left {
+            self.core.left = col.saturating_sub(step);
+        } else if col >= self.core.left + w {
+            self.core.left = col + 1 + step - w;
         }
     }
 
     /// 今の表示位置（行単位の小数）
     pub fn scroll_pos(&self) -> f64 {
-        self.top as f64 + self.frac as f64
+        self.core.top as f64 + self.core.frac as f64
     }
 
     pub(crate) fn scroll_into_view(&mut self) {
@@ -2166,14 +2174,14 @@ impl Editor {
         let rows = self.rows.max(1);
         if !self.folds.is_empty() {
             // 閉じた折りたたみは 1 行として数える
-            self.top = self.folds.snap(self.top);
-            let cur = self.folds.snap(self.cursor.line);
-            if cur < self.top {
-                self.top = cur;
-                self.frac = 0.0;
+            self.core.top = self.folds.snap(self.core.top);
+            let cur = self.folds.snap(self.core.cursor.line);
+            if cur < self.core.top {
+                self.core.top = cur;
+                self.core.frac = 0.0;
             } else {
-                let total = self.buf.line_count();
-                let shown = self.folds.visible_from(self.top, rows, total);
+                let total = self.core.buf.line_count();
+                let shown = self.folds.visible_from(self.core.top, rows, total);
                 if !shown.contains(&cur) {
                     let mut t = cur;
                     for _ in 1..rows {
@@ -2182,30 +2190,30 @@ impl Editor {
                             None => break,
                         }
                     }
-                    self.top = t;
-                    self.frac = 0.0;
+                    self.core.top = t;
+                    self.core.frac = 0.0;
                 }
             }
             return;
         }
-        if self.frac > 0.0 && self.cursor.line <= self.top {
-            self.frac = 0.0;
+        if self.core.frac > 0.0 && self.core.cursor.line <= self.core.top {
+            self.core.frac = 0.0;
         }
         // カーソルの上下に残す行（設定の scrolloff。画面の半分まで。ファイルの終わりより先へは送らない）
         let so = (self.settings.int("editor.scrolloff") as usize).min(rows.saturating_sub(1) / 2);
-        let last_top = self.buf.line_count().saturating_sub(rows);
-        if self.cursor.line < self.top + so {
-            self.top = self.cursor.line.saturating_sub(so);
-        } else if self.cursor.line + so >= self.top + rows {
+        let last_top = self.core.buf.line_count().saturating_sub(rows);
+        if self.core.cursor.line < self.core.top + so {
+            self.core.top = self.core.cursor.line.saturating_sub(so);
+        } else if self.core.cursor.line + so >= self.core.top + rows {
             // カーソルが見える最も上の top より下へは、ファイルの終わりを越えて送らない
-            let need = (self.cursor.line + 1).saturating_sub(rows);
-            self.top = (self.cursor.line + so + 1 - rows).min(last_top).max(need);
+            let need = (self.core.cursor.line + 1).saturating_sub(rows);
+            self.core.top = (self.core.cursor.line + so + 1 - rows).min(last_top).max(need);
         }
         // 折り返していれば、カーソルの行（の終わり）まで画面に入るように上の行を送る
         if let Some(w) = self.wrap_width() {
-            while self.top < self.cursor.line && (self.top..=self.cursor.line).map(|l| self.line_rows(l, w)).sum::<usize>() > rows {
-                self.top += 1;
-                self.frac = 0.0;
+            while self.core.top < self.core.cursor.line && (self.core.top..=self.core.cursor.line).map(|l| self.line_rows(l, w)).sum::<usize>() > rows {
+                self.core.top += 1;
+                self.core.frac = 0.0;
             }
         }
     }
@@ -2239,7 +2247,7 @@ mod tests {
             assert!(t.elapsed() < std::time::Duration::from_secs(10));
             std::thread::yield_now();
         }
-        assert_eq!(e.cursor.line, 80_000);
+        assert_eq!(e.core.cursor.line, 80_000);
         assert_eq!(e.match_count(), Some((Some(0), 1)));
         e.key(Key::Enter);
         assert_eq!(e.state(), State::Normal);
@@ -2248,7 +2256,7 @@ mod tests {
         e.key(Key::Char('g'));
         e.key(Key::Char('g'));
         e.key(Key::Char('n'));
-        assert_eq!(e.cursor.line, 80_000);
+        assert_eq!(e.core.cursor.line, 80_000);
     }
 
     #[test]
@@ -2258,7 +2266,7 @@ mod tests {
         let anchor = e.abs();
         e.drag(anchor, 1, GUTTER + 3);
         assert_eq!(e.state(), State::Visual { line: false, block: false });
-        assert_eq!((e.cursor.line, e.cursor.byte), (1, 3));
+        assert_eq!((e.core.cursor.line, e.core.cursor.byte), (1, 3));
         assert_eq!(e.visual_range(), (2, 16, false));
     }
 
@@ -2284,14 +2292,14 @@ mod tests {
         let text: String = (0..20).map(|i| format!("{i}\n")).collect();
         let mut e = ed(&text);
         e.scroll_to(2.5);
-        assert_eq!((e.top, e.frac), (2, 0.5));
+        assert_eq!((e.core.top, e.core.frac), (2, 0.5));
         // 上端が半分欠けた 2 行目ではなく、3 行目に置く
-        assert_eq!(e.cursor.line, 3);
+        assert_eq!(e.core.cursor.line, 3);
         e.scroll_to(100.0);
-        assert_eq!(e.top, 19, "最終行より先へは行かない");
-        assert_eq!(e.cursor.line, 19);
+        assert_eq!(e.core.top, 19, "最終行より先へは行かない");
+        assert_eq!(e.core.cursor.line, 19);
         e.scroll_to(0.0);
-        assert_eq!(e.cursor.line, 2, "画面の最下段に留まる");
+        assert_eq!(e.core.cursor.line, 2, "画面の最下段に留まる");
     }
 
     /// 折り返さない長い行: カーソルに付いて左端を送る・押した位置は左端から数える・横のホイールはカーソルを動かさない
@@ -2302,24 +2310,24 @@ mod tests {
         e.set_screen(40, 10);
         let w = e.active_rect().w - e.gutter();
         e.scroll_into_view();
-        assert_eq!(e.left, 0);
+        assert_eq!(e.core.left, 0);
         e.key(Key::Char('$'));
         e.scroll_into_view();
-        assert!(e.left > 0 && 99 >= e.left && 99 < e.left + w, "行末が見える: left {}", e.left);
-        let left = e.left;
+        assert!(e.core.left > 0 && 99 >= e.core.left && 99 < e.core.left + w, "行末が見える: left {}", e.core.left);
+        let left = e.core.left;
         e.click(0, e.gutter());
-        assert_eq!(e.cursor.byte, left, "押した位置は左端から");
+        assert_eq!(e.core.cursor.byte, left, "押した位置は左端から");
         e.hscroll(-1000);
         e.scroll_into_view();
-        assert_eq!((e.left, e.cursor.byte), (0, left), "ホイールではカーソルは動かず、左端も戻らない");
+        assert_eq!((e.core.left, e.core.cursor.byte), (0, left), "ホイールではカーソルは動かず、左端も戻らない");
         e.key(Key::Char('h'));
         e.scroll_into_view();
-        assert!(e.left > 0 && left - 1 < e.left + w, "カーソルが動いたら、また付いていく");
+        assert!(e.core.left > 0 && left - 1 < e.core.left + w, "カーソルが動いたら、また付いていく");
         e.key(Key::Char('j'));
         e.scroll_into_view();
-        assert_eq!(e.left, 0, "短い行へ移ると左端へ");
+        assert_eq!(e.core.left, 0, "短い行へ移ると左端へ");
         e.hscroll(1000);
-        assert!(e.left <= 101, "見えている行のいちばん長いものまで: {}", e.left);
+        assert!(e.core.left <= 101, "見えている行のいちばん長いものまで: {}", e.core.left);
     }
 
     /// 閉じた折りたたみがあっても、行末へ動けば横に送る（縦の送りが途中で返っても）
@@ -2336,6 +2344,6 @@ mod tests {
             e.key(Key::Char(k));
         }
         e.scroll_into_view();
-        assert!(e.left > 0, "left {}", e.left);
+        assert!(e.core.left > 0, "left {}", e.core.left);
     }
 }

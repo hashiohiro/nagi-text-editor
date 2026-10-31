@@ -81,14 +81,14 @@ impl Editor {
         if !self.settings.bool("editor.editorconfig") {
             return None;
         }
-        let path = std::path::absolute(self.buf.path.as_deref()?).ok()?;
+        let path = std::path::absolute(self.core.buf.path.as_deref()?).ok()?;
         let props = self.ec_cache.borrow_mut().entry(path.clone()).or_insert_with(|| std::rc::Rc::new(crate::editorconfig::props_for(&path))).clone();
         props.get(key).cloned()
     }
 
     /// 今のファイルから見分けたインデント（設定の「ファイルのインデントを見分ける」がオンのとき）
     fn detected_indent(&self) -> Option<(bool, usize)> {
-        self.settings.bool("editor.detect_indent").then(|| detect_indent(&self.buf)).flatten()
+        self.settings.bool("editor.detect_indent").then(|| detect_indent(&self.core.buf)).flatten()
     }
 
     /// インデントにタブを使うか（:set → ファイルから見分けたもの → 設定）
@@ -131,7 +131,7 @@ impl Editor {
         if let Some((false, w)) = self.detected_indent() {
             return w;
         }
-        let ext = self.buf.path.as_deref().and_then(|p| p.extension()).map(|e| ext_key(&e.to_string_lossy())).unwrap_or_default();
+        let ext = self.core.buf.path.as_deref().and_then(|p| p.extension()).map(|e| ext_key(&e.to_string_lossy())).unwrap_or_default();
         for pair in self.settings.list("editor.indent_overrides") {
             if let Some((k, v)) = pair.split_once('=') {
                 if ext_key(k.trim()) == ext {
@@ -156,16 +156,16 @@ impl Editor {
             return;
         }
         let w = self.indent_width();
-        let line = self.buf.line(self.cursor.line);
-        let col = nagi_core::display_col(&line, self.cursor.byte.min(line.len()), false);
+        let line = self.core.buf.line(self.core.cursor.line);
+        let col = nagi_core::display_col(&line, self.core.cursor.byte.min(line.len()), false);
         self.insert_text(&" ".repeat(w - col % w));
     }
 
     /// 改行で入れる文字（自動インデント・{ の後で 1 段深く）と、入れた後にカーソルを戻す byte 数。
     /// カーソルの後ろが閉じ括弧なら、それを次の行へ送ってカーソルを間の行に置く
     pub(crate) fn newline_text(&self) -> (String, usize) {
-        let line = self.buf.line(self.cursor.line);
-        let at = self.cursor.byte.min(line.len());
+        let line = self.core.buf.line(self.core.cursor.line);
+        let at = self.core.cursor.byte.min(line.len());
         if !self.settings.bool("editor.auto_indent") {
             return ("\n".into(), 0);
         }
@@ -173,7 +173,7 @@ impl Editor {
         let indent = &line[..ws_len.min(at)];
         let before = line[..at].trim_end();
         let open = before.chars().last().filter(|_| self.settings.bool("editor.smart_indent"));
-        let py = self.buf.path.as_deref().and_then(|p| p.extension()).is_some_and(|e| e == "py");
+        let py = self.core.buf.path.as_deref().and_then(|p| p.extension()).is_some_and(|e| e == "py");
         if !matches!(open, Some('{' | '(' | '[')) && !(py && open == Some(':')) {
             return (format!("\n{indent}"), 0);
         }
@@ -196,13 +196,13 @@ impl Editor {
         if !self.settings.bool("editor.auto_pairs") {
             return false;
         }
-        let line = self.buf.line(self.cursor.line);
-        let at = self.cursor.byte.min(line.len());
+        let line = self.core.buf.line(self.core.cursor.line);
+        let at = self.core.cursor.byte.min(line.len());
         let next = line[at..].chars().next();
         let prev = line[..at].chars().next_back();
         // 閉じる方の上なら進むだけ
         if matches!(c, ')' | ']' | '}' | '"' | '\'' | '`') && next == Some(c) {
-            self.cursor.byte = at + c.len_utf8();
+            self.core.cursor.byte = at + c.len_utf8();
             return true;
         }
         // 後ろが空白・行末・閉じ括弧・区切りのときだけ足す（語の前では足さない）
@@ -213,24 +213,24 @@ impl Editor {
             '{' => '}',
             '"' | '`' => c,
             // ' は語の後（don't）と Rust の寿命（&'a）では足さない
-            '\'' if !self.buf.path.as_deref().and_then(|p| p.extension()).is_some_and(|e| e == "rs") => c,
+            '\'' if !self.core.buf.path.as_deref().and_then(|p| p.extension()).is_some_and(|e| e == "rs") => c,
             _ => return false,
         };
         if !free || matches!(c, '"' | '\'' | '`') && prev.is_some_and(|p| p.is_alphanumeric() || p == c) {
             return false;
         }
         self.insert_text(&format!("{c}{close}"));
-        self.cursor.byte -= close.len_utf8();
+        self.core.cursor.byte -= close.len_utf8();
         true
     }
 
     /// 空の括弧・引用符の間の Backspace で両方消す範囲（行内 byte の始め, 終わり）
     pub(crate) fn pair_back(&self) -> Option<(usize, usize)> {
-        if !self.settings.bool("editor.auto_pairs") || self.cursor.byte == 0 {
+        if !self.settings.bool("editor.auto_pairs") || self.core.cursor.byte == 0 {
             return None;
         }
-        let line = self.buf.line(self.cursor.line);
-        let at = self.cursor.byte.min(line.len());
+        let line = self.core.buf.line(self.core.cursor.line);
+        let at = self.core.cursor.byte.min(line.len());
         let (p, n) = (line[..at].chars().next_back()?, line[at..].chars().next()?);
         matches!((p, n), ('(', ')') | ('[', ']') | ('{', '}') | ('"', '"') | ('\'', '\'') | ('`', '`')).then(|| (at - p.len_utf8(), at + n.len_utf8()))
     }
@@ -240,13 +240,13 @@ impl Editor {
         if !matches!(c, '}' | ')' | ']') || !self.settings.bool("editor.smart_indent") || !self.settings.bool("editor.auto_indent") {
             return;
         }
-        let line = self.buf.line(self.cursor.line);
-        let before = &line[..self.cursor.byte.min(line.len())];
+        let line = self.core.buf.line(self.core.cursor.line);
+        let before = &line[..self.core.cursor.byte.min(line.len())];
         if before.is_empty() || !before.chars().all(|c| c == ' ' || c == '\t') {
             return;
         }
         let cut = if before.ends_with('\t') { 1 } else { before.len().min(self.indent_width()) };
-        let ls = self.buf.line_start(self.cursor.line);
+        let ls = self.core.buf.line_start(self.core.cursor.line);
         let end = ls + before.len();
         self.edit(end - cut, end, "");
         self.set_abs(end - cut);
@@ -254,11 +254,11 @@ impl Editor {
 
     /// ソフトタブ: 空白のインデントの中の Backspace で、前のインデントの位置まで消す範囲（行内 byte）。当てはまらなければ None
     pub(crate) fn soft_tab_back(&self) -> Option<usize> {
-        if !self.settings.bool("editor.soft_tabs") || self.indent_tabs() || self.cursor.byte == 0 {
+        if !self.settings.bool("editor.soft_tabs") || self.indent_tabs() || self.core.cursor.byte == 0 {
             return None;
         }
-        let line = self.buf.line(self.cursor.line);
-        let before = &line[..self.cursor.byte.min(line.len())];
+        let line = self.core.buf.line(self.core.cursor.line);
+        let before = &line[..self.core.cursor.byte.min(line.len())];
         if !before.bytes().all(|b| b == b' ') {
             return None;
         }
@@ -275,15 +275,15 @@ impl Editor {
         if !trim && !nl {
             return;
         }
-        let edits = tidy(&self.buf, trim, nl);
+        let edits = tidy(&self.core.buf, trim, nl);
         if !edits.is_empty() {
-            self.hist.begin();
+            self.core.hist.begin();
             for (s, e, t) in edits {
                 self.edit(s, e, &t);
             }
-            self.hist.close();
-            let len = self.buf.line(self.cursor.line).len();
-            self.cursor.byte = self.cursor.byte.min(len);
+            self.core.hist.close();
+            let len = self.core.buf.line(self.core.cursor.line).len();
+            self.core.cursor.byte = self.core.cursor.byte.min(len);
         }
     }
 
@@ -298,24 +298,24 @@ impl Editor {
 
     /// 行 `ln` が折り返して使う画面の行数
     pub fn line_rows(&self, ln: usize, w: usize) -> usize {
-        let t = self.buf.line(ln);
+        let t = self.core.buf.line(ln);
         (nagi_core::display_col(&t, t.len(), false) + 1).div_ceil(w).max(1)
     }
 
     /// (行, byte) が作業中の窓のどこに出るか（窓の中の画面の行, 本文の中の列）。見えていなければ None
     pub fn screen_pos(&self, line: usize, byte: usize) -> Option<(usize, usize)> {
-        if line < self.top {
+        if line < self.core.top {
             return None;
         }
-        let t = self.buf.line(line);
+        let t = self.core.buf.line(line);
         let col = nagi_core::display_col(&t, byte.min(t.len()), false);
         match self.wrap_width() {
             Some(w) if self.folds.is_empty() => {
-                let above: usize = (self.top..line).map(|l| self.line_rows(l, w)).sum();
+                let above: usize = (self.core.top..line).map(|l| self.line_rows(l, w)).sum();
                 Some((above + col / w, col % w))
             }
             // 横に送っていれば、左端からの列（左に隠れていれば None）
-            _ => Some((line - self.top, col.checked_sub(self.left)?)),
+            _ => Some((line - self.core.top, col.checked_sub(self.core.left)?)),
         }
     }
 
@@ -347,39 +347,39 @@ impl Editor {
 
     /// 今のファイルの改行を変える（全体を書き換える。取り消せる。保存で変わる）
     pub(crate) fn set_fileformat(&mut self, crlf: bool) {
-        let text = self.buf.text();
+        let text = self.core.buf.text();
         let lf = text.replace("\r\n", "\n");
         let new = if crlf { lf.replace('\n', "\r\n") } else { lf };
-        let (line, byte) = (self.cursor.line, self.cursor.byte);
+        let (line, byte) = (self.core.cursor.line, self.core.cursor.byte);
         if new != text {
-            self.hist.begin();
+            self.core.hist.begin();
             self.edit(0, text.len(), &new);
-            self.hist.close();
+            self.core.hist.close();
         }
-        self.buf.crlf = crlf;
-        self.buf.mixed_newlines = false;
-        self.cursor.line = line.min(self.buf.line_count().saturating_sub(1));
-        self.cursor.byte = byte.min(self.buf.line(self.cursor.line).len());
+        self.core.buf.crlf = crlf;
+        self.core.buf.mixed_newlines = false;
+        self.core.cursor.line = line.min(self.core.buf.line_count().saturating_sub(1));
+        self.core.cursor.byte = byte.min(self.core.buf.line(self.core.cursor.line).len());
         self.svc.notify.info(format!("改行を {} にしました（保存で書く）", if crlf { "CRLF" } else { "LF" }));
     }
 
     /// 今のファイルの文字コードを変える（保存で変わる）
     pub(crate) fn set_file_encoding(&mut self, enc: &'static nagi_core::encoding::Encoding, bom: bool) {
-        if self.buf.encoding != enc || self.buf.bom != bom {
-            self.buf.encoding = enc;
-            self.buf.bom = bom;
-            self.buf.dirty = true;
+        if self.core.buf.encoding != enc || self.core.buf.bom != bom {
+            self.core.buf.encoding = enc;
+            self.core.buf.bom = bom;
+            self.core.buf.dirty = true;
         }
         self.svc.notify.info(format!("文字コードを {}{} にしました（保存で書く）", nagi_core::encoding::label(enc), if bom { "（BOM 付き）" } else { "" }));
     }
 
     /// 文字コードを決めて読み直す（:e ++enc=。変更があれば ! が要る）
     pub(crate) fn reload_as(&mut self, enc: &'static nagi_core::encoding::Encoding, force: bool) {
-        if self.buf.dirty && !force {
+        if self.core.buf.dirty && !force {
             self.svc.notify.error("E37: 変更が保存されていません（:e! ++enc= で捨てて読み直す）");
             return;
         }
-        let Some(path) = self.buf.path.clone() else { return };
+        let Some(path) = self.core.buf.path.clone() else { return };
         match Buffer::open_as(&path, Some(enc)) {
             Ok(b) => {
                 self.reload_with(b);
@@ -398,15 +398,15 @@ impl Editor {
         };
         let query = val.is_none() && (tok.ends_with('?') || matches!(name, "fileencoding" | "fenc" | "fileformat" | "ff"));
         let r = match (name, val) {
-            ("fileencoding" | "fenc", _) if query => Ok(Some(format!("fileencoding={}", self.buf.encoding.name().to_ascii_lowercase()))),
+            ("fileencoding" | "fenc", _) if query => Ok(Some(format!("fileencoding={}", self.core.buf.encoding.name().to_ascii_lowercase()))),
             ("fileencoding" | "fenc", Some(v)) => match enc::by_name(v) {
                 Some(e) => {
-                    self.set_file_encoding(e, self.buf.bom && e == enc::UTF_8);
+                    self.set_file_encoding(e, self.core.buf.bom && e == enc::UTF_8);
                     Ok(None)
                 }
                 None => Err(format!("E474: 知らない文字コード: {v}")),
             },
-            ("fileformat" | "ff", _) if query => Ok(Some(format!("fileformat={}", if self.buf.crlf { "dos" } else { "unix" }))),
+            ("fileformat" | "ff", _) if query => Ok(Some(format!("fileformat={}", if self.core.buf.crlf { "dos" } else { "unix" }))),
             ("fileformat" | "ff", Some("dos")) => {
                 self.set_fileformat(true);
                 Ok(None)
@@ -416,15 +416,15 @@ impl Editor {
                 Ok(None)
             }
             ("fileformat" | "ff", Some(v)) => Err(format!("E474: ff は dos か unix: {v}")),
-            ("bomb" | "nobomb" | "invbomb", None) if tok.ends_with('?') => Ok(Some(if self.buf.bom { "bomb".into() } else { "nobomb".into() })),
+            ("bomb" | "nobomb" | "invbomb", None) if tok.ends_with('?') => Ok(Some(if self.core.buf.bom { "bomb".into() } else { "nobomb".into() })),
             ("bomb" | "nobomb" | "invbomb", None) => {
                 let on = match name {
-                    "bomb" if tok.ends_with('!') => !self.buf.bom,
+                    "bomb" if tok.ends_with('!') => !self.core.buf.bom,
                     "bomb" => true,
-                    "invbomb" => !self.buf.bom,
+                    "invbomb" => !self.core.buf.bom,
                     _ => false,
                 };
-                let e = self.buf.encoding;
+                let e = self.core.buf.encoding;
                 self.set_file_encoding(e, on);
                 Ok(None)
             }
@@ -437,9 +437,9 @@ impl Editor {
     pub(crate) fn encoding_menu(&mut self, row: usize, col: usize) {
         use nagi_core::encoding as enc;
         let mut m = crate::menu::Menu::new(row, col);
-        let cur = (self.buf.encoding, self.buf.bom);
-        m = m.item(format!("{}改行を LF に", if self.buf.crlf { "  " } else { "● " }), |e| e.set_fileformat(false));
-        m = m.item(format!("{}改行を CRLF に", if self.buf.crlf { "● " } else { "  " }), |e| e.set_fileformat(true));
+        let cur = (self.core.buf.encoding, self.core.buf.bom);
+        m = m.item(format!("{}改行を LF に", if self.core.buf.crlf { "  " } else { "● " }), |e| e.set_fileformat(false));
+        m = m.item(format!("{}改行を CRLF に", if self.core.buf.crlf { "● " } else { "  " }), |e| e.set_fileformat(true));
         m = m.sep();
         for (e, bom, name) in [(enc::UTF_8, false, "UTF-8"), (enc::UTF_8, true, "UTF-8（BOM 付き）"), (enc::SHIFT_JIS, false, "Shift_JIS（CP932）"), (enc::EUC_JP, false, "EUC-JP"), (enc::UTF_16LE, true, "UTF-16LE")] {
             let mark = if cur == (e, bom) { "● " } else { "  " };
@@ -459,9 +459,9 @@ impl Editor {
 
     /// 状態の行に出す文字コードと改行（"UTF-8 LF"）
     pub fn encoding_label(&self) -> String {
-        let bom = if self.buf.bom && self.buf.encoding == nagi_core::encoding::UTF_8 { " BOM" } else { "" };
-        let nl = if self.buf.mixed_newlines { "混在" } else if self.buf.crlf { "CRLF" } else { "LF" };
-        format!("{}{bom} {nl}", nagi_core::encoding::label(self.buf.encoding))
+        let bom = if self.core.buf.bom && self.core.buf.encoding == nagi_core::encoding::UTF_8 { " BOM" } else { "" };
+        let nl = if self.core.buf.mixed_newlines { "混在" } else if self.core.buf.crlf { "CRLF" } else { "LF" };
+        format!("{}{bom} {nl}", nagi_core::encoding::label(self.core.buf.encoding))
     }
 }
 
@@ -482,9 +482,9 @@ mod tests {
     #[test]
     fn indent_by_language() {
         let mut e = Editor::new(Buffer::from_str(""), None);
-        e.buf.path = Some("x/app.tsx".into());
+        e.core.buf.path = Some("x/app.tsx".into());
         assert_eq!(e.indent_unit(), "  ", "ts=2 が tsx にも効く");
-        e.buf.path = Some("x/App.java".into());
+        e.core.buf.path = Some("x/App.java".into());
         assert_eq!(e.indent_unit(), "    ");
         e.settings.set("editor.indent_style", "tabs", false);
         assert_eq!(e.indent_unit(), "\t");
@@ -497,7 +497,7 @@ mod tests {
         assert_eq!(detect_indent(&Buffer::from_str("a {\n\tb {\n\t\tc\n\t}\n}\n")), Some((true, 0)));
         assert_eq!(detect_indent(&Buffer::from_str("a\nb\n")), None, "インデントの行が無ければ設定のまま");
         let mut e = Editor::new(Buffer::from_str(java), None);
-        e.buf.path = Some("x/A.java".into());
+        e.core.buf.path = Some("x/A.java".into());
         assert_eq!(e.indent_unit(), "  ", "設定は 4 でも、ファイルが 2 なら 2");
         e.settings.set("editor.detect_indent", "false", false);
         assert_eq!(e.indent_unit(), "    ");
@@ -508,33 +508,33 @@ mod tests {
     fn indent_while_typing() {
         use nagi_vim::Key;
         let mut e = Editor::new(Buffer::from_str("    f() {}"), None);
-        e.buf.path = Some("x/A.java".into());
+        e.core.buf.path = Some("x/A.java".into());
         e.settings.set("editor.detect_indent", "false", false);
         e.key(Key::Char('0'));
         e.key(Key::Char('f'));
         e.key(Key::Char('{'));
         e.key(Key::Char('a'));
         e.key(Key::Enter);
-        assert_eq!(e.buf.text(), "    f() {\n        \n    }");
-        assert_eq!((e.cursor.line, e.cursor.byte), (1, 8));
+        assert_eq!(e.core.buf.text(), "    f() {\n        \n    }");
+        assert_eq!((e.core.cursor.line, e.core.cursor.byte), (1, 8));
         // ソフトタブ: 空白のインデントの中の Backspace は 1 段（4）ずつ
         e.key(Key::Backspace);
-        assert_eq!(e.buf.line(1), "    ");
+        assert_eq!(e.core.buf.line(1), "    ");
         e.key(Key::Char(' '));
         e.key(Key::Backspace);
         e.key(Key::Backspace);
-        assert_eq!(e.buf.line(1), "", "5 つなら 1 つ、次に 4 つ");
+        assert_eq!(e.core.buf.line(1), "", "5 つなら 1 つ、次に 4 つ");
         // 閉じ括弧で 1 段浅く
         for c in "        }".chars() {
             e.key(Key::Char(c));
         }
-        assert_eq!(e.buf.line(1), "    }");
+        assert_eq!(e.core.buf.line(1), "    }");
         e.key(Key::Esc);
         // 自動インデントを切れば、改行は何も足さない
         e.settings.set("editor.auto_indent", "false", false);
         e.key(Key::Char('A'));
         e.key(Key::Enter);
-        assert_eq!(e.buf.line(2), "");
+        assert_eq!(e.core.buf.line(2), "");
         e.key(Key::Esc);
         // タブの表示幅
         e.settings.set("editor.tab_width", "8", false);
@@ -556,28 +556,28 @@ mod tests {
         e.ex_set("fenc? ff?");
         assert_eq!(e.svc.notify.text, "fileencoding=shift_jis  fileformat=dos");
         e.insert_text("あ");
-        e.buf.save().unwrap();
+        e.core.buf.save().unwrap();
         assert_eq!(std::fs::read(&f).unwrap(), SHIFT_JIS.encode("あ日本語\r\n二行目\r\n").0.as_ref());
         // 表せない文字があれば保存しない
         e.insert_text("😀");
-        assert!(e.buf.save().unwrap_err().to_string().contains("「😀」（1 行目）"));
+        assert!(e.core.buf.save().unwrap_err().to_string().contains("「😀」（1 行目）"));
         // UTF-8・LF にして保存
         e.ex_set("fenc=utf-8 ff=unix");
         assert_eq!(e.encoding_label(), "UTF-8 LF");
-        e.buf.save().unwrap();
+        e.core.buf.save().unwrap();
         assert_eq!(std::fs::read_to_string(&f).unwrap(), "あ😀日本語\n二行目\n");
         // 決めた文字コードで読み直す（変更が無いので ! は要らない）
         e.reload_as(SHIFT_JIS, false);
-        assert_eq!(e.buf.encoding, SHIFT_JIS);
+        assert_eq!(e.core.buf.encoding, SHIFT_JIS);
         e.reload_as(UTF_8, false);
-        assert_eq!(e.buf.line(1), "二行目");
+        assert_eq!(e.core.buf.line(1), "二行目");
         // 混ざった改行
         let g = dir.join("b.txt");
         std::fs::write(&g, "a\r\nb\nc\r\n").unwrap();
         let mut e = Editor::new(Buffer::open(&g).unwrap(), None);
         assert_eq!(e.encoding_label(), "UTF-8 混在");
         e.set_fileformat(true);
-        assert_eq!(e.buf.text(), "a\r\nb\r\nc\r\n");
+        assert_eq!(e.core.buf.text(), "a\r\nb\r\nc\r\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -586,27 +586,27 @@ mod tests {
     fn auto_pairs() {
         use nagi_vim::Key;
         let mut e = Editor::new(Buffer::from_str(""), None);
-        e.buf.path = Some("x/a.ts".into());
+        e.core.buf.path = Some("x/a.ts".into());
         for c in "if(\"a".chars() {
             e.key(Key::Char(c));
         }
-        assert_eq!(e.buf.line(0), "f(\"a\")");
+        assert_eq!(e.core.buf.line(0), "f(\"a\")");
         e.key(Key::Char('"'));
         e.key(Key::Char(')'));
         e.key(Key::Char(';'));
-        assert_eq!(e.buf.line(0), "f(\"a\");", "閉じる方は上を進む");
+        assert_eq!(e.core.buf.line(0), "f(\"a\");", "閉じる方は上を進む");
         for c in " don't [".chars() {
             e.key(Key::Char(c));
         }
-        assert_eq!(e.buf.line(0), "f(\"a\"); don't []", "語の後の ' は 1 つ");
+        assert_eq!(e.core.buf.line(0), "f(\"a\"); don't []", "語の後の ' は 1 つ");
         e.key(Key::Backspace);
-        assert_eq!(e.buf.line(0), "f(\"a\"); don't ");
+        assert_eq!(e.core.buf.line(0), "f(\"a\"); don't ");
         e.key(Key::Char('x'));
         e.key(Key::Esc);
         e.key(Key::Char('0'));
         e.key(Key::Char('i'));
         e.key(Key::Char('('));
-        assert_eq!(e.buf.line(0), "(f(\"a\"); don't x", "語の前では閉じない");
+        assert_eq!(e.core.buf.line(0), "(f(\"a\"); don't x", "語の前では閉じない");
     }
 
     /// scrolloff・wrapscan・ideajoin・highlightedyank（vimrc の書き方の :set で）
@@ -620,9 +620,9 @@ mod tests {
         for _ in 0..8 {
             e.key(Key::Char('j'));
         }
-        assert_eq!(e.top, 2, "8 行目で下に 3 行残す");
+        assert_eq!(e.core.top, 2, "8 行目で下に 3 行残す");
         e.key(Key::Char('G'));
-        assert_eq!(e.top, 20, "終わりより先へは送らない");
+        assert_eq!(e.core.top, 20, "終わりより先へは送らない");
         // wrapscan がオフなら、末尾の後ろから先頭へは戻らない
         for k in nagi_vim::parse_keys("/line 1<CR>", " ") {
             e.key(k);
@@ -632,10 +632,10 @@ mod tests {
         let mut e = Editor::new(Buffer::from_str("// a\n// b\nx = \"p\" +\n    \"q\";\n"), None);
         e.ex_set("ideajoin");
         e.key(Key::Char('J'));
-        assert_eq!(e.buf.line(0), "// a b");
+        assert_eq!(e.core.buf.line(0), "// a b");
         e.key(Key::Char('j'));
         e.key(Key::Char('J'));
-        assert_eq!(e.buf.line(1), "x = \"pq\";");
+        assert_eq!(e.core.buf.line(1), "x = \"pq\";");
         e.ex_set("highlightedyank");
         e.key(Key::Char('y'));
         e.key(Key::Char('y'));
@@ -665,7 +665,7 @@ mod tests {
         e.ex_set("et sw=3");
         assert_eq!(e.indent_unit(), "   ", ":set が勝つ");
         e.tidy_before_save();
-        assert_eq!(e.buf.line(0), "let a = 1;");
+        assert_eq!(e.core.buf.line(0), "let a = 1;");
         let mut b = Buffer::from_str("");
         b.path = Some(dir.join("new.ts"));
         e.new_file_defaults(&mut b);
@@ -692,9 +692,9 @@ mod tests {
         let c = e.pos_at(2, crate::editor::GUTTER + 10);
         assert_eq!((c.line, c.byte), (1, 110));
         // カーソルを最後の行へ: 長い行が 3 行使うので、上の行が送られる
-        e.cursor.line = 3;
+        e.core.cursor.line = 3;
         e.scroll_into_view();
-        let used: usize = (e.top..=3).map(|l| e.line_rows(l, w)).sum();
-        assert!(used <= e.rows, "top {} rows {} used {used}", e.top, e.rows);
+        let used: usize = (e.core.top..=3).map(|l| e.line_rows(l, w)).sum();
+        assert!(used <= e.rows, "top {} rows {} used {used}", e.core.top, e.rows);
     }
 }

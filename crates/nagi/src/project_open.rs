@@ -280,18 +280,18 @@ impl Editor {
         let restored = files.len();
         if files.is_empty() {
             // 別のプロジェクトのファイルを開いたままだと、木や索引がそちらを向くので、空のバッファにする
-            let here = self.buf.path.as_deref().and_then(|b| std::path::absolute(b).ok());
+            let here = self.core.buf.path.as_deref().and_then(|b| std::path::absolute(b).ok());
             if here.is_none_or(|h| !h.starts_with(&p.root)) {
                 self.new_empty_buffer();
             }
         }
         for f in files {
             self.edit_file(f.path.clone());
-            if self.buf.path.as_deref().is_some_and(|b| b == f.path) {
-                self.cursor.line = f.line.min(self.buf.line_count().saturating_sub(1));
+            if self.core.buf.path.as_deref().is_some_and(|b| b == f.path) {
+                self.core.cursor.line = f.line.min(self.core.buf.line_count().saturating_sub(1));
                 // IntelliJ の列は文字の数（byte ではない）。日本語の行で byte として使うと文字の途中になる
-                let text = self.buf.line(self.cursor.line);
-                self.cursor.byte = text.char_indices().nth(f.col).map_or(text.len(), |(b, _)| b);
+                let text = self.core.buf.line(self.core.cursor.line);
+                self.core.cursor.byte = text.char_indices().nth(f.col).map_or(text.len(), |(b, _)| b);
                 self.clamp_normal();
                 self.scroll_into_view();
             }
@@ -369,7 +369,7 @@ mod tests {
         // 打った相対パスはその窓の作業フォルダから
         assert_eq!(e1.resolve("x.txt"), abs(&a.join("x.txt")));
         e2.edit_file(std::path::PathBuf::from("x.txt"));
-        assert_eq!(e2.buf.path.as_deref(), Some(abs(&b.join("x.txt")).as_path()));
+        assert_eq!(e2.core.buf.path.as_deref(), Some(abs(&b.join("x.txt")).as_path()));
     }
 
     #[test]
@@ -398,9 +398,9 @@ mod tests {
         // 窓の作業フォルダになり、プロセスの作業フォルダ（ほかの窓と共有）は変えない
         assert_eq!(e.cwd, std::path::absolute(&d).unwrap());
         assert_eq!(std::env::current_dir().unwrap(), cwd);
-        assert!(e.buf.path.as_ref().unwrap().ends_with("A.java"), "{:?} {}", e.buf.path, e.svc.notify.text);
+        assert!(e.core.buf.path.as_ref().unwrap().ends_with("A.java"), "{:?} {}", e.core.buf.path, e.svc.notify.text);
         // IntelliJ の列 9 は 9 文字目（「*/」の *）。byte では「  /* 」5 + 日本語 9 + 空白 1 = 15（byte として 9 を使うと「本」の途中）
-        assert_eq!((e.cursor.line, e.cursor.byte), (1, 15));
+        assert_eq!((e.core.cursor.line, e.core.cursor.byte), (1, 15));
         assert!(e.svc.notify.text.contains("IntelliJ"), "{}", e.svc.notify.text);
         assert!(e.panels.tree.is_some(), "木を出す");
         // 索引は出力先（out）を見ない

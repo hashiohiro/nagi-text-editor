@@ -373,7 +373,7 @@ impl Editor {
                 Some(at - 2)
             };
             self.list_side = Side::Commit;
-            (self.vim, self.focus) = crate::editor::split_state(State::List);
+            (self.core.vim, self.focus) = crate::editor::split_state(State::List);
             let n = p.items.len();
             let Some(pick) = nagi_ui::list::pick(&mut p.selected, item.filter(|&i| i < n), clicks, 2) else { return };
             let i = p.selected;
@@ -702,7 +702,7 @@ pub(crate) mod draw {
         }
         let (cl, _) = c.cursor_pos();
         let first = cl.saturating_sub(l.msg_h.saturating_sub(1));
-        let n = c.msg.ed.buf.line_count();
+        let n = c.msg.ed.core.buf.line_count();
         for k in first..(first + l.msg_h).min(n) {
             let y = box_top + (k - first) as f32 * cell.h;
             draw_vim_line(p, &c.msg, k, mx, y, &ed.preedit, editing);

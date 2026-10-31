@@ -238,7 +238,7 @@ impl Editor {
             Key::Alt('f') => Chip::Mask,
             Key::Alt('t') => Chip::Context,
             Key::Alt('d') | Key::Alt('p') => {
-                let here = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()).and_then(|p| p.parent().map(|d| d.to_path_buf()));
+                let here = self.core.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()).and_then(|p| p.parent().map(|d| d.to_path_buf()));
                 let Some(g) = &mut self.panels.grep else { return false };
                 g.forced = None;
                 g.opts.dir = if key == Key::Alt('d') { here.or(g.opts.dir.clone()) } else { None };
@@ -253,7 +253,7 @@ impl Editor {
 
     /// 見出しの札を押した・条件のキー
     pub(crate) fn toggle_chip(&mut self, chip: Chip) {
-        let here = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()).and_then(|p| p.parent().map(|d| d.to_path_buf()));
+        let here = self.core.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()).and_then(|p| p.parent().map(|d| d.to_path_buf()));
         let Some(g) = &mut self.panels.grep else { return };
         // 参照の検索の結果を出していれば、打った検索の条件に戻してから
         if g.forced.take().is_some() {
@@ -278,7 +278,7 @@ impl Editor {
 
     pub(crate) fn open_grep_raw(&mut self, initial: &str) {
         let root = self
-            .buf
+            .core.buf
             .path
             .as_deref()
             .and_then(|p| std::path::absolute(p).ok())
@@ -313,7 +313,7 @@ impl Editor {
         self.bottom_kind = crate::result_grid::BottomKind::Grep;
         g.root = root;
         // 語を付けて呼んだら（`:Grep 語`）探し始めて編集画面へ戻る（Vim の :grep と同じ）。付けなければ最下行で打つ
-        (self.vim, self.focus) = crate::editor::split_state(if initial.is_empty() { State::GrepPrompt } else { State::Normal });
+        (self.core.vim, self.focus) = crate::editor::split_state(if initial.is_empty() { State::GrepPrompt } else { State::Normal });
         if !initial.is_empty() {
             g.query.set(initial);
         }
@@ -414,7 +414,7 @@ impl Editor {
         match key {
             // 結果があればパネルは残す（リストモードへは Ctrl-w j かクリックで）
             Key::Esc | Key::Ctrl('c') | Key::Ctrl('[') => {
-                (self.vim, self.focus) = crate::editor::split_state(State::Normal);
+                (self.core.vim, self.focus) = crate::editor::split_state(State::Normal);
                 if g.hits.is_empty() && g.job.is_none() {
                     self.close_grep();
                 }
@@ -487,7 +487,7 @@ impl Editor {
             ViewOut::Quit => self.close_grep(),
             ViewOut::Open => {
                 if let Some(g) = &mut self.panels.grep {
-                    let line = g.view.as_ref().map_or(0, |v| v.ed.cursor.line);
+                    let line = g.view.as_ref().map_or(0, |v| v.ed.core.cursor.line);
                     g.select(line);
                 }
                 if self.panels.grep.as_ref().is_some_and(|g| g.hits.get(g.selected).is_some_and(|h| !h.path.is_empty())) {
@@ -588,15 +588,15 @@ impl Editor {
         }
         let path = g.root.join(&h.path);
         self.edit_file(path);
-        let line = (h.line - 1).min(self.buf.line_count().saturating_sub(1));
-        let text = self.buf.line(line);
+        let line = (h.line - 1).min(self.core.buf.line_count().saturating_sub(1));
+        let text = self.core.buf.line(line);
         let lead = text.len() - text.trim_start().len();
-        self.cursor.line = line;
-        self.cursor.byte = (lead + h.range.0).min(text.len());
-        self.cursor.want_col = nagi_core::display_col(&text, self.cursor.byte, false);
+        self.core.cursor.line = line;
+        self.core.cursor.byte = (lead + h.range.0).min(text.len());
+        self.core.cursor.want_col = nagi_core::display_col(&text, self.core.cursor.byte, false);
         self.clamp_normal();
         // 画面の中ほどに出す
-        self.top = line.saturating_sub(self.rows / 2);
+        self.core.top = line.saturating_sub(self.rows / 2);
         if stay {
             self.set_state(State::List);
         }
@@ -1058,7 +1058,7 @@ mod tests {
         std::fs::write(dir.join("src/a.rs"), "let needle = 1; // Needle\nlet needles = 2;\n").unwrap();
         std::fs::write(dir.join("docs/b.txt"), "Needle\n").unwrap();
         let mut e = Editor::new(Buffer::open(&dir.join("src/a.rs")).unwrap(), None);
-        e.buf.path = Some(dir.join("src/a.rs"));
+        e.core.buf.path = Some(dir.join("src/a.rs"));
         e.set_screen(160, 40);
         e.open_grep("");
         keys(&mut e, "needle");
@@ -1125,7 +1125,7 @@ mod tests {
         std::fs::write(dir.join("src/a.rs"), "fn a() {}\n    let needle = 1;\n").unwrap();
         std::fs::write(dir.join("src/b.rs"), "// Needle here\nx\nneedle again\n").unwrap();
         let mut e = Editor::new(Buffer::open(&dir.join("src/a.rs")).unwrap(), None);
-        e.buf.path = Some(dir.join("src/a.rs"));
+        e.core.buf.path = Some(dir.join("src/a.rs"));
         e.set_screen(100, 40);
         e.open_grep("");
         assert_eq!(e.state(), State::GrepPrompt);
@@ -1137,18 +1137,18 @@ mod tests {
         // Enter で先頭を開く。行頭の空白の後の一致の位置へ
         keys(&mut e, "<CR>");
         assert_eq!(e.state(), State::Normal);
-        assert_eq!((e.cursor.line, e.cursor.byte), (1, 8));
+        assert_eq!((e.core.cursor.line, e.core.cursor.byte), (1, 8));
         assert!(e.panels.grep.is_some(), "パネルは残る");
         // :cn で次へ（別のファイル）
         keys(&mut e, ":cn<CR>");
-        assert_eq!(e.buf.line(0), "// Needle here");
-        assert_eq!((e.cursor.line, e.cursor.byte), (0, 3));
+        assert_eq!(e.core.buf.line(0), "// Needle here");
+        assert_eq!((e.core.cursor.line, e.core.cursor.byte), (0, 3));
         // Ctrl-w j でパネルへ、G で最後、Enter で開いて編集画面へ
         keys(&mut e, "<C-w>j");
         assert_eq!(e.state(), State::List);
         keys(&mut e, "G<CR>");
         assert_eq!(e.state(), State::Normal);
-        assert_eq!(e.cursor.line, 2);
+        assert_eq!(e.core.cursor.line, 2);
         // 本文へ移った後に、結果をマウスで選び直せる（下の欄の 0 行目はタブ、1 行目は見出し、2 行目から結果）
         assert_eq!(e.state(), State::Normal);
         e.bottom_click(3, 5, 1);
@@ -1156,7 +1156,7 @@ mod tests {
         assert_eq!(e.panels.grep.as_ref().unwrap().selected, 1);
         e.bottom_click(3, 5, 2);
         assert_eq!(e.state(), State::Normal);
-        assert_eq!(e.buf.line(0), "// Needle here");
+        assert_eq!(e.core.buf.line(0), "// Needle here");
         // 本文で挿入・ビジュアルの最中でも、結果を押せば選べる
         for k in ["ix", "v", "V"] {
             keys(&mut e, k);
@@ -1206,7 +1206,7 @@ mod tests {
         e.focus_panel();
         assert_eq!(e.state(), State::List);
         // 末尾を追いかけている。gg で先頭、W で次の語、yiw でヤンク（クリップボードにも）
-        assert_eq!(e.panels.grep.as_ref().unwrap().view.as_ref().unwrap().ed.cursor.line, 2);
+        assert_eq!(e.panels.grep.as_ref().unwrap().view.as_ref().unwrap().ed.core.cursor.line, 2);
         keys(&mut e, "gg0Wyiw");
         assert_eq!(get().unwrap(), "Scanning");
         // V j y で 2 行
@@ -1215,8 +1215,8 @@ mod tests {
         // 変える操作は効かない（dd・x・i で打つ）
         keys(&mut e, "ddxiabc<Esc>");
         let v = e.panels.grep.as_ref().unwrap().view.as_ref().unwrap();
-        assert_eq!(v.ed.buf.line(0), "[INFO] Scanning for projects...");
-        assert_eq!(v.ed.buf.line_count(), 3);
+        assert_eq!(v.ed.core.buf.line(0), "[INFO] Scanning for projects...");
+        assert_eq!(v.ed.core.buf.line_count(), 3);
         assert_eq!(e.state(), State::List, "{}", e.svc.notify.text);
         // 日本語の語もヤンクできる。/ で検索して移る
         keys(&mut e, "/失敗<CR>yiw");
@@ -1225,7 +1225,7 @@ mod tests {
         e.panels.grep.as_mut().unwrap().hits.push(Hit { path: String::new(), line: 0, range: (0, 0), text: "[INFO] BUILD FAILURE".into() });
         keys(&mut e, "gg");
         e.sync_output_view();
-        assert_eq!(e.panels.grep.as_ref().unwrap().view.as_ref().unwrap().ed.cursor.line, 0);
+        assert_eq!(e.panels.grep.as_ref().unwrap().view.as_ref().unwrap().ed.core.cursor.line, 0);
         // Esc で本文へ、q で閉じる
         keys(&mut e, "<Esc>");
         assert_eq!(e.state(), State::Normal);
@@ -1245,15 +1245,15 @@ mod tests {
         }
         e.sync_output_view();
         let v = e.panels.grep.as_ref().unwrap().view.as_ref().unwrap();
-        assert_eq!((v.ed.state(), v.ed.cursor.line, v.ed.buf.line_count()), (State::Normal, 199, 200));
+        assert_eq!((v.ed.state(), v.ed.core.cursor.line, v.ed.core.buf.line_count()), (State::Normal, 199, 200));
         // 最後の行の行末にいて、表示も最後の行が見える
-        assert_eq!(v.ed.cursor.byte, "[INFO] line 199".len() - 1);
-        assert!(v.ed.top + v.ed.rows > 199, "top {} rows {}", v.ed.top, v.ed.rows);
+        assert_eq!(v.ed.core.cursor.byte, "[INFO] line 199".len() - 1);
+        assert!(v.ed.core.top + v.ed.rows > 199, "top {} rows {}", v.ed.core.top, v.ed.rows);
         let push = |e: &mut Editor, t: &str| {
             e.panels.grep.as_mut().unwrap().hits.push(Hit { path: String::new(), line: 0, range: (0, 0), text: t.into() });
             e.sync_output_view();
         };
-        let line = |e: &Editor| e.panels.grep.as_ref().unwrap().view.as_ref().unwrap().ed.cursor.line;
+        let line = |e: &Editor| e.panels.grep.as_ref().unwrap().view.as_ref().unwrap().ed.core.cursor.line;
         // カーソルを動かしたら追いかけない
         e.focus_panel();
         keys(&mut e, "5k");

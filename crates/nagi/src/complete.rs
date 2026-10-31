@@ -103,11 +103,11 @@ impl Editor {
 
     /// SQL コンソールの補完（`auto` は `.` を打ったときに一覧だけ出す）
     pub(crate) fn start_sql_completion(&mut self, auto: bool) {
-        let line = self.buf.line(self.cursor.line);
-        let b = self.cursor.byte.min(line.len());
+        let line = self.core.buf.line(self.core.cursor.line);
+        let b = self.core.cursor.byte.min(line.len());
         let ws = line[..b].char_indices().rev().take_while(|(_, c)| word_char(*c) || *c == '#').last().map_or(b, |(i, _)| i);
         let prefix = line[ws..b].to_string();
-        let start = self.buf.line_start(self.cursor.line) + ws;
+        let start = self.core.buf.line_start(self.core.cursor.line) + ws;
         // 別名.
         let qualifier = line[..ws].strip_suffix('.').map(|q| q.chars().rev().take_while(|c| word_char(*c)).collect::<String>().chars().rev().collect::<String>()).filter(|q| !q.is_empty());
         let cands = self.sql_candidates(&prefix, qualifier.as_deref());
@@ -153,11 +153,11 @@ impl Editor {
             self.start_sql_completion(false);
             return;
         }
-        let line = self.buf.line(self.cursor.line);
-        let b = self.cursor.byte.min(line.len());
+        let line = self.core.buf.line(self.core.cursor.line);
+        let b = self.core.cursor.byte.min(line.len());
         let ws = line[..b].char_indices().rev().take_while(|(_, c)| word_char(*c)).last().map_or(b, |(i, _)| i);
         let prefix = line[ws..b].to_string();
-        let start = self.buf.line_start(self.cursor.line) + ws;
+        let start = self.core.buf.line_start(self.core.cursor.line) + ws;
         let low = prefix.to_lowercase();
         let mut seen: HashSet<String> = HashSet::new();
         seen.insert(prefix.clone());
@@ -169,9 +169,9 @@ impl Editor {
         };
         // 今のバッファ（カーソルの前後 1MB）
         let lo = start.saturating_sub(SCAN_BYTES);
-        let hi = (start + SCAN_BYTES).min(self.buf.len_bytes());
-        let lo = self.buf.line_start(self.buf.pos_of(lo).0);
-        let text = self.buf.slice_string(lo, hi);
+        let hi = (start + SCAN_BYTES).min(self.core.buf.len_bytes());
+        let lo = self.core.buf.line_start(self.core.buf.pos_of(lo).0);
+        let text = self.core.buf.slice_string(lo, hi);
         for (s, w) in words_in(&text, start - lo, forward) {
             // 打っている語そのものは除く
             if lo + s != start {
@@ -179,7 +179,7 @@ impl Editor {
             }
         }
         // ほかのバッファ
-        for slot in &self.docs {
+        for slot in &self.core.docs {
             if let Slot::Parked(d) = slot {
                 let n = d.buf.len_bytes().min(SCAN_BYTES);
                 let t = d.buf.slice_string(0, n);
@@ -278,8 +278,8 @@ pub(crate) mod draw {
         const MAX: usize = 10;
         let cell = p.fonts.cell();
         let rect = ed.active_rect();
-        let (sl, sb) = ed.buf.pos_of(c.start);
-        if sl < ed.top {
+        let (sl, sb) = ed.core.buf.pos_of(c.start);
+        if sl < ed.core.top {
             return;
         }
         // 折り返していれば、その行の中の画面の行と列
@@ -347,9 +347,9 @@ mod tests {
         let s = crate::layout::Screen { rows: 20, cols: 80 };
         assert!(crate::layout::press(&mut e, s, 6, 8, |_| 1).is_some());
         assert_eq!(e.panels.completion.as_ref().unwrap().sel, Some(1));
-        assert_eq!(e.buf.line(3), " Alphabet");
+        assert_eq!(e.core.buf.line(3), " Alphabet");
         assert!(crate::layout::press(&mut e, s, 7, 8, |_| 2).is_some());
-        assert_eq!(e.buf.line(3), " alpine");
+        assert_eq!(e.core.buf.line(3), " alpine");
         assert!(e.panels.completion.is_none(), "ダブルクリックで決めて閉じる");
         keys(&mut e, " al<C-n>");
         e.panels.completion.as_ref().unwrap().drawn.set(Some((5, 6, 20, 0, 3)));
@@ -361,25 +361,25 @@ mod tests {
         let mut e = Editor::new(Buffer::from_str("alpha beta\nAlphabet\nalpine\n"), None);
         // 3 行目の後ろで al → 前向き: 後ろには無いので先頭から alpha, Alphabet, alpine の順
         keys(&mut e, "Go al<C-n>");
-        assert_eq!(e.buf.line(3), " alpha");
+        assert_eq!(e.core.buf.line(3), " alpha");
         assert_eq!(e.panels.completion.as_ref().unwrap().items, vec!["alpha", "Alphabet", "alpine"]);
         keys(&mut e, "<C-n><C-n>");
-        assert_eq!(e.buf.line(3), " alpine");
+        assert_eq!(e.core.buf.line(3), " alpine");
         // 端の先は打った語
         keys(&mut e, "<C-n>");
-        assert_eq!(e.buf.line(3), " al");
+        assert_eq!(e.core.buf.line(3), " al");
         // Ctrl-p で後ろから
         keys(&mut e, "<C-p>");
-        assert_eq!(e.buf.line(3), " alpine");
+        assert_eq!(e.core.buf.line(3), " alpine");
         // ほかのキーで確定して続けて打つ
         keys(&mut e, "!<Esc>");
-        assert_eq!(e.buf.line(3), " alpine!");
+        assert_eq!(e.core.buf.line(3), " alpine!");
         assert!(e.panels.completion.is_none());
         // Ctrl-e で取り消す
         keys(&mut e, "o be<C-n><C-e><Esc>");
-        assert_eq!(e.buf.line(4), "  be", "前の行の字下げを引き継ぐ");
+        assert_eq!(e.core.buf.line(4), "  be", "前の行の字下げを引き継ぐ");
         // Ctrl-y で確定して続けて打つ
         keys(&mut e, "o be<C-n><C-y>X<Esc>");
-        assert_eq!(e.buf.line(5), "   betaX");
+        assert_eq!(e.core.buf.line(5), "   betaX");
     }
 }

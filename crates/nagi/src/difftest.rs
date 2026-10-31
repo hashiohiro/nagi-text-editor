@@ -273,9 +273,9 @@ fn run_nvim(nvim: &PathBuf, dir: &std::path::Path, start: (usize, usize), keys: 
 fn run_nagi(start: (usize, usize), keys: &str) -> (String, (usize, usize)) {
     let mut ed = Editor::new(Buffer::from_str(TEXT), None);
     ed.rows = 30;
-    ed.cursor.line = start.0 - 1;
-    ed.cursor.byte = start.1 - 1;
-    ed.cursor.want_col = nagi_core::display_col(&ed.buf.line(start.0 - 1), start.1 - 1, false);
+    ed.core.cursor.line = start.0 - 1;
+    ed.core.cursor.byte = start.1 - 1;
+    ed.core.cursor.want_col = nagi_core::display_col(&ed.core.buf.line(start.0 - 1), start.1 - 1, false);
     for k in parse_keys(keys, " ") {
         ed.key(k);
     }
@@ -285,7 +285,7 @@ fn run_nagi(start: (usize, usize), keys: &str) -> (String, (usize, usize)) {
             ed.key(nagi_vim::Key::Esc);
         }
     }
-    (ed.buf.text(), (ed.cursor.line + 1, ed.cursor.byte + 1))
+    (ed.core.buf.text(), (ed.core.cursor.line + 1, ed.core.cursor.byte + 1))
 }
 
 #[test]

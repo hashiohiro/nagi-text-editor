@@ -125,7 +125,7 @@ impl Editor {
         let path = root.join(rel);
         // 開いているバッファがあればその中身（保存前の変更も見せる）、無ければファイル
         let new = match self.find_doc(&path) {
-            Some(d) if d == self.cur_doc => self.buf.text(),
+            Some(d) if d == self.core.cur_doc => self.core.buf.text(),
             Some(d) => self.parked_doc(d).map(|x| x.buf.text()).unwrap_or_default(),
             None => std::fs::read_to_string(&path).unwrap_or_default(),
         };
@@ -139,7 +139,7 @@ impl Editor {
 
     /// 今のファイルの差分（`:Gdiff`）
     pub(crate) fn diff_current(&mut self) {
-        let (Some(root), Some(p)) = (self.svc.git.root.clone(), self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok())) else {
+        let (Some(root), Some(p)) = (self.svc.git.root.clone(), self.core.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok())) else {
             self.svc.notify.info("git のリポジトリのファイルではありません");
             return;
         };
@@ -261,18 +261,18 @@ impl Editor {
         let keep = self.panels.diff.take();
         let ret = self.diff_return.take();
         self.edit_file(path.clone());
-        let nl = self.buf.newline().to_string();
-        let total = self.buf.line_count();
-        let start = if h.new.start < total { self.buf.line_start(h.new.start) } else { self.buf.len_bytes() };
-        let end = if h.new.end < total { self.buf.line_start(h.new.end) } else { self.buf.len_bytes() };
+        let nl = self.core.buf.newline().to_string();
+        let total = self.core.buf.line_count();
+        let start = if h.new.start < total { self.core.buf.line_start(h.new.start) } else { self.core.buf.len_bytes() };
+        let end = if h.new.end < total { self.core.buf.line_start(h.new.end) } else { self.core.buf.len_bytes() };
         let text: String = old_lines.iter().map(|l| format!("{l}{nl}")).collect();
-        self.hist.begin();
+        self.core.hist.begin();
         self.edit(start, end, &text);
-        self.hist.close();
+        self.core.hist.close();
         self.svc.notify.info("変更を戻しました（バッファで u で取り消し）");
         drop(keep);
         // 差分を作り直して開き直す
-        let new = self.buf.text();
+        let new = self.core.buf.text();
         let (r2, rel2) = (root.clone(), rel.clone());
         self.job("git-blob", move || nagi_workers::git::head_blob(&r2, &rel2).unwrap_or_default(), move |e, old| {
             e.show_diff(format!("HEAD  {rel}"), format!("作業中のファイル  {rel}"), &old, &new, Some((root, rel.clone(), path)));
