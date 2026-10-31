@@ -151,6 +151,30 @@ pub enum LogHit {
     DetailArea,
 }
 
+/// 履歴のキーで、部品の外に及ぶこと（Editor が行う。ADR 0018 の §5）
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LogAction {
+    None,
+    /// 本文へ戻る（下の欄に収めたまま）
+    ToText,
+    /// 下の欄を隠す
+    HideBottom,
+    /// 履歴を閉じる
+    Close,
+    /// 選んだファイルを右の列の見える範囲へ
+    FitDetail,
+    /// 選んだファイルの差分を開く
+    OpenFileDiff,
+    /// このコミットをチェックアウトするか確かめる
+    AskCheckout(String),
+    /// 選んだコミットをチェリーピック
+    CherryPick,
+    /// `:Gbranch` の行に名前を打たせる（起点のハッシュ）
+    PromptBranch(String),
+    /// ハッシュをコピー
+    Copy,
+}
+
 /// ブランチの列の 1 行（nagi-ui の木の行）: 区分（depth 0）か、名前の / で分けたフォルダ（`key` は区分からの道筋。ローカル/feature）か、
 /// ブランチ（Leaf の `i` は branches の番号）
 pub type BranchRow = nagi_ui::PathRow;
@@ -376,6 +400,78 @@ impl LogView {
         }
         ui.put(Rect { x: dx, y: 1, w: w.saturating_sub(dx), h: body }, LogHit::DetailArea);
         ui
+    }
+
+    /// 絞り込みの欄の外のキー（`rows` は見える行数）。部品の中で済むこと（選び・複数選び・ファイルへ移る・絞り込みを開く）は
+    /// ここで行い、部品の外に及ぶこと（本文へ・欄を隠す・閉じる・差分・確認・`:` の行・コピー）を返す（ADR 0018 の §5）
+    pub fn key(&mut self, key: Key, rows: usize) -> LogAction {
+        // 複数選んでいれば、Esc はまず選びを外す
+        if key == Key::Esc && !self.focus_files && !self.marked.is_empty() {
+            self.marked.clear();
+            self.mark_anchor = None;
+            return LogAction::None;
+        }
+        // 下の欄に収めているとき: Esc は本文へ戻るだけ、q は欄を隠す（どちらも履歴は残す）
+        if self.docked && !self.focus_files {
+            match key {
+                Key::Esc => return LogAction::ToText,
+                Key::Char('q') => return LogAction::HideBottom,
+                _ => {}
+            }
+        }
+        if self.focus_files {
+            let n = self.detail.as_ref().map_or(0, |d| d.files.len());
+            return match key {
+                Key::Char('j') | Key::Down => {
+                    self.file_sel = (self.file_sel + 1).min(n.saturating_sub(1));
+                    LogAction::FitDetail
+                }
+                Key::Char('k') | Key::Up => {
+                    self.file_sel = self.file_sel.saturating_sub(1);
+                    LogAction::FitDetail
+                }
+                Key::Tab | Key::Esc | Key::Char('h') => {
+                    self.focus_files = false;
+                    LogAction::None
+                }
+                Key::Enter => LogAction::OpenFileDiff,
+                Key::Char('q') => LogAction::Close,
+                _ => LogAction::None,
+            };
+        }
+        // 移動は一覧の共通の動き（nagi_ui::list）。グラフだけの行は飛ばす
+        let n = self.visible.len();
+        let to = if key == Key::Char('g') { Some(0) } else { nagi_ui::list::step(key, self.selected, n, rows) };
+        if let Some(to) = to {
+            self.selected = nagi_ui::list::snap(self.selected, to, n, |i| self.rows[self.visible[i]].commit.is_some());
+            return LogAction::None;
+        }
+        let act = match key {
+            Key::Char('/') => {
+                self.filter = Some(crate::vim_field::VimField::new(&self.filter_text, false));
+                LogAction::None
+            }
+            Key::Tab | Key::Enter | Key::Char('l') => {
+                if self.detail.as_ref().is_some_and(|d| !d.files.is_empty()) {
+                    self.focus_files = true;
+                }
+                LogAction::None
+            }
+            Key::Char('o') => self.current().map_or(LogAction::None, |c| LogAction::AskCheckout(c.hash.clone())),
+            Key::Char(' ') => {
+                let k = self.selected;
+                self.toggle_mark(k);
+                self.mark_anchor = Some(k);
+                LogAction::None
+            }
+            Key::Char('c') => LogAction::CherryPick,
+            Key::Char('b') => self.current().map_or(LogAction::None, |c| LogAction::PromptBranch(c.short.clone())),
+            Key::Char('y') => LogAction::Copy,
+            Key::Char('q') | Key::Esc => LogAction::Close,
+            _ => LogAction::None,
+        };
+        nagi_ui::list::fit(self.selected, &mut self.top, rows);
+        act
     }
 
     /// 区分・フォルダを畳む・開く
@@ -634,34 +730,12 @@ impl Editor {
 
     /// 履歴の画面のキー
     pub(crate) fn log_key(&mut self, key: Key) {
-        let docked = self.log.as_ref().is_some_and(|l| l.docked);
         let rows = self.log_rows();
-        // 複数選んでいれば、Esc はまず選びを外す
-        if key == Key::Esc {
-            if let Some(l) = self.log.as_mut().filter(|l| l.filter.is_none() && !l.focus_files && !l.marked.is_empty()) {
-                l.marked.clear();
-                l.mark_anchor = None;
-                return;
-            }
-        }
-        // 下の欄に収めているとき: Esc は本文へ戻るだけ、q は欄を隠す（どちらも履歴は残す）。Ctrl-w k も本文へ
-        if docked && self.log.as_ref().is_some_and(|l| l.filter.is_none() && !l.focus_files) {
-            match key {
-                Key::Esc => {
-                    self.set_state(State::Normal);
-                    return;
-                }
-                Key::Char('q') => {
-                    self.hide_bottom();
-                    return;
-                }
-                _ => {}
-            }
-        }
         let Some(l) = &mut self.log else {
             self.set_state(State::Normal);
             return;
         };
+        // 絞り込みの欄（Vim 風の入力欄。Editor の feed_field を使う）
         if l.filter.is_some() {
             use crate::vim_field::FieldOut;
             let out = self.feed_field(key, |e| e.log.as_mut().and_then(|l| l.filter.as_mut()));
@@ -677,61 +751,18 @@ impl Editor {
             }
             return;
         }
-        if l.focus_files {
-            let n = l.detail.as_ref().map_or(0, |d| d.files.len());
-            match key {
-                Key::Char('j') | Key::Down => {
-                    l.file_sel = (l.file_sel + 1).min(n.saturating_sub(1));
-                    self.log_fit_detail();
-                }
-                Key::Char('k') | Key::Up => {
-                    l.file_sel = l.file_sel.saturating_sub(1);
-                    self.log_fit_detail();
-                }
-                Key::Tab | Key::Esc | Key::Char('h') => l.focus_files = false,
-                Key::Enter => self.log_open_file_diff(),
-                Key::Char('q') => self.close_log(),
-                _ => {}
-            }
-            return;
-        }
-        // 移動は一覧の共通の動き（list.rs）。グラフだけの行は飛ばす
-        let n = l.visible.len();
-        let to = if key == Key::Char('g') { Some(0) } else { nagi_ui::list::step(key, l.selected, n, rows) };
-        if let Some(to) = to {
-            l.selected = nagi_ui::list::snap(l.selected, to, n, |i| l.rows[l.visible[i]].commit.is_some());
-            return;
-        }
-        match key {
-            Key::Char('/') => l.filter = Some(crate::vim_field::VimField::new(&l.filter_text, false)),
-            Key::Tab | Key::Enter | Key::Char('l') => {
-                if l.detail.as_ref().is_some_and(|d| !d.files.is_empty()) {
-                    l.focus_files = true;
-                }
-            }
-            Key::Char('o') => {
-                if let Some(h) = l.current().map(|c| c.hash.clone()) {
-                    self.log_ask(Confirm::Checkout(h));
-                }
-            }
-            Key::Char(' ') => {
-                let k = l.selected;
-                l.toggle_mark(k);
-                l.mark_anchor = Some(k);
-            }
-            Key::Char('c') => self.log_cherry_pick_picked(),
-            Key::Char('b') => {
-                if let Some(h) = l.current().map(|c| c.short.clone()) {
-                    self.prompt_command("Gbranch ", &format!(" {h}"));
-                    return;
-                }
-            }
-            Key::Char('y') => self.log_copy_picked(false),
-            Key::Char('q') | Key::Esc => self.close_log(),
-            _ => {}
-        }
-        if let Some(l) = &mut self.log {
-            nagi_ui::list::fit(l.selected, &mut l.top, rows);
+        // 部品の中で済むことは LogView::key が行い、外に及ぶことを返す（ADR 0018 の §5）
+        match l.key(key, rows) {
+            LogAction::None => {}
+            LogAction::ToText => self.set_state(State::Normal),
+            LogAction::HideBottom => self.hide_bottom(),
+            LogAction::Close => self.close_log(),
+            LogAction::FitDetail => self.log_fit_detail(),
+            LogAction::OpenFileDiff => self.log_open_file_diff(),
+            LogAction::AskCheckout(h) => self.log_ask(Confirm::Checkout(h)),
+            LogAction::CherryPick => self.log_cherry_pick_picked(),
+            LogAction::PromptBranch(h) => self.prompt_command("Gbranch ", &format!(" {h}")),
+            LogAction::Copy => self.log_copy_picked(false),
         }
     }
 
@@ -1653,6 +1684,21 @@ mod tests {
         let d = parse_detail("abc\x1f自分\x1f3 days ago\x1fp1 p2\x1f件名\n\n本文\n\x1e\n\nM\tsrc/a.rs\nR100\told.rs\tnew.rs\n");
         assert_eq!((d.hash.as_str(), d.parents.as_str(), d.message.as_str()), ("abc", "p1 p2", "件名\n\n本文"));
         assert_eq!(d.files, vec![('M', "src/a.rs".to_string()), ('R', "new.rs".to_string())]);
+    }
+
+    /// 部品のキーは Editor を作らずに確かめられる（部品の中で済むことは行い、外に及ぶことは Action で返す）
+    #[test]
+    fn keys_without_editor() {
+        let mut l = view("*\x1fa1\x1f\x1f一\x1fA\x1f1\x1fa1\n|\n*\x1fb2\x1f\x1f二\x1fA\x1f2\x1fb2\n", &[], Some(parse_detail("a1\x1fA\x1f1\x1fp\x1f件名\x1e\n\nM\ta.rs\nA\tb.rs\n")));
+        assert_eq!(l.key(Key::Char('j'), 10), LogAction::None);
+        assert_eq!(l.selected, 2, "グラフだけの行は飛ばす");
+        assert_eq!(l.key(Key::Char('o'), 10), LogAction::AskCheckout("b2".into()));
+        assert_eq!(l.key(Key::Tab, 10), LogAction::None);
+        assert!(l.focus_files);
+        assert_eq!(l.key(Key::Char('j'), 10), LogAction::FitDetail);
+        assert_eq!((l.file_sel, l.key(Key::Enter, 10)), (1, LogAction::OpenFileDiff));
+        assert_eq!(l.key(Key::Esc, 10), LogAction::None);
+        assert_eq!(l.key(Key::Esc, 10), LogAction::ToText, "下の欄に収めているときの Esc は本文へ");
     }
 
     /// 試験用の履歴（下の欄に収めて出す）
