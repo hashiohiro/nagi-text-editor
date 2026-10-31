@@ -13,7 +13,6 @@ publish = false
 nagi-core = { path = "crates/nagi-core" }
 nagi-text = { path = "crates/nagi-text" }
 nagi-render = { path = "crates/nagi-render" }
-nagi-platform = { path = "crates/nagi-platform" }
 nagi-vim = { path = "crates/nagi-vim" }
 nagi-syntax = { path = "crates/nagi-syntax" }
 nagi-workers = { path = "crates/nagi-workers" }

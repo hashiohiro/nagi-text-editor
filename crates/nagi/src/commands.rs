@@ -379,6 +379,14 @@ pub fn find(name: &str) -> Option<(&'static Cmd, bool)> {
         return Some((c, bang));
     }
     let mut hits = COMMANDS.iter().filter(|c| c.names.iter().any(|n| n.eq_ignore_ascii_case(base)));
+    if let (Some(c), None) = (hits.next(), hits.next()) {
+        return Some((c, bang));
+    }
+    // Vim と同じく名前の頭だけでもよい（`:vsp` → `:vsplit`）。小文字で始まる Vim の名前だけで、2 文字以上・1 つに決まるとき
+    if base.len() < 2 || !base.starts_with(|ch: char| ch.is_ascii_lowercase()) {
+        return None;
+    }
+    let mut hits = COMMANDS.iter().filter(|c| c.names.iter().any(|n| n.starts_with(base)));
     match (hits.next(), hits.next()) {
         (Some(c), None) => Some((c, bang)),
         _ => None,
@@ -522,6 +530,17 @@ pub fn run(e: &mut Editor, line: &str) -> Effect {
 
 #[cfg(test)]
 mod tests {
+
+    /// 名前の頭だけでもよい（1 つに決まるときだけ）
+    #[test]
+    fn abbreviations() {
+        assert_eq!(find("vsp").map(|c| c.0.names[0]), Some("vs"));
+        assert_eq!(find("vspl!").map(|c| (c.0.names[0], c.1)), Some(("vs", true)));
+        assert!(find("vsx").is_none(), "どの名前の頭でもなければ無い");
+        assert!(find("s").is_none_or(|c| c.0.names.contains(&"s")), "1 文字は名前そのものだけ");
+        assert!(find("Gbr").is_none() || find("Gbr").is_some_and(|c| c.0.names.contains(&"Gbr")), "大文字の名前は頭では引かない");
+    }
+
     use super::*;
 
     #[test]
