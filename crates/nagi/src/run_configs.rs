@@ -252,7 +252,7 @@ impl Editor {
         if let Some(n) = &name {
             m = m.item(format!("▶ {n} を実行（Shift+F10）"), |e| e.run_command(""));
         }
-        let running = self.terminals.list.iter().any(|t| t.name.starts_with(RUN_PREFIX) && !t.exited);
+        let running = self.panels.terminals.list.iter().any(|t| t.name.starts_with(RUN_PREFIX) && !t.exited);
         m = m.item("構成を選んで実行…（Alt+Shift+F10）", |e| e.open_run_chooser());
         if self.run_last.is_some() {
             m = m.item("もう一度実行（Ctrl+F5）", |e| e.run_again());
@@ -266,13 +266,13 @@ impl Editor {
 
     pub(crate) fn run_stop(&mut self) {
         // デバッグしていれば、それも止める
-        if self.debug.as_ref().is_some_and(|d| !d.ended) {
+        if self.panels.debug.as_ref().is_some_and(|d| !d.ended) {
             self.debug_stop();
         }
-        let active = self.terminals.list.get(self.terminals.active).filter(|t| t.name.starts_with(RUN_PREFIX) && !t.exited).map(|t| t.name.clone());
+        let active = self.panels.terminals.list.get(self.panels.terminals.active).filter(|t| t.name.starts_with(RUN_PREFIX) && !t.exited).map(|t| t.name.clone());
         let last = self.run_last.as_ref().map(|n| format!("{RUN_PREFIX}{n}"));
-        let target = active.or(last.filter(|n| self.terminals.list.iter().any(|t| &t.name == n && !t.exited)));
-        let stopped = target.and_then(|n| self.terminals.list.iter_mut().find(|t| t.name == n)).map(|t| {
+        let target = active.or(last.filter(|n| self.panels.terminals.list.iter().any(|t| &t.name == n && !t.exited)));
+        let stopped = target.and_then(|n| self.panels.terminals.list.iter_mut().find(|t| t.name == n)).map(|t| {
             t.term.kill();
             t.name.trim_start_matches(RUN_PREFIX).to_string()
         });
@@ -297,11 +297,11 @@ impl Editor {
 
     /// 名前の窓を閉じる（動いていれば止める）
     pub(crate) fn close_terminal_named(&mut self, name: &str) {
-        if let Some(i) = self.terminals.list.iter().position(|t| t.name == name) {
-            let mut t = self.terminals.list.remove(i);
+        if let Some(i) = self.panels.terminals.list.iter().position(|t| t.name == name) {
+            let mut t = self.panels.terminals.list.remove(i);
             t.term.kill();
-            if self.terminals.active > i || self.terminals.active >= self.terminals.list.len() {
-                self.terminals.active = self.terminals.active.saturating_sub(1);
+            if self.panels.terminals.active > i || self.panels.terminals.active >= self.panels.terminals.list.len() {
+                self.panels.terminals.active = self.panels.terminals.active.saturating_sub(1);
             }
         }
     }
@@ -337,12 +337,12 @@ mod tests {
         e.run_command("");
         assert_eq!(e.run_selected.as_deref(), Some("あいさつ"));
         assert_eq!(e.bottom_kind, BottomKind::Terminal);
-        assert_eq!(e.terminals.list.len(), 1);
-        assert_eq!(e.terminals.list[0].name, "▶ あいさつ");
+        assert_eq!(e.panels.terminals.list.len(), 1);
+        assert_eq!(e.panels.terminals.list[0].name, "▶ あいさつ");
         let mut ok = false;
         for _ in 0..300 {
             e.sync_terminal();
-            if e.terminals.list[0].term.with_screen(|s| s.contents()).contains("nagi-run-ok") {
+            if e.panels.terminals.list[0].term.with_screen(|s| s.contents()).contains("nagi-run-ok") {
                 ok = true;
                 break;
             }
@@ -351,7 +351,7 @@ mod tests {
         assert!(ok, "出力が出ない");
         // もう一度（Ctrl+F5）: 窓は増えない
         e.shortcut("RunAgain");
-        assert_eq!(e.terminals.list.len(), 1);
+        assert_eq!(e.panels.terminals.list.len(), 1);
         // 一覧（Alt+Shift+F10）
         e.shortcut("RunConfigs");
         assert_eq!(e.state(), State::Finder);

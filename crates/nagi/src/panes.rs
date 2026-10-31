@@ -203,7 +203,7 @@ impl Editor {
 
     /// 差分・ログ・テーブルを画面いっぱいに出していないか（タブ・帯を出す）
     fn editor_shown(&self) -> bool {
-        self.diff.is_none() && !self.log_fullscreen() && self.db_table.is_none()
+        self.panels.diff.is_none() && !self.log_fullscreen() && self.panels.db_table.is_none()
     }
 
     /// バッファのタブの行の数（0 か 1。buffer_tabs.rs。設定の「タブ」で隠せる）。行の位置は area().y
@@ -403,12 +403,12 @@ impl Editor {
             match pick {
                 Some(w) => self.focus_window(w),
                 // 一番下の窓から下へは、パネルがあればパネルへ
-                None if dir == 'j' && self.grep.is_some() => {
+                None if dir == 'j' && self.panels.grep.is_some() => {
                     self.focus_panel();
                     return;
                 }
                 // 一番左の窓から左へは、ツリーがあればツリーへ
-                None if dir == 'h' && (self.tree.is_some() || self.commit.is_some()) => {
+                None if dir == 'h' && (self.panels.tree.is_some() || self.panels.commit.is_some()) => {
                     self.select_left_tab(self.left_last());
                     return;
                 }

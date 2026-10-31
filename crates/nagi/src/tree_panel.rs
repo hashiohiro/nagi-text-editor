@@ -180,7 +180,7 @@ impl Editor {
         }
         let current = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
         let waker = self.waker_or_noop();
-        let Some(t) = &mut self.tree else { return };
+        let Some(t) = &mut self.panels.tree else { return };
         if current.is_none() || t.synced == current {
             return;
         }
@@ -191,7 +191,7 @@ impl Editor {
 
     /// SelectInProjectView（Alt+F1）: 今のファイルを木で選ぶ（木を出して移る）
     pub(crate) fn select_in_tree(&mut self) {
-        if let Some(t) = &mut self.tree {
+        if let Some(t) = &mut self.panels.tree {
             t.synced = None;
         }
         self.open_tree();
@@ -212,9 +212,9 @@ impl Editor {
     /// 開いている左の欄のタブ（隠していても）。最後に選んだものが開いていればそれ、無ければ開いている最初のもの
     pub fn left_open(&self) -> Option<LeftTab> {
         let open = |t: LeftTab| match t {
-            LeftTab::Project => self.tree.is_some(),
-            LeftTab::Commit => self.commit.is_some(),
-            LeftTab::Run => self.run_panel.is_some(),
+            LeftTab::Project => self.panels.tree.is_some(),
+            LeftTab::Commit => self.panels.commit.is_some(),
+            LeftTab::Run => self.panels.run_panel.is_some(),
         };
         if open(self.left_tab) { Some(self.left_tab) } else { TABS.iter().map(|t| t.1).find(|&t| open(t)) }
     }
@@ -248,7 +248,7 @@ impl Editor {
     pub(crate) fn open_tree(&mut self) {
         let waker = self.waker_or_noop();
         let current = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
-        if self.tree.is_none() {
+        if self.panels.tree.is_none() {
             let root = current
                 .as_deref()
                 .and_then(nagi_workers::files::project_root)
@@ -273,11 +273,11 @@ impl Editor {
                 pending_w: false,
             };
             t.load(&root, &waker);
-            self.tree = Some(t);
+            self.panels.tree = Some(t);
         }
         self.left_tab = LeftTab::Project;
         self.left_hidden = false;
-        let t = self.tree.as_mut().unwrap();
+        let t = self.panels.tree.as_mut().unwrap();
         t.synced = current.clone();
         t.reveal = current;
         t.advance_reveal(&waker);
@@ -315,7 +315,7 @@ impl Editor {
     }
 
     pub(crate) fn close_tree(&mut self) {
-        self.tree = None;
+        self.panels.tree = None;
         if self.state() == State::List && self.list_side == crate::editor::Side::Left {
             self.set_state(State::Normal);
         }
@@ -325,7 +325,7 @@ impl Editor {
     /// 届いたフォルダの中身を受け取る。変わったら true
     pub fn poll_tree(&mut self) -> bool {
         let waker = self.waker_or_noop();
-        let Some(t) = &mut self.tree else { return false };
+        let Some(t) = &mut self.panels.tree else { return false };
         let mut changed = false;
         let mut loaded = Vec::new();
         while let Ok((dir, list)) = t.rx.try_recv() {
@@ -348,7 +348,7 @@ impl Editor {
     /// 見張っているフォルダの中身が変わった: ツリーで読み込んでいれば読み直す
     pub(crate) fn tree_reload_dir(&mut self, dir: &Path) -> bool {
         let waker = self.waker_or_noop();
-        let Some(t) = &mut self.tree else { return false };
+        let Some(t) = &mut self.panels.tree else { return false };
         let low = dir.to_string_lossy().to_lowercase();
         let Some(k) = t.children.keys().find(|k| k.to_string_lossy().to_lowercase() == low).cloned() else { return false };
         // 読み直している間も今の中身を出しておき、届いたら差し替える
@@ -361,7 +361,7 @@ impl Editor {
     pub(crate) fn tree_key(&mut self, key: Key) -> Effect {
         let waker = self.waker_or_noop();
         let half = (self.tree_rect().map_or(10, |r| r.h) / 2).max(1);
-        let Some(t) = &mut self.tree else {
+        let Some(t) = &mut self.panels.tree else {
             self.set_state(State::Normal);
             return Effect::None;
         };
@@ -370,7 +370,7 @@ impl Editor {
             match key {
                 Key::Char('c' | 'q') | Key::Ctrl('c' | 'q') => self.close_tree(),
                 Key::Char('h') | Key::Ctrl('h') => {}
-                Key::Char('j') | Key::Ctrl('j') if self.grep.is_some() => self.focus_panel(),
+                Key::Char('j') | Key::Ctrl('j') if self.panels.grep.is_some() => self.focus_panel(),
                 _ => self.set_state(State::Normal),
             }
             return Effect::None;
@@ -433,7 +433,7 @@ impl Editor {
         self.list_side = crate::editor::Side::Left;
         self.set_state(State::List);
         let waker = self.waker_or_noop();
-        let Some(t) = &mut self.tree else { return };
+        let Some(t) = &mut self.panels.tree else { return };
         let len = t.rows.len();
         let Some(pick) = nagi_ui::list::pick_row(&mut t.selected, t.scroll, row, HEAD, len, clicks) else { return };
         let r = t.rows[t.selected].clone();
@@ -475,13 +475,13 @@ pub struct TreeView;
 impl crate::layout::View for TreeView {
     fn rect(&self, ed: &crate::editor::Editor, s: crate::layout::Screen) -> Option<crate::panes::Rect> {
         let _ = s;
-        ed.tree.as_ref()?;
+        ed.panels.tree.as_ref()?;
         ed.tree_rect()
     }
 
     fn draw(&self, ed: &crate::editor::Editor, p: &mut crate::view::Painter, r: crate::panes::Rect, s: crate::layout::Screen) {
         let _ = (r, s);
-        if let Some(t) = &ed.tree {
+        if let Some(t) = &ed.panels.tree {
             let git = ed.tree_git_states();
             draw::draw_tree(p, t, r, ed.state() == crate::editor::State::List && ed.list_side == crate::editor::Side::Left, &git, ed.nav.index.as_ref());
         }
@@ -496,7 +496,7 @@ impl crate::layout::View for TreeView {
 
     fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At, dy: isize, dx: isize) -> bool {
         let _ = at;
-        if let Some(t) = &mut ed.tree {
+        if let Some(t) = &mut ed.panels.tree {
             let h = r.h.saturating_sub(HEAD);
             nagi_ui::list::wheel(&mut t.selected, &mut t.scroll, t.rows.len(), h, dy);
             if dx != 0 {
@@ -513,7 +513,7 @@ impl crate::layout::View for TreeView {
         use nagi_vim::Key::*;
         let _ = r;
         // 押した行を選ぶだけ（左クリックと違ってフォルダを開け閉めしない）
-        let Some(t) = &mut ed.tree else { return false };
+        let Some(t) = &mut ed.panels.tree else { return false };
         let len = t.rows.len();
         if nagi_ui::list::pick_row(&mut t.selected, t.scroll, at.row, crate::tree_panel::HEAD, len, 1).is_none() {
             return false;
@@ -730,7 +730,7 @@ mod tests {
     fn settle(e: &mut Editor) {
         for _ in 0..500 {
             e.poll_tree();
-            if e.tree.as_ref().is_some_and(|t| !t.loading() && t.reveal.is_none()) {
+            if e.panels.tree.as_ref().is_some_and(|t| !t.loading() && t.reveal.is_none()) {
                 return;
             }
             std::thread::sleep(std::time::Duration::from_millis(2));
@@ -779,9 +779,9 @@ mod tests {
         let r = e.tree_rect().unwrap();
         assert!(r.y > 0, "木の上に帯がある前提: {r:?}");
         let s = crate::layout::Screen { rows: 40, cols: 120 };
-        let name = |e: &Editor| e.tree.as_ref().map(|t| t.rows[t.selected].name.clone()).unwrap();
+        let name = |e: &Editor| e.panels.tree.as_ref().map(|t| t.rows[t.selected].name.clone()).unwrap();
         // b.txt の行を押して選び、もう一度押して（ダブルクリック）開く
-        let at = e.tree.as_ref().unwrap().rows.iter().position(|x| x.name == "b.txt").unwrap();
+        let at = e.panels.tree.as_ref().unwrap().rows.iter().position(|x| x.name == "b.txt").unwrap();
         crate::layout::press(&mut e, s, r.y + 1 + at, r.x + 3, |_| 1);
         assert_eq!(name(&e), "b.txt", "押した行を選ぶ");
         crate::layout::press(&mut e, s, r.y + 1 + at, r.x + 3, |_| 2);
@@ -830,14 +830,14 @@ mod tests {
             for _ in 0..500 {
                 e.poll_tree();
                 e.sync_tree();
-                if e.tree.as_ref().is_some_and(|t| !t.loading() && t.reveal.is_none()) {
+                if e.panels.tree.as_ref().is_some_and(|t| !t.loading() && t.reveal.is_none()) {
                     break;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(2));
             }
         };
         settle(&mut e);
-        let sel = |e: &Editor| e.tree.as_ref().map(|t| t.rows[t.selected].path.clone()).unwrap();
+        let sel = |e: &Editor| e.panels.tree.as_ref().map(|t| t.rows[t.selected].path.clone()).unwrap();
         assert!(sel(&e).ends_with("other.txt"));
         // 本文へ戻って別のファイルを開くと、木もそこへ
         e.set_state(State::Normal);
@@ -874,18 +874,18 @@ mod tests {
         assert_eq!(e.state(), State::List);
         let a = e.area();
         assert_eq!(e.windows_x(), (a.x + e.left_width() + 1, a.w - e.left_width() - 1), "ツリーの分だけ窓が右へ寄る");
-        let t = e.tree.as_ref().unwrap();
+        let t = e.panels.tree.as_ref().unwrap();
         let names: Vec<String> = t.rows.iter().map(|r| format!("{}{}", "  ".repeat(r.depth), r.name)).collect();
         // フォルダが先、.gitignore の target は出さない、.git も出さない。今のファイルまで展開して選ぶ
         assert_eq!(names, vec!["src", "  view", "    panes.rs", "  main.rs", ".gitignore", "README.md"]);
         assert_eq!(t.rows[t.selected].name, "panes.rs");
         // h で親へ移る（畳まない。IntelliJ と同じ）、もう一度 h で畳む
         keys(&mut e, "h");
-        let t = e.tree.as_ref().unwrap();
+        let t = e.panels.tree.as_ref().unwrap();
         assert_eq!(t.rows[t.selected].name, "view");
         assert!(t.is_expanded(&dir.join("src/view")));
         keys(&mut e, "h");
-        assert!(!e.tree.as_ref().unwrap().is_expanded(&dir.join("src/view")));
+        assert!(!e.panels.tree.as_ref().unwrap().is_expanded(&dir.join("src/view")));
         // j で main.rs、Enter で開いて編集画面へ
         keys(&mut e, "j<CR>");
         assert_eq!(e.state(), State::Normal);
@@ -894,7 +894,7 @@ mod tests {
         keys(&mut e, "<C-w>h");
         assert_eq!(e.state(), State::List);
         keys(&mut e, "q");
-        assert!(e.tree.is_none());
+        assert!(e.panels.tree.is_none());
         assert_eq!(e.windows_x(), (a.x, a.w));
     }
 }

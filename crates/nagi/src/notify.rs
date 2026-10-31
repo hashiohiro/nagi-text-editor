@@ -256,7 +256,7 @@ impl Editor {
             .collect();
         let n = lines.len();
         self.open_result_panel("知らせ（:messages）");
-        if let Some(g) = &mut self.grep {
+        if let Some(g) = &mut self.panels.grep {
             for text in lines {
                 g.hits.push(nagi_workers::grep::Hit { path: String::new(), line: 0, range: (0, 0), text });
             }
@@ -286,7 +286,7 @@ mod tests {
         e.svc.notify.clear();
         assert!(e.svc.notify.text.is_empty());
         e.show_messages();
-        let g = e.grep.as_ref().unwrap();
+        let g = e.panels.grep.as_ref().unwrap();
         assert_eq!(g.hits.len(), 2, "進み具合は履歴に残さない");
         assert!(g.hits[1].text.ends_with("E ふたつめはできません"), "{}", g.hits[1].text);
     }

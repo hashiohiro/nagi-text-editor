@@ -74,28 +74,28 @@ impl Editor {
         match key {
             Key::Ctrl('n') | Key::Ctrl('p') => {
                 let forward = key == Key::Ctrl('n');
-                if self.completion.is_none() {
+                if self.panels.completion.is_none() {
                     self.start_completion(forward);
                 } else {
                     self.step_completion(forward);
                 }
                 true
             }
-            Key::Ctrl('e') if self.completion.is_some() => {
-                if let Some(c) = &mut self.completion {
+            Key::Ctrl('e') if self.panels.completion.is_some() => {
+                if let Some(c) = &mut self.panels.completion {
                     c.sel = None;
                 }
                 self.apply_completion();
-                self.completion = None;
+                self.panels.completion = None;
                 true
             }
-            Key::Ctrl('y') if self.completion.is_some() => {
-                self.completion = None;
+            Key::Ctrl('y') if self.panels.completion.is_some() => {
+                self.panels.completion = None;
                 true
             }
             _ => {
                 // 確定して、キーは普通に処理する
-                self.completion = None;
+                self.panels.completion = None;
                 false
             }
         }
@@ -119,7 +119,7 @@ impl Editor {
         }
         let items = cands.iter().map(|c| c.0.clone()).collect();
         let notes = cands.into_iter().map(|c| (c.1, c.2)).collect();
-        self.completion = Some(Completion { start, original: prefix, items, sel: if auto { None } else { Some(0) }, notes, smart: None, drawn: Default::default() });
+        self.panels.completion = Some(Completion { start, original: prefix, items, sel: if auto { None } else { Some(0) }, notes, smart: None, drawn: Default::default() });
         if !auto {
             self.apply_completion();
         }
@@ -127,7 +127,7 @@ impl Editor {
 
     /// 補完の一覧の `i` 番目を押した: 選び、ダブルクリックで決める（Ctrl+Space の一覧は Enter、Ctrl-n の一覧は Ctrl-y と同じ）
     pub(crate) fn completion_click(&mut self, i: usize, clicks: u32) {
-        let Some(c) = &mut self.completion else { return };
+        let Some(c) = &mut self.panels.completion else { return };
         let mut sel = c.sel.unwrap_or(0);
         let pick = nagi_ui::list::pick(&mut sel, (i < c.items.len()).then_some(i), clicks, 2);
         let smart = c.smart.is_some();
@@ -200,12 +200,12 @@ impl Editor {
             self.svc.notify.info("-- 補完の候補はありません");
             return;
         }
-        self.completion = Some(Completion { start, original: prefix, items, sel: Some(0), notes: Vec::new(), smart: None, drawn: Default::default() });
+        self.panels.completion = Some(Completion { start, original: prefix, items, sel: Some(0), notes: Vec::new(), smart: None, drawn: Default::default() });
         self.apply_completion();
     }
 
     fn step_completion(&mut self, forward: bool) {
-        let Some(c) = &mut self.completion else { return };
+        let Some(c) = &mut self.panels.completion else { return };
         let n = c.items.len();
         // 候補の並びの両端の先は「打った語」（None）
         c.sel = match (c.sel, forward) {
@@ -220,7 +220,7 @@ impl Editor {
 
     /// 選んでいる候補（無ければ打った語）を本文に入れる
     fn apply_completion(&mut self) {
-        let Some(c) = &self.completion else { return };
+        let Some(c) = &self.panels.completion else { return };
         let text = match c.sel {
             Some(i) => c.items[i].clone(),
             None => c.original.clone(),
@@ -244,14 +244,14 @@ impl crate::layout::View for CompletionView {
 
     fn rect(&self, ed: &crate::editor::Editor, s: crate::layout::Screen) -> Option<crate::panes::Rect> {
         let _ = s;
-        (ed.completion.is_some() && ed.state() == crate::editor::State::Insert).then_some(crate::panes::Rect { x: 0, y: 0, w: s.cols, h: s.rows })
+        (ed.panels.completion.is_some() && ed.state() == crate::editor::State::Insert).then_some(crate::panes::Rect { x: 0, y: 0, w: s.cols, h: s.rows })
     }
 
     fn click(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At, clicks: u32) -> crate::layout::Click {
         let (row, col) = at.screen;
         let _ = r;
         // 一覧の外は本文へ（補完は閉じる）
-        let Some((top, x, w, first, n)) = ed.completion.as_ref().and_then(|c| c.drawn.get()) else { return crate::layout::Click::Pass };
+        let Some((top, x, w, first, n)) = ed.panels.completion.as_ref().and_then(|c| c.drawn.get()) else { return crate::layout::Click::Pass };
         if row < top || row >= top + n || col < x || col >= x + w {
             return crate::layout::Click::Pass;
         }
@@ -261,7 +261,7 @@ impl crate::layout::View for CompletionView {
 
     fn draw(&self, ed: &crate::editor::Editor, p: &mut crate::view::Painter, r: crate::panes::Rect, s: crate::layout::Screen) {
         let _ = (r, s);
-        if let Some(c) = &ed.completion {
+        if let Some(c) = &ed.panels.completion {
             draw::draw_completion(p, ed, c, s.rows, s.cols);
         }
     }
@@ -343,16 +343,16 @@ mod tests {
         e.set_screen(80, 20);
         keys(&mut e, "Go al<C-n>");
         // 描いた位置（描き方が記録する）: 5 行目から 3 件、6 列目から幅 20
-        e.completion.as_ref().unwrap().drawn.set(Some((5, 6, 20, 0, 3)));
+        e.panels.completion.as_ref().unwrap().drawn.set(Some((5, 6, 20, 0, 3)));
         let s = crate::layout::Screen { rows: 20, cols: 80 };
         assert!(crate::layout::press(&mut e, s, 6, 8, |_| 1).is_some());
-        assert_eq!(e.completion.as_ref().unwrap().sel, Some(1));
+        assert_eq!(e.panels.completion.as_ref().unwrap().sel, Some(1));
         assert_eq!(e.buf.line(3), " Alphabet");
         assert!(crate::layout::press(&mut e, s, 7, 8, |_| 2).is_some());
         assert_eq!(e.buf.line(3), " alpine");
-        assert!(e.completion.is_none(), "ダブルクリックで決めて閉じる");
+        assert!(e.panels.completion.is_none(), "ダブルクリックで決めて閉じる");
         keys(&mut e, " al<C-n>");
-        e.completion.as_ref().unwrap().drawn.set(Some((5, 6, 20, 0, 3)));
+        e.panels.completion.as_ref().unwrap().drawn.set(Some((5, 6, 20, 0, 3)));
         assert!(crate::layout::press(&mut e, s, 12, 50, |_| 1).is_none(), "一覧の外は本文へ");
     }
 
@@ -362,7 +362,7 @@ mod tests {
         // 3 行目の後ろで al → 前向き: 後ろには無いので先頭から alpha, Alphabet, alpine の順
         keys(&mut e, "Go al<C-n>");
         assert_eq!(e.buf.line(3), " alpha");
-        assert_eq!(e.completion.as_ref().unwrap().items, vec!["alpha", "Alphabet", "alpine"]);
+        assert_eq!(e.panels.completion.as_ref().unwrap().items, vec!["alpha", "Alphabet", "alpine"]);
         keys(&mut e, "<C-n><C-n>");
         assert_eq!(e.buf.line(3), " alpine");
         // 端の先は打った語
@@ -374,7 +374,7 @@ mod tests {
         // ほかのキーで確定して続けて打つ
         keys(&mut e, "!<Esc>");
         assert_eq!(e.buf.line(3), " alpine!");
-        assert!(e.completion.is_none());
+        assert!(e.panels.completion.is_none());
         // Ctrl-e で取り消す
         keys(&mut e, "o be<C-n><C-e><Esc>");
         assert_eq!(e.buf.line(4), "  be", "前の行の字下げを引き継ぐ");

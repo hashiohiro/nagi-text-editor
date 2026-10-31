@@ -48,7 +48,7 @@ impl Editor {
     pub(crate) fn open_input(&mut self, title: impl Into<String>, label: impl Into<String>, initial: &str, notes: Vec<String>, ok: impl FnOnce(&mut Editor, String) + 'static) {
         let mut field = Prompt::default();
         field.set(initial);
-        self.input = Some(InputDialog { title: title.into(), label: label.into(), field, notes, ok: Some(Box::new(ok)), button: 0 });
+        self.panels.input = Some(InputDialog { title: title.into(), label: label.into(), field, notes, ok: Some(Box::new(ok)), button: 0 });
         self.set_state(State::Input);
     }
 
@@ -76,13 +76,13 @@ impl Editor {
     }
 
     fn close_input(&mut self) {
-        self.input = None;
+        self.panels.input = None;
         self.set_state(State::Normal);
     }
 
     /// 決める（OK）
     fn accept_input(&mut self) {
-        let Some(mut d) = self.input.take() else { return };
+        let Some(mut d) = self.panels.input.take() else { return };
         self.set_state(State::Normal);
         if let Some(ok) = d.ok.take() {
             ok(self, d.field.text);
@@ -90,7 +90,7 @@ impl Editor {
     }
 
     pub(crate) fn input_key(&mut self, key: Key) {
-        let Some(d) = &mut self.input else {
+        let Some(d) = &mut self.panels.input else {
             self.set_state(State::Normal);
             return;
         };
@@ -106,7 +106,7 @@ impl Editor {
     }
 
     pub(crate) fn input_click(&mut self, row: usize, col: usize) {
-        let Some(d) = &self.input else { return };
+        let Some(d) = &self.panels.input else { return };
         let r = rect(d, self.screen.0, self.screen.1);
         match buttons(r).into_iter().find(|b| b.1 == row && col >= b.2 && col < b.3).map(|b| b.0) {
             Some(0) => self.accept_input(),
@@ -126,7 +126,7 @@ impl crate::component::Component for InputComponent {
     }
 
     fn text(&self, ed: &mut Editor, text: &str) {
-        if let Some(d) = &mut ed.input {
+        if let Some(d) = &mut ed.panels.input {
             d.field.insert(text);
         }
     }
@@ -148,13 +148,13 @@ pub struct InputView;
 
 impl crate::layout::View for InputView {
     fn rect(&self, ed: &Editor, s: crate::layout::Screen) -> Option<Rect> {
-        ed.input.as_ref()?;
+        ed.panels.input.as_ref()?;
         Some(Rect { x: 0, y: 0, w: s.cols, h: s.rows })
     }
 
     fn draw(&self, ed: &Editor, p: &mut crate::view::Painter, r: Rect, s: crate::layout::Screen) {
         let _ = r;
-        if let Some(d) = &ed.input {
+        if let Some(d) = &ed.panels.input {
             draw::draw_input(p, ed, d, s.cols, s.rows);
         }
     }

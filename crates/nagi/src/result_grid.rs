@@ -459,7 +459,7 @@ impl Editor {
     /// `:DbExport csv|tsv|insert`: 今の結果（テーブルの編集の画面ならその表）を書き出して開く
     pub(crate) fn db_export(&mut self, fmt: &str) {
         let fmt = fmt.trim().to_ascii_lowercase();
-        let (text, name) = if let Some(te) = &self.db_table {
+        let (text, name) = if let Some(te) = &self.panels.db_table {
             let t = te.as_tab();
             let table = crate::db_panel::qualified(te.dialect, &te.schema, &te.table);
             (match fmt.as_str() {
@@ -467,7 +467,7 @@ impl Editor {
                 "insert" | "sql" => t.to_inserts(&table),
                 _ => t.to_tsv(),
             }, te.table.clone())
-        } else if let Some(t) = self.db_results.active_tab() {
+        } else if let Some(t) = self.panels.db_results.active_tab() {
             (match fmt.as_str() {
                 "csv" => t.to_csv(),
                 "insert" | "sql" => t.to_inserts("TABLE_NAME"),
@@ -487,26 +487,26 @@ impl Editor {
 
     /// 結果が届いた: 1 つのテーブルからの SELECT なら、書き戻す表を決め、主キーを知るために列を読んでおく
     pub(crate) fn result_find_target(&mut self, i: usize, id: u64) {
-        let Some(t) = self.db_results.tab(id) else { return };
+        let Some(t) = self.panels.db_results.tab(id) else { return };
         let Some((schema, name)) = crate::sql_complete::edit_target(&t.base) else { return };
-        if self.db.as_ref().is_some_and(|p| p.kind(i) == Some(nagi_workers::db::Kind::Salesforce)) {
+        if self.panels.db.as_ref().is_some_and(|p| p.kind(i) == Some(nagi_workers::db::Kind::Salesforce)) {
             return;
         }
-        let Some(c) = self.db.as_mut().and_then(|p| p.conns.get_mut(i)) else { return };
+        let Some(c) = self.panels.db.as_mut().and_then(|p| p.conns.get_mut(i)) else { return };
         let (s, n) = c.resolve(schema.as_deref(), &name);
         c.ensure_columns(&s, &n);
-        if let Some(t) = self.db_results.tab_mut(id) {
+        if let Some(t) = self.panels.db_results.tab_mut(id) {
             t.target = Some((s, n));
         }
     }
 
     /// 今の結果を書き戻す用意: (テーブルの名前, 主キーの列の番号, 結果の列ごとのテーブルでの名前)。直せなければその訳
     fn result_plan(&self) -> Result<(String, Vec<usize>, Vec<String>), String> {
-        let t = self.db_results.active_tab().ok_or_else(String::new)?;
+        let t = self.panels.db_results.active_tab().ok_or_else(String::new)?;
         let Some((s, n)) = &t.target else {
             return Err("この結果は直せません（1 つのテーブルからの SELECT で、選ぶのが * か列の名前だけのとき直せます）".into());
         };
-        let Some(cols) = self.db.as_ref().and_then(|p| p.conns.get(t.src)).and_then(|c| c.columns.get(&(s.clone(), n.clone()))) else {
+        let Some(cols) = self.panels.db.as_ref().and_then(|p| p.conns.get(t.src)).and_then(|c| c.columns.get(&(s.clone(), n.clone()))) else {
             return Err("テーブルの列を読んでいます。少し待ってからもう一度".into());
         };
         let mut pk = Vec::new();
@@ -531,7 +531,7 @@ impl Editor {
             }
             return;
         }
-        let r = &mut self.db_results;
+        let r = &mut self.panels.db_results;
         let Some(t) = r.active_tab() else { return };
         if t.rows.is_empty() || t.cols.is_empty() {
             return;
@@ -542,7 +542,7 @@ impl Editor {
 
     /// 打っている値を、選んでいるセルに入れる（欄を閉じる）
     fn result_commit_edit(&mut self) {
-        let r = &mut self.db_results;
+        let r = &mut self.panels.db_results;
         let v = r.value_edit.take().map(|f| f.text()).unwrap_or_default();
         if let Some(t) = r.active_tab_mut() {
             let (row, col) = (t.row, t.col);
@@ -553,20 +553,20 @@ impl Editor {
     /// 表（クエリの結果・テーブルの編集）の Ctrl+C・Ctrl+V（Shift+Insert）。セルのコピー・貼り付けをしたら true。
     /// キーマップ（Vim を使わないときの Ctrl+C・V は本文のコピー・貼り付け）より先に見る
     pub(crate) fn grid_clipboard_key(&mut self, key: Key) -> bool {
-        let table = self.state() == State::DbTable && self.db_table.is_some();
+        let table = self.state() == State::DbTable && self.panels.db_table.is_some();
         let results = !table
             && self.focus == Some(crate::editor::Panel::List)
             && self.list_side == Side::Bottom
             && self.bottom_kind == BottomKind::Result
-            && self.db_results.active > 0;
+            && self.panels.db_results.active > 0;
         if !table && !results {
             return false;
         }
         // 値・絞り込みを打っている間: Vim ならいつも通り（Ctrl+C は Insert を抜ける）。使わないなら、Ctrl+V は欄に貼り、Ctrl+C は選んだ所（選んでいなければ欄の値）をコピー
         let field = if table {
-            self.db_table.as_ref().and_then(|t| t.editing.as_ref().or(t.filter_edit.as_ref().map(|x| &x.1))).map(|f| f.selected_text().unwrap_or_else(|| f.text()))
+            self.panels.db_table.as_ref().and_then(|t| t.editing.as_ref().or(t.filter_edit.as_ref().map(|x| &x.1))).map(|f| f.selected_text().unwrap_or_else(|| f.text()))
         } else {
-            let r = &self.db_results;
+            let r = &self.panels.db_results;
             r.value_edit.as_ref().or(r.editing.as_ref().map(|x| &x.1)).map(|f| f.selected_text().unwrap_or_else(|| f.text()))
         };
         if let Some(text) = field {
@@ -593,7 +593,7 @@ impl Editor {
 
     /// 選んでいるセルの値をコピー（NULL は空）
     fn result_copy(&mut self) {
-        let Some(t) = self.db_results.active_tab().filter(|t| !t.rows.is_empty() && !t.cols.is_empty()) else { return };
+        let Some(t) = self.panels.db_results.active_tab().filter(|t| !t.rows.is_empty() && !t.cols.is_empty()) else { return };
         let s = t.value(t.row, t.col).unwrap_or_default();
         self.copy_text(s, "値");
     }
@@ -607,7 +607,7 @@ impl Editor {
             return;
         }
         let Some(cells) = self.clipboard_cells() else { return };
-        let Some(t) = self.db_results.active_tab_mut().filter(|t| !t.rows.is_empty() && !t.cols.is_empty()) else { return };
+        let Some(t) = self.panels.db_results.active_tab_mut().filter(|t| !t.rows.is_empty() && !t.cols.is_empty()) else { return };
         let (row, col) = (t.row, t.col);
         let (rows, cols) = (t.rows.len(), t.cols.len());
         let mut n = 0;
@@ -641,14 +641,14 @@ impl Editor {
             self.svc.notify.warn(e);
             return;
         }
-        if let Some(t) = self.db_results.active_tab_mut().filter(|t| !t.rows.is_empty()) {
+        if let Some(t) = self.panels.db_results.active_tab_mut().filter(|t| !t.rows.is_empty()) {
             let (r, c) = (t.row, t.col);
             t.set_value(r, c, None);
         }
     }
 
     pub(crate) fn result_undo(&mut self) {
-        if !self.db_results.active_tab_mut().is_some_and(|t| t.undo_one()) {
+        if !self.panels.db_results.active_tab_mut().is_some_and(|t| t.undo_one()) {
             self.svc.notify.info("戻す変更はありません");
         }
     }
@@ -662,7 +662,7 @@ impl Editor {
                 return;
             }
         };
-        let Some(t) = self.db_results.active_tab() else { return };
+        let Some(t) = self.panels.db_results.active_tab() else { return };
         let stmts = t.statements(&name, &pk, &names);
         if stmts.is_empty() {
             self.svc.notify.info("送る変更はありません");
@@ -674,7 +674,7 @@ impl Editor {
         self.ask_or(
             q,
             move |e| {
-                if let Some(c) = e.db.as_mut().and_then(|p| p.conns.get_mut(src)).filter(|c| c.connected) {
+                if let Some(c) = e.panels.db.as_mut().and_then(|p| p.conns.get_mut(src)).filter(|c| c.connected) {
                     c.send_batch(crate::db_panel::Target::Result(id), stmts);
                     e.svc.notify.info("送信しています…");
                 } else {
@@ -689,14 +689,14 @@ impl Editor {
     pub(crate) fn result_key(&mut self, key: Key) -> crate::editor::Effect {
         let half = (self.panel_rect().map_or(10, |r| r.h) / 2).max(1);
         // 値の入力中（Vim 風。Enter か Tab で決める、ノーマルの Esc でやめる）
-        if self.db_results.value_edit.is_some() {
-            let out = if key == Key::Tab { FieldOut::Submit } else { self.feed_field(key, |e| e.db_results.value_edit.as_mut()) };
-            let r = &mut self.db_results;
+        if self.panels.db_results.value_edit.is_some() {
+            let out = if key == Key::Tab { FieldOut::Submit } else { self.feed_field(key, |e| e.panels.db_results.value_edit.as_mut()) };
+            let r = &mut self.panels.db_results;
             match out {
                 FieldOut::Cancel => r.value_edit = None,
                 FieldOut::Submit => {
                     self.result_commit_edit();
-                    if let Some(t) = self.db_results.active_tab_mut().filter(|_| key == Key::Tab) {
+                    if let Some(t) = self.panels.db_results.active_tab_mut().filter(|_| key == Key::Tab) {
                         t.col = (t.col + 1).min(t.cols.len().saturating_sub(1));
                     }
                 }
@@ -705,9 +705,9 @@ impl Editor {
             return crate::editor::Effect::None;
         }
         // 絞り込みの欄の入力中（Vim 風。Enter で決める、ノーマルの Esc でやめる）。値を直すキー（i・c・x・u・Enter）より先に受ける
-        if self.db_results.editing.is_some() {
-            let out = self.feed_field(key, |e| e.db_results.editing.as_mut().map(|x| &mut x.1));
-            let r = &mut self.db_results;
+        if self.panels.db_results.editing.is_some() {
+            let out = self.feed_field(key, |e| e.panels.db_results.editing.as_mut().map(|x| &mut x.1));
+            let r = &mut self.panels.db_results;
             match out {
                 FieldOut::Cancel => r.editing = None,
                 FieldOut::Submit => {
@@ -730,8 +730,8 @@ impl Editor {
             return crate::editor::Effect::None;
         }
         // 値を直す操作（結果のタブで）
-        let dirty = self.db_results.active_tab().is_some_and(|t| !t.edits.is_empty());
-        if self.db_results.active > 0 {
+        let dirty = self.panels.db_results.active_tab().is_some_and(|t| !t.edits.is_empty());
+        if self.panels.db_results.active > 0 {
             match key {
                 Key::F(2) | Key::Enter | Key::Char('i') => {
                     self.result_begin_edit(false);
@@ -759,10 +759,10 @@ impl Editor {
                     return crate::editor::Effect::None;
                 }
                 Key::Char('q') if dirty => {
-                    let n = self.db_results.active_tab().map_or(0, |t| t.changes());
-                    let id = self.db_results.active_tab().map_or(0, |t| t.id);
+                    let n = self.panels.db_results.active_tab().map_or(0, |t| t.changes());
+                    let id = self.panels.db_results.active_tab().map_or(0, |t| t.id);
                     self.ask_or(format!("未送信の変更が {n} 件あります。捨てて閉じますか"), move |e| {
-                        let r = &mut e.db_results;
+                        let r = &mut e.panels.db_results;
                         r.tabs.retain(|t| t.id != id);
                         r.active = r.active.min(r.tabs.len());
                     }, |_| {});
@@ -771,7 +771,7 @@ impl Editor {
                 _ => {}
             }
         }
-        let r = &mut self.db_results;
+        let r = &mut self.panels.db_results;
         let pending = std::mem::take(&mut r.pending_g);
         match key {
             Key::Char(']') | Key::Ctrl('n') => r.active = (r.active + 1) % (r.tabs.len() + 1),
@@ -879,8 +879,8 @@ impl Editor {
         self.list_side = Side::Bottom;
         self.set_state(State::List);
         // 値を打っている間: 別のセルを押したら、打った値を決めてからそのセルへ移って直し始める。同じセルなら何もしない
-        if self.db_results.value_edit.is_some() {
-            let other = self.db_results.active_tab().is_some_and(|t| {
+        if self.panels.db_results.value_edit.is_some() {
+            let other = self.panels.db_results.active_tab().is_some_and(|t| {
                 let head = if t.filterable { 4 } else { 3 };
                 let hit = nagi_ui::list::row_at(t.scroll, row, head, t.rows.len()).zip(grid_col_at(t.hscroll, &t.widths, col));
                 hit.is_some_and(|h| h != (t.row, t.col))
@@ -893,13 +893,13 @@ impl Editor {
         // 絞り込みの欄を打っている間（Insert・Visual でも）: 押した所へすぐ移る。打った条件は残し、
         // もう一方の欄ならそのまま移る。表を押したら Enter と同じく決めて読み直す
         let at_filter = (row == 1).then(|| filter_field_at(col + 1));
-        if let Some((field, f)) = self.db_results.editing.take() {
+        if let Some((field, f)) = self.panels.db_results.editing.take() {
             if at_filter == Some(field) {
-                self.db_results.editing = Some((field, f));
+                self.panels.db_results.editing = Some((field, f));
                 return;
             }
             let text = f.text();
-            if let Some(t) = self.db_results.active_tab_mut() {
+            if let Some(t) = self.panels.db_results.active_tab_mut() {
                 match field {
                     Field::Where => t.where_ = text,
                     Field::Order => t.order = text,
@@ -914,7 +914,7 @@ impl Editor {
                 }
             }
         }
-        let r = &mut self.db_results;
+        let r = &mut self.panels.db_results;
         // 1 行目: タブ
         if row == 0 {
             let mut x = 1;
@@ -993,7 +993,7 @@ impl crate::component::Component for ResultComponent {
     fn status(&self, ed: &crate::editor::Editor) -> Option<crate::component::Status> {
         let help = "hjkl 移動  i・F2 値を直す  x NULL  Ctrl+V 貼る  u 戻す  Ctrl+Enter 送る  y 値  Y 行  gy 表全体  q 閉じる ";
         let plain = "矢印 移動  F2・ダブルクリック 値を直す  Ctrl+C・V コピー・貼り付け  Ctrl+Z 戻す  Ctrl+Enter 送る  右クリック 操作  Esc 窓へ ";
-        match ed.db_results.active_tab().map_or(0, |t| t.changes()) {
+        match ed.panels.db_results.active_tab().map_or(0, |t| t.changes()) {
             0 => crate::component::Status::keys("-- クエリの結果 --", help, plain),
             n => Some(crate::component::Status { name: format!("-- 編集 --  変更 {n} 行（未送信）"), warn: true, help: help.into(), plain: Some(plain.into()) }),
         }
@@ -1016,7 +1016,7 @@ pub(crate) mod draw {
 
     /// データベースの結果（下のパネル）。1 行目はタブ、出力なら記録、結果なら絞り込みの行と表
     pub(crate) fn draw_db_results(p: &mut Painter, ed: &Editor, r: Rect) {
-        let res = &ed.db_results;
+        let res = &ed.panels.db_results;
         let cell = p.fonts.cell();
         let (x0, y0, wpx) = (r.x as f32 * cell.w, r.y as f32 * cell.h, r.w as f32 * cell.w);
         p.out.push(Instance::fill(x0, y0, wpx, r.h as f32 * cell.h, PANEL_BG));
@@ -1144,37 +1144,37 @@ mod tests {
         e.set_screen(160, 50);
         e.open_db_panel();
         e.db_add("mem jdbc:sqlite::memory:");
-        let i = e.db.as_ref().unwrap().sources.len() - 1;
-        e.db.as_mut().unwrap().selected = e.db.as_ref().unwrap().rows.iter().position(|r| *r == crate::db_panel::DbRow::Source(i)).unwrap();
+        let i = e.panels.db.as_ref().unwrap().sources.len() - 1;
+        e.panels.db.as_mut().unwrap().selected = e.panels.db.as_ref().unwrap().rows.iter().position(|r| *r == crate::db_panel::DbRow::Source(i)).unwrap();
         let keys = |e: &mut Editor, k: &str| {
             for key in nagi_vim::parse_keys(k, " ") {
                 e.key(key);
             }
         };
         keys(&mut e, "<CR>");
-        wait(&mut e, &|e| e.db.as_ref().unwrap().conns[i].connected);
-        e.db.as_mut().unwrap().conns[i].manual = true;
+        wait(&mut e, &|e| e.panels.db.as_ref().unwrap().conns[i].connected);
+        e.panels.db.as_mut().unwrap().conns[i].manual = true;
         e.db_execute(i, "create table item(id integer primary key, name text)".into());
         e.db_execute(i, "insert into item values (1, 'a'), (2, 'b')".into());
         e.db_execute(i, "select * from item".into());
-        wait(&mut e, &|e| e.db_results.active_tab().is_some_and(|t| t.rows.len() == 2 && t.filterable && !t.running));
+        wait(&mut e, &|e| e.panels.db_results.active_tab().is_some_and(|t| t.rows.len() == 2 && t.filterable && !t.running));
         // 列が分かれば値を直せる表になる（絞り込みの欄の i・Enter を、値を直すキーに取られない）
-        wait(&mut e, &|e| e.db.as_ref().unwrap().conns[i].columns.contains_key(&("main".into(), "item".into())));
-        let field = |e: &Editor| e.db_results.editing.as_ref().map(|f| (f.0, f.1.mode_label(), f.1.text()));
+        wait(&mut e, &|e| e.panels.db.as_ref().unwrap().conns[i].columns.contains_key(&("main".into(), "item".into())));
+        let field = |e: &Editor| e.panels.db_results.editing.as_ref().map(|f| (f.0, f.1.mode_label(), f.1.text()));
         e.result_click(1, 10, 1);
         keys(&mut e, "id > 1");
-        assert!(e.db_results.value_edit.is_none());
+        assert!(e.panels.db_results.value_edit.is_none());
         e.result_click(1, 50, 1);
         assert_eq!(field(&e), Some((Field::Order, "INSERT", String::new())));
         keys(&mut e, "id<Esc>v");
         e.result_click(1, 10, 1);
         assert_eq!(field(&e), Some((Field::Where, "INSERT", "id > 1".into())));
-        assert_eq!(e.db_results.active_tab().unwrap().order, "id");
+        assert_eq!(e.panels.db_results.active_tab().unwrap().order, "id");
         // 表を押す: 決めて読み直す（行き来の間に打った ORDER BY も効く）
         e.result_click(4, 8, 1);
         assert_eq!(field(&e), None);
-        wait(&mut e, &|e| e.db_results.active_tab().is_some_and(|t| !t.running));
-        assert_eq!(e.db_results.active_tab().unwrap().rows.len(), 1);
+        wait(&mut e, &|e| e.panels.db_results.active_tab().is_some_and(|t| !t.running));
+        assert_eq!(e.panels.db_results.active_tab().unwrap().rows.len(), 1);
     }
 
     /// 結果の表: 打っている間に別の行・列をダブルクリックすると、打った値を決めてそのセルを直す。Ctrl+C・Ctrl+V でセルをコピー・貼り付け
@@ -1185,35 +1185,35 @@ mod tests {
         e.set_screen(160, 50);
         e.open_db_panel();
         e.db_add("mem jdbc:sqlite::memory:");
-        let i = e.db.as_ref().unwrap().sources.len() - 1;
-        e.db.as_mut().unwrap().selected = e.db.as_ref().unwrap().rows.iter().position(|r| *r == crate::db_panel::DbRow::Source(i)).unwrap();
+        let i = e.panels.db.as_ref().unwrap().sources.len() - 1;
+        e.panels.db.as_mut().unwrap().selected = e.panels.db.as_ref().unwrap().rows.iter().position(|r| *r == crate::db_panel::DbRow::Source(i)).unwrap();
         let keys = |e: &mut Editor, k: &str| {
             for key in nagi_vim::parse_keys(k, " ") {
                 e.key(key);
             }
         };
         keys(&mut e, "<CR>");
-        wait(&mut e, &|e| e.db.as_ref().unwrap().conns[i].connected);
-        e.db.as_mut().unwrap().conns[i].manual = true;
+        wait(&mut e, &|e| e.panels.db.as_ref().unwrap().conns[i].connected);
+        e.panels.db.as_mut().unwrap().conns[i].manual = true;
         e.db_execute(i, "create table item(id integer primary key, name text)".into());
         e.db_execute(i, "insert into item values (1, 'a'), (2, 'b')".into());
         e.db_execute(i, "select * from item order by id".into());
-        wait(&mut e, &|e| e.db_results.active_tab().is_some_and(|t| t.rows.len() == 2 && t.target.is_some()));
-        wait(&mut e, &|e| e.db.as_ref().unwrap().conns[i].columns.contains_key(&("main".into(), "item".into())));
+        wait(&mut e, &|e| e.panels.db_results.active_tab().is_some_and(|t| t.rows.len() == 2 && t.target.is_some()));
+        wait(&mut e, &|e| e.panels.db.as_ref().unwrap().conns[i].columns.contains_key(&("main".into(), "item".into())));
         // 表は 4 行目から（タブ・絞り込み・見出し 2 行）。id は 7 列目から、name は id の幅 + 3 の後
-        let name_x = 7 + e.db_results.active_tab().unwrap().widths[0] + 3 + 1;
+        let name_x = 7 + e.panels.db_results.active_tab().unwrap().widths[0] + 3 + 1;
         e.result_click(4, name_x, 1);
         e.result_click(4, name_x, 2);
-        assert!(e.db_results.value_edit.is_some());
+        assert!(e.panels.db_results.value_edit.is_some());
         keys(&mut e, "<Esc>ccz");
         e.result_click(5, 8, 1);
         e.result_click(5, 8, 2);
-        let t = e.db_results.active_tab().unwrap();
+        let t = e.panels.db_results.active_tab().unwrap();
         assert_eq!(t.value(0, 1).as_deref(), Some("z"));
         assert_eq!((t.row, t.col), (1, 0));
-        assert_eq!(e.db_results.value_edit.as_ref().map(|f| f.text()).as_deref(), Some("2"));
+        assert_eq!(e.panels.db_results.value_edit.as_ref().map(|f| f.text()).as_deref(), Some("2"));
         keys(&mut e, "<Esc><Esc>");
-        assert!(e.db_results.value_edit.is_none());
+        assert!(e.panels.db_results.value_edit.is_none());
         thread_local! { static CLIP: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) }; }
         fn set(t: &str) { CLIP.with(|c| *c.borrow_mut() = t.to_string()); }
         fn get() -> Option<String> { CLIP.with(|c| Some(c.borrow().clone())) }
@@ -1223,11 +1223,11 @@ mod tests {
         assert_eq!(get().as_deref(), Some("z"));
         keys(&mut e, "j");
         e.key(Key::Ctrl('v'));
-        assert_eq!(e.db_results.active_tab().unwrap().value(1, 1).as_deref(), Some("z"));
+        assert_eq!(e.panels.db_results.active_tab().unwrap().value(1, 1).as_deref(), Some("z"));
         // 表の外へははみ出さない
         set("p\tq\nr\ts");
         e.key(Key::Ctrl('v'));
-        let t = e.db_results.active_tab().unwrap();
+        let t = e.panels.db_results.active_tab().unwrap();
         assert_eq!((t.value(1, 1).as_deref(), t.changes()), (Some("p"), 2));
     }
 
@@ -1239,52 +1239,52 @@ mod tests {
         e.set_screen(160, 50);
         e.open_db_panel();
         e.db_add("mem jdbc:sqlite::memory:");
-        let i = e.db.as_ref().unwrap().sources.len() - 1;
-        e.db.as_mut().unwrap().selected = e.db.as_ref().unwrap().rows.iter().position(|r| *r == crate::db_panel::DbRow::Source(i)).unwrap();
+        let i = e.panels.db.as_ref().unwrap().sources.len() - 1;
+        e.panels.db.as_mut().unwrap().selected = e.panels.db.as_ref().unwrap().rows.iter().position(|r| *r == crate::db_panel::DbRow::Source(i)).unwrap();
         let keys = |e: &mut Editor, k: &str| {
             for key in nagi_vim::parse_keys(k, " ") {
                 e.key(key);
             }
         };
         keys(&mut e, "<CR>");
-        wait(&mut e, &|e| e.db.as_ref().unwrap().conns[i].connected);
+        wait(&mut e, &|e| e.panels.db.as_ref().unwrap().conns[i].connected);
         // データを変える文を確かめずに流す（DB は自動コミットのまま）
-        e.db.as_mut().unwrap().conns[i].manual = true;
+        e.panels.db.as_mut().unwrap().conns[i].manual = true;
         e.db_execute(i, "create table item(id integer primary key, name text)".into());
         e.db_execute(i, "insert into item values (1, 'a'), (2, 'b')".into());
         // 式の列があると直せない
         e.db_execute(i, "select id, upper(name) from item".into());
-        wait(&mut e, &|e| e.db_results.active_tab().is_some_and(|t| t.rows.len() == 2));
-        assert!(e.db_results.active_tab().unwrap().target.is_none());
+        wait(&mut e, &|e| e.panels.db_results.active_tab().is_some_and(|t| t.rows.len() == 2));
+        assert!(e.panels.db_results.active_tab().unwrap().target.is_none());
         e.db_execute(i, "select * from item order by id".into());
-        wait(&mut e, &|e| e.db_results.active_tab().is_some_and(|t| t.rows.len() == 2 && t.target.is_some()));
-        wait(&mut e, &|e| e.db.as_ref().unwrap().conns[i].columns.contains_key(&("main".into(), "item".into())));
+        wait(&mut e, &|e| e.panels.db_results.active_tab().is_some_and(|t| t.rows.len() == 2 && t.target.is_some()));
+        wait(&mut e, &|e| e.panels.db.as_ref().unwrap().conns[i].columns.contains_key(&("main".into(), "item".into())));
         e.list_side = Side::Bottom;
         e.set_state(State::List);
         // 2 行目の name を F2 で直す（値を消して打つ）
         keys(&mut e, "jl");
         e.key(Key::F(2));
-        assert!(e.db_results.value_edit.is_some());
+        assert!(e.panels.db_results.value_edit.is_some());
         keys(&mut e, "<Esc>ccx'y<CR>");
-        let t = e.db_results.active_tab().unwrap();
+        let t = e.panels.db_results.active_tab().unwrap();
         assert_eq!(t.value(1, 1).as_deref(), Some("x'y"));
         assert!(t.modified(1, 1));
         assert_eq!(t.statements("item", &[0], &t.cols.clone()), vec!["UPDATE item SET name = 'x''y' WHERE id = '2'"]);
         // 送ると読み直さずに表へ入る。DB の値も変わっている（ここからは本当に手動の Tx に）
-        e.db.as_mut().unwrap().conns[i].manual = false;
+        e.panels.db.as_mut().unwrap().conns[i].manual = false;
         e.db_toggle_tx(i);
         e.key(Key::Ctrl('m'));
         keys(&mut e, "y");
-        wait(&mut e, &|e| e.db_results.active_tab().is_some_and(|t| t.edits.is_empty() && t.info.contains("直しました")));
-        assert_eq!(e.db_results.active_tab().unwrap().rows[1][1].as_deref(), Some("x'y"));
+        wait(&mut e, &|e| e.panels.db_results.active_tab().is_some_and(|t| t.edits.is_empty() && t.info.contains("直しました")));
+        assert_eq!(e.panels.db_results.active_tab().unwrap().rows[1][1].as_deref(), Some("x'y"));
         e.db_execute(i, "select name from item where id = 2".into());
-        wait(&mut e, &|e| e.db_results.active_tab().is_some_and(|t| t.rows.len() == 1));
-        assert_eq!(e.db_results.active_tab().unwrap().rows[0][0].as_deref(), Some("x'y"));
+        wait(&mut e, &|e| e.panels.db_results.active_tab().is_some_and(|t| t.rows.len() == 1));
+        assert_eq!(e.panels.db_results.active_tab().unwrap().rows[0][0].as_deref(), Some("x'y"));
         // 手動の Tx をロールバックすると、直して送った結果の表も前の値に戻る
-        let id = e.db_results.tabs[e.db_results.tabs.len() - 2].id;
+        let id = e.panels.db_results.tabs[e.panels.db_results.tabs.len() - 2].id;
         e.db_commit(i, false);
-        wait(&mut e, &|e| e.db_results.tab(id).unwrap().rows[1][1].as_deref() == Some("b"));
-        wait(&mut e, &|e| e.db_results.tab(id).is_some_and(|t| !t.running));
-        assert_eq!(e.db_results.tab(id).unwrap().rows[1][1].as_deref(), Some("b"));
+        wait(&mut e, &|e| e.panels.db_results.tab(id).unwrap().rows[1][1].as_deref() == Some("b"));
+        wait(&mut e, &|e| e.panels.db_results.tab(id).is_some_and(|t| !t.running));
+        assert_eq!(e.panels.db_results.tab(id).unwrap().rows[1][1].as_deref(), Some("b"));
     }
 }

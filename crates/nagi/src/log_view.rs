@@ -585,13 +585,13 @@ impl Editor {
             None
         };
         // 新しく開く（下の欄に収めるのは select_bottom_tab が後で決める）
-        self.log = None;
+        self.panels.log = None;
         self.load_log(root, path, range);
     }
 
     /// 履歴を読み直す（操作の後。下の欄に収めているかは保つ）
     pub(crate) fn reload_log(&mut self) {
-        let (Some(root), Some(l)) = (self.svc.git.root.clone(), &self.log) else { return };
+        let (Some(root), Some(l)) = (self.svc.git.root.clone(), &self.panels.log) else { return };
         let (path, range) = (l.src_path.clone(), l.src_range.clone());
         let state = self.state();
         self.load_log(root, path, range);
@@ -600,7 +600,7 @@ impl Editor {
 
     /// 履歴を（読み直すときも）裏で取る
     fn load_log(&mut self, root: std::path::PathBuf, path: Option<String>, range: Option<String>) {
-        let docked = self.log.as_ref().is_some_and(|l| l.docked);
+        let docked = self.panels.log.as_ref().is_some_and(|l| l.docked);
         let r2 = root.clone();
         let p2 = path.clone();
         let range2 = range.clone();
@@ -637,7 +637,7 @@ impl Editor {
             }
             Ok(v)
         });
-        self.log = Some(LogView {
+        self.panels.log = Some(LogView {
             left: 0,
             docked,
             branch_sel: None,
@@ -671,7 +671,7 @@ impl Editor {
 
     /// 裏で取ったログ・ブランチ・コミットの中身を受け取る。変わったら true
     pub fn poll_log(&mut self) -> bool {
-        let Some(l) = &mut self.log else { return false };
+        let Some(l) = &mut self.panels.log else { return false };
         let mut changed = false;
         if let Some(Ok(r)) = l.rx_log.as_ref().map(|rx| rx.try_recv()) {
             l.rx_log = None;
@@ -686,7 +686,7 @@ impl Editor {
             }
             changed = true;
         }
-        let Some(l) = &mut self.log else { return changed };
+        let Some(l) = &mut self.panels.log else { return changed };
         if let Some(Ok(r)) = l.rx_branches.as_ref().map(|rx| rx.try_recv()) {
             l.rx_branches = None;
             if let Ok(b) = r {
@@ -716,7 +716,7 @@ impl Editor {
     pub(crate) fn log_request_detail(&mut self) {
         let waker = self.waker.clone();
         let root = self.svc.git.root.clone();
-        let Some(l) = &mut self.log else { return };
+        let Some(l) = &mut self.panels.log else { return };
         let want = l.current().map(|c| c.hash.clone());
         if let (Some(h), Some(root)) = (want, root) {
             if l.detail.as_ref().is_none_or(|d| d.hash != h) && l.rx_detail.is_none() {
@@ -731,15 +731,15 @@ impl Editor {
     /// 履歴の画面のキー
     pub(crate) fn log_key(&mut self, key: Key) {
         let rows = self.log_rows();
-        let Some(l) = &mut self.log else {
+        let Some(l) = &mut self.panels.log else {
             self.set_state(State::Normal);
             return;
         };
         // 絞り込みの欄（Vim 風の入力欄。Editor の feed_field を使う）
         if l.filter.is_some() {
             use crate::vim_field::FieldOut;
-            let out = self.feed_field(key, |e| e.log.as_mut().and_then(|l| l.filter.as_mut()));
-            let Some(l) = &mut self.log else { return };
+            let out = self.feed_field(key, |e| e.panels.log.as_mut().and_then(|l| l.filter.as_mut()));
+            let Some(l) = &mut self.panels.log else { return };
             match out {
                 FieldOut::Changed => {
                     l.filter_text = l.filter.as_ref().map(|f| f.text()).unwrap_or_default();
@@ -769,7 +769,7 @@ impl Editor {
     /// 履歴の中の (行, 列) にあるもの（幅 `w`。描き方と同じ割り付け）
     fn log_hit(&self, row: usize, col: usize, w: usize) -> Option<LogHit> {
         let h = self.log_rect().map_or(row + 1, |r| r.h);
-        self.log.as_ref()?.ui(w, h, self.log_cols_for(w)).hit(row, col).map(|h| h.0.clone())
+        self.panels.log.as_ref()?.ui(w, h, self.log_cols_for(w)).hit(row, col).map(|h| h.0.clone())
     }
 
     /// 選んでいるファイルの行が、右の中身の列の見える範囲に入るように送る
@@ -777,7 +777,7 @@ impl Editor {
         let rows = self.log_rows();
         let Some(w) = self.log_rect().map(|r| r.w) else { return };
         let dw = self.log_cols_for(w).1;
-        let Some(l) = &mut self.log else { return };
+        let Some(l) = &mut self.panels.log else { return };
         let Some(d) = &l.detail else { return };
         if let Some(k) = detail_lines(d, dw.saturating_sub(1)).iter().position(|x| *x == DetailLine::File(l.file_sel)) {
             nagi_ui::list::fit(k, &mut l.detail_top, rows);
@@ -791,7 +791,7 @@ impl Editor {
         let mods = self.click_mods;
         // 描き方（draw_log_view）と同じ割り付けで当てる
         let hit = self.log_hit(row, col, w);
-        let Some(l) = &mut self.log else { return };
+        let Some(l) = &mut self.panels.log else { return };
         if hit == Some(LogHit::Filter) {
             // 0 行目（「/ で絞り込み」の見出し）を押したら絞り込みの欄を開く
             if l.filter.is_none() {
@@ -843,7 +843,7 @@ impl Editor {
                 if let Some(k) = l.row_of_ref(&l.branches[i].1) {
                     l.selected = k;
                     let rows = self.log_rows();
-                    if let Some(l) = &mut self.log {
+                    if let Some(l) = &mut self.panels.log {
                         nagi_ui::list::fit(k, &mut l.top, rows);
                     }
                 }
@@ -861,13 +861,13 @@ impl Editor {
 
     /// そのブランチの履歴だけを出す。もう出していれば、全部のブランチに戻す（下の欄か窓の領域かは保つ）
     pub(crate) fn log_show_branch(&mut self, i: usize) {
-        let Some(l) = &mut self.log else { return };
+        let Some(l) = &mut self.panels.log else { return };
         let Some(name) = l.branches.get(i).map(|b| b.1.clone()) else { return };
         let all = l.src_range.as_deref() == Some(name.as_str());
         l.src_range = if all { None } else { Some(name.clone()) };
         l.src_path = None;
         self.reload_log();
-        if let Some(l) = &mut self.log {
+        if let Some(l) = &mut self.panels.log {
             l.branch_sel = Some(i);
         }
         self.svc.notify.info(if all { "全部のブランチの履歴を出しました".to_string() } else { format!("{name} の履歴だけを出しました（もう一度ダブルクリックで全部に戻す）") });
@@ -940,7 +940,7 @@ impl Editor {
 
     /// ブランチの列の i 番目をチェックアウトする（右クリックのメニュー）
     pub(crate) fn log_checkout_branch(&mut self, i: usize) {
-        let Some((sec, name, cur)) = self.log.as_ref().and_then(|l| l.branches.get(i).cloned()) else { return };
+        let Some((sec, name, cur)) = self.panels.log.as_ref().and_then(|l| l.branches.get(i).cloned()) else { return };
         if cur {
             self.svc.notify.info(format!("{name} はもうチェックアウトしています"));
             return;
@@ -951,7 +951,7 @@ impl Editor {
         }
         let remote = sec == "リモート";
         let local = name.split_once('/').map_or(name.as_str(), |(_, n)| n).to_string();
-        let exists = self.log.as_ref().is_some_and(|l| l.branches.iter().any(|(s, n, _)| s == "ローカル" && *n == local));
+        let exists = self.panels.log.as_ref().is_some_and(|l| l.branches.iter().any(|(s, n, _)| s == "ローカル" && *n == local));
         self.checkout_ref(&name, remote, exists, |e, _| e.reload_log());
     }
 
@@ -961,7 +961,7 @@ impl Editor {
         let rows = self.log_rows();
         let cols = self.log_cols_for(w);
         let right = self.log_right_cols();
-        let Some(l) = &mut self.log else { return };
+        let Some(l) = &mut self.panels.log else { return };
         if col + cols.1 + 1 > w {
             // 右の中身: 縦は中身全体、横は変えたファイルの長いパス
             let Some(d) = &l.detail else { return };
@@ -994,7 +994,7 @@ impl Editor {
 
     /// コミットの作者・日時・ハッシュの列の幅（作者・日時はドラッグで変えていればその幅、でなければ中身に合わせる）
     pub(crate) fn log_right_cols(&self) -> (usize, usize, usize) {
-        let auto = self.log.as_ref().map_or((10, 10, 7), |l| l.auto_cols);
+        let auto = self.panels.log.as_ref().map_or((10, 10, 7), |l| l.auto_cols);
         (self.svc.sizes.get("log_author_width").unwrap_or(auto.0).clamp(4, 40), self.svc.sizes.get("log_date_width").unwrap_or(auto.1).clamp(4, 40), auto.2)
     }
 
@@ -1025,8 +1025,8 @@ impl Editor {
 
     /// 履歴を出している矩形（窓の領域いっぱいか、下の欄の中身）。区切りをつかむのに使う
     pub(crate) fn log_rect(&self) -> Option<crate::panes::Rect> {
-        let l = self.log.as_ref()?;
-        if self.diff.is_some() {
+        let l = self.panels.log.as_ref()?;
+        if self.panels.diff.is_some() {
             return None;
         }
         if !l.docked {
@@ -1038,7 +1038,7 @@ impl Editor {
 
     /// 履歴の行の高さ（下の欄か窓の領域か）
     fn log_rows(&self) -> usize {
-        if self.log.as_ref().is_some_and(|l| l.docked) {
+        if self.panels.log.as_ref().is_some_and(|l| l.docked) {
             self.bottom_content_rect().map_or(5, |r| r.h).saturating_sub(2).max(1)
         } else {
             self.windows_rows().saturating_sub(3).max(1)
@@ -1054,7 +1054,7 @@ impl Editor {
         // 押す前の割り付けで当てる（押すとフォルダが畳まれて行が変わる）
         let hit = self.log_hit(row, col, w);
         self.log_click(row, col, w, 1);
-        let Some(l) = &self.log else { return false };
+        let Some(l) = &self.panels.log else { return false };
         let cur = self.svc.git.status.as_ref().map(|s| s.branch.clone()).unwrap_or_default();
         let upstream = self.svc.git.status.as_ref().and_then(|s| s.upstream.clone());
         // 右の列（選んだコミットの変えたファイル）
@@ -1176,7 +1176,7 @@ impl Editor {
     /// 真ん中の列の (row, col) が、複数選んだコミットの行か（そうなら、その行を今の行にする）
     fn log_marked_at(&mut self, row: usize, col: usize, w: usize) -> bool {
         let hit = self.log_hit(row, col, w);
-        let Some(l) = &mut self.log else { return false };
+        let Some(l) = &mut self.panels.log else { return false };
         if l.marked.len() < 2 {
             return false;
         }
@@ -1195,7 +1195,7 @@ impl Editor {
 
     /// 複数選んだコミットへのメニュー
     fn log_context_picked(&mut self, at: (usize, usize)) -> bool {
-        let Some(l) = &self.log else { return false };
+        let Some(l) = &self.panels.log else { return false };
         let picked = l.picked();
         let n = picked.len();
         let cur = self.svc.git.status.as_ref().map(|s| s.branch.clone()).unwrap_or_default();
@@ -1212,7 +1212,7 @@ impl Editor {
         m = m.item(format!("{n} 件を取り消す（revert）"), move |e| e.log_ask(Confirm::RevertMany(hs)));
         m = m.sep();
         m = m.item("選びを外す", |e| {
-            if let Some(l) = &mut e.log {
+            if let Some(l) = &mut e.panels.log {
                 l.marked.clear();
                 l.mark_anchor = None;
             }
@@ -1223,7 +1223,7 @@ impl Editor {
 
     /// 選んでいるコミットをチェリーピックする（複数なら古い順に）
     fn log_cherry_pick_picked(&mut self) {
-        let Some(l) = &self.log else { return };
+        let Some(l) = &self.panels.log else { return };
         let mut hs: Vec<String> = l.picked().into_iter().map(|c| c.hash).collect();
         hs.reverse();
         match hs.len() {
@@ -1235,7 +1235,7 @@ impl Editor {
 
     /// 選んでいるコミットのハッシュ（`subject` なら短いハッシュと題名）を、1 行に 1 つずつコピーする
     fn log_copy_picked(&mut self, subject: bool) {
-        let Some(l) = &self.log else { return };
+        let Some(l) = &self.panels.log else { return };
         let picked = l.picked();
         if picked.is_empty() {
             return;
@@ -1254,7 +1254,7 @@ impl Editor {
     fn log_compare_two(&mut self, old: &str, new: &str) {
         let waker = self.waker.clone();
         let Some(root) = self.svc.git.root.clone() else { return };
-        let Some(l) = &mut self.log else { return };
+        let Some(l) = &mut self.panels.log else { return };
         // 右の列は今の行のコミットの中身なので、新しい方を今の行に
         if let Some(k) = l.visible.iter().position(|&i| l.rows[i].commit.as_ref().is_some_and(|c| c.hash == new)) {
             l.selected = k;
@@ -1273,7 +1273,7 @@ impl Editor {
     /// 選んでいるコミットの（1 つ目の）親の行へ
     fn log_goto_parent(&mut self) {
         let rows = self.log_rows();
-        let Some(l) = &mut self.log else { return };
+        let Some(l) = &mut self.panels.log else { return };
         let Some(p) = l.detail.as_ref().and_then(|d| d.parents.split(' ').next().map(String::from)).filter(|p| !p.is_empty()) else { return };
         if let Some(k) = l.visible.iter().position(|&i| l.rows[i].commit.as_ref().is_some_and(|c| c.hash == p)) {
             l.selected = k;
@@ -1322,7 +1322,7 @@ impl Editor {
     }
 
     pub(crate) fn close_log(&mut self) {
-        self.log = None;
+        self.panels.log = None;
         if self.state() == State::Log {
             self.set_state(State::Normal);
         }
@@ -1330,7 +1330,7 @@ impl Editor {
 
     /// 選んだコミットの、選んだファイルの差分（1 つ前の版 ↔ このコミット）
     fn log_open_file_diff(&mut self) {
-        let (Some(root), Some(l)) = (self.svc.git.root.clone(), &self.log) else { return };
+        let (Some(root), Some(l)) = (self.svc.git.root.clone(), &self.panels.log) else { return };
         let Some(d) = &l.detail else { return };
         let Some((_, path)) = d.files.get(l.file_sel).cloned() else { return };
         let h = d.hash.clone();
@@ -1381,7 +1381,7 @@ impl Editor {
     /// `path`（根からの / 区切り）の履歴を開く
     fn open_log_file(&mut self, path: &str) {
         let Some(root) = self.svc.git.root.clone() else { return };
-        self.log = None;
+        self.panels.log = None;
         self.load_log(root, Some(path.to_string()), None);
     }
 
@@ -1408,7 +1408,7 @@ pub struct LogComponent;
 
 impl crate::component::Component for LogComponent {
     fn status(&self, ed: &crate::editor::Editor) -> Option<crate::component::Status> {
-        let name = match ed.log.as_ref().filter(|l| l.filter.is_some()) {
+        let name = match ed.panels.log.as_ref().filter(|l| l.filter.is_some()) {
             Some(l) => format!("/{}", l.filter_text),
             None => "-- 履歴 --".into(),
         };
@@ -1422,7 +1422,7 @@ impl crate::component::Component for LogComponent {
 
     /// 絞り込みの欄に打っている間の文字
     fn text(&self, ed: &mut crate::editor::Editor, text: &str) {
-        if let Some(l) = &mut ed.log {
+        if let Some(l) = &mut ed.panels.log {
             if let Some(f) = &mut l.filter {
                 f.insert_text(text);
                 l.filter_text = f.text();
@@ -1443,7 +1443,7 @@ impl crate::layout::View for LogScreenView {
 
     fn rect(&self, ed: &crate::editor::Editor, s: crate::layout::Screen) -> Option<crate::panes::Rect> {
         let _ = s;
-        if ed.diff.is_some() || !ed.log.as_ref().is_some_and(|l| !l.docked) {
+        if ed.panels.diff.is_some() || !ed.panels.log.as_ref().is_some_and(|l| !l.docked) {
             return None;
         }
         let (x, w) = ed.windows_x();
@@ -1452,7 +1452,7 @@ impl crate::layout::View for LogScreenView {
 
     fn draw(&self, ed: &crate::editor::Editor, p: &mut crate::view::Painter, r: crate::panes::Rect, s: crate::layout::Screen) {
         let _ = (r, s);
-        if let Some(l) = &ed.log {
+        if let Some(l) = &ed.panels.log {
             draw::draw_log_view(p, l, r, ed.log_cols_for(r.w), ed.log_right_cols(), &ed.preedit, ed.svc.git.status.as_ref().map(|s| (s.branch.as_str(), s.ahead as usize, s.behind as usize)));
         }
     }
@@ -1757,14 +1757,14 @@ mod tests {
         // 押して畳む（下の欄: 0 行目はタブ、1 行目は絞り込みの見出し、2 行目から木）
         let mut e = Editor::new(nagi_core::Buffer::from_str("x"), None);
         e.set_screen(120, 40);
-        e.log = Some(l);
+        e.panels.log = Some(l);
         e.select_bottom_tab(crate::result_grid::BottomKind::Git);
         e.bottom_click(2, 2, 1);
-        assert_eq!(show(e.log.as_ref().unwrap()), ["ローカル/", "リモート/"]);
+        assert_eq!(show(e.panels.log.as_ref().unwrap()), ["ローカル/", "リモート/"]);
         e.bottom_click(2, 2, 1);
-        assert_eq!(show(e.log.as_ref().unwrap()), ["ローカル/", " feature/", " main", "リモート/"], "開くと、中で畳んだフォルダは畳んだまま");
+        assert_eq!(show(e.panels.log.as_ref().unwrap()), ["ローカル/", " feature/", " main", "リモート/"], "開くと、中で畳んだフォルダは畳んだまま");
         e.bottom_click(3, 2, 1);
-        assert_eq!(show(e.log.as_ref().unwrap())[..4], ["ローカル/", " feature/", "  b/", "   c"]);
+        assert_eq!(show(e.panels.log.as_ref().unwrap())[..4], ["ローカル/", " feature/", "  b/", "   c"]);
     }
 
     /// コミットの作者・日時の列は中身に合わせた幅で、境目をつかんで変えられる
@@ -1772,7 +1772,7 @@ mod tests {
     fn commit_columns() {
         let mut e = Editor::new(nagi_core::Buffer::from_str("x"), None);
         e.set_screen(160, 40);
-        e.log = Some(view("*\x1fa1\x1f\x1f一\x1fとても長い名前の作者\x1f12 minutes ago\x1fa1b2c3d4\n", &[], None));
+        e.panels.log = Some(view("*\x1fa1\x1f\x1f一\x1fとても長い名前の作者\x1f12 minutes ago\x1fa1b2c3d4\n", &[], None));
         e.select_bottom_tab(crate::result_grid::BottomKind::Git);
         assert_eq!(e.log_right_cols(), (16, 14, 7), "作者は 16 列まで、日時は中身に合わせる（ハッシュは 7 列から）");
         let r = e.log_rect().unwrap();
@@ -1806,26 +1806,26 @@ mod tests {
         assert_eq!(wrap("abc def ghi", 7), ["abc def", "ghi"]);
         let mut e = Editor::new(nagi_core::Buffer::from_str("x"), None);
         e.set_screen(120, 40);
-        e.log = Some(view("*\x1fa1\x1f\x1f一\x1fA\x1f1\x1fa1\n", &[], Some(d)));
+        e.panels.log = Some(view("*\x1fa1\x1f\x1f一\x1fA\x1f1\x1fa1\n", &[], Some(d)));
         e.select_bottom_tab(crate::result_grid::BottomKind::Git);
         let r = e.log_rect().unwrap();
         let (_, dw) = e.log_cols_for(r.w);
-        let n = detail_lines(e.log.as_ref().unwrap().detail.as_ref().unwrap(), dw - 1).len();
+        let n = detail_lines(e.panels.log.as_ref().unwrap().detail.as_ref().unwrap(), dw - 1).len();
         e.log_wheel(1000, 0, r.w, r.w - 2);
         let rows = e.log_rows();
-        assert_eq!(e.log.as_ref().unwrap().detail_top, n - rows, "最後の行まで送れる");
+        assert_eq!(e.panels.log.as_ref().unwrap().detail_top, n - rows, "最後の行まで送れる");
         // 送った後に押した行（最後の行）は、最後のファイル
         e.bottom_click(1 + rows, r.w - 5, 1);
-        let l = e.log.as_ref().unwrap();
+        let l = e.panels.log.as_ref().unwrap();
         assert_eq!((l.focus_files, l.file_sel), (true, 39));
         // 横にも送れる（長いパス）
         e.log_wheel(0, 5, r.w, r.w - 2);
-        assert!(e.log.as_ref().unwrap().detail_left > 0);
+        assert!(e.panels.log.as_ref().unwrap().detail_left > 0);
         // キーで選びを上へ動かすと、見える範囲へ戻る
         e.log_wheel(-1000, 0, r.w, r.w - 2);
         e.set_state(State::Log);
         e.key(nagi_vim::Key::Char('k'));
-        let l = e.log.as_ref().unwrap();
+        let l = e.panels.log.as_ref().unwrap();
         let k = detail_lines(l.detail.as_ref().unwrap(), dw - 1).iter().position(|x| *x == DetailLine::File(38)).unwrap();
         assert!(l.detail_top <= k && k < l.detail_top + rows, "{} {k}", l.detail_top);
     }
@@ -1836,7 +1836,7 @@ mod tests {
         let mut e = Editor::new(nagi_core::Buffer::from_str("x"), None);
         e.set_screen(120, 40);
         let rows = parse_log("*\x1fa1\x1f\x1f一\x1fA\x1f1\x1fa1\n|\n*\x1fb2\x1f\x1f二\x1fA\x1f2\x1fb2\n");
-        e.log = Some(LogView {
+        e.panels.log = Some(LogView {
             left: 0,
             branch_sel: None,
             branch_top: 0,
@@ -1870,18 +1870,18 @@ mod tests {
         // 真ん中の 3 行目（グラフだけの行の次）を押す。欄の 0 行目はタブ、1 行目は絞り込みの見出し
         e.bottom_click(4, 60, 1);
         assert_eq!(e.state(), State::Log);
-        assert_eq!(e.log.as_ref().unwrap().selected, 2);
+        assert_eq!(e.panels.log.as_ref().unwrap().selected, 2);
         // グラフだけの行は選ばない
         e.bottom_click(3, 60, 1);
-        assert_eq!(e.log.as_ref().unwrap().selected, 2);
+        assert_eq!(e.panels.log.as_ref().unwrap().selected, 2);
         // 本文へ戻ってから、右の変えたファイル（見出し 2 行・空き・件名 1 行・空き・「変えたファイル」の次の次）を押す
         e.set_state(State::Normal);
         e.bottom_click(1 + 1 + 7, 110, 1);
-        let l = e.log.as_ref().unwrap();
+        let l = e.panels.log.as_ref().unwrap();
         assert_eq!((e.state(), l.focus_files, l.file_sel), (State::Log, true, 1));
         // 真ん中を押せばコミットの選びへ戻る
         e.bottom_click(2, 60, 1);
-        let l = e.log.as_ref().unwrap();
+        let l = e.panels.log.as_ref().unwrap();
         assert_eq!((l.focus_files, l.selected), (false, 0));
     }
 
@@ -1920,25 +1920,25 @@ mod tests {
             }
             panic!("届かない");
         };
-        wait(&mut e, &|e| e.log.as_ref().is_some_and(|l| !l.loading && !l.branches.is_empty() && l.detail.is_some()));
+        wait(&mut e, &|e| e.panels.log.as_ref().is_some_and(|l| !l.loading && !l.branches.is_empty() && l.detail.is_some()));
         // 2 つ目のコミットを押す → 描く前の取りに行き（view::build が呼ぶ）で、右の中身がそのコミットになる
         let r = e.log_rect().unwrap();
         let (bw, _) = e.log_cols_for(r.w);
         e.log_click(2, bw + 5, r.w, 1);
-        let want = e.log.as_ref().unwrap().current().unwrap().hash.clone();
-        assert_ne!(e.log.as_ref().unwrap().detail.as_ref().unwrap().hash, want);
+        let want = e.panels.log.as_ref().unwrap().current().unwrap().hash.clone();
+        assert_ne!(e.panels.log.as_ref().unwrap().detail.as_ref().unwrap().hash, want);
         e.log_request_detail();
-        assert!(e.log.as_ref().unwrap().rx_detail.is_some(), "選んだらすぐ取りに行く");
-        wait(&mut e, &|e| e.log.as_ref().unwrap().detail.as_ref().is_some_and(|d| d.hash == want));
+        assert!(e.panels.log.as_ref().unwrap().rx_detail.is_some(), "選んだらすぐ取りに行く");
+        wait(&mut e, &|e| e.panels.log.as_ref().unwrap().detail.as_ref().is_some_and(|d| d.hash == want));
         // ブランチの列はホイールで送る（41 本で画面に入らない）。送った分だけ、押した行のブランチもずれる
-        let first = e.log.as_ref().unwrap().branch_at(0);
+        let first = e.panels.log.as_ref().unwrap().branch_at(0);
         e.log_wheel(5, 0, r.w, 1);
-        let l = e.log.as_ref().unwrap();
+        let l = e.panels.log.as_ref().unwrap();
         assert_eq!(l.branch_top, 5);
         assert_ne!(l.branch_at(0), first);
         assert_eq!(l.branch_at(0), match &l.branch_rows()[5] { BranchRow::Leaf { i, .. } => Some(*i), _ => None });
         e.log_wheel(-100, 0, r.w, 1);
-        assert_eq!(e.log.as_ref().unwrap().branch_top, 0);
+        assert_eq!(e.panels.log.as_ref().unwrap().branch_top, 0);
         // 列の間の線をつかんで動かす（ダブルクリックで元に戻す）
         let (bw, dw) = e.log_cols_for(r.w);
         let sep = e.sep_at(r.y + 3, r.x + bw).expect("ブランチの列の右の線");
@@ -1982,7 +1982,7 @@ mod tests {
         let wait = |e: &mut Editor| {
             for _ in 0..500 {
                 e.poll_background();
-                if e.log.as_ref().is_some_and(|l| !l.loading && !l.branches.is_empty() && l.rx_detail.is_none()) && e.svc.git.status.is_some() {
+                if e.panels.log.as_ref().is_some_and(|l| !l.loading && !l.branches.is_empty() && l.rx_detail.is_none()) && e.svc.git.status.is_some() {
                     return;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(20));
@@ -1991,26 +1991,26 @@ mod tests {
         };
         e.select_bottom_tab(crate::result_grid::BottomKind::Git);
         wait(&mut e);
-        let l = e.log.as_ref().unwrap();
+        let l = e.panels.log.as_ref().unwrap();
         // ブランチの列: 0 行目は「ローカル」の見出し、1 行目 main、2 行目 topic
         assert_eq!((l.branch_at(0), l.branch_at(1), l.branch_at(2)), (None, Some(0), Some(1)));
         // 欄の 0 行目はタブ、1 行目は見出し、2 行目から中身。topic を押すと、その指すコミットへ
         e.bottom_click(4, 2, 1);
-        let l = e.log.as_ref().unwrap();
+        let l = e.panels.log.as_ref().unwrap();
         assert_eq!(l.branch_sel, Some(1));
         assert_eq!(l.current().map(|c| c.subject.as_str()), Some("add a"));
         // ダブルクリックで、そのブランチの履歴だけ（チェックアウトはしない）
         e.bottom_click(4, 2, 2);
         wait(&mut e);
         assert_eq!(g(&["rev-parse", "--abbrev-ref", "HEAD"]), "main", "チェックアウトしない");
-        let subjects = |e: &Editor| e.log.as_ref().unwrap().rows.iter().filter_map(|r| r.commit.as_ref().map(|c| c.subject.clone())).collect::<Vec<_>>();
+        let subjects = |e: &Editor| e.panels.log.as_ref().unwrap().rows.iter().filter_map(|r| r.commit.as_ref().map(|c| c.subject.clone())).collect::<Vec<_>>();
         assert_eq!(subjects(&e), vec!["add a"], "topic の履歴だけ");
-        assert_eq!(e.log.as_ref().unwrap().branch_sel, Some(1));
+        assert_eq!(e.panels.log.as_ref().unwrap().branch_sel, Some(1));
         // もう一度ダブルクリックで全部に戻る（下の欄に収めたまま）
         e.bottom_click(4, 2, 2);
         wait(&mut e);
         assert_eq!(subjects(&e).len(), 3);
-        assert!(e.log.as_ref().unwrap().docked);
+        assert!(e.panels.log.as_ref().unwrap().docked);
         // チェックアウトは右クリックのメニューから
         let w = e.bottom_content_rect().unwrap().w;
         assert!(e.log_context(3, 2, w, (5, 2)));
@@ -2029,7 +2029,7 @@ mod tests {
         e.refresh_git();
         e.reload_log();
         wait(&mut e);
-        let k = e.log.as_ref().unwrap().visible.iter().position(|&i| e.log.as_ref().unwrap().rows[i].commit.as_ref().is_some_and(|c| c.subject == "add b")).unwrap();
+        let k = e.panels.log.as_ref().unwrap().visible.iter().position(|&i| e.panels.log.as_ref().unwrap().rows[i].commit.as_ref().is_some_and(|c| c.subject == "add b")).unwrap();
         let w = e.bottom_content_rect().unwrap().w;
         assert!(e.log_context(1 + k, 60, w, (10, 60)));
         assert_eq!(e.state(), State::Menu);
@@ -2086,11 +2086,11 @@ mod tests {
             }
             panic!("届かない");
         };
-        let ready = |e: &Editor| e.log.as_ref().is_some_and(|l| !l.loading && !l.branches.is_empty() && l.rx_detail.is_none()) && e.svc.git.status.is_some();
+        let ready = |e: &Editor| e.panels.log.as_ref().is_some_and(|l| !l.loading && !l.branches.is_empty() && l.rx_detail.is_none()) && e.svc.git.status.is_some();
         e.select_bottom_tab(crate::result_grid::BottomKind::Git);
         wait(&mut e, &ready);
         // 題名の行（見せている行の番号）。欄の 0 行目はタブ、1 行目は見出しなので、押す行は 2 + k
-        let at = |e: &Editor, s: &str| e.log.as_ref().unwrap().visible.iter().position(|&i| e.log.as_ref().unwrap().rows[i].commit.as_ref().is_some_and(|c| c.subject == s)).unwrap();
+        let at = |e: &Editor, s: &str| e.panels.log.as_ref().unwrap().visible.iter().position(|&i| e.panels.log.as_ref().unwrap().rows[i].commit.as_ref().is_some_and(|c| c.subject == s)).unwrap();
         let click = |e: &mut Editor, k: usize, mods: nagi_vim::Mods| {
             e.click_mods = mods;
             e.bottom_click(2 + k, 60, 1);
@@ -2098,7 +2098,7 @@ mod tests {
         };
         let ctrl = nagi_vim::Mods { ctrl: true, ..Default::default() };
         let shift = nagi_vim::Mods { shift: true, ..Default::default() };
-        let subjects = |e: &Editor| e.log.as_ref().unwrap().picked().into_iter().map(|c| c.subject).collect::<Vec<_>>();
+        let subjects = |e: &Editor| e.panels.log.as_ref().unwrap().picked().into_iter().map(|c| c.subject).collect::<Vec<_>>();
         let (ka, kb, kc) = (at(&e, "add a"), at(&e, "add b"), at(&e, "add c"));
         // 押すと 1 つ、Ctrl+クリックで今のものに足す（並びは履歴の順）
         click(&mut e, kc, Default::default());
@@ -2111,13 +2111,13 @@ mod tests {
         // Shift+クリックで、起点から押したところまで
         click(&mut e, kc, Default::default());
         click(&mut e, ka, shift);
-        let l = e.log.as_ref().unwrap();
+        let l = e.panels.log.as_ref().unwrap();
         let want: Vec<String> = (kc.min(ka)..=kc.max(ka)).filter_map(|k| l.commit_at(k).map(|c| c.subject.clone())).collect();
         assert_eq!(subjects(&e), want);
         assert!(want.len() >= 3);
         // Esc で選びを外す（履歴は閉じない）
         e.key(Key::Esc);
-        assert!(e.log.as_ref().unwrap().marked.is_empty());
+        assert!(e.panels.log.as_ref().unwrap().marked.is_empty());
         assert_eq!(e.state(), State::Log);
         // 2 つを選んで右クリック → 比べる: 右の列に、a から c までに変わったファイル
         click(&mut e, ka, Default::default());
@@ -2126,11 +2126,11 @@ mod tests {
         assert!(e.log_context(1 + ka, 60, w, (10, 60)));
         let labels: Vec<String> = e.menu.as_ref().unwrap().items.iter().map(|it| it.label.clone()).collect();
         assert!(labels.contains(&"2 件を side にチェリーピック".to_string()), "{labels:?}");
-        assert_eq!(e.log.as_ref().unwrap().marked.len(), 2, "右クリックで選びを外さない");
+        assert_eq!(e.panels.log.as_ref().unwrap().marked.len(), 2, "右クリックで選びを外さない");
         let i = labels.iter().position(|s| s == "2 つのコミットを比べる").unwrap();
         e.menu_run(i);
-        wait(&mut e, &|e| e.log.as_ref().unwrap().detail.as_ref().is_some_and(|d| d.base.is_some()));
-        let l = e.log.as_ref().unwrap();
+        wait(&mut e, &|e| e.panels.log.as_ref().unwrap().detail.as_ref().is_some_and(|d| d.base.is_some()));
+        let l = e.panels.log.as_ref().unwrap();
         let d = l.detail.as_ref().unwrap();
         assert_eq!(l.current().unwrap().subject, "add c", "新しい方を今の行に");
         assert_eq!(d.files, vec![('A', "b".to_string()), ('A', "c".to_string())]);

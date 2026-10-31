@@ -307,30 +307,30 @@ impl Editor {
             pending: None,
             quit_armed: false,
         };
-        let Some(c) = self.db.as_mut().map(|p| &mut p.conns[i]) else { return };
+        let Some(c) = self.panels.db.as_mut().map(|p| &mut p.conns[i]) else { return };
         if let Some(cols) = c.columns.get(&(schema.to_string(), table.to_string())) {
             te.colinfo = cols.clone();
         } else {
             c.send_columns(schema, table);
         }
         c.send_table_query(te.select_sql(), 0, Some(te.count_sql()));
-        self.db_table = Some(te);
+        self.panels.db_table = Some(te);
         self.set_state(State::DbTable);
     }
 
     /// 読み直す（変更は捨てる）
     pub(crate) fn db_table_reload(&mut self) {
-        let Some(te) = &mut self.db_table else { return };
+        let Some(te) = &mut self.panels.db_table else { return };
         te.running = true;
         te.preview = None;
         let (i, sql, count, offset) = (te.src, te.select_sql(), te.count_sql(), te.offset);
-        if let Some(c) = self.db.as_mut().map(|p| &mut p.conns[i]) {
+        if let Some(c) = self.panels.db.as_mut().map(|p| &mut p.conns[i]) {
             c.send_table_query(sql, offset, Some(count));
         }
     }
 
     pub(crate) fn close_db_table(&mut self) {
-        self.db_table = None;
+        self.panels.db_table = None;
         if self.state() == State::DbTable {
             self.set_state(State::Normal);
         }
@@ -338,7 +338,7 @@ impl Editor {
 
     /// 入力欄に IME の確定を入れる
     pub(crate) fn db_table_insert(&mut self, text: &str) {
-        let Some(te) = &mut self.db_table else { return };
+        let Some(te) = &mut self.panels.db_table else { return };
         if let Some(f) = &mut te.editing {
             f.insert_text(text);
         } else if let Some((_, f)) = &mut te.filter_edit {
@@ -348,16 +348,16 @@ impl Editor {
 
     /// IME を使う入力欄にいるか
     pub fn db_table_typing(&self) -> bool {
-        self.state() == State::DbTable && self.db_table.as_ref().is_some_and(|t| t.editing.as_ref().is_some_and(|f| f.is_insert()) || t.filter_edit.as_ref().is_some_and(|f| f.1.is_insert()))
+        self.state() == State::DbTable && self.panels.db_table.as_ref().is_some_and(|t| t.editing.as_ref().is_some_and(|f| f.is_insert()) || t.filter_edit.as_ref().is_some_and(|f| f.1.is_insert()))
     }
 
     /// 確かめた変更を送る
     fn db_table_send(&mut self) {
-        let Some(te) = &mut self.db_table else { return };
+        let Some(te) = &mut self.panels.db_table else { return };
         let stmts = te.preview.take().unwrap_or_default();
         te.busy = true;
         let i = te.src;
-        if let Some(c) = self.db.as_mut().map(|p| &mut p.conns[i]) {
+        if let Some(c) = self.panels.db.as_mut().map(|p| &mut p.conns[i]) {
             c.send_batch(crate::db_panel::Target::Table, stmts);
         }
         self.svc.notify.info("送信しています…");
@@ -365,18 +365,18 @@ impl Editor {
 
     /// 選んでいるセルの値をコピー（NULL は空）
     pub(crate) fn db_table_copy(&mut self) {
-        let Some(te) = self.db_table.as_ref().filter(|t| t.len() > 0 && !t.cols.is_empty()) else { return };
+        let Some(te) = self.panels.db_table.as_ref().filter(|t| t.len() > 0 && !t.cols.is_empty()) else { return };
         let s = te.value(te.row, te.col).unwrap_or_default();
         self.copy_text(s, "値");
     }
 
     /// クリップボードを選んでいるセルに貼る（タブ・改行で区切ってあれば、そこから右・下のセルへ。消す行は飛ばす）
     pub(crate) fn db_table_paste(&mut self) {
-        if !self.db_table.as_ref().is_some_and(|t| t.len() > 0 && !t.cols.is_empty()) {
+        if !self.panels.db_table.as_ref().is_some_and(|t| t.len() > 0 && !t.cols.is_empty()) {
             return;
         }
         let Some(cells) = self.clipboard_cells() else { return };
-        let Some(te) = &mut self.db_table else { return };
+        let Some(te) = &mut self.panels.db_table else { return };
         let (row, col) = (te.row, te.col);
         let (rows, cols) = (te.len(), te.cols.len());
         let mut n = 0;
@@ -398,7 +398,7 @@ impl Editor {
 
     /// 打っている値を、選んでいるセルに入れる（欄を閉じる）
     fn db_table_commit_edit(&mut self) {
-        let Some(te) = &mut self.db_table else { return };
+        let Some(te) = &mut self.panels.db_table else { return };
         let v = te.editing.take().map(|f| f.text()).unwrap_or_default();
         let (d, c) = (te.row, te.col);
         te.set_value(d, c, Some(v));
@@ -406,19 +406,19 @@ impl Editor {
 
     pub(crate) fn db_table_key(&mut self, key: Key) {
         let half = (self.windows_rows() / 2).max(1);
-        let Some(te) = &mut self.db_table else {
+        let Some(te) = &mut self.panels.db_table else {
             self.set_state(State::Normal);
             return;
         };
         // 値の入力中（Vim 風。Enter か Tab で決める、ノーマルの Esc でやめる）
         if te.editing.is_some() {
-            let out = if key == Key::Tab { FieldOut::Submit } else { self.feed_field(key, |e| e.db_table.as_mut().and_then(|t| t.editing.as_mut())) };
-            let Some(te) = &mut self.db_table else { return };
+            let out = if key == Key::Tab { FieldOut::Submit } else { self.feed_field(key, |e| e.panels.db_table.as_mut().and_then(|t| t.editing.as_mut())) };
+            let Some(te) = &mut self.panels.db_table else { return };
             match out {
                 FieldOut::Cancel => te.editing = None,
                 FieldOut::Submit => {
                     self.db_table_commit_edit();
-                    if let Some(te) = self.db_table.as_mut().filter(|_| key == Key::Tab) {
+                    if let Some(te) = self.panels.db_table.as_mut().filter(|_| key == Key::Tab) {
                         te.col = (te.col + 1).min(te.cols.len().saturating_sub(1));
                     }
                 }
@@ -428,8 +428,8 @@ impl Editor {
         }
         // 絞り込みの欄の入力中
         if te.filter_edit.is_some() {
-            let out = self.feed_field(key, |e| e.db_table.as_mut().and_then(|t| t.filter_edit.as_mut()).map(|x| &mut x.1));
-            let Some(te) = &mut self.db_table else { return };
+            let out = self.feed_field(key, |e| e.panels.db_table.as_mut().and_then(|t| t.filter_edit.as_mut()).map(|x| &mut x.1));
+            let Some(te) = &mut self.panels.db_table else { return };
             match out {
                 FieldOut::Cancel => te.filter_edit = None,
                 FieldOut::Submit => {
@@ -513,7 +513,7 @@ impl Editor {
                     let q = format!("{} 件の変更を送りますか（送る文は上に出ています）", s.len());
                     te.preview = Some(s);
                     self.ask_or(q, |e| e.db_table_send(), |e| {
-                        if let Some(te) = &mut e.db_table {
+                        if let Some(te) = &mut e.panels.db_table {
                             te.preview = None;
                         }
                         e.svc.notify.info("送信をやめました（変更は残っています）");
@@ -585,7 +585,7 @@ pub struct DbTableComponent;
 
 impl crate::component::Component for DbTableComponent {
     fn status(&self, ed: &crate::editor::Editor) -> Option<crate::component::Status> {
-        let n = ed.db_table.as_ref().map_or(0, |t| t.changes());
+        let n = ed.panels.db_table.as_ref().map_or(0, |t| t.changes());
         let help = "i・F2 値  c 入れ替え  x NULL  o 行を足す  dd 消す  u 戻す  f/F 絞り込み  s 並べ替え  < > ページ  Ctrl+Enter 送信  q 閉じる ";
         if n > 0 {
             Some(crate::component::Status { name: format!("-- 編集 --  変更 {n} 件（未送信）"), warn: true, help: help.into(), plain: Some(PLAIN_HELP.into()) })
@@ -615,14 +615,14 @@ impl crate::layout::View for DbTableView {
 
     fn rect(&self, ed: &crate::editor::Editor, s: crate::layout::Screen) -> Option<crate::panes::Rect> {
         let _ = s;
-        ed.db_table.as_ref()?;
+        ed.panels.db_table.as_ref()?;
         let (x, w) = ed.windows_x();
         Some(crate::panes::Rect { x, y: ed.area().y, w, h: ed.windows_rows().saturating_sub(ed.area().y) })
     }
 
     fn draw(&self, ed: &crate::editor::Editor, p: &mut crate::view::Painter, r: crate::panes::Rect, s: crate::layout::Screen) {
         let _ = (r, s);
-        if let Some(te) = &ed.db_table {
+        if let Some(te) = &ed.panels.db_table {
             draw::draw_db_table(p, ed, te, r);
         }
     }
@@ -631,7 +631,7 @@ impl crate::layout::View for DbTableView {
         let _ = r;
         // 窓を覆って出ているテーブル: 押したらテーブルへ向き、押したセルをそのまま直し始める（Insert。Enter と同じ）。下の本文へは通さない
         ed.set_state(crate::editor::State::DbTable);
-        let Some(te) = &mut ed.db_table else { return crate::layout::Click::Done };
+        let Some(te) = &mut ed.panels.db_table else { return crate::layout::Click::Done };
         // 送る前の確認の間は、選び直さない
         if te.preview.is_some() {
             return crate::layout::Click::Done;
@@ -662,7 +662,7 @@ impl crate::layout::View for DbTableView {
             if te.editing.is_some() {
                 ed.db_table_commit_edit();
             }
-            let Some(te) = &mut ed.db_table else { return crate::layout::Click::Done };
+            let Some(te) = &mut ed.panels.db_table else { return crate::layout::Click::Done };
             if te.changes() > 0 {
                 ed.svc.notify.info("未送信の変更があります（Ctrl+Enter で送るか、u で戻す）");
             } else {
@@ -679,7 +679,7 @@ impl crate::layout::View for DbTableView {
             }
             ed.db_table_commit_edit();
         }
-        let Some(te) = &mut ed.db_table else { return crate::layout::Click::Done };
+        let Some(te) = &mut ed.panels.db_table else { return crate::layout::Click::Done };
         let pick = nagi_ui::list::pick_row(&mut te.row, te.scroll, at.row, 4, len, clicks);
         let cell = crate::result_grid::grid_col_at(te.hscroll, &te.widths, at.col);
         if pick.is_some() {
@@ -696,7 +696,7 @@ impl crate::layout::View for DbTableView {
 
     fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At, dy: isize, dx: isize) -> bool {
         let _ = at;
-        if let Some(te) = &mut ed.db_table {
+        if let Some(te) = &mut ed.panels.db_table {
             let len = te.len();
             nagi_ui::list::wheel(&mut te.row, &mut te.scroll, len, r.h.saturating_sub(HEAD), dy);
             crate::result_grid::grid_hwheel(&mut te.col, &mut te.hscroll, &te.widths, r.w, dx);
@@ -760,7 +760,7 @@ pub(crate) mod draw {
         let saved = p.cols;
         p.cols = r.x + r.w;
         // 1 行目: 名前と接続先、件数
-        let src = ed.db.as_ref().map_or(String::new(), |d| d.sources[te.src].name.clone());
+        let src = ed.panels.db.as_ref().map_or(String::new(), |d| d.sources[te.src].name.clone());
         let c = p.text(&format!(" {}", crate::db_panel::qualified(te.dialect, &te.schema, &te.table)), r.x, y0, FG);
         let c = p.text(&format!("（{src}）"), c, y0, STATUS_FG);
         if te.pk().is_empty() && !te.colinfo.is_empty() {
@@ -844,39 +844,39 @@ mod tests {
         e.set_screen(160, 50);
         e.open_db_panel();
         e.db_add("mem jdbc:sqlite::memory:");
-        let i = e.db.as_ref().unwrap().sources.len() - 1;
-        e.db.as_mut().unwrap().selected = e.db.as_ref().unwrap().rows.iter().position(|r| *r == crate::db_panel::DbRow::Source(i)).unwrap();
+        let i = e.panels.db.as_ref().unwrap().sources.len() - 1;
+        e.panels.db.as_mut().unwrap().selected = e.panels.db.as_ref().unwrap().rows.iter().position(|r| *r == crate::db_panel::DbRow::Source(i)).unwrap();
         keys(&mut e, "<CR>");
-        wait(&mut e, &|e| e.db.as_ref().unwrap().conns[i].connected);
+        wait(&mut e, &|e| e.panels.db.as_ref().unwrap().conns[i].connected);
         for sql in ["create table item(id integer primary key, name text)", "insert into item values (1, 'a'), (2, 'b')"] {
-            e.db.as_mut().unwrap().conns[i].manual = true;
+            e.panels.db.as_mut().unwrap().conns[i].manual = true;
             e.db_execute(i, sql.into());
-            wait(&mut e, &|e| e.db_results.active_tab().is_some_and(|t| !t.running));
+            wait(&mut e, &|e| e.panels.db_results.active_tab().is_some_and(|t| !t.running));
         }
-        e.db.as_mut().unwrap().conns[i].manual = false;
+        e.panels.db.as_mut().unwrap().conns[i].manual = false;
         e.db_open_table(i, "main", "item");
-        wait(&mut e, &|e| e.db_table.as_ref().is_some_and(|t| !t.running && !t.rows.is_empty()));
+        wait(&mut e, &|e| e.panels.db_table.as_ref().is_some_and(|t| !t.running && !t.rows.is_empty()));
         let s = crate::layout::Screen { rows: 50, cols: 160 };
         let ay = e.area().y;
         let (x, _) = e.windows_x();
         // 表は 2 行目から（見出し 2 行）なので、データの 2 行目は 5 行目。name は 7 列目 + id の幅 + 3 から
-        let name_x = x + 7 + e.db_table.as_ref().unwrap().widths[0] + 3 + 1;
+        let name_x = x + 7 + e.panels.db_table.as_ref().unwrap().widths[0] + 3 + 1;
         crate::layout::press(&mut e, s, ay + 5, name_x, |_| 1);
-        let te = e.db_table.as_ref().unwrap();
+        let te = e.panels.db_table.as_ref().unwrap();
         assert_eq!((te.row, te.col), (1, 1));
         assert_eq!(te.editing.as_ref().map(|f| f.mode_label()), Some("INSERT"), "1 回で直し始める（Insert）");
         // 打っている間に別の行・列を押す: 打った値を決めて、押したセルを直し始める
         keys(&mut e, "<Esc>ccz");
         crate::layout::press(&mut e, s, ay + 4, x + 8, |_| 1);
-        let te = e.db_table.as_ref().unwrap();
+        let te = e.panels.db_table.as_ref().unwrap();
         assert_eq!(te.value(1, 1).as_deref(), Some("z"));
         assert_eq!((te.row, te.col), (0, 0));
         assert_eq!(te.editing.as_ref().map(|f| f.text()).as_deref(), Some("1"));
         // 同じセルを押しても、打っている欄は閉じない
         crate::layout::press(&mut e, s, ay + 4, x + 8, |_| 1);
-        assert!(e.db_table.as_ref().unwrap().editing.is_some());
+        assert!(e.panels.db_table.as_ref().unwrap().editing.is_some());
         keys(&mut e, "<Esc><Esc>");
-        assert!(e.db_table.as_ref().unwrap().editing.is_none());
+        assert!(e.panels.db_table.as_ref().unwrap().editing.is_none());
         // Ctrl+C でセルの値、Ctrl+V で貼る（タブ・改行で区切ってあれば右・下のセルへ）
         thread_local! { static CLIP: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) }; }
         fn set(t: &str) { CLIP.with(|c| *c.borrow_mut() = t.to_string()); }
@@ -888,10 +888,10 @@ mod tests {
         keys(&mut e, "kh");
         set("10\tp\r\n20\tq\r\n");
         e.key(Key::Ctrl('v'));
-        let te = e.db_table.as_ref().unwrap();
+        let te = e.panels.db_table.as_ref().unwrap();
         assert_eq!((0..2).map(|d| (te.value(d, 0), te.value(d, 1))).collect::<Vec<_>>(), [(Some("10".into()), Some("p".into())), (Some("20".into()), Some("q".into()))]);
         keys(&mut e, "u");
-        assert_eq!(e.db_table.as_ref().unwrap().value(1, 1).as_deref(), Some("z"), "u は 1 つのセルずつ戻す");
+        assert_eq!(e.panels.db_table.as_ref().unwrap().value(1, 1).as_deref(), Some("z"), "u は 1 つのセルずつ戻す");
     }
 
     /// マウスで欄を移る: WHERE・ORDER BY の欄やセルを、打っている欄が Insert・Visual のままでもすぐ押せる
@@ -901,45 +901,45 @@ mod tests {
         e.set_screen(160, 50);
         e.open_db_panel();
         e.db_add("mem jdbc:sqlite::memory:");
-        let i = e.db.as_ref().unwrap().sources.len() - 1;
-        e.db.as_mut().unwrap().selected = e.db.as_ref().unwrap().rows.iter().position(|r| *r == crate::db_panel::DbRow::Source(i)).unwrap();
+        let i = e.panels.db.as_ref().unwrap().sources.len() - 1;
+        e.panels.db.as_mut().unwrap().selected = e.panels.db.as_ref().unwrap().rows.iter().position(|r| *r == crate::db_panel::DbRow::Source(i)).unwrap();
         keys(&mut e, "<CR>");
-        wait(&mut e, &|e| e.db.as_ref().unwrap().conns[i].connected);
+        wait(&mut e, &|e| e.panels.db.as_ref().unwrap().conns[i].connected);
         for sql in ["create table item(id integer primary key, name text)", "insert into item values (1, 'a'), (2, 'b')"] {
-            e.db.as_mut().unwrap().conns[i].manual = true;
+            e.panels.db.as_mut().unwrap().conns[i].manual = true;
             e.db_execute(i, sql.into());
-            wait(&mut e, &|e| e.db_results.active_tab().is_some_and(|t| !t.running));
+            wait(&mut e, &|e| e.panels.db_results.active_tab().is_some_and(|t| !t.running));
         }
-        e.db.as_mut().unwrap().conns[i].manual = false;
+        e.panels.db.as_mut().unwrap().conns[i].manual = false;
         e.db_open_table(i, "main", "item");
-        wait(&mut e, &|e| e.db_table.as_ref().is_some_and(|t| !t.running && !t.rows.is_empty()));
+        wait(&mut e, &|e| e.panels.db_table.as_ref().is_some_and(|t| !t.running && !t.rows.is_empty()));
         let s = crate::layout::Screen { rows: 50, cols: 160 };
         let ay = e.area().y;
         let (x, _) = e.windows_x();
-        let field = |e: &Editor| e.db_table.as_ref().unwrap().filter_edit.as_ref().map(|f| (f.0, f.1.mode_label(), f.1.text()));
+        let field = |e: &Editor| e.panels.db_table.as_ref().unwrap().filter_edit.as_ref().map(|f| (f.0, f.1.mode_label(), f.1.text()));
         // WHERE を打っている間（Insert）に ORDER BY を押す: 打った条件は残して ORDER BY へ
         keys(&mut e, "fid > 0");
         crate::layout::press(&mut e, s, ay + 1, x + 50, |_| 1);
         assert_eq!(field(&e), Some((Field::Order, "INSERT", String::new())));
-        assert_eq!(e.db_table.as_ref().unwrap().where_, "id > 0");
+        assert_eq!(e.panels.db_table.as_ref().unwrap().where_, "id > 0");
         // Visual のまま WHERE を押す
         keys(&mut e, "id<Esc>v");
         crate::layout::press(&mut e, s, ay + 1, x + 10, |_| 1);
         assert_eq!(field(&e), Some((Field::Where, "INSERT", "id > 0".into())));
-        assert_eq!(e.db_table.as_ref().unwrap().order, "id");
+        assert_eq!(e.panels.db_table.as_ref().unwrap().order, "id");
         // Insert のまま表を押す: 決めて読み直す
         keys(&mut e, " and id < 2");
         crate::layout::press(&mut e, s, ay + 4, x + 8, |_| 1);
         assert_eq!(field(&e), None);
-        wait(&mut e, &|e| e.db_table.as_ref().is_some_and(|t| !t.running));
-        let te = e.db_table.as_ref().unwrap();
+        wait(&mut e, &|e| e.panels.db_table.as_ref().is_some_and(|t| !t.running));
+        let te = e.panels.db_table.as_ref().unwrap();
         assert_eq!((te.where_.as_str(), te.len()), ("id > 0 and id < 2", 1));
         // 値を打っている間（Insert）に WHERE を押す: 値を決めてから（未送信の変更があるので欄は開かない）
         crate::layout::press(&mut e, s, ay + 4, x + 8, |_| 2);
-        assert!(e.db_table.as_ref().unwrap().editing.is_some());
+        assert!(e.panels.db_table.as_ref().unwrap().editing.is_some());
         keys(&mut e, "<Esc>cc5");
         crate::layout::press(&mut e, s, ay + 1, x + 10, |_| 1);
-        let te = e.db_table.as_ref().unwrap();
+        let te = e.panels.db_table.as_ref().unwrap();
         assert!(te.editing.is_none() && te.filter_edit.is_none());
         assert_eq!(te.value(0, 0).as_deref(), Some("5"));
     }
@@ -950,20 +950,20 @@ mod tests {
         e.set_screen(160, 50);
         e.open_db_panel();
         e.db_add("mem jdbc:sqlite::memory:");
-        let i = e.db.as_ref().unwrap().sources.len() - 1;
-        e.db.as_mut().unwrap().selected = e.db.as_ref().unwrap().rows.iter().position(|r| *r == crate::db_panel::DbRow::Source(i)).unwrap();
+        let i = e.panels.db.as_ref().unwrap().sources.len() - 1;
+        e.panels.db.as_mut().unwrap().selected = e.panels.db.as_ref().unwrap().rows.iter().position(|r| *r == crate::db_panel::DbRow::Source(i)).unwrap();
         keys(&mut e, "<CR>");
-        wait(&mut e, &|e| e.db.as_ref().unwrap().conns[i].connected);
+        wait(&mut e, &|e| e.panels.db.as_ref().unwrap().conns[i].connected);
         for sql in ["create table item(id integer primary key, name text, note text)", "insert into item values (1, 'a', 'x'), (2, 'b', 'y'), (3, 'c', 'z')"] {
-            e.db.as_mut().unwrap().conns[i].manual = true;
+            e.panels.db.as_mut().unwrap().conns[i].manual = true;
             e.db_execute(i, sql.into());
-            wait(&mut e, &|e| e.db_results.active_tab().is_some_and(|t| !t.running));
+            wait(&mut e, &|e| e.panels.db_results.active_tab().is_some_and(|t| !t.running));
         }
-        e.db.as_mut().unwrap().conns[i].manual = false;
+        e.panels.db.as_mut().unwrap().conns[i].manual = false;
         e.db_open_table(i, "main", "item");
         assert_eq!(e.state(), State::DbTable);
-        wait(&mut e, &|e| e.db_table.as_ref().is_some_and(|t| !t.running && !t.colinfo.is_empty() && t.total.is_some()));
-        assert_eq!(e.db_table.as_ref().unwrap().range_label(), "1–3 / 3");
+        wait(&mut e, &|e| e.panels.db_table.as_ref().is_some_and(|t| !t.running && !t.colinfo.is_empty() && t.total.is_some()));
+        assert_eq!(e.panels.db_table.as_ref().unwrap().range_label(), "1–3 / 3");
         // 1 行目の name を直す、2 行目の note を NULL に、3 行目を消す、行を足す
         // i は今の値の後ろから Insert。Esc でノーマルにして cc で入れ替える（Vim 風の欄）
         keys(&mut e, "li");
@@ -971,7 +971,7 @@ mod tests {
         keys(&mut e, "jlx");
         keys(&mut e, "jdd");
         keys(&mut e, "o0i9<Tab>inew<CR>");
-        let te = e.db_table.as_ref().unwrap();
+        let te = e.panels.db_table.as_ref().unwrap();
         assert_eq!(te.changes(), 4);
         assert_eq!(
             te.statements().unwrap(),
@@ -984,14 +984,14 @@ mod tests {
         );
         // u で 1 つ戻す（足した行の name）→ もう一度入れる
         keys(&mut e, "u");
-        assert_eq!(e.db_table.as_ref().unwrap().added[0][1], None);
+        assert_eq!(e.panels.db_table.as_ref().unwrap().added[0][1], None);
         keys(&mut e, "inew<CR>");
         // Ctrl+Enter で SQL を見せ、y で送る
         keys(&mut e, "<C-m>");
-        assert!(e.db_table.as_ref().unwrap().preview.is_some());
+        assert!(e.panels.db_table.as_ref().unwrap().preview.is_some());
         keys(&mut e, "y");
-        wait(&mut e, &|e| e.db_table.as_ref().is_some_and(|t| !t.busy && !t.running && t.changes() == 0 && t.rows.len() == 3));
-        let te = e.db_table.as_ref().unwrap();
+        wait(&mut e, &|e| e.panels.db_table.as_ref().is_some_and(|t| !t.busy && !t.running && t.changes() == 0 && t.rows.len() == 3));
+        let te = e.panels.db_table.as_ref().unwrap();
         let names: Vec<Option<String>> = te.rows.iter().map(|r| r[1].clone()).collect();
         assert_eq!(names, vec![Some("りんご".into()), Some("b".into()), Some("new".into())]);
         assert_eq!(te.rows[1][2], None);
@@ -999,12 +999,12 @@ mod tests {
         keys(&mut e, "x");
         // 本文に向こうとしても（木でファイルを開いたなど）、未送信の変更があれば閉じずに知らせる
         e.set_state(State::Normal);
-        assert!(e.db_table.is_some());
+        assert!(e.panels.db_table.is_some());
         assert_eq!(e.state(), State::DbTable);
         assert!(e.svc.notify.text.contains("送っていない変更が 1 件"), "{}", e.svc.notify.text);
         keys(&mut e, "q");
-        assert!(e.db_table.is_some());
+        assert!(e.panels.db_table.is_some());
         keys(&mut e, "q");
-        assert!(e.db_table.is_none());
+        assert!(e.panels.db_table.is_none());
     }
 }

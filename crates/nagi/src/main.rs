@@ -981,11 +981,11 @@ impl Frame {
                 let (p, row) = match ed.state() {
                     State::Replace if ed.replace_field == 1 => (&ed.repl, rows + 1),
                     State::Command => (&ed.cmdline, rows),
-                    State::Finder => match &ed.finder {
+                    State::Finder => match &ed.panels.finder {
                         Some(f) => (&f.query, rows),
                         None => (&ed.query, rows),
                     },
-                    State::GrepPrompt => match &ed.grep {
+                    State::GrepPrompt => match &ed.panels.grep {
                         Some(g) if g.editing_mask => (&g.mask, rows),
                         Some(g) => (&g.query, rows),
                         None => (&ed.query, rows),
@@ -996,7 +996,7 @@ impl Frame {
                 let lead = match ed.state() {
                     State::Finder => 2,
                     State::GrepPrompt => {
-                        let lead = if ed.grep.as_ref().is_some_and(|g| g.editing_mask) { grep_panel::MASK_LEAD } else { grep_panel::GREP_LEAD };
+                        let lead = if ed.panels.grep.as_ref().is_some_and(|g| g.editing_mask) { grep_panel::MASK_LEAD } else { grep_panel::GREP_LEAD };
                         nagi_core::display_col(lead, lead.len(), false)
                     }
                     _ => 1,
@@ -1095,14 +1095,14 @@ impl Frame {
             chrome::Hit::Projects => {
                 let c = ed.toolbar_col(hit);
                 ed.open_finder(finder::Source::Projects);
-                if let Some(f) = &mut ed.finder {
+                if let Some(f) = &mut ed.panels.finder {
                     f.anchor = Some(c);
                 }
             }
             chrome::Hit::Branches => {
                 let c = ed.toolbar_col(hit);
                 ed.open_branches();
-                if let Some(b) = &mut ed.branch_popup {
+                if let Some(b) = &mut ed.panels.branch_popup {
                     b.anchor = Some(c);
                 }
             }

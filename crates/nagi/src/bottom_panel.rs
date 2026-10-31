@@ -52,7 +52,7 @@ pub struct ProblemsView {
 impl Editor {
     /// 出すタブ（クエリの結果は結果があるときだけ）
     pub fn bottom_tabs(&self) -> Vec<(&'static str, BottomKind)> {
-        BTABS.iter().copied().filter(|(_, k)| *k != BottomKind::Result || !self.db_results.is_empty()).collect()
+        BTABS.iter().copied().filter(|(_, k)| *k != BottomKind::Result || !self.panels.db_results.is_empty()).collect()
     }
 
     /// 下の欄の中身の矩形（1 行目のタブを除く）
@@ -63,33 +63,33 @@ impl Editor {
 
     /// ログ（コマンドの出力）の入れ物（出していなくても）
     pub(crate) fn output_panel_mut(&mut self) -> Option<&mut crate::grep_panel::GrepPanel> {
-        if self.grep.as_ref().is_some_and(|g| g.title.is_some()) {
-            self.grep.as_mut()
+        if self.panels.grep.as_ref().is_some_and(|g| g.title.is_some()) {
+            self.panels.grep.as_mut()
         } else {
-            self.grep_other.as_mut().filter(|g| g.title.is_some())
+            self.panels.grep_other.as_mut().filter(|g| g.title.is_some())
         }
     }
 
     /// 今の `grep` がログ（コマンドの出力）か
     fn grep_is_output(&self) -> bool {
-        self.grep.as_ref().is_some_and(|g| g.title.is_some())
+        self.panels.grep.as_ref().is_some_and(|g| g.title.is_some())
     }
 
     /// 検索とログの入れ物を、`kind` の方が `grep` に来るように入れ替える
     pub(crate) fn swap_grep_for(&mut self, kind: BottomKind) {
         let want_output = kind == BottomKind::Output;
-        if self.grep.is_some() && self.grep_is_output() != want_output {
-            std::mem::swap(&mut self.grep, &mut self.grep_other);
+        if self.panels.grep.is_some() && self.grep_is_output() != want_output {
+            std::mem::swap(&mut self.panels.grep, &mut self.panels.grep_other);
         }
-        if self.grep.is_none() && self.grep_other.as_ref().is_some_and(|g| g.title.is_some() == want_output) {
-            std::mem::swap(&mut self.grep, &mut self.grep_other);
+        if self.panels.grep.is_none() && self.panels.grep_other.as_ref().is_some_and(|g| g.title.is_some() == want_output) {
+            std::mem::swap(&mut self.panels.grep, &mut self.panels.grep_other);
         }
     }
 
     /// 新しく検索・ログを始める前に、出している方がもう一方なら脇へ置く
     pub(crate) fn stash_grep_unless(&mut self, output: bool) {
-        if self.grep.is_some() && self.grep_is_output() != output {
-            self.grep_other = self.grep.take();
+        if self.panels.grep.is_some() && self.grep_is_output() != output {
+            self.panels.grep_other = self.panels.grep.take();
         }
     }
 
@@ -100,13 +100,13 @@ impl Editor {
         match kind {
             BottomKind::Grep | BottomKind::Output => self.swap_grep_for(kind),
             BottomKind::Git => {
-                if self.log.is_none() {
+                if self.panels.log.is_none() {
                     self.open_log(false);
                 }
-                if let Some(l) = &mut self.log {
+                if let Some(l) = &mut self.panels.log {
                     l.docked = true;
                 }
-                if self.log.is_some() {
+                if self.panels.log.is_some() {
                     self.set_state(State::Log);
                     self.rows = self.text_rows(self.active_rect());
                     return;
@@ -145,7 +145,7 @@ impl Editor {
 
     /// 履歴を全画面で出しているか（下の欄に収めていない）
     pub fn log_fullscreen(&self) -> bool {
-        self.log.as_ref().is_some_and(|l| !l.docked)
+        self.panels.log.as_ref().is_some_and(|l| !l.docked)
     }
 
     /// 問題の一覧の行（ファイルごとにまとめ、エラーのあるファイルを先に）
@@ -172,7 +172,7 @@ impl Editor {
         let rows = self.problem_rows();
         let h = self.bottom_content_rect().map_or(10, |r| r.h).max(1);
         let last = rows.len().saturating_sub(1);
-        let p = &mut self.problems;
+        let p = &mut self.panels.problems;
         let g = std::mem::take(&mut p.pending_g);
         if std::mem::take(&mut p.pending_w) {
             if matches!(key, Key::Char('k') | Key::Ctrl('k') | Key::Char('w') | Key::Ctrl('w') | Key::Char('p')) {
@@ -209,7 +209,7 @@ impl Editor {
             Key::Char(':') => self.enter_command(""),
             _ => {}
         }
-        let p = &mut self.problems;
+        let p = &mut self.panels.problems;
         nagi_ui::list::fit(p.selected, &mut p.scroll, h);
         Effect::None
     }
@@ -219,7 +219,7 @@ impl Editor {
         self.list_side = Side::Bottom;
         self.set_state(State::List);
         let n = self.problem_rows().len();
-        let p = &mut self.problems;
+        let p = &mut self.panels.problems;
         if nagi_ui::list::pick_row(&mut p.selected, p.scroll, row, 0, n, clicks) == Some(nagi_ui::list::Pick::Accept(p.selected)) {
             self.problems_key(Key::Enter);
         }
@@ -289,7 +289,7 @@ impl crate::layout::View for BottomView {
         let (row, col) = at.screen;
         let _ = r;
         // ターミナルの画面: 押して選び始める（ドラッグで範囲）
-        if ed.bottom_kind == BottomKind::Terminal && ed.terminals.chooser.is_none() && ed.terminal_rect().is_some_and(|t| t.contains(row, col)) && ed.terminal_press(row, col) {
+        if ed.bottom_kind == BottomKind::Terminal && ed.panels.terminals.chooser.is_none() && ed.terminal_rect().is_some_and(|t| t.contains(row, col)) && ed.terminal_press(row, col) {
             return crate::layout::Click::SelectTerminal;
         }
         // 1 行目はタブ、2 行目から中身
@@ -306,7 +306,7 @@ impl crate::layout::View for BottomView {
         // 1 行目はタブ（ターミナルは main.rs が先に受け取る）
         let h = r.h.saturating_sub(1);
         match ed.bottom_kind {
-            BottomKind::Grep | BottomKind::Output => match &mut ed.grep {
+            BottomKind::Grep | BottomKind::Output => match &mut ed.panels.grep {
                 // 出力・診断の読む画面は、中の Editor を送る（カーソルは見える範囲に留める）
                 Some(g) if g.view.is_some() && g.title.is_some() => {
                     let v = g.view.as_mut().unwrap();
@@ -327,7 +327,7 @@ impl crate::layout::View for BottomView {
                 None => {}
             },
             BottomKind::Result => {
-                let res = &mut ed.db_results;
+                let res = &mut ed.panels.db_results;
                 if res.active == 0 {
                     // 出力（下から数える。0 が最新）
                     res.log_scroll = (res.log_scroll as isize - dy).clamp(0, res.log.len().saturating_sub(1) as isize) as usize;
@@ -340,12 +340,12 @@ impl crate::layout::View for BottomView {
             BottomKind::Git => ed.log_wheel(dy, dx, r.w, at.col),
             BottomKind::Problems => {
                 let n = ed.problem_rows().len();
-                let p = &mut ed.problems;
+                let p = &mut ed.panels.problems;
                 p.scroll = (p.scroll as isize + dy).clamp(0, n.saturating_sub(h.saturating_sub(1)) as isize) as usize;
             }
             BottomKind::Terminal => {}
             BottomKind::Debug => {
-                if let Some(d) = &mut ed.debug {
+                if let Some(d) = &mut ed.panels.debug {
                     d.var_scroll = (d.var_scroll as isize + dy).clamp(0, d.vars.len().saturating_sub(1) as isize) as usize;
                     d.sel_var = d.sel_var.max(d.var_scroll).min(d.vars.len().saturating_sub(1));
                 }
@@ -371,18 +371,18 @@ impl crate::layout::View for BottomView {
             }
             BottomKind::Grep | BottomKind::Output => {
                 // 押した行を選ぶ（選んでいる範囲の中なら範囲を保つ）
-                let in_range = ed.grep.as_ref().is_some_and(|g| g.anchor.is_some());
+                let in_range = ed.panels.grep.as_ref().is_some_and(|g| g.anchor.is_some());
                 if !in_range {
                     ed.panel_click_at(prow, pcol, 1);
                 }
                 let m = if ed.bottom_kind == BottomKind::Grep { m.keys("開く", &[Enter]).keys("開いて欄に残る", &[Char('o')]) } else { m };
                 let m = m.keys("コピー", &[Char('y')]);
-                let m = if ed.bottom_kind == BottomKind::Grep && ed.grep.as_ref().is_some_and(|g| g.title.is_none()) {
+                let m = if ed.bottom_kind == BottomKind::Grep && ed.panels.grep.as_ref().is_some_and(|g| g.title.is_none()) {
                     // 検索の条件（見出しの札・Alt+C などと同じ）
                     use crate::grep_panel::Chip;
-                    let on = ed.grep.as_ref().map(crate::grep_panel::chips).unwrap_or_default();
+                    let on = ed.panels.grep.as_ref().map(crate::grep_panel::chips).unwrap_or_default();
                     let mark = |c: Chip| if on.iter().any(|x| x.2 == c && x.1) { "✓ " } else { "   " };
-                    let ctx = ed.grep.as_ref().map_or("", |g| g.opts.context.label());
+                    let ctx = ed.panels.grep.as_ref().map_or("", |g| g.opts.context.label());
                     m.keys("検索し直す", &[Char('/')])
                         .sep()
                         .item(format!("{}大文字小文字を区別（Alt+C）", mark(Chip::Case)), |e| e.toggle_chip(Chip::Case))
@@ -404,8 +404,8 @@ impl crate::layout::View for BottomView {
             }
             BottomKind::Result => {
                 ed.result_click(prow, pcol.saturating_sub(1), 1);
-                let filterable = ed.db_results.active_tab().is_some_and(|t| t.filterable);
-                let editable = ed.db_results.active_tab().is_some_and(|t| t.target.is_some());
+                let filterable = ed.panels.db_results.active_tab().is_some_and(|t| t.filterable);
+                let editable = ed.panels.db_results.active_tab().is_some_and(|t| t.target.is_some());
                 let m = m.keys("値をコピー", &[Char('y')]).keys("行をコピー", &[Char('Y')]).keys("表全体をコピー（タブ区切り）", &[Char('g'), Char('y')]);
                 let m = if filterable {
                     m.sep()
@@ -444,7 +444,7 @@ impl crate::layout::View for BottomView {
                     .keys("欄を隠す", &[Char('q')])
             }
             BottomKind::Terminal => {
-                if ed.terminals.list.is_empty() {
+                if ed.panels.terminals.list.is_empty() {
                     return false;
                 }
                 ed.set_state(State::Terminal);
@@ -453,7 +453,7 @@ impl crate::layout::View for BottomView {
                 })
                 .item("貼り付け", |e| e.terminal_key(nagi_vim::Key::Paste))
                 .sep()
-                .item("新しいターミナル…", |e| e.terminals.open_chooser())
+                .item("新しいターミナル…", |e| e.panels.terminals.open_chooser())
                 .item("このターミナルを閉じる", |e| e.close_terminal())
                 .item("本文へ", |e| e.set_state(State::Normal))
             }
@@ -491,13 +491,13 @@ pub(crate) mod draw {
         let ui = std::mem::replace(&mut p.ui, matches!(ed.bottom_kind, BottomKind::Problems | BottomKind::Debug));
         match ed.bottom_kind {
             BottomKind::Result => draw_db_results(p, ed, c),
-            BottomKind::Grep | BottomKind::Output => match &ed.grep {
+            BottomKind::Grep | BottomKind::Output => match &ed.panels.grep {
                 Some(g) => draw_grep_panel(p, g, c, matches!(ed.state(), State::List | State::GrepPrompt)),
                 None if ed.bottom_kind == BottomKind::Grep => empty(p, "検索していません（:Grep 語、Ctrl+Shift+F）"),
                 None => empty(p, "コマンドの出力はありません（:Make、Maven のタブのゴール）"),
             },
             BottomKind::Problems => draw_problems(p, ed, c, focused),
-            BottomKind::Git => match &ed.log {
+            BottomKind::Git => match &ed.panels.log {
                 Some(l) if l.docked => draw_log_view(p, l, c, ed.log_cols_for(c.w), ed.log_right_cols(), &ed.preedit, ed.svc.git.status.as_ref().map(|s| (s.branch.as_str(), s.ahead as usize, s.behind as usize))),
                 _ => empty(p, "git のリポジトリではありません"),
             },
@@ -519,9 +519,9 @@ pub(crate) mod draw {
         let root = ed.nav_root();
         let saved = p.cols;
         p.cols = r.x + r.w;
-        for (k, row) in rows.iter().enumerate().skip(ed.problems.scroll).take(r.h) {
-            let y = (r.y + k - ed.problems.scroll) as f32 * cell.h;
-            let sel = k == ed.problems.selected;
+        for (k, row) in rows.iter().enumerate().skip(ed.panels.problems.scroll).take(r.h) {
+            let y = (r.y + k - ed.panels.problems.scroll) as f32 * cell.h;
+            let sel = k == ed.panels.problems.selected;
             if sel {
                 p.out.push(Instance::fill(r.x as f32 * cell.w, y, r.w as f32 * cell.w, cell.h, if focused { FG } else { MATCH_BG }));
             }
@@ -578,13 +578,13 @@ mod tests {
         e.open_grep("x");
         e.stash_grep_unless(true);
         e.open_result_panel("Maven: compile");
-        assert!(e.grep.as_ref().unwrap().title.is_some());
-        assert!(e.grep_other.as_ref().unwrap().title.is_none(), "検索は脇に残す");
+        assert!(e.panels.grep.as_ref().unwrap().title.is_some());
+        assert!(e.panels.grep_other.as_ref().unwrap().title.is_none(), "検索は脇に残す");
         e.select_bottom_tab(BottomKind::Grep);
-        assert!(e.grep.as_ref().unwrap().title.is_none());
-        assert_eq!(e.grep.as_ref().unwrap().query.text, "x");
+        assert!(e.panels.grep.as_ref().unwrap().title.is_none());
+        assert_eq!(e.panels.grep.as_ref().unwrap().query.text, "x");
         e.select_bottom_tab(BottomKind::Output);
-        assert_eq!(e.grep.as_ref().unwrap().title.as_deref(), Some("Maven: compile"));
+        assert_eq!(e.panels.grep.as_ref().unwrap().title.as_deref(), Some("Maven: compile"));
         // :Make をキーで流しても、カーソルは動かない（結果はログのタブへ）
         let dir = std::env::temp_dir().join(format!("nagi-bottom-make-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);

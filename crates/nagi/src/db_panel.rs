@@ -616,7 +616,7 @@ impl DbPanel {
 impl Editor {
     /// `:Db`（ActivateDatabaseToolWindow）: データベースのタブを出して移る
     pub(crate) fn open_db_panel(&mut self) {
-        if self.db.is_none() {
+        if self.panels.db.is_none() {
             let mut sources = nagi_workers::db::detect_sources(&self.nav_root());
             let cfg = config_path();
             if let Ok(t) = std::fs::read_to_string(&cfg) {
@@ -646,9 +646,9 @@ impl Editor {
                 then: HashMap::new(),
             };
             p.rebuild();
-            self.db = Some(p);
+            self.panels.db = Some(p);
         }
-        if self.db.as_ref().is_some_and(|p| p.sources.is_empty()) {
+        if self.panels.db.as_ref().is_some_and(|p| p.sources.is_empty()) {
             self.svc.notify.info("接続先がありません。a（＋）で足せます");
         }
         self.focus_right(RightTab::Database);
@@ -658,7 +658,7 @@ impl Editor {
     pub(crate) fn db_add(&mut self, arg: &str) {
         self.open_db_panel();
         let f: Vec<&str> = arg.split_whitespace().collect();
-        let Some(p) = &mut self.db else { return };
+        let Some(p) = &mut self.panels.db else { return };
         let (Some(name), Some(url)) = (f.first(), f.get(1).filter(|u| Kind::of(u).is_some())) else {
             p.form = Some(Form::new(Kind::Oracle));
             self.svc.notify.info("接続先を足す: Tab で次の欄、種類は ← →、最後の欄で Enter で保存してつなぐ");
@@ -669,7 +669,7 @@ impl Editor {
     }
 
     fn db_push_source(&mut self, ds: DataSource, save: bool) {
-        if self.db.is_none() {
+        if self.panels.db.is_none() {
             return;
         }
         if save {
@@ -689,7 +689,7 @@ impl Editor {
         } else {
             self.svc.notify.info(format!("接続先 {} を足しました", ds.name));
         }
-        let Some(p) = &mut self.db else { return };
+        let Some(p) = &mut self.panels.db else { return };
         p.sources.push(ds);
         p.conns.push(Conn::default());
         p.rebuild();
@@ -698,14 +698,14 @@ impl Editor {
 
     /// つなぐ（準備ができていなければダウンロードを聞く。パスワードが要ればそれを聞く）
     fn db_begin_connect(&mut self, i: usize) {
-        let Some(p) = &mut self.db else { return };
+        let Some(p) = &mut self.panels.db else { return };
         let s = p.sources[i].clone();
         if Kind::of(&s.url) == Some(Kind::Oracle) && !drivers::oracle_ready() {
             // 何を・どこへ・どの条件で置くかは右の欄に出し、確認の窓で答える
             p.setup_ask = Some(i);
             let q = format!("Oracle のドライバー（約 {} MB）をダウンロードしますか", drivers::ORACLE_CLIENT_SIZE_MB);
             self.ask_or(q, move |e| e.db_download_driver(i), |e| {
-                if let Some(p) = &mut e.db {
+                if let Some(p) = &mut e.panels.db {
                     p.setup_ask = None;
                 }
                 e.svc.notify.info("やめました");
@@ -731,7 +731,7 @@ impl Editor {
     /// saved: 保存したパスワードか（違えば、つながったときに保存する）
     fn db_connect_with(&mut self, i: usize, pass: String, saved: bool) {
         let waker = self.waker();
-        let Some(p) = &mut self.db else { return };
+        let Some(p) = &mut self.panels.db else { return };
         let s = p.sources[i].clone();
         p.conns[i] = Conn::default();
         p.folds.set_open(&format!("s{i}"), true);
@@ -756,7 +756,7 @@ impl Editor {
 
     /// 開いたところの中身を読む
     fn db_ensure(&mut self, r: &DbRow) {
-        let Some(p) = &mut self.db else { return };
+        let Some(p) = &mut self.panels.db else { return };
         let i = r.source();
         let c = &mut p.conns[i];
         if !c.connected {
@@ -783,7 +783,7 @@ impl Editor {
     fn db_toggle_row(&mut self, r: &DbRow) {
         let Some(k) = r.key() else { return };
         let opened = {
-            let Some(p) = &mut self.db else { return };
+            let Some(p) = &mut self.panels.db else { return };
             let open = !p.folds.is_open(&k);
             p.folds.set_open(&k, open);
             open
@@ -791,7 +791,7 @@ impl Editor {
         if opened {
             self.db_ensure(r);
         }
-        if let Some(p) = &mut self.db {
+        if let Some(p) = &mut self.panels.db {
             p.rebuild();
         }
     }
@@ -800,10 +800,10 @@ impl Editor {
     pub fn poll_db(&mut self) -> bool {
         let mut changed = false;
         // ダウンロード
-        let dl = self.db.as_ref().and_then(|p| p.download.as_ref().map(|(i, d, _)| (*i, d.poll())));
+        let dl = self.panels.db.as_ref().and_then(|p| p.download.as_ref().map(|(i, d, _)| (*i, d.poll())));
         if let Some((i, polled)) = dl.filter(|(_, x)| x.status.is_some() || x.done.is_some()) {
             changed = true;
-            let p = self.db.as_mut().unwrap();
+            let p = self.panels.db.as_mut().unwrap();
             if let (Some(text), Some(d)) = (polled.status, &mut p.download) {
                 d.2 = text;
             }
@@ -821,11 +821,11 @@ impl Editor {
                     }
                 }
             }
-            if let Some(p) = &mut self.db {
+            if let Some(p) = &mut self.panels.db {
                 p.rebuild();
             }
         }
-        let Some(p) = &mut self.db else { return changed };
+        let Some(p) = &mut self.panels.db else { return changed };
         let mut replies: Vec<(usize, Reply)> = Vec::new();
         for (i, c) in p.conns.iter().enumerate() {
             let Some(cl) = &c.client else { continue };
@@ -838,7 +838,7 @@ impl Editor {
             self.db_reply(i, r);
         }
         if changed {
-            if let Some(p) = &mut self.db {
+            if let Some(p) = &mut self.panels.db {
                 p.rebuild();
             }
         }
@@ -865,7 +865,7 @@ impl Editor {
             self.db_reconnected(i, tx_lost);
             return;
         }
-        let Some(p) = &mut self.db else { return };
+        let Some(p) = &mut self.panels.db else { return };
         let name = p.sources[i].name.clone();
         let c = &mut p.conns[i];
         let exp = c.expect.pop_front();
@@ -896,7 +896,7 @@ impl Editor {
                 }
                 self.svc.notify.info(format!("{name} につなぎました（{product}、{schema}）{saved}"));
                 self.db_log_line(&format!("{name} につなぎました（{product}、{schema}）{saved}"), false);
-                if let Some(sql) = self.db.as_mut().and_then(|p| p.then.remove(&i)) {
+                if let Some(sql) = self.panels.db.as_mut().and_then(|p| p.then.remove(&i)) {
                     self.db_execute(i, sql);
                 }
             }
@@ -917,7 +917,7 @@ impl Editor {
                 c.objects.insert(s, o);
             }
             (Some(Expect::Columns(s, t)), Reply::Columns(cols)) => {
-                if let Some(te) = &mut self.db_table {
+                if let Some(te) = &mut self.panels.db_table {
                     if te.src == i && te.schema == s && te.table == t {
                         te.set_columns(cols.clone());
                     }
@@ -947,7 +947,7 @@ impl Editor {
                 }
                 // テーブルを作ったり消したりしたかもしれないので、木を読み直す
                 if ok && changes {
-                    if let Some(c) = self.db.as_mut().map(|p| &mut p.conns[i]) {
+                    if let Some(c) = self.panels.db.as_mut().map(|p| &mut p.conns[i]) {
                         let s = c.schema.clone();
                         c.send(Req::Objects(s.clone()), Expect::Objects(s));
                     }
@@ -955,22 +955,22 @@ impl Editor {
                 match target {
                     Target::Result(id) => {
                         let rows = matches!(reply, Reply::Rows { .. });
-                        self.db_results.reply(id, reply);
+                        self.panels.db_results.reply(id, reply);
                         if rows {
                             self.result_find_target(i, id);
                         }
                     }
                     Target::Table => {
-                        if let Some(te) = &mut self.db_table {
+                        if let Some(te) = &mut self.panels.db_table {
                             te.reply(reply);
                         }
                     }
                 }
             }
             (Some(Expect::Count(target)), Reply::Count(n)) => match target {
-                Target::Result(id) => self.db_results.set_total(id, n),
+                Target::Result(id) => self.panels.db_results.set_total(id, n),
                 Target::Table => {
-                    if let Some(te) = &mut self.db_table {
+                    if let Some(te) = &mut self.panels.db_table {
                         te.total = Some(n);
                     }
                 }
@@ -987,14 +987,14 @@ impl Editor {
                     self.db_log(&name, &format!("{n} 件の変更（{what}）"), &format!("{ms} ms"), false);
                     match target {
                         Target::Table => self.db_table_reload(),
-                        Target::Result(id) => self.db_results.committed(id, format!("{n} 行を直しました · {ms} ms")),
+                        Target::Result(id) => self.panels.db_results.committed(id, format!("{n} 行を直しました · {ms} ms")),
                     }
                 }
                 Reply::Error(e) => {
                     self.svc.notify.error(format!("送信できません: {}", e.lines().next().unwrap_or("")));
                     let what = if target == Target::Table { "テーブルの編集" } else { "結果の編集" };
                     self.db_log(&name, &format!("{n} 件の変更（{what}）"), e, true);
-                    if let Some(te) = &mut self.db_table {
+                    if let Some(te) = &mut self.panels.db_table {
                         te.busy = false;
                     }
                 }
@@ -1016,7 +1016,7 @@ impl Editor {
                 self.svc.notify.info(format!("{what}しました（{n} 件）"));
                 self.db_log_line(&format!("{what}しました（{n} 件）"), false);
                 // 結果の表で直して送った値: ロールバックなら前の値に戻して読み直す
-                for id in self.db_results.tx_ended(i, commit) {
+                for id in self.panels.db_results.tx_ended(i, commit) {
                     self.db_requery(id);
                 }
             }
@@ -1039,12 +1039,12 @@ impl Editor {
 
     /// 出力のタブに 1 行書く
     pub(crate) fn db_log_line(&mut self, text: &str, error: bool) {
-        self.db_results.log(String::new(), text.to_string(), String::new(), error);
+        self.panels.db_results.log(String::new(), text.to_string(), String::new(), error);
     }
 
     fn db_log(&mut self, src: &str, sql: &str, outcome: &str, error: bool) {
         let first = sql.split_whitespace().collect::<Vec<_>>().join(" ");
-        self.db_results.log(src.to_string(), first, outcome.to_string(), error);
+        self.panels.db_results.log(src.to_string(), first, outcome.to_string(), error);
     }
 
     /// 文字をファイルに書いて開く（DDL・書き出し）
@@ -1067,7 +1067,7 @@ impl Editor {
             self.svc.notify.info("流す文がありません（カーソルを文の上に置いてください）");
             return;
         }
-        let Some(p) = &mut self.db else { return };
+        let Some(p) = &mut self.panels.db else { return };
         if !p.conns[i].connected {
             p.then.insert(i, sql);
             if p.conns[i].client.is_none() {
@@ -1087,26 +1087,26 @@ impl Editor {
     }
 
     fn db_run(&mut self, i: usize, sql: String) {
-        let Some(p) = &self.db else { return };
+        let Some(p) = &self.panels.db else { return };
         let changes = !is_read_only(&sql);
         let first = sql.lines().next().unwrap_or("").chars().take(60).collect::<String>();
         let title = format!("{} · {first}", p.sources[i].name);
         let sf = p.kind(i) == Some(Kind::Salesforce);
-        let id = self.db_results.new_tab(i, &title, &sql, !changes && !sf);
+        let id = self.panels.db_results.new_tab(i, &title, &sql, !changes && !sf);
         let d = self.db_dialect(i);
-        if let Some(t) = self.db_results.tabs.iter_mut().find(|t| t.id == id) {
+        if let Some(t) = self.panels.db_results.tabs.iter_mut().find(|t| t.id == id) {
             t.dialect = d;
         }
-        let c = &mut self.db.as_mut().unwrap().conns[i];
+        let c = &mut self.panels.db.as_mut().unwrap().conns[i];
         c.send(Req::Query { sql: sql.clone(), max: MAX_ROWS, offset: 0 }, Expect::Query(Target::Result(id), sql, changes));
         self.show_results();
     }
 
     /// 結果のタブを、絞り込み・並べ替え・ページを変えて読み直す
     pub(crate) fn db_requery(&mut self, id: u64) {
-        let Some(t) = self.db_results.tab(id) else { return };
+        let Some(t) = self.panels.db_results.tab(id) else { return };
         let (i, sql, count, offset) = (t.src, t.effective_sql(), t.count_sql(), t.offset);
-        let Some(c) = self.db.as_mut().and_then(|p| p.conns.get_mut(i)) else { return };
+        let Some(c) = self.panels.db.as_mut().and_then(|p| p.conns.get_mut(i)) else { return };
         if !c.connected {
             self.svc.notify.info("まだつないでいません");
             return;
@@ -1120,7 +1120,7 @@ impl Editor {
     /// Oracle のドライバーをダウンロードする（確認の窓で「はい」）
     fn db_download_driver(&mut self, i: usize) {
         let waker = self.waker();
-        let Some(p) = &mut self.db else { return };
+        let Some(p) = &mut self.panels.db else { return };
         p.setup_ask = None;
         p.download = Some((i, drivers::download_oracle(waker), "ダウンロードを始めます…".into()));
         p.folds.set_open(&format!("s{i}"), true);
@@ -1131,12 +1131,12 @@ impl Editor {
     /// 今のバッファが SQL コンソールなら、その接続先
     /// 接続先 `i` の方言
     pub(crate) fn db_dialect(&self, i: usize) -> &'static nagi_lang::sql::Dialect {
-        nagi_lang::sql::dialect(self.db.as_ref().and_then(|p| p.kind(i)))
+        nagi_lang::sql::dialect(self.panels.db.as_ref().and_then(|p| p.kind(i)))
     }
 
     pub fn console_source(&self) -> Option<usize> {
         let path = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok())?;
-        self.db.as_ref()?.consoles.get(&path).copied()
+        self.panels.db.as_ref()?.consoles.get(&path).copied()
     }
 
     /// コンソールでカーソルのある文の行の範囲
@@ -1171,11 +1171,11 @@ impl Editor {
 
     /// Tx の自動・手動を切り替える
     pub(crate) fn db_toggle_tx(&mut self, i: usize) {
-        if self.db.as_ref().and_then(|p| p.kind(i)) == Some(Kind::Salesforce) {
+        if self.panels.db.as_ref().and_then(|p| p.kind(i)) == Some(Kind::Salesforce) {
             self.svc.notify.info("Salesforce にトランザクションはありません");
             return;
         }
-        let Some(c) = self.db.as_mut().map(|p| &mut p.conns[i]) else { return };
+        let Some(c) = self.panels.db.as_mut().map(|p| &mut p.conns[i]) else { return };
         if !c.connected {
             self.svc.notify.info("まだつないでいません");
             return;
@@ -1192,7 +1192,7 @@ impl Editor {
     }
 
     pub(crate) fn db_commit(&mut self, i: usize, commit: bool) {
-        let Some(c) = self.db.as_mut().map(|p| &mut p.conns[i]) else { return };
+        let Some(c) = self.panels.db.as_mut().map(|p| &mut p.conns[i]) else { return };
         if !c.connected {
             return;
         }
@@ -1203,7 +1203,7 @@ impl Editor {
 
     /// 裏で接続が切れていたので、つなぎ直した（手動の Tx なら、コミットしていない変更は失われた）
     fn db_reconnected(&mut self, i: usize, tx_lost: bool) {
-        let Some(p) = &mut self.db else { return };
+        let Some(p) = &mut self.panels.db else { return };
         let name = p.sources[i].name.clone();
         let c = &mut p.conns[i];
         let n = if tx_lost { std::mem::take(&mut c.pending) } else { 0 };
@@ -1216,7 +1216,7 @@ impl Editor {
         }
         if tx_lost {
             // 結果の表で直して送った値は、ロールバックと同じく前の値に戻して読み直す
-            for id in self.db_results.tx_ended(i, false) {
+            for id in self.panels.db_results.tx_ended(i, false) {
                 self.db_requery(id);
             }
         }
@@ -1224,7 +1224,7 @@ impl Editor {
 
     /// 今の接続先（コンソールの接続先、無ければ木で選んでいる接続先）
     fn db_current_source(&self) -> Option<usize> {
-        self.console_source().or_else(|| self.db.as_ref().and_then(|p| p.rows.get(p.selected)).map(|r| r.source()))
+        self.console_source().or_else(|| self.panels.db.as_ref().and_then(|p| p.rows.get(p.selected)).map(|r| r.source()))
     }
 
     /// `:DbLogout`: Salesforce の保存したログインを消して切る（ほかの接続先は、保存したパスワードを消す）
@@ -1246,7 +1246,7 @@ impl Editor {
     }
 
     fn db_close(&mut self, i: usize, again: bool) {
-        let Some(p) = &self.db else { return };
+        let Some(p) = &self.panels.db else { return };
         let n = p.conns[i].pending;
         if n > 0 {
             let q = format!("まだコミットしていない変更が {n} 件あります。捨てて{}か", if again { "つなぎ直します" } else { "切ります" });
@@ -1257,7 +1257,7 @@ impl Editor {
     }
 
     fn db_close_now(&mut self, i: usize, again: bool) {
-        let Some(p) = &mut self.db else { return };
+        let Some(p) = &mut self.panels.db else { return };
         // 裏のスレッドは、送り口が無くなると今の頼みごとを終えてから接続を閉じる（コミットしていない変更は取り消される）
         p.conns[i] = Conn::default();
         p.then.remove(&i);
@@ -1274,7 +1274,7 @@ impl Editor {
 
     /// 接続先 `i` の木を読み直す（覚えたテーブル・列・索引を捨てて、今のスキーマから）
     fn db_reload(&mut self, i: usize) {
-        let Some(p) = &mut self.db else { return };
+        let Some(p) = &mut self.panels.db else { return };
         let c = &mut p.conns[i];
         if c.connected {
             c.objects.clear();
@@ -1292,7 +1292,7 @@ impl Editor {
 
     /// 接続先 `i` の保存したパスワード（Salesforce はログイン）を消す
     fn db_forget_login(&mut self, i: usize) {
-        let Some(p) = &mut self.db else { return };
+        let Some(p) = &mut self.panels.db else { return };
         let s = p.sources[i].clone();
         if p.kind(i) != Some(Kind::Salesforce) {
             let had = nagi_workers::db::forget_password(&s.url, &s.user);
@@ -1315,7 +1315,7 @@ impl Editor {
 
     /// 接続先 `i` のスキーマを切り替える（コンソール・木は切り替えた先を見る）
     fn db_switch_schema(&mut self, i: usize, s: &str) {
-        let Some(c) = self.db.as_mut().map(|p| &mut p.conns[i]) else { return };
+        let Some(c) = self.panels.db.as_mut().map(|p| &mut p.conns[i]) else { return };
         if !c.connected {
             self.svc.notify.info("まだつないでいません");
             return;
@@ -1326,7 +1326,7 @@ impl Editor {
 
     /// 接続先 `i` の既定のスキーマを決める（空なら外す）。設定ファイルに書き、つないでいれば切り替える
     pub(crate) fn db_set_default_schema(&mut self, i: usize, schema: &str) {
-        let Some(p) = &mut self.db else { return };
+        let Some(p) = &mut self.panels.db else { return };
         let Some(ds) = p.sources.get_mut(i) else { return };
         ds.schema = schema.trim().to_string();
         let ds = ds.clone();
@@ -1358,7 +1358,7 @@ impl Editor {
 
     /// スキーマの候補（:DbSchema の補完）
     pub fn db_schema_names(&self) -> Vec<String> {
-        self.db_current_source().and_then(|i| self.db.as_ref()?.conns.get(i)?.schemas.clone()).unwrap_or_default()
+        self.db_current_source().and_then(|i| self.panels.db.as_ref()?.conns.get(i)?.schemas.clone()).unwrap_or_default()
     }
 
     /// `:DbCommit` / `:DbRollback` / `:DbTx`
@@ -1376,7 +1376,7 @@ impl Editor {
 
     /// 接続先の SQL コンソールを開く
     pub(crate) fn open_console(&mut self, i: usize, initial: Option<String>) {
-        let Some(p) = &mut self.db else { return };
+        let Some(p) = &mut self.panels.db else { return };
         let s = p.sources[i].clone();
         let dir = work_dir().join("consoles");
         let _ = std::fs::create_dir_all(&dir);
@@ -1403,7 +1403,7 @@ impl Editor {
 
     /// 新しいクエリ（DataGrip の New Query Console）: 接続先の新しい .sql を Insert で開く。Ctrl+Enter で流す
     pub(crate) fn db_new_query(&mut self, i: usize, initial: Option<String>) {
-        let Some(p) = &mut self.db else { return };
+        let Some(p) = &mut self.panels.db else { return };
         let s = p.sources[i].clone();
         let dir = work_dir().join("consoles");
         let _ = std::fs::create_dir_all(&dir);
@@ -1427,10 +1427,10 @@ impl Editor {
 
     /// `:DbNew`: 今の接続先（コンソール・木で選んでいるもの。無ければ最初の接続先）で新しいクエリ
     pub(crate) fn db_new_query_command(&mut self) {
-        if self.db.is_none() {
+        if self.panels.db.is_none() {
             self.open_db_panel();
         }
-        let i = self.db_current_source().or_else(|| self.db.as_ref().filter(|p| !p.sources.is_empty()).map(|_| 0));
+        let i = self.db_current_source().or_else(|| self.panels.db.as_ref().filter(|p| !p.sources.is_empty()).map(|_| 0));
         match i {
             Some(i) => self.db_new_query(i, None),
             None => self.svc.notify.info("接続先がありません。データベースの欄の a で足せます"),
@@ -1438,7 +1438,7 @@ impl Editor {
     }
 
     fn db_selected(&self) -> Option<DbRow> {
-        let p = self.db.as_ref()?;
+        let p = self.panels.db.as_ref()?;
         p.rows.get(p.selected).cloned()
     }
 
@@ -1446,7 +1446,7 @@ impl Editor {
     fn db_activate(&mut self) {
         let Some(r) = self.db_selected() else { return };
         if let DbRow::Source(i) = r {
-            let p = self.db.as_ref().unwrap();
+            let p = self.panels.db.as_ref().unwrap();
             if p.conns[i].client.is_none() && p.download.is_none() {
                 self.db_begin_connect(i);
                 return;
@@ -1459,7 +1459,7 @@ impl Editor {
     fn db_open_selected(&mut self) {
         match self.db_selected() {
             // Salesforce は表を直さないので、SOQL で先頭の 200 件を出す
-            Some(DbRow::Object(i, _, t, Group::Tables | Group::Views, _)) if self.db.as_ref().and_then(|p| p.kind(i)) == Some(Kind::Salesforce) => {
+            Some(DbRow::Object(i, _, t, Group::Tables | Group::Views, _)) if self.panels.db.as_ref().and_then(|p| p.kind(i)) == Some(Kind::Salesforce) => {
                 self.db_execute(i, format!("SELECT FIELDS(STANDARD) FROM {t} LIMIT 200"));
                 self.set_state(State::List);
                 self.list_side = crate::editor::Side::Right;
@@ -1478,7 +1478,7 @@ impl Editor {
     }
 
     fn db_ddl_of(&mut self, i: usize, s: &str, t: &str, g: Group) {
-        if let Some(c) = self.db.as_mut().map(|p| &mut p.conns[i]) {
+        if let Some(c) = self.panels.db.as_mut().map(|p| &mut p.conns[i]) {
             let kind = if g == Group::Views { "VIEW" } else { "TABLE" };
             c.send(Req::Ddl(s.to_string(), t.to_string(), kind.into()), Expect::Ddl(format!("{s}.{t}")));
         }
@@ -1487,7 +1487,7 @@ impl Editor {
     /// 木の右クリック（欄の中の行。0 行目はタブ、1 行目は絞り込み）。押した行を選んでから、その行のメニューを出す（DataGrip と同じ操作）。
     /// `at` はメニューを出す画面の位置。出したら true
     pub(crate) fn db_context(&mut self, prow: usize, at: (usize, usize)) -> bool {
-        let Some(p) = &mut self.db else { return false };
+        let Some(p) = &mut self.panels.db else { return false };
         // 右クリックは押した行を選ぶだけ（決めない）
         let len = p.rows.len();
         if prow < 2 || nagi_ui::list::pick_row(&mut p.selected, p.scroll, prow, 2, len, 1).is_none() {
@@ -1500,7 +1500,7 @@ impl Editor {
             p.conns[i].ensure_columns(s, t);
         }
         self.focus_right(RightTab::Database);
-        let Some(p) = &self.db else { return false };
+        let Some(p) = &self.panels.db else { return false };
         let src = p.sources[i].clone();
         let c = &p.conns[i];
         let kind = Kind::of(&src.url);
@@ -1606,7 +1606,7 @@ impl Editor {
 
     /// テーブルの SELECT・INSERT・UPDATE・DELETE を作って新しいクエリに書く（列がまだ無ければ読み始めて、もう一度と知らせる）
     fn db_generate(&mut self, i: usize, s: &str, t: &str, what: &str) {
-        let Some(p) = &mut self.db else { return };
+        let Some(p) = &mut self.panels.db else { return };
         let c = &mut p.conns[i];
         let Some(cols) = c.columns.get(&(s.to_string(), t.to_string())).cloned() else {
             c.ensure_columns(s, t);
@@ -1619,7 +1619,7 @@ impl Editor {
 
     /// 入力欄（絞り込み・フォーム）に IME の確定を入れる。入れたら true
     pub(crate) fn db_insert(&mut self, text: &str) -> bool {
-        let Some(p) = &mut self.db else { return false };
+        let Some(p) = &mut self.panels.db else { return false };
         if let Some(f) = &mut p.form {
             if f.at > 0 {
                 f.fields[f.at].1.insert_text(text);
@@ -1641,7 +1641,7 @@ impl Editor {
         if self.vim_on || !matches!(key, Key::Char(c) if c != ' ') || !self.right_focused() || self.right_tab != RightTab::Database {
             return false;
         }
-        let Some(p) = &mut self.db else { return false };
+        let Some(p) = &mut self.panels.db else { return false };
         if p.filter.is_some() || p.form.is_some() || p.password.is_some() {
             return false;
         }
@@ -1652,12 +1652,12 @@ impl Editor {
 
     /// IME を使う入力欄にいるか（パスワードでは使わない）
     pub fn db_typing(&self) -> bool {
-        self.right_focused() && self.db.as_ref().is_some_and(|p| p.form.as_ref().is_some_and(|f| f.at > 0 && f.fields[f.at].1.is_insert()) || p.filter.as_ref().is_some_and(|f| f.is_insert()))
+        self.right_focused() && self.panels.db.as_ref().is_some_and(|p| p.form.as_ref().is_some_and(|f| f.at > 0 && f.fields[f.at].1.is_insert()) || p.filter.as_ref().is_some_and(|f| f.is_insert()))
     }
 
     pub(crate) fn db_key(&mut self, key: Key) -> Effect {
         let half = (self.windows_rows() / 2).max(1);
-        let Some(p) = &mut self.db else {
+        let Some(p) = &mut self.panels.db else {
             self.set_state(State::Normal);
             return Effect::None;
         };
@@ -1703,9 +1703,9 @@ impl Editor {
                 }
                 Key::Esc if f.at == 0 => FieldOut::Cancel,
                 Key::Enter if f.at == 0 => FieldOut::Submit,
-                k => self.feed_field(k, |e| e.db.as_mut().and_then(|p| p.form.as_mut()).map(|f| &mut f.fields[f.at].1)),
+                k => self.feed_field(k, |e| e.panels.db.as_mut().and_then(|p| p.form.as_mut()).map(|f| &mut f.fields[f.at].1)),
             };
-            let Some(p) = &mut self.db else { return Effect::None };
+            let Some(p) = &mut self.panels.db else { return Effect::None };
             let Some(f) = &mut p.form else { return Effect::None };
             match out {
                 FieldOut::Cancel => {
@@ -1720,7 +1720,7 @@ impl Editor {
                     Ok(ds) => {
                         p.form = None;
                         self.db_push_source(ds, true);
-                        let i = self.db.as_ref().unwrap().sources.len() - 1;
+                        let i = self.panels.db.as_ref().unwrap().sources.len() - 1;
                         self.db_begin_connect(i);
                     }
                     Err(e) => self.svc.notify.error(e),
@@ -1731,8 +1731,8 @@ impl Editor {
         }
         // 絞り込みの入力中（Vim 風。Enter で決める、ノーマルの Esc で消す）
         if p.filter.is_some() {
-            let out = self.feed_field(key, |e| e.db.as_mut().and_then(|p| p.filter.as_mut()));
-            let Some(p) = &mut self.db else { return Effect::None };
+            let out = self.feed_field(key, |e| e.panels.db.as_mut().and_then(|p| p.filter.as_mut()));
+            let Some(p) = &mut self.panels.db else { return Effect::None };
             match out {
                 FieldOut::Changed => {
                     p.filter_text = p.filter.as_ref().map(|f| f.text()).unwrap_or_default();
@@ -1784,7 +1784,7 @@ impl Editor {
             // 新しいクエリ（テーブルの上なら SELECT を書き入れて）
             Key::Char('n') => {
                 if let Some(r) = self.db_selected() {
-                    let sf = self.db.as_ref().and_then(|p| p.kind(r.source())) == Some(Kind::Salesforce);
+                    let sf = self.panels.db.as_ref().and_then(|p| p.kind(r.source())) == Some(Kind::Salesforce);
                     let init = match &r {
                         DbRow::Object(_, _, t, Group::Tables | Group::Views, _) if sf => Some(format!("SELECT Id, Name FROM {t} LIMIT 100")),
                         DbRow::Object(_, s, t, Group::Tables | Group::Views, _) => Some(format!("SELECT * FROM {}", qualified(self.db_dialect(r.source()), s, t))),
@@ -1796,7 +1796,7 @@ impl Editor {
             // コンソール（テーブルの上なら SELECT を書き足して）
             Key::Char('c') => {
                 if let Some(r) = self.db_selected() {
-                    let sf = self.db.as_ref().and_then(|p| p.kind(r.source())) == Some(Kind::Salesforce);
+                    let sf = self.panels.db.as_ref().and_then(|p| p.kind(r.source())) == Some(Kind::Salesforce);
                     let init = match &r {
                         DbRow::Object(_, _, t, Group::Tables | Group::Views, _) if sf => Some(format!("SELECT Id, Name FROM {t} LIMIT 100")),
                         DbRow::Object(_, s, t, Group::Tables | Group::Views, _) => Some(format!("SELECT * FROM {};", qualified(self.db_dialect(r.source()), s, t))),
@@ -1818,10 +1818,10 @@ impl Editor {
                 }
             }
             Key::Char('q') => {
-                if self.db.as_ref().is_some_and(|p| p.conns.iter().any(|c| c.pending > 0)) {
+                if self.panels.db.as_ref().is_some_and(|p| p.conns.iter().any(|c| c.pending > 0)) {
                     self.svc.notify.info("まだコミットしていない変更があります。先にコミットかロールバックを");
                 } else {
-                    self.db = None;
+                    self.panels.db = None;
                     self.set_state(State::Normal);
                     self.rows = self.text_rows(self.active_rect());
                 }
@@ -1836,7 +1836,7 @@ impl Editor {
     }
 
     pub(crate) fn db_click(&mut self, row: usize, clicks: u32) {
-        let Some(p) = &mut self.db else { return };
+        let Some(p) = &mut self.panels.db else { return };
         // 1 行目はタブ、2 行目は絞り込みの欄
         if row == 1 {
             if p.filter.is_none() {
@@ -1866,7 +1866,7 @@ impl Editor {
     /// コンソールの上の帯のボタン（見出し, 横の位置, 幅, 何をするか）。帯の左端から数える
     pub fn console_bar(&self, w: usize) -> Vec<(String, usize, usize, BarItem)> {
         let Some(i) = self.console_source() else { return Vec::new() };
-        let Some(p) = &self.db else { return Vec::new() };
+        let Some(p) = &self.panels.db else { return Vec::new() };
         let c = &p.conns[i];
         let width = |s: &str| nagi_core::display_col(s, s.len(), false);
         let right = format!("{} › {} ▾", p.sources[i].name, if c.schema.is_empty() { "…" } else { &c.schema });
@@ -1991,15 +1991,15 @@ pub(crate) mod tests {
         e.set_screen(160, 50);
         e.open_db_panel();
         for k in ["/or", "/or<Esc>v"] {
-            e.db.as_mut().unwrap().filter = None;
-            e.db.as_mut().unwrap().filter_text.clear();
+            e.panels.db.as_mut().unwrap().filter = None;
+            e.panels.db.as_mut().unwrap().filter_text.clear();
             e.focus_right(RightTab::Database);
             keys(&mut e, k);
-            assert!(e.right_focused() && e.db.as_ref().unwrap().filter.is_some(), "{k}");
+            assert!(e.right_focused() && e.panels.db.as_ref().unwrap().filter.is_some(), "{k}");
             e.click(1, 7);
             assert_eq!((e.state(), e.cursor.line), (State::Normal, 1), "{k}");
             keys(&mut e, "x");
-            assert_eq!(e.db.as_ref().unwrap().filter_text, "or", "{k}: 打ったキーは本文へ");
+            assert_eq!(e.panels.db.as_ref().unwrap().filter_text, "or", "{k}: 打ったキーは本文へ");
         }
         assert_eq!(e.buf.line(1).trim_end().len(), 1, "x を 2 回");
     }
@@ -2030,22 +2030,22 @@ pub(crate) mod tests {
         let mut e = Editor::new(nagi_core::Buffer::from_str("x\n"), None);
         e.set_screen(160, 50);
         e.db_add(&format!("sf salesforce:{} me@example.com", m.base));
-        let i = e.db.as_ref().unwrap().sources.len() - 1;
-        assert_eq!(e.db.as_ref().unwrap().kind(i), Some(Kind::Salesforce));
+        let i = e.panels.db.as_ref().unwrap().sources.len() - 1;
+        assert_eq!(e.panels.db.as_ref().unwrap().kind(i), Some(Kind::Salesforce));
         e.focus_right(RightTab::Database);
-        e.db.as_mut().unwrap().selected = e.db.as_ref().unwrap().rows.iter().position(|r| *r == DbRow::Source(i)).unwrap();
+        e.panels.db.as_mut().unwrap().selected = e.panels.db.as_ref().unwrap().rows.iter().position(|r| *r == DbRow::Source(i)).unwrap();
         keys(&mut e, "<CR>");
-        wait(&mut e, &|e| e.db.as_ref().unwrap().conns[i].objects.values().any(|o| !o.tables.is_empty()));
-        let p = e.db.as_ref().unwrap();
+        wait(&mut e, &|e| e.panels.db.as_ref().unwrap().conns[i].objects.values().any(|o| !o.tables.is_empty()));
+        let p = e.panels.db.as_ref().unwrap();
         let labels: Vec<String> = p.rows.iter().map(|r| p.row_label(r).2).collect();
         assert!(labels.contains(&"オブジェクト".to_string()) && labels.contains(&"カスタムオブジェクト".to_string()), "{labels:?}");
-        assert!(e.db_results.log.iter().any(|l| l.text.contains("ブラウザ")), "ログインの知らせが出力に残る");
+        assert!(e.panels.db_results.log.iter().any(|l| l.text.contains("ブラウザ")), "ログインの知らせが出力に残る");
         // Account の上で o → SOQL が流れて結果のタブに出る（絞り込みの欄は出さない）
         let k = p.rows.iter().position(|r| matches!(r, DbRow::Object(_, _, t, _, _) if t == "Account")).unwrap();
-        e.db.as_mut().unwrap().selected = k;
+        e.panels.db.as_mut().unwrap().selected = k;
         keys(&mut e, "o");
-        wait(&mut e, &|e| e.db_results.active_tab().is_some_and(|t| !t.running));
-        let t = e.db_results.active_tab().unwrap();
+        wait(&mut e, &|e| e.panels.db_results.active_tab().is_some_and(|t| !t.running));
+        let t = e.panels.db_results.active_tab().unwrap();
         assert_eq!(t.cols, vec!["Id", "Name", "Owner.Name"]);
         assert_eq!(t.rows.len(), 3);
         assert!(!t.filterable);
@@ -2101,18 +2101,18 @@ pub(crate) mod tests {
         for c in "it".chars() {
             e.key(Key::Char(c));
         }
-        let p = e.db.as_ref().unwrap();
+        let p = e.panels.db.as_ref().unwrap();
         assert!(p.filter.is_some());
         assert_eq!(p.filter_text, "it");
         // 決めた後にまた打つと、今の絞り込みの後ろへ
         e.key(Key::Enter);
-        assert!(e.db.as_ref().unwrap().filter.is_none());
+        assert!(e.panels.db.as_ref().unwrap().filter.is_none());
         e.key(Key::Char('e'));
-        assert_eq!(e.db.as_ref().unwrap().filter_text, "ite");
+        assert_eq!(e.panels.db.as_ref().unwrap().filter_text, "ite");
         // Ctrl+A で全部を選んで打ち直す
         e.key(Key::Ctrl('a'));
         e.key(Key::Char('m'));
-        assert_eq!(e.db.as_ref().unwrap().filter_text, "m");
+        assert_eq!(e.panels.db.as_ref().unwrap().filter_text, "m");
         e.set_vim(true);
     }
 
@@ -2123,16 +2123,16 @@ pub(crate) mod tests {
         e.set_screen(160, 50);
         e.open_db_panel();
         e.db_add("mem jdbc:sqlite::memory:");
-        let i = e.db.as_ref().unwrap().sources.len() - 1;
+        let i = e.panels.db.as_ref().unwrap().sources.len() - 1;
         let prow = |e: &Editor| {
-            let p = e.db.as_ref().unwrap();
+            let p = e.panels.db.as_ref().unwrap();
             p.rows.iter().position(|r| *r == DbRow::Source(i)).map(|k| k - p.scroll + 2).unwrap()
         };
-        let open = |e: &Editor| e.db.as_ref().unwrap().folds.is_open(&format!("s{i}"));
+        let open = |e: &Editor| e.panels.db.as_ref().unwrap().folds.is_open(&format!("s{i}"));
         let r = prow(&e);
         e.db_click(r, 1);
-        assert!(e.db.as_ref().unwrap().conns[i].client.is_some(), "1 回でつなぎ始める");
-        wait(&mut e, &|e| e.db.as_ref().unwrap().conns[i].connected);
+        assert!(e.panels.db.as_ref().unwrap().conns[i].client.is_some(), "1 回でつなぎ始める");
+        wait(&mut e, &|e| e.panels.db.as_ref().unwrap().conns[i].connected);
         assert!(open(&e));
         e.db_click(r, 1);
         assert!(!open(&e), "もう 1 回で閉じる");
@@ -2148,9 +2148,9 @@ pub(crate) mod tests {
         e.set_screen(160, 50);
         e.open_db_panel();
         e.db_add("mem jdbc:sqlite::memory:");
-        let i = e.db.as_ref().unwrap().sources.len() - 1;
+        let i = e.panels.db.as_ref().unwrap().sources.len() - 1;
         let prow = |e: &Editor, f: &dyn Fn(&DbRow) -> bool| {
-            let p = e.db.as_ref().unwrap();
+            let p = e.panels.db.as_ref().unwrap();
             p.rows.iter().position(|r| f(r)).map(|k| k - p.scroll + 2).unwrap()
         };
         let labels = |e: &Editor| e.menu.as_ref().unwrap().items.iter().filter(|it| it.run.is_some()).map(|it| it.label.clone()).collect::<Vec<_>>();
@@ -2164,17 +2164,17 @@ pub(crate) mod tests {
         assert_eq!(e.state(), State::Menu);
         assert!(labels(&e).contains(&"つなぐ".to_string()) && !labels(&e).iter().any(|l| l.contains("パスワード")), "SQLite にパスワードは無い: {:?}", labels(&e));
         run(&mut e, "つなぐ");
-        wait(&mut e, &|e| e.db.as_ref().unwrap().conns[i].connected);
-        e.db.as_mut().unwrap().conns[i].manual = true;
+        wait(&mut e, &|e| e.panels.db.as_ref().unwrap().conns[i].connected);
+        e.panels.db.as_mut().unwrap().conns[i].manual = true;
         e.db_execute(i, "create table item(id integer primary key, name text)".into());
-        wait(&mut e, &|e| e.db.as_ref().unwrap().conns[i].objects.get("main").is_some_and(|o| !o.tables.is_empty()));
+        wait(&mut e, &|e| e.panels.db.as_ref().unwrap().conns[i].objects.get("main").is_some_and(|o| !o.tables.is_empty()));
         // テーブル: メニューを出すと列を読み始める
         let r = prow(&e, &|r| matches!(r, DbRow::Object(_, _, t, Group::Tables, _) if t == "item"));
         assert!(e.db_context(r, (r, 150)));
         for want in ["データを開く", "新しいクエリ", "件数を数える", "SELECT 文を作る（新しいクエリに）", "DDL を開く", "名前をコピー", "DROP 文を作る（新しいクエリに）"] {
             assert!(labels(&e).iter().any(|l| l == want), "{want}: {:?}", labels(&e));
         }
-        wait(&mut e, &|e| e.db.as_ref().unwrap().conns[i].columns.contains_key(&("main".to_string(), "item".to_string())));
+        wait(&mut e, &|e| e.panels.db.as_ref().unwrap().conns[i].columns.contains_key(&("main".to_string(), "item".to_string())));
         run(&mut e, "SELECT 文を作る（新しいクエリに）");
         assert_eq!(e.console_source(), Some(i), "新しいクエリはこの接続先のコンソール");
         assert!(e.buf.text().contains("SELECT id,\n       name\nFROM main.item"), "{}", e.buf.text());
@@ -2183,8 +2183,8 @@ pub(crate) mod tests {
         let r = prow(&e, &|r| matches!(r, DbRow::Object(_, _, t, Group::Tables, _) if t == "item"));
         assert!(e.db_context(r, (r, 150)));
         run(&mut e, "件数を数える");
-        wait(&mut e, &|e| e.db_results.active_tab().is_some_and(|t| !t.running));
-        assert_eq!(e.db_results.active_tab().unwrap().rows[0][0].as_deref(), Some("0"));
+        wait(&mut e, &|e| e.panels.db_results.active_tab().is_some_and(|t| !t.running));
+        assert_eq!(e.panels.db_results.active_tab().unwrap().rows[0][0].as_deref(), Some("0"));
         // スキーマ: SQLite は切り替えない・既定にしない
         let r = prow(&e, &|r| matches!(r, DbRow::Schema(..)));
         assert!(e.db_context(r, (r, 150)));
@@ -2212,7 +2212,7 @@ pub(crate) mod tests {
         e.open_db_panel();
         // a → 種類を SQLite に（名前の順で最後なので、Oracle から ← で回る）→ 名前 → ファイル → Enter で保存してつなぐ
         keys(&mut e, "a");
-        assert!(e.db.as_ref().unwrap().form.is_some());
+        assert!(e.panels.db.as_ref().unwrap().form.is_some());
         keys(&mut e, "<Up><Left><Down>shop<Tab>");
         let file = dir.join("shop.db");
         for c in file.display().to_string().chars() {
@@ -2220,19 +2220,19 @@ pub(crate) mod tests {
         }
         keys(&mut e, "<CR>");
         assert!(std::fs::read_to_string(dir.join(".config/nagi/databases.txt")).unwrap().contains("shop | jdbc:sqlite:"));
-        let i = e.db.as_ref().unwrap().sources.len() - 1;
-        wait(&mut e, &|e| e.db.as_ref().unwrap().conns[i].objects.contains_key("main"));
+        let i = e.panels.db.as_ref().unwrap().sources.len() - 1;
+        wait(&mut e, &|e| e.panels.db.as_ref().unwrap().conns[i].objects.contains_key("main"));
         // コンソール: CREATE は確かめてから
         keys(&mut e, "c");
         assert_eq!(e.console_source(), Some(i));
         keys(&mut e, "Gocreate table item(id integer primary key, name text)<Esc><C-m>");
         assert!(e.menu.as_ref().and_then(|m| m.title.as_deref()).is_some_and(|t| t.contains("データを変える文")), "確認の窓");
         keys(&mut e, "y");
-        wait(&mut e, &|e| e.db.as_ref().unwrap().conns[i].objects.get("main").is_some_and(|o| !o.tables.is_empty()));
+        wait(&mut e, &|e| e.panels.db.as_ref().unwrap().conns[i].objects.get("main").is_some_and(|o| !o.tables.is_empty()));
         // 手動 Tx では確かめずに流し、未コミットを数える。ロールバックで消える
         e.db_toggle_tx(i);
         keys(&mut e, "o<CR>insert into item values (1, 'りんご')<Esc><C-m>");
-        wait(&mut e, &|e| e.db.as_ref().unwrap().conns[i].pending == 1);
+        wait(&mut e, &|e| e.panels.db.as_ref().unwrap().conns[i].pending == 1);
         let bar: Vec<String> = e.console_bar(120).into_iter().map(|b| b.0).collect();
         assert!(bar.contains(&"未コミット 1 件".to_string()), "{bar:?}");
         // 狭くしても、ボタンと接続先は重ならない（説明を外し、記号だけにし、名前を詰める）
@@ -2245,33 +2245,33 @@ pub(crate) mod tests {
         }
         e.db_commit(i, false);
         keys(&mut e, "o<CR>select count(*) as n from item<Esc><C-m>");
-        wait(&mut e, &|e| e.db_results.active_tab().is_some_and(|t| !t.running && !t.rows.is_empty()));
-        assert_eq!(e.db_results.active_tab().unwrap().rows[0][0].as_deref(), Some("0"), "ロールバックで消えた");
+        wait(&mut e, &|e| e.panels.db_results.active_tab().is_some_and(|t| !t.running && !t.rows.is_empty()));
+        assert_eq!(e.panels.db_results.active_tab().unwrap().rows[0][0].as_deref(), Some("0"), "ロールバックで消えた");
         // 出力のタブに記録が残る
-        assert!(e.db_results.log.iter().any(|l| l.text.contains("insert into item")));
+        assert!(e.panels.db_results.log.iter().any(|l| l.text.contains("insert into item")));
         // 木: テーブル（1）› item
-        let p = e.db.as_ref().unwrap();
+        let p = e.panels.db.as_ref().unwrap();
         assert!(p.rows.iter().any(|r| matches!(r, DbRow::Group(_, _, Group::Tables, 1))), "{:?}", p.rows);
         assert!(p.rows.iter().any(|r| matches!(r, DbRow::Object(_, _, t, _, _) if t == "item")));
         // 新しいクエリ: 別のファイルを Insert で開き、そのまま書いて Ctrl+Enter で流せる
         e.focus_right(RightTab::Database);
-        e.db.as_mut().unwrap().selected = e.db.as_ref().unwrap().rows.iter().position(|r| *r == DbRow::Source(i)).unwrap();
+        e.panels.db.as_mut().unwrap().selected = e.panels.db.as_ref().unwrap().rows.iter().position(|r| *r == DbRow::Source(i)).unwrap();
         keys(&mut e, "n");
         assert_eq!(e.state(), State::Insert);
         assert!(e.buf.path.as_ref().unwrap().to_string_lossy().ends_with("shop_query_1.sql"));
         keys(&mut e, "select 42 as answer<C-m>");
-        wait(&mut e, &|e| e.db_results.active_tab().is_some_and(|t| !t.running && !t.rows.is_empty()));
-        assert_eq!(e.db_results.active_tab().unwrap().rows[0][0].as_deref(), Some("42"));
+        wait(&mut e, &|e| e.panels.db_results.active_tab().is_some_and(|t| !t.running && !t.rows.is_empty()));
+        assert_eq!(e.panels.db_results.active_tab().unwrap().rows[0][0].as_deref(), Some("42"));
         keys(&mut e, "<Esc>");
         e.db_new_query_command();
         assert!(e.buf.path.as_ref().unwrap().to_string_lossy().ends_with("shop_query_2.sql"), "番号を進める");
         // 絞り込み
         e.focus_right(RightTab::Database);
         keys(&mut e, "/zzz<CR>");
-        assert!(!e.db.as_ref().unwrap().rows.iter().any(|r| matches!(r, DbRow::Object(..))));
+        assert!(!e.panels.db.as_ref().unwrap().rows.iter().any(|r| matches!(r, DbRow::Object(..))));
         // Vim 風: Esc でノーマル、もう一度 Esc で消す
         keys(&mut e, "/<Esc><Esc>");
-        assert!(e.db.as_ref().unwrap().rows.iter().any(|r| matches!(r, DbRow::Object(..))));
+        assert!(e.panels.db.as_ref().unwrap().rows.iter().any(|r| matches!(r, DbRow::Object(..))));
     }
 }
 

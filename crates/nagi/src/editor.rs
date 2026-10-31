@@ -265,7 +265,56 @@ pub struct Services {
     pub(crate) git: crate::git_ui::GitState,
 }
 
+/// 部品ごとの状態（ADR 0018 の §5）。出していない部品は None
+pub struct Panels {
+    /// デバッグ（debugger.rs）と、ブレークポイント（ファイル → 行。0 始まり）
+    pub(crate) debug: Option<crate::debugger::DebugUi>,
+    pub finder: Option<crate::finder::Finder>,
+    /// ランチャー（起動時のプロジェクトの選択）
+    pub launcher: Option<crate::launcher::Launcher>,
+    /// Markdown のプレビュー（右の欄）
+    pub md_preview: Option<crate::md_preview::MdPreview>,
+    /// 全文検索のパネル（開いている間だけ）
+    pub grep: Option<crate::grep_panel::GrepPanel>,
+    /// ファイルツリー（開いている間だけ）
+    pub tree: Option<crate::tree_panel::TreePanel>,
+    /// 右の欄（データベース・Maven）と、下のパネルのクエリの結果
+    pub db: Option<crate::db_panel::DbPanel>,
+    pub maven: Option<crate::maven_panel::MavenPanel>,
+    pub db_results: crate::result_grid::DbResults,
+    /// テーブルのデータの編集（開いている間だけ）
+    pub db_table: Option<crate::db_table::TableEditor>,
+    /// 検索とログのうち、出していない方（下の欄のタブで入れ替える）
+    pub grep_other: Option<crate::grep_panel::GrepPanel>,
+    /// 下の欄の「問題」
+    pub problems: crate::bottom_panel::ProblemsView,
+    /// 下の欄の「ターミナル」の窓たち
+    pub terminals: crate::terminal::Terminals,
+    pub run_dialog: Option<crate::run_dialog::RunDialog>,
+    pub settings_dialog: Option<crate::settings_dialog::SettingsDialog>,
+    /// 入力のダイアログ（input_dialog.rs）
+    pub input: Option<crate::input_dialog::InputDialog>,
+    /// ブランチのポップアップ（開いている間だけ）
+    pub branch_popup: Option<crate::branches::BranchPopup>,
+    /// 履歴の画面（開いている間だけ）
+    pub log: Option<crate::log_view::LogView>,
+    /// blame（出している間だけ）
+    pub blame: Option<crate::blame::Blame>,
+    /// コミットのパネル（開いている間だけ）
+    pub commit: Option<crate::commit_panel::CommitPanel>,
+    /// 実行の構成の欄（左の欄の「実行」タブ）
+    pub run_panel: Option<crate::run_panel::RunPanel>,
+    /// 左右並べの差分（開いている間だけ）と、閉じたときに戻るモード
+    pub diff: Option<crate::diff_view::DiffView>,
+    /// `:` のコマンドラインの候補
+    pub cmd_complete: Option<crate::cmdline_complete::CmdComplete>,
+    /// 補完の途中（Insert の Ctrl-n / Ctrl-p）
+    pub completion: Option<crate::complete::Completion>,
+}
+
 pub struct Editor {
+    /// 部品ごとの状態
+    pub panels: Panels,
     /// どの部品からも使うもの
     pub svc: Services,
     pub buf: Buffer,
@@ -312,8 +361,6 @@ pub struct Editor {
     pub yank_flash: Option<(usize, usize, std::time::Instant)>,
     /// 動いている整形（format.rs）
     pub(crate) format_job: Option<crate::format::FormatJob>,
-    /// デバッグ（debugger.rs）と、ブレークポイント（ファイル → 行。0 始まり）
-    pub(crate) debug: Option<crate::debugger::DebugUi>,
     pub(crate) breakpoints: std::collections::BTreeMap<std::path::PathBuf, std::collections::BTreeSet<usize>>,
     /// 最後に編集した時刻（自動で保存するまでの時間を数える）
     pub last_edit_at: Option<std::time::Instant>,
@@ -358,17 +405,8 @@ pub struct Editor {
     pub(crate) layout: crate::panes::Layout,
     /// 画面の本文の範囲（列, 行）。最下行は含まない（App が描画前に入れる）
     pub(crate) screen: (usize, usize),
-    pub finder: Option<crate::finder::Finder>,
-    /// ランチャー（起動時のプロジェクトの選択）
-    pub launcher: Option<crate::launcher::Launcher>,
-    /// Markdown のプレビュー（右の欄）
-    pub md_preview: Option<crate::md_preview::MdPreview>,
     /// Markdown のハイライトの覚え（(パス, 版) → 範囲）。描くたびに解析し直さない
     pub(crate) md_cache: std::cell::RefCell<Vec<(std::path::PathBuf, u64, std::rc::Rc<Vec<(std::ops::Range<usize>, nagi_syntax::Hl)>>)>>,
-    /// 全文検索のパネル（開いている間だけ）
-    pub grep: Option<crate::grep_panel::GrepPanel>,
-    /// ファイルツリー（開いている間だけ）
-    pub tree: Option<crate::tree_panel::TreePanel>,
     /// リストモードでいるパネル
     pub list_side: Side,
     /// 一度集めたプロジェクトのファイル一覧（根 → 相対パス）
@@ -396,24 +434,11 @@ pub struct Editor {
     /// 開いているファイルに木を合わせる（:TreeSync で切り替え。既定は合わせる）
     pub tree_sync: bool,
     pub bottom_hidden: bool,
-    /// 右の欄（データベース・Maven）と、下のパネルのクエリの結果
-    pub db: Option<crate::db_panel::DbPanel>,
-    pub maven: Option<crate::maven_panel::MavenPanel>,
-    pub db_results: crate::result_grid::DbResults,
-    /// テーブルのデータの編集（開いている間だけ）
-    pub db_table: Option<crate::db_table::TableEditor>,
     pub bottom_kind: crate::result_grid::BottomKind,
-    /// 検索とログのうち、出していない方（下の欄のタブで入れ替える）
-    pub grep_other: Option<crate::grep_panel::GrepPanel>,
-    /// 下の欄の「問題」
-    pub problems: crate::bottom_panel::ProblemsView,
-    /// 下の欄の「ターミナル」の窓たち
-    pub terminals: crate::terminal::Terminals,
     /// 実行の構成: 選んでいるもの・最後に動かしたもの・一覧に出しているもの（run_configs.rs）
     pub run_selected: Option<String>,
     pub run_last: Option<String>,
     pub run_list: Vec<nagi_workers::runconfig::RunConfig>,
-    pub run_dialog: Option<crate::run_dialog::RunDialog>,
     /// 設定（settings.rs）
     pub settings: crate::settings::Settings,
     /// この窓の作業フォルダ（開いたプロジェクトの根。起動したときはそのフォルダ）。プロセスの作業フォルダは
@@ -421,7 +446,6 @@ pub struct Editor {
     pub cwd: PathBuf,
     /// この窓のハンドル（ダイアログの持ち主にする。0 なら無し: 試験）
     pub hwnd: isize,
-    pub settings_dialog: Option<crate::settings_dialog::SettingsDialog>,
     /// 入力補完を自動で出す時刻（設定の「打っている間に自動で出す」）
     pub auto_complete_at: Option<std::time::Instant>,
     /// 補完で、まだ届いていない情報（SQL の列・テーブル、読み込み中のライブラリの索引）を待っている (何を, 打っている語の始まり)。
@@ -466,8 +490,6 @@ pub struct Editor {
     pub hover_chrome: Option<crate::chrome::Hit>,
     /// ファイルの中の検索を本文の上の帯で打っている（Ctrl+F・Ctrl+R。search_bar.rs）
     pub search_bar: bool,
-    /// 入力のダイアログ（input_dialog.rs）
-    pub input: Option<crate::input_dialog::InputDialog>,
     /// 全文検索の小窓のプレビューに読んだファイル（パス, 行）
     pub grep_preview: std::cell::RefCell<Option<(std::path::PathBuf, std::sync::Arc<Vec<String>>)>>,
     /// 部品を左クリックしている間の修飾キー（Ctrl・Shift+クリックで一覧の複数を選ぶ）。押した間だけ App が入れる
@@ -484,31 +506,15 @@ pub struct Editor {
     pub drawn_texts: std::cell::RefCell<Vec<(usize, usize, String)>>,
     /// 左の欄で出しているタブ（ツリーとコミットのパネルが両方開いているとき）
     pub left_tab: crate::tree_panel::LeftTab,
-    /// ブランチのポップアップ（開いている間だけ）
-    pub branch_popup: Option<crate::branches::BranchPopup>,
     /// 裏で動かしているフェッチ・pull（見出し, 引数（止まったらもう一度動かす）, 結果）
     pub git_job: Option<(String, Vec<String>, nagi_core::task::Task<nagi_core::Result<String>>)>,
-    /// 履歴の画面（開いている間だけ）
-    pub log: Option<crate::log_view::LogView>,
-    /// blame（出している間だけ）
-    pub blame: Option<crate::blame::Blame>,
-    /// コミットのパネル（開いている間だけ）
-    pub commit: Option<crate::commit_panel::CommitPanel>,
-    /// 実行の構成の欄（左の欄の「実行」タブ）
-    pub run_panel: Option<crate::run_panel::RunPanel>,
-    /// 左右並べの差分（開いている間だけ）と、閉じたときに戻るモード
-    pub diff: Option<crate::diff_view::DiffView>,
     pub(crate) diff_return: Option<State>,
     pub(crate) diff_pending: Option<char>,
     /// 動いている診断のコマンドと、その結果
     pub(crate) make: Option<crate::diagnostics::MakeState>,
     pub diags: Vec<crate::diagnostics::Diag>,
-    /// `:` のコマンドラインの候補
-    pub cmd_complete: Option<crate::cmdline_complete::CmdComplete>,
     /// `:e` などの候補のために裏で集めているファイルの一覧（根, 途中, 集めた分）
     pub(crate) cmd_files: Option<(PathBuf, nagi_workers::files::FileWalk, Vec<String>)>,
-    /// 補完の途中（Insert の Ctrl-n / Ctrl-p）
-    pub completion: Option<crate::complete::Completion>,
     /// プロジェクトの定義の索引
     pub(crate) nav: crate::nav::IndexState,
     /// 作業中のバッファの閉じた折りたたみ
@@ -622,11 +628,11 @@ impl Editor {
 
     /// 本文を覆っている差分・テーブルを閉じる。テーブルに送っていない変更があれば閉じずに知らせて false（変更を黙って捨てない）
     fn uncover(&mut self) -> bool {
-        if self.diff.take().is_some() {
+        if self.panels.diff.take().is_some() {
             self.diff_return = None;
         }
-        match self.db_table.as_ref().map(|t| t.changes()) {
-            Some(0) => self.db_table = None,
+        match self.panels.db_table.as_ref().map(|t| t.changes()) {
+            Some(0) => self.panels.db_table = None,
             Some(n) => {
                 self.svc.notify.info(format!("テーブルに送っていない変更が {n} 件あります（Ctrl+Enter で送るか、q で捨てて閉じる）"));
                 return false;
@@ -638,9 +644,9 @@ impl Editor {
 
     /// コマンドの行・検索の行から戻る先（本文を覆う差分・テーブルがあればそこ、無ければ本文）
     pub(crate) fn cmdline_back(&self) -> State {
-        if self.db_table.is_some() {
+        if self.panels.db_table.is_some() {
             State::DbTable
-        } else if self.diff.is_some() {
+        } else if self.panels.diff.is_some() {
             State::Diff
         } else {
             State::Normal
@@ -674,6 +680,32 @@ impl Editor {
     pub fn new(buf: Buffer, syntax: Option<nagi_syntax::Syntax>) -> Self {
         Self {
             svc: Services::default(),
+            panels: Panels {
+                finder: None,
+                launcher: None,
+                md_preview: None,
+                grep: None,
+                grep_other: None,
+                tree: None,
+                db: None,
+                maven: None,
+                db_results: Default::default(),
+                db_table: None,
+                problems: Default::default(),
+                terminals: Default::default(),
+                run_dialog: None,
+                settings_dialog: None,
+                input: None,
+                branch_popup: None,
+                log: None,
+                blame: None,
+                commit: None,
+                run_panel: None,
+                diff: None,
+                cmd_complete: None,
+                completion: None,
+                debug: None,
+            },
             buf,
             hist: History::default(),
             cursor: Cursor::default(),
@@ -700,7 +732,6 @@ impl Editor {
             easy: None,
             yank_flash: None,
             format_job: None,
-            debug: None,
             breakpoints: Default::default(),
             last_edit_at: None,
             ec_cache: Default::default(),
@@ -726,13 +757,8 @@ impl Editor {
             prev_win: None,
             layout: crate::panes::Layout::Leaf(0),
             screen: (80, 24),
-            finder: None,
-            launcher: None,
             md_cache: Default::default(),
-            md_preview: None,
             tree_sync: true,
-            grep: None,
-            tree: None,
             list_side: Side::Bottom,
             file_cache: HashMap::new(),
             watcher: None,
@@ -748,21 +774,13 @@ impl Editor {
             last_sub: None,
             folds: Default::default(),
             nav: Default::default(),
-            completion: None,
-            cmd_complete: None,
             cmd_files: None,
             make: None,
-            commit: None,
-            run_panel: None,
-            blame: None,
-            log: None,
-            branch_popup: None,
             left_tab: Default::default(),
             left_hidden: false,
             bottom_hidden: false,
             hover_button: None,
             hover_chrome: None,
-            input: None,
             search_bar: false,
             grep_preview: Default::default(),
             click_mods: Default::default(),
@@ -775,22 +793,13 @@ impl Editor {
             hover_bar: None,
             hover_buftab: None,
             prompt_caret: Default::default(),
-            db: None,
-            maven: None,
-            db_results: Default::default(),
-            db_table: None,
             bottom_kind: Default::default(),
-            grep_other: None,
-            problems: Default::default(),
-            terminals: Default::default(),
             run_selected: None,
             run_last: None,
             run_list: Vec::new(),
-            run_dialog: None,
             settings: crate::settings::Settings::load(None),
             cwd: std::env::current_dir().unwrap_or_default(),
             hwnd: 0,
-            settings_dialog: None,
             auto_complete_at: None,
             data_wait: None,
             click_effect: None,
@@ -811,7 +820,6 @@ impl Editor {
             right_hidden: false,
             right_pending_w: false,
             git_job: None,
-            diff: None,
             diff_return: None,
             diff_pending: None,
             diags: Vec::new(),
@@ -970,18 +978,18 @@ impl Editor {
     /// 入力欄（IME の確定先）があるモードか
     pub fn has_prompt(&self) -> bool {
         matches!(self.state(), State::Command | State::Search | State::Replace | State::GrepPrompt | State::Input)
-            || (self.state() == State::Finder && self.finder.as_ref().is_some_and(|f| f.field.is_insert()))
+            || (self.state() == State::Finder && self.panels.finder.as_ref().is_some_and(|f| f.field.is_insert()))
             || self.state() == State::Terminal
-            || (self.state() == State::RunDialog && self.run_dialog.as_ref().is_some_and(|d| d.typing()))
+            || (self.state() == State::RunDialog && self.panels.run_dialog.as_ref().is_some_and(|d| d.typing()))
             || (self.state() == State::Settings && self.settings_typing())
-            || (self.state() == State::Launcher && self.launcher.as_ref().is_some_and(|l| l.ask.as_ref().map_or(l.field.is_insert(), |a| a.1.is_insert())))
-            || (self.state() == State::CommitMsg && self.commit.as_ref().is_some_and(|c| c.msg.is_insert()))
-            || (self.state() == State::Log && self.log.as_ref().is_some_and(|l| l.filter.as_ref().is_some_and(|f| f.is_insert())))
-            || (self.state() == State::Branches && self.branch_popup.as_ref().is_some_and(|b| b.naming.as_ref().is_none_or(|n| n.1.is_insert())))
+            || (self.state() == State::Launcher && self.panels.launcher.as_ref().is_some_and(|l| l.ask.as_ref().map_or(l.field.is_insert(), |a| a.1.is_insert())))
+            || (self.state() == State::CommitMsg && self.panels.commit.as_ref().is_some_and(|c| c.msg.is_insert()))
+            || (self.state() == State::Log && self.panels.log.as_ref().is_some_and(|l| l.filter.as_ref().is_some_and(|f| f.is_insert())))
+            || (self.state() == State::Branches && self.panels.branch_popup.as_ref().is_some_and(|b| b.naming.as_ref().is_none_or(|n| n.1.is_insert())))
             || self.db_typing()
             || self.db_table_typing()
-            || (self.state() == State::List && self.list_side == Side::Bottom && self.db_results.editing.as_ref().is_some_and(|e| e.1.is_insert()))
-            || (self.state() == State::List && self.list_side == Side::Bottom && self.db_results.value_edit.as_ref().is_some_and(|f| f.is_insert()))
+            || (self.state() == State::List && self.list_side == Side::Bottom && self.panels.db_results.editing.as_ref().is_some_and(|e| e.1.is_insert()))
+            || (self.state() == State::List && self.list_side == Side::Bottom && self.panels.db_results.value_edit.as_ref().is_some_and(|f| f.is_insert()))
     }
 
     pub(crate) fn motion(&self) -> Motion<'_> {
@@ -1057,7 +1065,7 @@ impl Editor {
     }
 
     fn leave_insert(&mut self) {
-        self.completion = None;
+        self.panels.completion = None;
         // 矩形の I A c: 打った文字列をほかの行へ（同じ undo のグループに入れる）
         let placed = self.finish_block_insert();
         self.hist.close();
@@ -1219,17 +1227,17 @@ impl Editor {
 
     fn insert(&mut self, key: Key) {
         // IntelliJ のような補完（Ctrl+Space）: 一覧を出している間のキーは先に扱う
-        if self.completion.as_ref().is_some_and(|c| c.smart.is_some()) {
+        if self.panels.completion.as_ref().is_some_and(|c| c.smart.is_some()) {
             if self.smart_key(key) {
                 return;
             }
         } else if key == Key::Ctrl(' ') {
-            self.completion = None;
+            self.panels.completion = None;
             self.start_smart_completion();
             return;
         }
         // 補完（Ctrl-n / Ctrl-p）の途中なら先に扱う
-        if (self.completion.is_some() || matches!(key, Key::Ctrl('n') | Key::Ctrl('p'))) && self.completion_key(key) {
+        if (self.panels.completion.is_some() || matches!(key, Key::Ctrl('n') | Key::Ctrl('p'))) && self.completion_key(key) {
             return;
         }
         match key {
@@ -1268,9 +1276,9 @@ impl Editor {
                 // SQL コンソールでは「別名.」の後にすぐ列の候補を出す（列がまだ無ければ、届いたら出る）
                 if c == '.' && self.console_source().is_some() {
                     let msg = self.svc.notify.text.clone();
-                    self.completion = None;
+                    self.panels.completion = None;
                     self.start_smart_completion();
-                    if self.completion.is_none() {
+                    if self.panels.completion.is_none() {
                         self.svc.notify.info(msg);
                     }
                 }
@@ -1283,7 +1291,7 @@ impl Editor {
         // Ctrl+Space: 候補を出し直す（打った名前と同じでも出す）
         if key == Key::Ctrl(' ') {
             let text = self.cmdline.text[..self.cmdline.cursor].to_string();
-            self.cmd_complete = self.cmd_candidates_forced(&text, true);
+            self.panels.cmd_complete = self.cmd_candidates_forced(&text, true);
             return Effect::None;
         }
         // 候補を選ぶキー（Tab / Ctrl-n / Ctrl-p）
@@ -1294,14 +1302,14 @@ impl Editor {
             Key::Esc | Key::Ctrl('c') => {
                 self.cmdline = Prompt::default();
                 self.set_state(self.cmdline_back());
-                self.cmd_complete = None;
+                self.panels.cmd_complete = None;
             }
             Key::Backspace if self.cmdline.text.is_empty() => {
                 self.set_state(self.cmdline_back());
-                self.cmd_complete = None;
+                self.panels.cmd_complete = None;
             }
             Key::Enter => {
-                self.cmd_complete = None;
+                self.panels.cmd_complete = None;
                 let line = std::mem::take(&mut self.cmdline).text;
                 self.set_state(self.cmdline_back());
                 let doc = self.cur_doc;
@@ -1864,16 +1872,16 @@ impl Editor {
 
     /// パネルの入力欄（フォーム・絞り込み・パスワード・WHERE / ORDER BY）にいるか。いる間は <leader> の割り当てを通さない
     pub fn in_text_field(&self) -> bool {
-        (self.right_focused() && self.db.as_ref().is_some_and(|p| p.form.is_some() || p.filter.is_some() || p.password.is_some()))
-            || (self.state() == State::List && self.list_side == Side::Bottom && (self.db_results.editing.is_some() || self.db_results.value_edit.is_some()))
+        (self.right_focused() && self.panels.db.as_ref().is_some_and(|p| p.form.is_some() || p.filter.is_some() || p.password.is_some()))
+            || (self.state() == State::List && self.list_side == Side::Bottom && (self.panels.db_results.editing.is_some() || self.panels.db_results.value_edit.is_some()))
     }
 
     /// 貼り付けを受ける入力欄にいるか（Vim の Insert の Ctrl-V は別）
     fn paste_target(&self) -> bool {
         self.has_prompt()
             || matches!(self.state(), State::Branches)
-            || (self.state() == State::Log && self.log.as_ref().is_some_and(|l| l.filter.is_some()))
-            || (self.right_focused() && self.db.as_ref().is_some_and(|p| p.password.is_some()))
+            || (self.state() == State::Log && self.panels.log.as_ref().is_some_and(|l| l.filter.is_some()))
+            || (self.right_focused() && self.panels.db.as_ref().is_some_and(|p| p.password.is_some()))
     }
 
     /// クリップボードの文字を、今の入力欄に入れる（コミットメッセージ以外は 1 行にする）
@@ -1892,7 +1900,7 @@ impl Editor {
             text.trim_end_matches(['\r', '\n']).replace("\r\n", " ").replace(['\n', '\r'], " ")
         };
         if self.right_focused() {
-            if let Some((_, pr)) = self.db.as_mut().and_then(|p| p.password.as_mut()) {
+            if let Some((_, pr)) = self.panels.db.as_mut().and_then(|p| p.password.as_mut()) {
                 pr.insert(&text);
                 return;
             }
@@ -1922,8 +1930,8 @@ impl Editor {
         match self.state() {
             State::Insert => {
                 // IME で確定した文字は補完の語ではないので、一覧は閉じる
-                if self.completion.as_ref().is_some_and(|c| c.smart.is_some()) {
-                    self.completion = None;
+                if self.panels.completion.as_ref().is_some_and(|c| c.smart.is_some()) {
+                    self.panels.completion = None;
                 }
                 self.insert_text(text)
             }
@@ -1946,9 +1954,9 @@ impl Editor {
 
     /// 下の欄の結果の表で、WHERE・ORDER BY の欄を直している間の文字
     pub(crate) fn bottom_text(&mut self, text: &str) {
-        if let Some(f) = &mut self.db_results.value_edit {
+        if let Some(f) = &mut self.panels.db_results.value_edit {
             f.insert_text(text);
-        } else if let Some((_, f)) = &mut self.db_results.editing {
+        } else if let Some((_, f)) = &mut self.panels.db_results.editing {
             f.insert_text(text);
         }
     }

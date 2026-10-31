@@ -155,13 +155,13 @@ impl Editor {
             self.svc.notify.info("差分はありません");
         }
         let cursor = hunk_rows.first().copied().unwrap_or(0);
-        self.diff = Some(DiffView { left_title, right_title, rows, top: cursor.saturating_sub(5), cursor, col: 0, on_left: false, left: 0, hunk_rows, work, hunks, old_text: old.to_string() });
+        self.panels.diff = Some(DiffView { left_title, right_title, rows, top: cursor.saturating_sub(5), cursor, col: 0, on_left: false, left: 0, hunk_rows, work, hunks, old_text: old.to_string() });
         self.diff_return = Some(self.state());
         self.set_state(State::Diff);
     }
 
     fn close_diff(&mut self) {
-        self.diff = None;
+        self.panels.diff = None;
         let back = match self.diff_return.take() {
             Some(m @ (State::List | State::Normal | State::Log)) => m,
             _ => State::Normal,
@@ -172,7 +172,7 @@ impl Editor {
     /// 差分の画面のキー
     pub(crate) fn diff_key(&mut self, key: Key) {
         let rows = self.screen.1.saturating_sub(2).max(1);
-        let Some(d) = &mut self.diff else {
+        let Some(d) = &mut self.panels.diff else {
             self.set_state(State::Normal);
             return;
         };
@@ -217,7 +217,7 @@ impl Editor {
             _ => {}
         }
         let tw = self.diff_text_w();
-        if let Some(d) = &mut self.diff {
+        if let Some(d) = &mut self.panels.diff {
             nagi_ui::list::fit(d.cursor, &mut d.top, rows);
             d.follow(tw);
         }
@@ -230,7 +230,7 @@ impl Editor {
 
     /// カーソルの変更を戻す（`stage` ならステージ）。作業中のファイルとの差分だけ
     fn diff_apply(&mut self, stage: bool) {
-        let Some(d) = &self.diff else { return };
+        let Some(d) = &self.panels.diff else { return };
         let Some((root, rel, path)) = d.work.clone() else {
             self.svc.notify.warn("この差分では戻せません（作業中のファイルとの差分だけ）");
             return;
@@ -258,7 +258,7 @@ impl Editor {
             return;
         }
         // 戻す: ファイルをバッファで開いて、その範囲を HEAD の行に置き換える（u で取り消せる）
-        let keep = self.diff.take();
+        let keep = self.panels.diff.take();
         let ret = self.diff_return.take();
         self.edit_file(path.clone());
         let nl = self.buf.newline().to_string();
@@ -288,7 +288,7 @@ pub struct DiffComponent;
 
 impl crate::component::Component for DiffComponent {
     fn status(&self, ed: &crate::editor::Editor) -> Option<crate::component::Status> {
-        let d = ed.diff.as_ref();
+        let d = ed.panels.diff.as_ref();
         let n = d.map_or(0, |d| d.hunk_rows.len());
         let i = d.map_or(0, |d| d.hunk_rows.iter().rposition(|&r| r <= d.cursor).map_or(0, |i| i + 1));
         crate::component::Status::keys(format!("-- 差分 --   変更 {i}/{n}"), "]c 次  [c 前  h/l 横  s ステージ  u 戻す  Enter 開く  q 閉じる ", "右クリック ステージ・戻す・次の変更  Esc 閉じる ")
@@ -311,14 +311,14 @@ impl crate::layout::View for DiffScreenView {
 
     fn rect(&self, ed: &crate::editor::Editor, s: crate::layout::Screen) -> Option<crate::panes::Rect> {
         let _ = s;
-        ed.diff.as_ref()?;
+        ed.panels.diff.as_ref()?;
         let (x, w) = ed.windows_x();
         Some(crate::panes::Rect { x, y: ed.area().y, w, h: ed.windows_rows().saturating_sub(ed.area().y) })
     }
 
     fn draw(&self, ed: &crate::editor::Editor, p: &mut crate::view::Painter, r: crate::panes::Rect, s: crate::layout::Screen) {
         let _ = (r, s);
-        if let Some(d) = &ed.diff {
+        if let Some(d) = &ed.panels.diff {
             draw::draw_diff_view(p, d, r);
         }
     }
@@ -328,7 +328,7 @@ impl crate::layout::View for DiffScreenView {
         // 窓を覆って出ている差分: 押したら差分へ向き、押した行・列へカーソルを置く（下の本文へは通さない）
         ed.set_state(crate::editor::State::Diff);
         let tw = ed.diff_text_w();
-        if let Some(d) = &mut ed.diff {
+        if let Some(d) = &mut ed.panels.diff {
             let half = r.w.saturating_sub(1) / 2;
             let k = at.row.checked_sub(1).map(|k| d.top + k).filter(|&k| k < d.rows.len());
             if let Some(k) = k {
@@ -346,7 +346,7 @@ impl crate::layout::View for DiffScreenView {
     fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At, dy: isize, dx: isize) -> bool {
         let _ = at;
         let tw = ed.diff_text_w();
-        let Some(d) = &mut ed.diff else { return false };
+        let Some(d) = &mut ed.panels.diff else { return false };
         // 表示だけを送る（カーソルは動かさない。キーで動かすと見える範囲へ戻る）
         let body = r.h.saturating_sub(1);
         d.top = (d.top as isize + dy).clamp(0, d.rows.len().saturating_sub(body) as isize) as usize;
@@ -496,7 +496,7 @@ mod tests {
         assert!(matches!(e.sep_at(5, l.x + l.w), Some(crate::resize::Sep::Size(s)) if s.key == "left_width"), "差分の間も左の欄の大きさを変えられる");
         // 欄に移っても差分は残る
         e.set_state(State::List);
-        assert!(e.diff.is_some());
+        assert!(e.panels.diff.is_some());
         // : から戻ると差分へ
         e.enter_command("");
         keys(&mut e, "<Esc>");
@@ -504,10 +504,10 @@ mod tests {
         e.enter_command("");
         keys(&mut e, "echo 1<CR>");
         assert_eq!(e.state(), State::Diff);
-        assert!(e.diff.is_some());
+        assert!(e.panels.diff.is_some());
         // 本文に向くと閉じる
         e.set_state(State::Normal);
-        assert!(e.diff.is_none());
+        assert!(e.panels.diff.is_none());
         // 左の欄を隠していても、差分の間に出すアイコンがある
         e.show_diff("a".into(), "b".into(), "a\n", "b\n", None);
         e.left_hidden = true;
@@ -523,21 +523,21 @@ mod tests {
         let long = "y".repeat(80);
         e.show_diff("a".into(), "b".into(), "ab\n", &format!("ab\n{long}\n"), None);
         assert_eq!(e.state(), State::Diff);
-        let d = e.diff.as_ref().unwrap();
+        let d = e.panels.diff.as_ref().unwrap();
         assert_eq!((d.cursor, d.col), (1, 0), "最初の変更の行の頭");
         e.diff_key(Key::Char('$'));
         let tw = e.diff_text_w();
-        let d = e.diff.as_ref().unwrap();
+        let d = e.panels.diff.as_ref().unwrap();
         assert_eq!(d.shown_col(), 79);
         assert!(d.left > 0 && 79 < d.left + tw, "行末が見える: left {}", d.left);
         e.diff_key(Key::Char('l'));
-        assert_eq!(e.diff.as_ref().unwrap().shown_col(), 79, "行末で止まる");
+        assert_eq!(e.panels.diff.as_ref().unwrap().shown_col(), 79, "行末で止まる");
         e.diff_key(Key::Char('k'));
-        let d = e.diff.as_ref().unwrap();
+        let d = e.panels.diff.as_ref().unwrap();
         assert_eq!((d.cursor, d.shown_col(), d.left), (0, 1, 1), "短い行では行末に出し、左端も付いてくる");
         e.diff_key(Key::Char('0'));
-        assert_eq!(e.diff.as_ref().unwrap().left, 0);
+        assert_eq!(e.panels.diff.as_ref().unwrap().left, 0);
         e.diff_key(Key::Char('l'));
-        assert_eq!(e.diff.as_ref().unwrap().shown_col(), 1);
+        assert_eq!(e.panels.diff.as_ref().unwrap().shown_col(), 1);
     }
 }

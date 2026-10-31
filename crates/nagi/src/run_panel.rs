@@ -60,7 +60,7 @@ impl RunPanel {
 impl Editor {
     /// 構成の名前が動いているか
     pub fn run_is_running(&self, name: &str) -> bool {
-        self.terminals.list.iter().any(|t| t.name.strip_prefix(RUN_PREFIX) == Some(name) && !t.exited)
+        self.panels.terminals.list.iter().any(|t| t.name.strip_prefix(RUN_PREFIX) == Some(name) && !t.exited)
     }
 
     /// 実行の欄を開いて移る（構成を読み直し、選んでいる構成の行を選ぶ）
@@ -70,7 +70,7 @@ impl Editor {
             items.push(c);
         }
         let at = self.run_selected.as_ref().and_then(|s| items.iter().position(|c| &c.name == s)).unwrap_or(0);
-        let p = self.run_panel.get_or_insert(RunPanel { items: Vec::new(), selected: 0, scroll: 0 });
+        let p = self.panels.run_panel.get_or_insert(RunPanel { items: Vec::new(), selected: 0, scroll: 0 });
         p.items = items;
         p.selected = at.min(p.len() - 1);
         self.left_tab = crate::tree_panel::LeftTab::Run;
@@ -81,7 +81,7 @@ impl Editor {
     }
 
     pub(crate) fn close_run_panel(&mut self) {
-        self.run_panel = None;
+        self.panels.run_panel = None;
         if self.state() == State::List && self.list_side == Side::Run {
             self.set_state(State::Normal);
         }
@@ -95,14 +95,14 @@ impl Editor {
 
     /// 選んでいる行を動かす構成にする
     fn run_panel_choose(&mut self) {
-        if let Some(c) = self.run_panel.as_ref().and_then(|p| p.current()) {
+        if let Some(c) = self.panels.run_panel.as_ref().and_then(|p| p.current()) {
             self.run_selected = Some(c.name.clone());
         }
     }
 
     /// ボタン・キーの操作（選んでいる構成に）
     pub(crate) fn run_panel_tool(&mut self, tool: Tool) {
-        let cur = self.run_panel.as_ref().and_then(|p| p.current().cloned());
+        let cur = self.panels.run_panel.as_ref().and_then(|p| p.current().cloned());
         match (tool, cur) {
             (Tool::Run, Some(c)) => self.run_config(c),
             (Tool::Run, None) | (Tool::Add, _) => self.open_run_dialog(None),
@@ -115,7 +115,7 @@ impl Editor {
 
     /// 名前の構成を止める（出力は残す）
     pub(crate) fn run_stop_named(&mut self, name: &str) {
-        match self.terminals.list.iter_mut().find(|t| t.name.strip_prefix(RUN_PREFIX) == Some(name) && !t.exited) {
+        match self.panels.terminals.list.iter_mut().find(|t| t.name.strip_prefix(RUN_PREFIX) == Some(name) && !t.exited) {
             Some(t) => {
                 t.term.kill();
                 self.svc.notify.info(format!("止めました: {name}"));
@@ -126,7 +126,7 @@ impl Editor {
 
     pub(crate) fn run_panel_key(&mut self, key: Key) -> crate::editor::Effect {
         let h = self.run_panel_rect().map_or(10, |r| r.h.saturating_sub(HEAD));
-        let Some(p) = &mut self.run_panel else { return crate::editor::Effect::None };
+        let Some(p) = &mut self.panels.run_panel else { return crate::editor::Effect::None };
         if let Some(i) = nagi_ui::list::step(key, p.selected, p.len(), h) {
             p.selected = i;
             self.run_panel_choose();
@@ -157,7 +157,7 @@ impl Editor {
             }
             return;
         }
-        let Some(p) = &mut self.run_panel else { return };
+        let Some(p) = &mut self.panels.run_panel else { return };
         let len = p.len();
         let pick = nagi_ui::list::pick_row(&mut p.selected, p.scroll, row, HEAD, len, clicks);
         if pick.is_some() {
@@ -189,13 +189,13 @@ pub struct RunPanelView;
 impl crate::layout::View for RunPanelView {
     fn rect(&self, ed: &Editor, s: crate::layout::Screen) -> Option<crate::panes::Rect> {
         let _ = s;
-        ed.run_panel.as_ref()?;
+        ed.panels.run_panel.as_ref()?;
         ed.run_panel_rect()
     }
 
     fn draw(&self, ed: &Editor, p: &mut crate::view::Painter, r: crate::panes::Rect, s: crate::layout::Screen) {
         let _ = s;
-        if let Some(rp) = &ed.run_panel {
+        if let Some(rp) = &ed.panels.run_panel {
             draw::draw_run_panel(p, ed, rp, r);
         }
     }
@@ -208,7 +208,7 @@ impl crate::layout::View for RunPanelView {
 
     fn wheel(&self, ed: &mut Editor, r: crate::panes::Rect, at: crate::layout::At, dy: isize, dx: isize) -> bool {
         let _ = (at, dx);
-        if let Some(p) = &mut ed.run_panel {
+        if let Some(p) = &mut ed.panels.run_panel {
             let len = p.len();
             nagi_ui::list::wheel(&mut p.selected, &mut p.scroll, len, r.h.saturating_sub(HEAD), dy);
         }
@@ -224,7 +224,7 @@ impl crate::layout::View for RunPanelView {
             return false;
         }
         ed.run_panel_click(at.row, at.col, 1);
-        let Some(c) = ed.run_panel.as_ref().and_then(|p| p.current().cloned()) else {
+        let Some(c) = ed.panels.run_panel.as_ref().and_then(|p| p.current().cloned()) else {
             let m = crate::menu::Menu::new(row, col).keys("構成を追加…", &[Char('a')]).keys("読み直す", &[Char('r')]).sep().keys("欄を閉じる", &[Char('q')]);
             ed.open_menu(m);
             return true;
@@ -326,7 +326,7 @@ mod tests {
         e.toggle_left_tab(crate::tree_panel::LeftTab::Run);
         assert_eq!(e.left_visible(), Some(crate::tree_panel::LeftTab::Run));
         assert_eq!((e.state(), e.list_side), (State::List, Side::Run));
-        let p = e.run_panel.as_ref().unwrap();
+        let p = e.panels.run_panel.as_ref().unwrap();
         assert_eq!(p.items.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), vec!["一", "二"]);
         assert_eq!(p.len(), 3, "最後は追加・編集の行");
         // ↓ で選ぶと、動かす構成になる
@@ -336,11 +336,11 @@ mod tests {
         e.select_left_tab(crate::tree_panel::LeftTab::Project);
         assert_eq!(e.left_visible(), Some(crate::tree_panel::LeftTab::Project));
         e.select_left_tab(crate::tree_panel::LeftTab::Run);
-        assert_eq!(e.run_panel.as_ref().unwrap().selected, 1);
+        assert_eq!(e.panels.run_panel.as_ref().unwrap().selected, 1);
         // Enter で動かす
         e.key(Key::Enter);
-        assert_eq!(e.terminals.list.len(), 1);
-        assert_eq!(e.terminals.list[0].name, "▶ 二");
+        assert_eq!(e.panels.terminals.list.len(), 1);
+        assert_eq!(e.panels.terminals.list[0].name, "▶ 二");
         // もう一度押すと隠す
         e.list_side = Side::Run;
         e.set_state(State::List);

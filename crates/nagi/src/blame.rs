@@ -96,7 +96,7 @@ pub fn now_secs() -> i64 {
 impl Editor {
     /// 作業中の窓に blame を出しているか
     pub fn blame_active(&self) -> bool {
-        self.blame.as_ref().is_some_and(|b| self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()).as_ref() == Some(&b.path))
+        self.panels.blame.as_ref().is_some_and(|b| self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()).as_ref() == Some(&b.path))
     }
 
     /// 作業中の窓の、行番号と blame の欄の幅
@@ -107,7 +107,7 @@ impl Editor {
     /// `:Gblame`（Annotate）: 出す・消す
     pub(crate) fn toggle_blame(&mut self) {
         if self.blame_active() {
-            self.blame = None;
+            self.panels.blame = None;
             return;
         }
         self.load_blame();
@@ -129,14 +129,14 @@ impl Editor {
             let r = nagi_workers::git::git_input(&root, &["blame", "--porcelain", "--contents", "-", "--", &rel], Some(text.as_bytes())).map(|b| parse_porcelain(&String::from_utf8_lossy(&b)));
             ctx.send(r);
         });
-        let keep = self.blame.take().filter(|b| b.path == path);
+        let keep = self.panels.blame.take().filter(|b| b.path == path);
         let (lines, commits) = keep.map(|b| (b.lines, b.commits)).unwrap_or_default();
-        self.blame = Some(Blame { path, lines, commits, rx: Some(rx) });
+        self.panels.blame = Some(Blame { path, lines, commits, rx: Some(rx) });
     }
 
     /// 裏で作った blame を受け取る。変わったら true
     pub fn poll_blame(&mut self) -> bool {
-        let Some(b) = &mut self.blame else { return false };
+        let Some(b) = &mut self.panels.blame else { return false };
         let Some(rx) = &b.rx else { return false };
         let Ok(r) = rx.try_recv() else { return false };
         b.rx = None;
@@ -147,7 +147,7 @@ impl Editor {
             }
             Err(e) => {
                 self.svc.notify.info(format!("blame: {}", e.first_line()));
-                self.blame = None;
+                self.panels.blame = None;
             }
         }
         true
@@ -155,7 +155,7 @@ impl Editor {
 
     /// 描く用: 行 `l` の blame（コミットが変わる行だけ文字を出す）。(文字, 色の明るさ 0〜3, 未コミットか)
     pub fn blame_cell(&self, l: usize, now: i64) -> Option<(String, u8, bool)> {
-        let b = self.blame.as_ref()?;
+        let b = self.panels.blame.as_ref()?;
         let &id = b.lines.get(l)?;
         let c = &b.commits[id];
         let age = now - c.time;
@@ -183,7 +183,7 @@ impl Editor {
 
     /// カーソルの行のコミット（枠に出す）
     pub fn blame_at_cursor(&self) -> Option<&CommitInfo> {
-        let b = self.blame.as_ref()?;
+        let b = self.panels.blame.as_ref()?;
         b.lines.get(self.cursor.line).map(|&i| &b.commits[i])
     }
 }

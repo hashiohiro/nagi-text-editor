@@ -279,12 +279,12 @@ impl Editor {
         });
         let mut p = BranchPopup { query: Prompt::default(), branches: Vec::new(), entries: Vec::new(), selected: 0, ops: None, naming: None, rx: Some(rx), anchor: None, depth: Vec::new(), folds: nagi_ui::Folds::closed(), opened_current: false };
         p.rebuild();
-        self.branch_popup = Some(p);
+        self.panels.branch_popup = Some(p);
         self.set_state(State::Branches);
     }
 
     fn close_branches(&mut self) {
-        self.branch_popup = None;
+        self.panels.branch_popup = None;
         if self.state() == State::Branches {
             self.set_state(State::Normal);
         }
@@ -292,7 +292,7 @@ impl Editor {
 
     /// 裏の結果を受け取る。変わったら true
     pub fn poll_branches(&mut self) -> bool {
-        let Some(p) = &mut self.branch_popup else {
+        let Some(p) = &mut self.panels.branch_popup else {
             return self.poll_git_job();
         };
         let mut changed = false;
@@ -362,7 +362,7 @@ impl Editor {
             return;
         }
         let local = b.name.split_once('/').map_or(b.name.as_str(), |(_, n)| n).to_string();
-        let exists = self.branch_popup.as_ref().is_some_and(|p| p.branches.iter().any(|x| !x.remote && x.name == local));
+        let exists = self.panels.branch_popup.as_ref().is_some_and(|p| p.branches.iter().any(|x| !x.remote && x.name == local));
         self.checkout_ref(&b.name, b.remote, exists, close_if_ok);
     }
 
@@ -387,11 +387,11 @@ impl Editor {
     }
 
     fn run_op(&mut self, op: Op, b: Branch) {
-        let cur = self.branch_popup.as_ref().map(|p| p.current_name()).unwrap_or_default();
+        let cur = self.panels.branch_popup.as_ref().map(|p| p.current_name()).unwrap_or_default();
         match op {
             Op::Checkout => self.checkout_branch(&b),
             Op::NewFrom => {
-                if let Some(p) = &mut self.branch_popup {
+                if let Some(p) = &mut self.panels.branch_popup {
                     p.naming = Some((Naming::New(Some(b.name.clone())), crate::vim_field::VimField::new("", false)));
                 }
             }
@@ -410,7 +410,7 @@ impl Editor {
                 self.run_git_job("pull ", &["pull", "--no-edit"]);
             }
             Op::Rename => {
-                if let Some(p) = &mut self.branch_popup {
+                if let Some(p) = &mut self.panels.branch_popup {
                     p.naming = Some((Naming::Rename(b.name.clone()), crate::vim_field::VimField::new(&b.name, false)));
                 }
             }
@@ -441,15 +441,15 @@ impl Editor {
 
     /// ポップアップのキー
     pub(crate) fn branches_key(&mut self, key: Key) {
-        let Some(p) = &mut self.branch_popup else {
+        let Some(p) = &mut self.panels.branch_popup else {
             self.set_state(State::Normal);
             return;
         };
         // 名前を打っている
         if p.naming.is_some() {
             use crate::vim_field::FieldOut;
-            let out = self.feed_field(key, |e| e.branch_popup.as_mut().and_then(|p| p.naming.as_mut()).map(|n| &mut n.1));
-            let Some(p) = &mut self.branch_popup else { return };
+            let out = self.feed_field(key, |e| e.panels.branch_popup.as_mut().and_then(|p| p.naming.as_mut()).map(|n| &mut n.1));
+            let Some(p) = &mut self.panels.branch_popup else { return };
             match out {
                 FieldOut::Cancel => p.naming = None,
                 FieldOut::Submit => {
@@ -552,7 +552,7 @@ impl Editor {
     /// ブランチの小窓のクリック（画面の行・列と本文の行数）。行を押すと選び、ダブルクリックで Enter と同じ（チェックアウトなど）。
     /// 小窓の外を押したら閉じる。名前を打っている間・操作の一覧を出している間は、キーで
     pub(crate) fn branches_click(&mut self, row: usize, col: usize, rows: usize, cols: usize, clicks: u32) {
-        let Some(p) = &mut self.branch_popup else { return };
+        let Some(p) = &mut self.panels.branch_popup else { return };
         // 描き方（draw_branch_popup）と同じ割り付けで当てる
         let (frame, ui) = p.ui(rows, cols);
         if !frame.contains(row, col) {
@@ -577,7 +577,7 @@ impl Editor {
     }
 
     pub(crate) fn branches_insert(&mut self, text: &str) {
-        let Some(p) = &mut self.branch_popup else { return };
+        let Some(p) = &mut self.panels.branch_popup else { return };
         match &mut p.naming {
             Some((_, f)) => {
                 f.insert_text(text);
@@ -618,13 +618,13 @@ pub struct BranchPopupView;
 impl crate::layout::View for BranchPopupView {
     fn rect(&self, ed: &crate::editor::Editor, s: crate::layout::Screen) -> Option<crate::panes::Rect> {
         let _ = s;
-        ed.branch_popup.as_ref()?;
+        ed.panels.branch_popup.as_ref()?;
         Some(crate::panes::Rect { x: 0, y: 0, w: s.cols, h: s.rows })
     }
 
     fn draw(&self, ed: &crate::editor::Editor, p: &mut crate::view::Painter, r: crate::panes::Rect, s: crate::layout::Screen) {
         let _ = (r, s);
-        if let Some(b) = &ed.branch_popup {
+        if let Some(b) = &ed.panels.branch_popup {
             draw::draw_branch_popup(p, b, s.rows, s.cols, &ed.preedit);
         }
     }
@@ -784,7 +784,7 @@ mod tests {
         for _ in 0..2000 {
             e.poll_branches();
             e.poll_git();
-            if e.branch_popup.as_ref().is_none_or(|p| p.rx.is_none()) {
+            if e.panels.branch_popup.as_ref().is_none_or(|p| p.rx.is_none()) {
                 return;
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
@@ -813,11 +813,11 @@ mod tests {
         wait(&mut e);
         // 絞り込んで Enter でチェックアウト
         keys(&mut e, "cou");
-        let p = e.branch_popup.as_ref().unwrap();
+        let p = e.panels.branch_popup.as_ref().unwrap();
         assert_eq!(p.selected_branch().map(|b| b.name.as_str()), Some("feature/coupon"));
         keys(&mut e, "<CR>");
         assert_eq!(g(&["branch", "--show-current"]), "feature/coupon");
-        assert!(e.branch_popup.is_none());
+        assert!(e.panels.branch_popup.is_none());
         // 新しいブランチを作る
         e.open_branches();
         wait(&mut e);
@@ -827,7 +827,7 @@ mod tests {
         e.open_branches();
         wait(&mut e);
         keys(&mut e, "coupon<Right>");
-        let n = e.branch_popup.as_ref().unwrap().ops.as_ref().unwrap().0.len();
+        let n = e.panels.branch_popup.as_ref().unwrap().ops.as_ref().unwrap().0.len();
         for _ in 1..n {
             keys(&mut e, "<Down>");
         }
@@ -860,13 +860,13 @@ mod tests {
         let s = crate::layout::Screen { rows: 40, cols: 120 };
         // 小窓は 2 行目から（1 行目は絞り込み）、幅 56 で真ん中
         let x = (120 - 56) / 2 + 5;
-        let p = e.branch_popup.as_ref().unwrap();
+        let p = e.panels.branch_popup.as_ref().unwrap();
         let k = p.entries.iter().position(|en| matches!(en, Entry::Branch(i) if p.branches[*i].name == "topic")).unwrap();
         let header = p.entries.iter().position(|en| matches!(en, Entry::Header(_))).unwrap();
         crate::layout::press(&mut e, s, 3 + header, x, |_| 1);
-        assert_ne!(e.branch_popup.as_ref().unwrap().selected, header, "見出しは選ばない");
+        assert_ne!(e.panels.branch_popup.as_ref().unwrap().selected, header, "見出しは選ばない");
         crate::layout::press(&mut e, s, 3 + k, x, |_| 1);
-        assert_eq!(e.branch_popup.as_ref().unwrap().selected, k);
+        assert_eq!(e.panels.branch_popup.as_ref().unwrap().selected, k);
         assert_eq!(g(&["branch", "--show-current"]), "main", "1 回では何もしない");
         crate::layout::press(&mut e, s, 3 + k, x, |_| 2);
         e.wait_jobs();
@@ -875,7 +875,7 @@ mod tests {
         e.open_branches();
         wait(&mut e);
         crate::layout::press(&mut e, s, 0, 0, |_| 1);
-        assert!(e.branch_popup.is_none());
+        assert!(e.panels.branch_popup.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

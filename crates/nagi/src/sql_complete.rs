@@ -82,7 +82,7 @@ impl Editor {
     pub(crate) fn sql_smart_candidates(&mut self, start: usize, prefix: &str) -> Vec<Cand> {
         let Some(i) = self.console_source() else { return Vec::new() };
         let (stmt, cur) = self.sql_statement_around(start);
-        let Some(p) = self.db.as_ref() else { return Vec::new() };
+        let Some(p) = self.panels.db.as_ref() else { return Vec::new() };
         let cat = ConnCatalog { conn: &p.conns[i], wants: Default::default() };
         let console = nagi_lang::sql::Console { catalog: &cat, stmt: &stmt, cur };
         let src = self.buf.text();
@@ -92,7 +92,7 @@ impl Editor {
         let out = nagi_lang::template::complete::complete(&cx);
         // 届いていない分は読み始め、届いたら作り直す
         let wants = cat.wants.take();
-        if let Some(p) = self.db.as_mut() {
+        if let Some(p) = self.panels.db.as_mut() {
             let c = &mut p.conns[i];
             for w in wants {
                 match w {
@@ -132,41 +132,41 @@ mod tests {
         e.set_screen(160, 50);
         e.open_db_panel();
         e.db_add("mem jdbc:sqlite::memory:");
-        let i = e.db.as_ref().unwrap().sources.len() - 1;
-        e.db.as_mut().unwrap().selected = e.db.as_ref().unwrap().rows.iter().position(|r| *r == crate::db_panel::DbRow::Source(i)).unwrap();
+        let i = e.panels.db.as_ref().unwrap().sources.len() - 1;
+        e.panels.db.as_mut().unwrap().selected = e.panels.db.as_ref().unwrap().rows.iter().position(|r| *r == crate::db_panel::DbRow::Source(i)).unwrap();
         let keys = |e: &mut Editor, k: &str| {
             for key in nagi_vim::parse_keys(k, " ") {
                 e.key(key);
             }
         };
         keys(&mut e, "<CR>");
-        crate::db_panel::tests::wait(&mut e, &|e| e.db.as_ref().unwrap().conns[i].connected);
-        e.db.as_mut().unwrap().conns[i].manual = true;
+        crate::db_panel::tests::wait(&mut e, &|e| e.panels.db.as_ref().unwrap().conns[i].connected);
+        e.panels.db.as_mut().unwrap().conns[i].manual = true;
         e.db_execute(i, "create table orders(order_id integer primary key, customer_id integer, status text)".into());
-        crate::db_panel::tests::wait(&mut e, &|e| e.db.as_ref().unwrap().conns[i].objects.get("main").is_some_and(|o| !o.tables.is_empty()));
+        crate::db_panel::tests::wait(&mut e, &|e| e.panels.db.as_ref().unwrap().conns[i].objects.get("main").is_some_and(|o| !o.tables.is_empty()));
         e.open_console(i, None);
         // Ctrl-n（前方一致で入れる）は今までどおり
         keys(&mut e, "Goselect * from ord<C-n>");
         assert!(e.buf.line(e.cursor.line).ends_with("from orders"), "{}", e.buf.line(e.cursor.line));
         // . の後は一覧を出す（列はまだ読んでいないので読みに行き、届いたら一覧を出す）
         keys(&mut e, "<C-y> o where o.");
-        crate::db_panel::tests::wait(&mut e, &|e| e.completion.as_ref().is_some_and(|c| c.smart.is_some() && !c.items.is_empty()));
-        assert_eq!(e.completion.as_ref().unwrap().items, vec!["order_id", "customer_id", "status"]);
-        assert_eq!(e.completion.as_ref().unwrap().notes[0].1, "INTEGER  orders  PK");
+        crate::db_panel::tests::wait(&mut e, &|e| e.panels.completion.as_ref().is_some_and(|c| c.smart.is_some() && !c.items.is_empty()));
+        assert_eq!(e.panels.completion.as_ref().unwrap().items, vec!["order_id", "customer_id", "status"]);
+        assert_eq!(e.panels.completion.as_ref().unwrap().notes[0].1, "INTEGER  orders  PK");
         // 打って絞り込み（飛ばし打ちも）、Enter で決める
         keys(&mut e, "cid");
-        assert_eq!(e.completion.as_ref().unwrap().items[0], "customer_id");
+        assert_eq!(e.panels.completion.as_ref().unwrap().items[0], "customer_id");
         keys(&mut e, "<CR>");
         assert!(e.buf.line(e.cursor.line).ends_with("o.customer_id"), "{}", e.buf.line(e.cursor.line));
         // 次の文（空行で区切る）: SELECT の後は FROM の表の列が先（関数の strftime より）
         keys(&mut e, "<Esc>o<CR>select st from orders<Esc>02fta");
         e.start_smart_completion();
-        let c = e.completion.as_ref().unwrap();
+        let c = e.panels.completion.as_ref().unwrap();
         assert_eq!(c.items[0], "status", "{:?}", c.items);
         // FROM の後はテーブル
         keys(&mut e, "<Esc><Esc>o<CR>select * from o");
         e.start_smart_completion();
-        assert_eq!(e.completion.as_ref().unwrap().items[0], "orders");
+        assert_eq!(e.panels.completion.as_ref().unwrap().items[0], "orders");
         keys(&mut e, "<CR>");
         assert!(e.buf.line(e.cursor.line).ends_with("select * from orders"), "{}", e.buf.line(e.cursor.line));
     }
@@ -179,8 +179,8 @@ mod tests {
         e.set_screen(160, 50);
         e.open_db_panel();
         e.db_add("ora jdbc:oracle:thin:@//db:1521/X");
-        let i = e.db.as_ref().unwrap().sources.len() - 1;
-        let c = &mut e.db.as_mut().unwrap().conns[i];
+        let i = e.panels.db.as_ref().unwrap().sources.len() - 1;
+        let c = &mut e.panels.db.as_mut().unwrap().conns[i];
         c.schema = "HR".into();
         c.schemas = Some(vec!["HR".into(), "SCOTT".into()]);
         c.objects.insert("HR".into(), Objects { tables: vec![("EMP".into(), "TABLE".into())], ..Default::default() });
@@ -197,12 +197,12 @@ mod tests {
         assert!(e.buf.line(e.cursor.line).ends_with("from \"EMP\""), "{}", e.buf.line(e.cursor.line));
         keys(&mut e, " e where e.");
         e.start_smart_completion();
-        assert_eq!(e.completion.as_ref().unwrap().items, vec!["EMP_ID"]);
+        assert_eq!(e.panels.completion.as_ref().unwrap().items, vec!["EMP_ID"]);
         keys(&mut e, "<CR>");
         assert!(e.buf.line(e.cursor.line).ends_with("where e.\"EMP_ID\""), "{}", e.buf.line(e.cursor.line));
         keys(&mut e, "<Esc>o<CR>select * from sco");
         e.start_smart_completion();
-        assert_eq!(e.completion.as_ref().unwrap().items[0], "SCOTT");
+        assert_eq!(e.panels.completion.as_ref().unwrap().items[0], "SCOTT");
         keys(&mut e, "<CR>");
         assert!(e.buf.line(e.cursor.line).ends_with("from \"SCOTT\""), "{}", e.buf.line(e.cursor.line));
     }
@@ -216,8 +216,8 @@ mod tests {
         e.set_screen(160, 50);
         e.open_db_panel();
         e.db_add("sf salesforce:https://login.salesforce.com me@example.com");
-        let i = e.db.as_ref().unwrap().sources.len() - 1;
-        let c = &mut e.db.as_mut().unwrap().conns[i];
+        let i = e.panels.db.as_ref().unwrap().sources.len() - 1;
+        let c = &mut e.panels.db.as_mut().unwrap().conns[i];
         c.objects.insert(String::new(), Objects { tables: vec![("Account".into(), "TABLE".into()), ("Contact".into(), "TABLE".into())], ..Default::default() });
         let col = |n: &str, fk: &str, rel: &str| Column { name: n.into(), ty: "string".into(), fk: fk.into(), rel: rel.into(), ..Default::default() };
         c.columns.insert((String::new(), "Account".into()), vec![col("Id", "", ""), col("Name", "", ""), col("OwnerId", "User", "Owner")]);
@@ -239,7 +239,7 @@ mod tests {
                 keys(e, "i");
             }
             e.start_smart_completion();
-            let v = e.completion.as_ref().map(|c| c.items.clone()).unwrap_or_default();
+            let v = e.panels.completion.as_ref().map(|c| c.items.clone()).unwrap_or_default();
             keys(e, "<Esc><Esc>");
             v
         };
@@ -248,7 +248,7 @@ mod tests {
         // 子のリレーションはまだ読んでいない: 読みに行くと頼む（つないでいないので届かない）
         let v = items(&mut e, "select Id, (select Id from |) from Account");
         assert!(v.is_empty(), "{v:?}");
-        let c = &mut e.db.as_mut().unwrap().conns[i];
+        let c = &mut e.panels.db.as_mut().unwrap().conns[i];
         c.relations.insert((String::new(), "Account".into()), vec![("Contacts".into(), "Contact".into())]);
         let v = items(&mut e, "select Id, (select Id from |) from Account");
         assert!(v.contains(&"Contacts".to_string()), "子のリレーション: {v:?}");

@@ -315,14 +315,14 @@ impl Editor {
             }
         }
         f.refilter();
-        self.finder = Some(f);
+        self.panels.finder = Some(f);
         self.set_state(State::Finder);
         self.svc.notify.clear();
     }
 
     /// 裏で集めている候補を受け取る。変わったら true（描き直す）
     pub fn poll_finder(&mut self) -> bool {
-        let Some(f) = &mut self.finder else { return false };
+        let Some(f) = &mut self.panels.finder else { return false };
         let mut changed = false;
         // どこでも検索: 集まったファイルを足すだけ（並べ替えると種類の並びとずれる）
         if let (Some(w), Source::Everywhere) = (&f.walk, f.source) {
@@ -400,7 +400,7 @@ impl Editor {
     }
 
     pub(crate) fn finder_key(&mut self, key: Key) -> Effect {
-        let Some(f) = &mut self.finder else {
+        let Some(f) = &mut self.panels.finder else {
             self.set_state(State::Normal);
             return Effect::None;
         };
@@ -419,16 +419,16 @@ impl Editor {
             // ノーマルでは j / k で候補を選ぶ
             Key::Char('j') if normal => down(f),
             Key::Char('k') if normal => up(f),
-            k => match self.feed_field(k, |e| e.finder.as_mut().map(|f| &mut f.field)) {
+            k => match self.feed_field(k, |e| e.panels.finder.as_mut().map(|f| &mut f.field)) {
                 FieldOut::Changed => {
-                    if let Some(f) = &mut self.finder {
+                    if let Some(f) = &mut self.panels.finder {
                         f.sync_query();
                     }
                 }
                 FieldOut::Submit => return self.accept_finder(None),
                 FieldOut::Cancel => self.close_finder(),
                 FieldOut::None => {
-                    if let Some(f) = &mut self.finder {
+                    if let Some(f) = &mut self.panels.finder {
                         f.query.cursor = f.field.cursor().1.min(f.query.text.len());
                     }
                 }
@@ -438,7 +438,7 @@ impl Editor {
     }
 
     pub(crate) fn finder_insert(&mut self, text: &str) {
-        if let Some(f) = &mut self.finder {
+        if let Some(f) = &mut self.panels.finder {
             if f.field.insert_text(text) == FieldOut::Changed {
                 f.sync_query();
             }
@@ -448,7 +448,7 @@ impl Editor {
     /// ファインダーのクリック（画面の行・列と画面の大きさ）。候補を押すと選び、ダブルクリックで開く（Enter と同じ）。
     /// 上のタブを押すとその種類に替え（打った語は残す）、小窓の外を押したら閉じる（ほかの小窓と同じ）
     pub(crate) fn finder_click(&mut self, row: usize, col: usize, cols: usize, rows: usize, clicks: u32) {
-        let Some(f) = &mut self.finder else { return };
+        let Some(f) = &mut self.panels.finder else { return };
         let b = draw::finder_box(cols, rows, f.anchor);
         if !b.contains(row, col) {
             self.close_finder();
@@ -472,8 +472,8 @@ impl Editor {
 
     /// どこでも検索のタブ: 種類を替える（打った語は残す）
     pub(crate) fn finder_switch(&mut self, src: Source) {
-        let Some(q) = self.finder.as_ref().map(|f| f.query.text.clone()) else { return };
-        if self.finder.as_ref().is_some_and(|f| f.source == src) {
+        let Some(q) = self.panels.finder.as_ref().map(|f| f.query.text.clone()) else { return };
+        if self.panels.finder.as_ref().is_some_and(|f| f.source == src) {
             return;
         }
         self.open_finder(src);
@@ -483,13 +483,13 @@ impl Editor {
     }
 
     fn close_finder(&mut self) {
-        self.finder = None;
+        self.panels.finder = None;
         self.set_state(State::Normal);
     }
 
     /// 選んだ候補を開く（コマンドなら実行する）。`split` は分割して開く（true: 左右、false: 上下）
     fn accept_finder(&mut self, split: Option<bool>) -> Effect {
-        let Some(f) = self.finder.take() else { return Effect::None };
+        let Some(f) = self.panels.finder.take() else { return Effect::None };
         self.set_state(State::Normal);
         let Some(&(i, _)) = f.hits.get(f.selected) else { return Effect::None };
         let i = i as usize;
@@ -562,13 +562,13 @@ pub struct FinderView;
 impl crate::layout::View for FinderView {
     fn rect(&self, ed: &crate::editor::Editor, s: crate::layout::Screen) -> Option<crate::panes::Rect> {
         let _ = s;
-        ed.finder.as_ref()?;
+        ed.panels.finder.as_ref()?;
         Some(crate::panes::Rect { x: 0, y: 0, w: s.cols, h: s.rows })
     }
 
     fn draw(&self, ed: &crate::editor::Editor, p: &mut crate::view::Painter, r: crate::panes::Rect, s: crate::layout::Screen) {
         let _ = (r, s);
-        if let Some(f) = &ed.finder {
+        if let Some(f) = &ed.panels.finder {
             draw::draw_finder(p, f, s.rows, s.cols, &ed.preedit);
         }
     }
@@ -750,7 +750,7 @@ mod tests {
     fn wait_walk(e: &mut Editor) {
         for _ in 0..500 {
             e.poll_finder();
-            if e.finder.as_ref().is_some_and(|f| !f.walking()) {
+            if e.panels.finder.as_ref().is_some_and(|f| !f.walking()) {
                 return;
             }
             std::thread::sleep(std::time::Duration::from_millis(2));
@@ -768,13 +768,13 @@ mod tests {
         e.open_finder(Source::Files);
         wait_walk(&mut e);
         let s = crate::layout::Screen { rows: 40, cols: 100 };
-        let f = e.finder.as_ref().unwrap();
+        let f = e.panels.finder.as_ref().unwrap();
         let second = f.items[f.hits[1].0 as usize].clone();
         // 小窓の一覧の 1 行目が一番良い候補、その下が 2 番目
         let b = draw::finder_box(100, 40, None);
         let row = b.y + draw::LIST_TOP + 1;
         crate::layout::press(&mut e, s, row, b.x + 5, |_| 1);
-        assert_eq!(e.finder.as_ref().unwrap().selected, 1, "押した行の候補を選ぶ");
+        assert_eq!(e.panels.finder.as_ref().unwrap().selected, 1, "押した行の候補を選ぶ");
         assert_eq!(e.state(), State::Finder, "1 回では開かない");
         crate::layout::press(&mut e, s, row, b.x + 5, |_| 2);
         assert_eq!(e.state(), State::Normal);
@@ -784,11 +784,11 @@ mod tests {
         e.finder_insert("main");
         let (_, c0, _) = draw::finder_tabs(Source::Everywhere)[2];
         crate::layout::press(&mut e, s, b.y, b.x + c0 + 1, |_| 1);
-        let f = e.finder.as_ref().unwrap();
+        let f = e.panels.finder.as_ref().unwrap();
         assert_eq!((f.source, f.query.text.as_str()), (Source::Files, "main"));
         // 小窓の外を押すと閉じる
         crate::layout::press(&mut e, s, 0, 5, |_| 1);
-        assert!(e.finder.is_none());
+        assert!(e.panels.finder.is_none());
         assert_eq!(e.state(), State::Normal);
     }
 
@@ -802,7 +802,7 @@ mod tests {
         keys(&mut e, ":SearchEverywhere<CR>");
         assert_eq!(e.state(), State::Finder);
         wait_walk(&mut e);
-        let f = e.finder.as_ref().unwrap();
+        let f = e.panels.finder.as_ref().unwrap();
         assert_eq!(f.items.len(), f.every.len());
         assert!(f.items.iter().any(|i| i == "src/view/panes.rs") && f.items.iter().any(|i| i.ends_with(":HideAll")));
         keys(&mut e, "view/pan<CR>");
@@ -824,19 +824,19 @@ mod tests {
         e.open_finder(Source::Files);
         assert_eq!(e.state(), State::Finder);
         wait_walk(&mut e);
-        let f = e.finder.as_ref().unwrap();
+        let f = e.panels.finder.as_ref().unwrap();
         assert_eq!(f.items.len(), 3);
         // 検索語が空なら短い順
         assert_eq!(f.items[f.hits[0].0 as usize], "README.md");
         keys(&mut e, "pan");
-        let f = e.finder.as_ref().unwrap();
+        let f = e.panels.finder.as_ref().unwrap();
         assert_eq!(f.hits.len(), 1);
         keys(&mut e, "<CR>");
         assert_eq!(e.state(), State::Normal);
         assert_eq!(e.buf.line(0), "panes");
         // 2 回目は覚えた一覧をすぐ出す（裏で集め直している間も）。Ctrl-v で左右に分けて開く
         e.open_finder(Source::Files);
-        assert_eq!(e.finder.as_ref().unwrap().items.len(), 3);
+        assert_eq!(e.panels.finder.as_ref().unwrap().items.len(), 3);
         keys(&mut e, "main<C-v>");
         assert!(e.is_split());
         assert_eq!(e.buf.line(0), "main");
@@ -844,20 +844,20 @@ mod tests {
         std::fs::write(dir.join("src/new_file.rs"), "").unwrap();
         e.open_finder(Source::Files);
         wait_walk(&mut e);
-        assert_eq!(e.finder.as_ref().unwrap().items.len(), 4);
+        assert_eq!(e.panels.finder.as_ref().unwrap().items.len(), 4);
         keys(&mut e, "<Esc><Esc>");
         // 欄は Vim 風: Esc でノーマル（j / k で選ぶ、ciw で直す）、もう一度 Esc で閉じる。閉じても何も変えない
         e.open_finder(Source::Files);
         keys(&mut e, "read<Esc>");
         assert_eq!(e.state(), State::Finder);
-        assert!(!e.finder.as_ref().unwrap().field.is_insert());
+        assert!(!e.panels.finder.as_ref().unwrap().field.is_insert());
         keys(&mut e, "ciwmain<Esc>");
-        assert_eq!(e.finder.as_ref().unwrap().query.text, "main");
-        let hits = e.finder.as_ref().unwrap().hits.len();
+        assert_eq!(e.panels.finder.as_ref().unwrap().query.text, "main");
+        let hits = e.panels.finder.as_ref().unwrap().hits.len();
         keys(&mut e, "k");
-        assert_eq!(e.finder.as_ref().unwrap().selected, 1.min(hits - 1), "k で次の候補");
+        assert_eq!(e.panels.finder.as_ref().unwrap().selected, 1.min(hits - 1), "k で次の候補");
         keys(&mut e, "j");
-        assert_eq!(e.finder.as_ref().unwrap().selected, 0);
+        assert_eq!(e.panels.finder.as_ref().unwrap().selected, 0);
         keys(&mut e, "<Esc>");
         assert_eq!(e.state(), State::Normal);
         assert_eq!(e.buf.line(0), "main");
@@ -871,7 +871,7 @@ mod tests {
         keys(&mut e, &format!(":e {}<CR>", dir.join("src/main.rs").display()));
         keys(&mut e, &format!(":e {}<CR>", dir.join("src/view/panes.rs").display()));
         e.open_finder(Source::Buffers);
-        let f = e.finder.as_ref().unwrap();
+        let f = e.panels.finder.as_ref().unwrap();
         // 直前のバッファが一番上（選んだ状態）、作業中のバッファは最後
         assert!(f.items[f.hits[0].0 as usize].ends_with("src/main.rs"), "{:?}", f.items);
         assert!(f.items[f.hits[2].0 as usize].ends_with("panes.rs"));
@@ -881,7 +881,7 @@ mod tests {
         // IME で確定した文字も検索語に入る
         e.open_finder(Source::Buffers);
         e.ime_commit("pan");
-        assert_eq!(e.finder.as_ref().unwrap().hits.len(), 1);
+        assert_eq!(e.panels.finder.as_ref().unwrap().hits.len(), 1);
     }
 
     #[test]
@@ -891,7 +891,7 @@ mod tests {
         e.open_finder(Source::Commands);
         // 日本語の説明で絞って実行する（IME で打った語）
         e.ime_commit("左右に分割");
-        assert_eq!(e.finder.as_ref().unwrap().hits.len(), 1);
+        assert_eq!(e.panels.finder.as_ref().unwrap().hits.len(), 1);
         keys(&mut e, "<CR>");
         assert!(e.is_split());
         // コマンド名でも当たる。終了の知らせは App へ返す

@@ -33,8 +33,8 @@ pub fn is_markdown(p: &std::path::Path) -> bool {
 impl Editor {
     /// `:MarkdownPreview`: 出す・閉じる
     pub(crate) fn toggle_md_preview(&mut self) {
-        if self.md_preview.is_some() && self.right_visible() == Some(RightTab::Preview) {
-            self.md_preview = None;
+        if self.panels.md_preview.is_some() && self.right_visible() == Some(RightTab::Preview) {
+            self.panels.md_preview = None;
             if self.right_focused() {
                 self.set_state(State::Normal);
             }
@@ -45,7 +45,7 @@ impl Editor {
             self.svc.notify.info("Markdown のファイルではありません");
             return;
         }
-        self.md_preview = Some(MdPreview { key: (PathBuf::new(), 0, 0), lines: Vec::new(), scroll: 0, selected: 0, follow: true, seen_line: usize::MAX });
+        self.panels.md_preview = Some(MdPreview { key: (PathBuf::new(), 0, 0), lines: Vec::new(), scroll: 0, selected: 0, follow: true, seen_line: usize::MAX });
         self.right_tab = RightTab::Preview;
         self.right_hidden = false;
         self.rows = self.text_rows(self.active_rect());
@@ -54,7 +54,7 @@ impl Editor {
 
     /// 今の Markdown のバッファに合わせて作り直し、カーソルの行へスクロールする（描く前に呼ぶ）
     pub(crate) fn refresh_md_preview(&mut self) {
-        if self.md_preview.is_none() || self.right_visible() != Some(RightTab::Preview) {
+        if self.panels.md_preview.is_none() || self.right_visible() != Some(RightTab::Preview) {
             return;
         }
         let w = self.right_rect().map_or(40, |r| r.w.saturating_sub(2));
@@ -64,7 +64,7 @@ impl Editor {
         let md = self.buf.path.as_deref().is_some_and(is_markdown);
         let cur_line = self.cursor.line;
         let key = (self.buf.path.clone().unwrap_or_default(), self.buf.version, w);
-        let Some(pv) = &mut self.md_preview else { return };
+        let Some(pv) = &mut self.panels.md_preview else { return };
         if md && pv.key != key {
             pv.lines = render(&self.buf.text(), w);
             pv.key = key;
@@ -87,7 +87,7 @@ impl Editor {
 
     pub(crate) fn md_preview_key(&mut self, key: Key) -> Effect {
         let h = self.right_rect().map_or(20, |r| r.h.saturating_sub(1)).max(1);
-        let Some(pv) = &mut self.md_preview else {
+        let Some(pv) = &mut self.panels.md_preview else {
             self.set_state(State::Normal);
             return Effect::None;
         };
@@ -104,7 +104,7 @@ impl Editor {
                 }
             }
             Key::Char('q') => {
-                self.md_preview = None;
+                self.panels.md_preview = None;
                 self.set_state(State::Normal);
                 self.rows = self.text_rows(self.active_rect());
             }
@@ -129,7 +129,7 @@ impl Editor {
         if path.is_empty() {
             return;
         }
-        let base = self.md_preview.as_ref().and_then(|p| p.key.0.parent().map(|d| d.to_path_buf())).unwrap_or_default();
+        let base = self.panels.md_preview.as_ref().and_then(|p| p.key.0.parent().map(|d| d.to_path_buf())).unwrap_or_default();
         let target = base.join(path.replace('/', std::path::MAIN_SEPARATOR_STR));
         if target.is_file() {
             self.set_state(State::Normal);
@@ -141,7 +141,7 @@ impl Editor {
 
     /// プレビューの行のクリック（2 回でリンクを開く）
     pub(crate) fn md_preview_click(&mut self, row: usize, clicks: u32) {
-        let Some(pv) = &mut self.md_preview else { return };
+        let Some(pv) = &mut self.panels.md_preview else { return };
         let len = pv.lines.len();
         let Some(pick) = nagi_ui::list::pick_row(&mut pv.selected, pv.scroll, row, 1, len, clicks) else { return };
         pv.follow = false;
@@ -230,14 +230,14 @@ mod tests {
         e.toggle_md_preview();
         assert_eq!(e.right_visible(), Some(RightTab::Preview));
         assert!(e.right_width() >= 60, "プレビューは広め: {}", e.right_width());
-        let pv = e.md_preview.as_ref().unwrap();
+        let pv = e.panels.md_preview.as_ref().unwrap();
         assert_eq!(pv.lines[0].text, "T");
         // カーソルを下へ: プレビューも送られる
         for k in nagi_vim::parse_keys("121G", " ") {
             e.key(k);
         }
         e.refresh_md_preview();
-        let pv = e.md_preview.as_ref().unwrap();
+        let pv = e.panels.md_preview.as_ref().unwrap();
         assert!(pv.scroll > 30, "{}", pv.scroll);
         assert_eq!(pv.lines[pv.selected].text.trim(), "段落 58");
         // 打つと作り直す
@@ -245,16 +245,16 @@ mod tests {
             e.key(k);
         }
         e.refresh_md_preview();
-        assert_eq!(e.md_preview.as_ref().unwrap().lines[0].text, "T追記");
+        assert_eq!(e.panels.md_preview.as_ref().unwrap().lines[0].text, "T追記");
         // 欄に移ってリンクの行で Enter → そのファイルを開く
         e.focus_right(RightTab::Preview);
-        let at = e.md_preview.as_ref().unwrap().lines.iter().position(|l| !l.links.is_empty()).unwrap();
-        e.md_preview.as_mut().unwrap().selected = at;
+        let at = e.panels.md_preview.as_ref().unwrap().lines.iter().position(|l| !l.links.is_empty()).unwrap();
+        e.panels.md_preview.as_mut().unwrap().selected = at;
         e.key(Key::Enter);
         assert!(e.buf.path.as_ref().unwrap().ends_with("setup.md"), "{:?} {}", e.buf.path, e.svc.notify.text);
         // もう一度で閉じる
         e.set_state(State::Normal);
         e.toggle_md_preview();
-        assert!(e.md_preview.is_none());
+        assert!(e.panels.md_preview.is_none());
     }
 }

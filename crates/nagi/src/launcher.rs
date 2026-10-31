@@ -161,7 +161,7 @@ impl Editor {
     /// ランチャーを出す（一覧は裏で集める）
     /// 選んでいるプロジェクトをピン留めする・外す（p・右クリック）
     pub(crate) fn launcher_pin(&mut self) {
-        let Some(l) = &mut self.launcher else { return };
+        let Some(l) = &mut self.panels.launcher else { return };
         let Some(e) = l.selected_entry().cloned() else { return };
         let on = crate::project_open::toggle_pin(&e.path);
         let path = e.path.clone();
@@ -176,7 +176,7 @@ impl Editor {
 
     /// 選んでいるプロジェクトを一覧から外す（dd・右クリック）
     pub(crate) fn launcher_hide(&mut self) {
-        let Some(l) = &mut self.launcher else { return };
+        let Some(l) = &mut self.panels.launcher else { return };
         let Some(e) = l.selected_entry().cloned() else { return };
         crate::project_open::hide_project(&e.path);
         l.all.retain(|x| x.path != e.path);
@@ -189,7 +189,7 @@ impl Editor {
         let rx = nagi_core::task::spawn("launcher", self.waker(), move |ctx| {
             ctx.send(recent_entries());
         });
-        self.launcher = Some(Launcher {
+        self.panels.launcher = Some(Launcher {
             all: Vec::new(),
             hits: Vec::new(),
             selected: 0,
@@ -207,13 +207,13 @@ impl Editor {
             picking: None,
             pick_insert: true,
         });
-        self.finder = None;
+        self.panels.finder = None;
         self.set_state(State::Launcher);
     }
 
     /// 裏で集めた一覧・プレビュー・clone の結果を受け取る。変わったら true
     pub(crate) fn poll_launcher(&mut self) -> bool {
-        let Some(l) = &mut self.launcher else { return false };
+        let Some(l) = &mut self.panels.launcher else { return false };
         let mut changed = false;
         if let Some(rx) = &l.loading {
             if let Ok(all) = rx.try_recv() {
@@ -245,7 +245,7 @@ impl Editor {
                     return true;
                 }
                 None => {
-                    if let Some(l) = &mut self.launcher {
+                    if let Some(l) = &mut self.panels.launcher {
                         if l.pick_insert {
                             l.field.reinsert();
                         }
@@ -254,7 +254,7 @@ impl Editor {
                 }
             }
         }
-        let Some(l) = &mut self.launcher else { return changed };
+        let Some(l) = &mut self.panels.launcher else { return changed };
         let mut cloned = None;
         if let Some((_, rx)) = &l.cloning {
             if let Ok(r) = rx.try_recv() {
@@ -280,7 +280,7 @@ impl Editor {
     /// 選んでいるプロジェクトのプレビューがまだなら作り始める
     fn want_preview(&mut self) -> bool {
         let waker = self.waker();
-        let Some(l) = &mut self.launcher else { return false };
+        let Some(l) = &mut self.panels.launcher else { return false };
         let Some(e) = l.selected_entry() else { return false };
         if e.missing || l.previews.contains_key(&e.path) || l.preview_rx.as_ref().is_some_and(|(p, _)| *p == e.path) {
             return false;
@@ -297,15 +297,15 @@ impl Editor {
     /// エクスプローラーから落としたもの: フォルダはプロジェクトとして開き、ファイルは開く（ランチャーなら閉じて）
     pub(crate) fn open_dropped(&mut self, path: PathBuf) {
         if path.is_dir() {
-            if self.launcher.is_some() {
+            if self.panels.launcher.is_some() {
                 self.close_launcher_to(path);
             } else {
                 self.open_project(path);
             }
             return;
         }
-        if self.launcher.is_some() {
-            self.launcher = None;
+        if self.panels.launcher.is_some() {
+            self.panels.launcher = None;
         }
         if !matches!(self.state(), State::Normal) {
             self.set_state(State::Normal);
@@ -314,19 +314,19 @@ impl Editor {
     }
 
     fn close_launcher_to(&mut self, dir: PathBuf) {
-        self.launcher = None;
+        self.panels.launcher = None;
         self.set_state(State::Normal);
         self.open_project(dir);
     }
 
     /// ランチャーを閉じて空のバッファで始める
     fn close_launcher(&mut self) {
-        self.launcher = None;
+        self.panels.launcher = None;
         self.set_state(State::Normal);
     }
 
     pub(crate) fn launcher_insert(&mut self, text: &str) {
-        let Some(l) = &mut self.launcher else { return };
+        let Some(l) = &mut self.panels.launcher else { return };
         if let Some((_, f)) = &mut l.ask {
             f.insert_text(text);
             return;
@@ -338,7 +338,7 @@ impl Editor {
     }
 
     pub(crate) fn launcher_key(&mut self, key: Key) {
-        let Some(l) = &mut self.launcher else {
+        let Some(l) = &mut self.panels.launcher else {
             self.set_state(State::Normal);
             return;
         };
@@ -349,8 +349,8 @@ impl Editor {
         l.message.clear();
         // o・g の入力
         if l.ask.is_some() {
-            let out = self.feed_field(key, |e| e.launcher.as_mut().and_then(|l| l.ask.as_mut()).map(|a| &mut a.1));
-            let Some(l) = &mut self.launcher else { return };
+            let out = self.feed_field(key, |e| e.panels.launcher.as_mut().and_then(|l| l.ask.as_mut()).map(|a| &mut a.1));
+            let Some(l) = &mut self.panels.launcher else { return };
             match out {
                 FieldOut::Submit => {
                     let (ask, f) = l.ask.take().unwrap();
@@ -399,9 +399,9 @@ impl Editor {
                 self.close_launcher();
                 return;
             }
-            k => match self.feed_field(k, |e| e.launcher.as_mut().map(|l| &mut l.field)) {
+            k => match self.feed_field(k, |e| e.panels.launcher.as_mut().map(|l| &mut l.field)) {
                 FieldOut::Changed => {
-                    if let Some(l) = &mut self.launcher {
+                    if let Some(l) = &mut self.panels.launcher {
                         l.refilter();
                     }
                 }
@@ -421,7 +421,7 @@ impl Editor {
         let base = std::env::var_os("USERPROFILE").map(|h| PathBuf::from(h).join("IdeaProjects")).unwrap_or_else(|| self.cwd.clone());
         let dest = base.join(&name);
         let waker = self.waker();
-        let Some(l) = &mut self.launcher else { return };
+        let Some(l) = &mut self.panels.launcher else { return };
         if dest.exists() {
             l.message = format!("もうあります: {}（o で開けます）", dest.display());
             return;
@@ -439,7 +439,7 @@ impl Editor {
     /// 左の操作: o フォルダ（ダイアログ）、w WSL のフォルダ（ダイアログ）、g git から取得、r 最近のファイル、n 空で始める
     pub(crate) fn launcher_action(&mut self, a: char) {
         let (waker, hwnd) = (self.waker.clone(), self.hwnd);
-        let Some(l) = &mut self.launcher else { return };
+        let Some(l) = &mut self.panels.launcher else { return };
         l.pick_insert = l.field.is_insert();
         match a {
             'o' => {
@@ -467,7 +467,7 @@ impl Editor {
 
     /// 左の操作のクリック（画面の行・列）。当たれば true
     pub(crate) fn launcher_left_click(&mut self, row: usize, col: usize) -> bool {
-        let Some(l) = &self.launcher else { return false };
+        let Some(l) = &self.panels.launcher else { return false };
         let (acts, w) = l.act_map.borrow().clone();
         if col >= w {
             return false;
@@ -484,7 +484,7 @@ impl Editor {
     /// 一覧の行のクリック（2 回で開く）
     /// 一覧の画面の行 `row` を押した（1 件 2 行なので、描いたときの行の表で候補を引く）。選び、ダブルクリックで開く
     pub(crate) fn launcher_click_row(&mut self, row: usize, clicks: u32) {
-        let Some(l) = &mut self.launcher else { return };
+        let Some(l) = &mut self.panels.launcher else { return };
         let n = l.hits.len();
         let hit = l.row_map.borrow().iter().find(|(r, _)| *r == row).map(|x| x.1).filter(|&i| i < n);
         match nagi_ui::list::pick(&mut l.selected, hit, clicks, 2) {
@@ -527,13 +527,13 @@ pub struct LauncherView;
 impl crate::layout::View for LauncherView {
     fn rect(&self, ed: &crate::editor::Editor, s: crate::layout::Screen) -> Option<crate::panes::Rect> {
         let _ = s;
-        ed.launcher.as_ref()?;
+        ed.panels.launcher.as_ref()?;
         Some(crate::panes::Rect { x: 0, y: 0, w: s.cols, h: s.rows + ed.status_rows() })
     }
 
     fn draw(&self, ed: &crate::editor::Editor, p: &mut crate::view::Painter, r: crate::panes::Rect, s: crate::layout::Screen) {
         let _ = (r, s);
-        if let Some(l) = &ed.launcher {
+        if let Some(l) = &ed.panels.launcher {
             draw::draw_launcher(p, l, s.cols, s.rows + ed.status_rows(), &ed.preedit);
         }
     }
@@ -548,7 +548,7 @@ impl crate::layout::View for LauncherView {
         let (row, col) = at.screen;
         use nagi_vim::Key::*;
         // プロジェクトの行: 選んでから、開く・ピン留め・一覧から外す
-        let Some(l) = &mut ed.launcher else { return false };
+        let Some(l) = &mut ed.panels.launcher else { return false };
         let n = l.hits.len();
         let hit = l.row_map.borrow().iter().find(|(r, _)| *r == row).map(|&(_, h)| h).filter(|&i| i < n);
         if nagi_ui::list::pick(&mut l.selected, hit, 1, 2).is_none() {
@@ -809,59 +809,59 @@ mod tests {
         e.set_screen(160, 40);
         e.open_launcher();
         // 裏の読み込みは待たずに、一覧を差し替える
-        let l = e.launcher.as_mut().unwrap();
+        let l = e.panels.launcher.as_mut().unwrap();
         l.loading = None;
         l.all = vec![entry("shop", true, false), entry("shop-front", false, false), entry("billing", false, false), entry("old-notes", false, true)];
         l.refilter();
         assert_eq!(e.state(), State::Launcher);
-        assert_eq!(e.launcher.as_ref().unwrap().hits.len(), 4);
+        assert_eq!(e.panels.launcher.as_ref().unwrap().hits.len(), 4);
         // 打てば絞り込み（Insert で始まる）
         for k in nagi_vim::parse_keys("bil", " ") {
             e.launcher_key(k);
         }
-        let l = e.launcher.as_ref().unwrap();
+        let l = e.panels.launcher.as_ref().unwrap();
         assert_eq!(l.hits.len(), 1);
         assert_eq!(l.selected_entry().unwrap().name, "billing");
         // Esc でノーマル、ciw で消して全部（選んでいたものは選んだまま）、j で次
         for k in nagi_vim::parse_keys("<Esc>ciw<Esc>", " ") {
             e.launcher_key(k);
         }
-        let l = e.launcher.as_ref().unwrap();
+        let l = e.panels.launcher.as_ref().unwrap();
         assert_eq!(l.hits.len(), 4);
         assert_eq!(l.selected_entry().unwrap().name, "billing");
         e.launcher_key(Key::Char('j'));
-        assert_eq!(e.launcher.as_ref().unwrap().selected_entry().unwrap().name, "old-notes");
+        assert_eq!(e.panels.launcher.as_ref().unwrap().selected_entry().unwrap().name, "old-notes");
         // 無いフォルダは開かない
         e.launcher_key(Key::Enter);
         assert_eq!(e.state(), State::Launcher);
-        assert!(e.launcher.as_ref().unwrap().message.contains("ありません"), "{}", e.launcher.as_ref().unwrap().message);
+        assert!(e.panels.launcher.as_ref().unwrap().message.contains("ありません"), "{}", e.panels.launcher.as_ref().unwrap().message);
         // ダイアログ（ここでは本物の代わりの通り道）を開いている間のキーは受けず、閉じたら開いたときの入力の状態に戻る
         e.launcher_key(Key::Char('i'));
-        assert!(e.launcher.as_ref().unwrap().field.is_insert());
+        assert!(e.panels.launcher.as_ref().unwrap().field.is_insert());
         let (tx, rx) = nagi_core::task::manual();
-        let l = e.launcher.as_mut().unwrap();
+        let l = e.panels.launcher.as_mut().unwrap();
         l.pick_insert = l.field.is_insert();
         l.picking = Some(rx);
         e.launcher_key(Key::Esc);
-        assert!(e.launcher.as_ref().unwrap().field.is_insert(), "ダイアログ中の Esc は受けない");
+        assert!(e.panels.launcher.as_ref().unwrap().field.is_insert(), "ダイアログ中の Esc は受けない");
         tx.send(None).unwrap();
         e.poll_launcher();
-        let l = e.launcher.as_ref().unwrap();
+        let l = e.panels.launcher.as_ref().unwrap();
         assert!(l.picking.is_none() && l.field.is_insert());
         e.launcher_key(Key::Esc);
         // g で git の URL の入力、Esc Esc でやめる（o はダイアログを出すので試験では押さない）
         for k in nagi_vim::parse_keys("g", " ") {
             e.launcher_key(k);
         }
-        assert!(e.launcher.as_ref().unwrap().ask.is_some());
+        assert!(e.panels.launcher.as_ref().unwrap().ask.is_some());
         for k in nagi_vim::parse_keys("<Esc><Esc>", " ") {
             e.launcher_key(k);
         }
-        assert!(e.launcher.as_ref().unwrap().ask.is_none());
+        assert!(e.panels.launcher.as_ref().unwrap().ask.is_none());
         // ノーマルの Esc で閉じて空のバッファ
         e.launcher_key(Key::Esc);
         assert_eq!(e.state(), State::Normal);
-        assert!(e.launcher.is_none());
+        assert!(e.panels.launcher.is_none());
         assert_eq!(ago(crate::project_open::now_ms() - 180_000), "3 分前");
     }
 
@@ -876,12 +876,12 @@ mod tests {
         e.set_screen(120, 40);
         e.open_launcher();
         e.open_dropped(dir.join("a.txt"));
-        assert!(e.launcher.is_none());
+        assert!(e.panels.launcher.is_none());
         assert_eq!(e.state(), State::Normal);
         assert_eq!(e.buf.line(0), "dropped");
         e.open_launcher();
         e.open_dropped(dir.join("proj"));
-        assert!(e.launcher.is_none());
+        assert!(e.panels.launcher.is_none());
         assert_ne!(e.state(), State::Launcher, "ランチャーから開いたときと同じく、ツリーへ");
         assert!(e.svc.git.root.as_ref().is_some_and(|r| r.ends_with("proj")) || e.svc.notify.text.contains("proj"), "{}", e.svc.notify.text);
     }

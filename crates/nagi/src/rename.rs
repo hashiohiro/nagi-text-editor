@@ -65,7 +65,7 @@ impl Editor {
             return;
         };
         self.open_grep_regex(&format!(r"\b{}\b", regex::escape(&name)));
-        if let Some(g) = &mut self.grep {
+        if let Some(g) = &mut self.panels.grep {
             g.refs = Some(crate::grep_panel::RefsFilter { name, target, rename: Some(new.to_string()) });
         }
         self.svc.notify.info("名前を変える所を探しています…");
@@ -98,7 +98,7 @@ impl Editor {
 
     /// 全文検索は 1 行に 1 件なので、同じ行のほかの一致もそれぞれ 1 件に分ける（1 つずつ定義を確かめて変えるため）
     pub(crate) fn split_rename_hits(&mut self, name: &str) {
-        let Some(g) = &mut self.grep else { return };
+        let Some(g) = &mut self.panels.grep else { return };
         let re = regex::Regex::new(&format!(r"\b{}\b", regex::escape(name))).unwrap();
         let mut file: Option<(String, Vec<String>)> = None;
         let mut out = Vec::with_capacity(g.hits.len());
@@ -122,7 +122,7 @@ impl Editor {
 
     /// 参照の検索の絞り込みが終わった: 一覧（下の欄）を見せて、確かめてから変える
     pub(crate) fn ask_rename(&mut self, name: String, new: String, target: (String, usize, usize)) {
-        let Some(g) = &self.grep else { return };
+        let Some(g) = &self.panels.grep else { return };
         let sites: Vec<Site> = g.hits.iter().map(|h| (h.path.clone(), h.line.saturating_sub(1), h.range.0)).collect();
         let files = {
             let mut v: Vec<&str> = sites.iter().map(|s| s.0.as_str()).collect();
@@ -452,7 +452,7 @@ mod tests {
         // 名前を書かなければ、今の名前を入れたダイアログ。打ち直して Enter で変える
         e.rename_command("");
         assert_eq!(e.state(), crate::editor::State::Input);
-        assert_eq!(e.input.as_ref().unwrap().field.text, "n");
+        assert_eq!(e.panels.input.as_ref().unwrap().field.text, "n");
         keys(&mut e, "<BS>k<CR>");
         assert_eq!(e.state(), crate::editor::State::Normal);
         assert!(e.buf.text().contains("    int k = 1;\n    k = k + this.n;"), "{}", e.buf.text());

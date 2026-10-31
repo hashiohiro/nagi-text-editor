@@ -438,7 +438,7 @@ impl Editor {
         // 定義が 1 か所に決まれば、探し終わったところで、別の定義を指すもの（同じ名前のほかのメソッド・ライブラリのもの・ローカル変数）を除く
         let target = self.definition_target(&name, word_at);
         self.open_grep_regex(&format!(r"\b{}\b", regex::escape(&name)));
-        if let (Some(g), Some(target)) = (&mut self.grep, target) {
+        if let (Some(g), Some(target)) = (&mut self.panels.grep, target) {
             g.refs = Some(crate::grep_panel::RefsFilter { name, target, rename: None });
         }
     }
@@ -472,7 +472,7 @@ impl Editor {
         if rename.is_some() {
             self.split_rename_hits(&f.name);
         }
-        let (Some(g), Some(idx)) = (&self.grep, &self.nav.index) else { return };
+        let (Some(g), Some(idx)) = (&self.panels.grep, &self.nav.index) else { return };
         let root = g.root.clone();
         let hits = &g.hits;
         let name = f.name.as_str();
@@ -574,7 +574,7 @@ impl Editor {
             }
         }
         let before = keep.len();
-        let Some(g) = &mut self.grep else { return };
+        let Some(g) = &mut self.panels.grep else { return };
         let mut k = keep.iter();
         g.hits.retain(|_| *k.next().unwrap_or(&true));
         g.selected = 0;
@@ -655,7 +655,7 @@ impl Editor {
 
     fn open_locations(&mut self, source: Source, items: Vec<String>, locs: Vec<(PathBuf, usize, usize)>, _big: bool) {
         self.open_finder(source);
-        if let Some(f) = &mut self.finder {
+        if let Some(f) = &mut self.panels.finder {
             f.set_locations(items, locs);
         }
         if self.state() != State::Finder {
@@ -983,12 +983,12 @@ mod tests {
         keys(&mut e, "2G0frgr");
         for _ in 0..1000 {
             e.poll_grep();
-            if e.grep.as_ref().is_some_and(|g| !g.searching()) {
+            if e.panels.grep.as_ref().is_some_and(|g| !g.searching()) {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
-        let got: Vec<(String, usize)> = e.grep.as_ref().unwrap().hits.iter().map(|h| (h.path.clone(), h.line)).collect();
+        let got: Vec<(String, usize)> = e.panels.grep.as_ref().unwrap().hits.iter().map(|h| (h.path.clone(), h.line)).collect();
         assert_eq!(got, vec![("A.java".to_string(), 2), ("A.java".to_string(), 4), ("B.java".to_string(), 4)], "{}", e.svc.notify.text);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -1024,10 +1024,10 @@ mod tests {
             let mut before = 0;
             for _ in 0..20000 {
                 e.poll_grep();
-                if let Some(g) = e.grep.as_ref().filter(|g| g.searching()) {
+                if let Some(g) = e.panels.grep.as_ref().filter(|g| g.searching()) {
                     before = g.hits.len();
                 }
-                if e.grep.as_ref().is_some_and(|g| !g.searching()) {
+                if e.panels.grep.as_ref().is_some_and(|g| !g.searching()) {
                     break;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(1));
@@ -1037,10 +1037,10 @@ mod tests {
             if let Some(f) = std::env::var_os("NAGI_RATE_DUMP") {
                 let mut f = std::path::PathBuf::from(f);
                 f.set_extension(format!("{name}.txt"));
-                let all: String = e.grep.as_ref().unwrap().hits.iter().map(|h| format!("{}:{}:{:?}\n", h.path, h.line, h.range)).collect();
+                let all: String = e.panels.grep.as_ref().unwrap().hits.iter().map(|h| format!("{}:{}:{:?}\n", h.path, h.line, h.range)).collect();
                 std::fs::write(f, all).unwrap();
             }
-            for h in e.grep.as_ref().unwrap().hits.iter().take(12) {
+            for h in e.panels.grep.as_ref().unwrap().hits.iter().take(12) {
                 println!("  {}:{} {}", h.path, h.line, h.text.chars().take(80).collect::<String>());
             }
         }
@@ -1129,16 +1129,16 @@ mod tests {
         // 候補が 2 つ（Box）: ファインダーで選ぶ
         keys(&mut e, "4Gwgd");
         assert_eq!(e.state(), State::Finder);
-        assert_eq!(e.finder.as_ref().unwrap().hits.len(), 2);
+        assert_eq!(e.panels.finder.as_ref().unwrap().hits.len(), 2);
         keys(&mut e, "c.ts<CR>");
         assert!(e.buf.path.as_ref().unwrap().ends_with("c.ts"));
         // ファイルの構造とシンボル検索
         keys(&mut e, &format!(":e {}<CR>", dir.join("src/b.ts").display()));
         e.outline();
-        assert_eq!(e.finder.as_ref().unwrap().items.len(), 2, "helper と Box");
+        assert_eq!(e.panels.finder.as_ref().unwrap().items.len(), 2, "helper と Box");
         keys(&mut e, "<Esc><Esc>");
         e.symbol_search(true);
-        assert_eq!(e.finder.as_ref().unwrap().items.len(), 2, "型は Box が 2 つ");
+        assert_eq!(e.panels.finder.as_ref().unwrap().items.len(), 2, "型は Box が 2 つ");
         keys(&mut e, "<Esc><Esc>");
     }
 

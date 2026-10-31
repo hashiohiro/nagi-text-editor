@@ -226,7 +226,7 @@ impl Editor {
                 locs.push((m.clone(), 0, 0));
             }
             self.open_finder(Source::Projects);
-            if let Some(f) = &mut self.finder {
+            if let Some(f) = &mut self.panels.finder {
                 f.set_projects(items, locs, true);
             }
             self.svc.notify.info(format!("Eclipse のワークスペース {}: 開くプロジェクトを選んでください", p.name));
@@ -254,15 +254,15 @@ impl Editor {
         self.cwd = std::path::absolute(&p.root).unwrap_or_else(|_| p.root.clone());
         remember_project(&p.root);
         // プロジェクトごとのパネルと索引を作り直す
-        self.tree = None;
+        self.panels.tree = None;
         self.nav = Default::default();
-        self.maven = None;
-        self.grep = None;
-        self.commit = None;
-        self.log = None;
-        self.branch_popup = None;
+        self.panels.maven = None;
+        self.panels.grep = None;
+        self.panels.commit = None;
+        self.panels.log = None;
+        self.panels.branch_popup = None;
         self.diags.clear();
-        self.finder = None;
+        self.panels.finder = None;
         self.set_state(State::Normal);
         // プロジェクトの設定の上書き（.nagi\settings.conf）を読み直す
         self.settings.set_root(Some(&p.root));
@@ -402,7 +402,7 @@ mod tests {
         // IntelliJ の列 9 は 9 文字目（「*/」の *）。byte では「  /* 」5 + 日本語 9 + 空白 1 = 15（byte として 9 を使うと「本」の途中）
         assert_eq!((e.cursor.line, e.cursor.byte), (1, 15));
         assert!(e.svc.notify.text.contains("IntelliJ"), "{}", e.svc.notify.text);
-        assert!(e.tree.is_some(), "木を出す");
+        assert!(e.panels.tree.is_some(), "木を出す");
         // 索引は出力先（out）を見ない
         for _ in 0..1000 {
             e.poll_index();

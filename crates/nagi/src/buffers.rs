@@ -411,7 +411,7 @@ impl Editor {
             locs.push((p.clone(), *l, 0));
         }
         self.open_finder(crate::finder::Source::Locations);
-        if let Some(f) = &mut self.finder {
+        if let Some(f) = &mut self.panels.finder {
             f.set_locations(items, locs);
         }
         if self.state() != crate::editor::State::Finder {

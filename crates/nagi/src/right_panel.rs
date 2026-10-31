@@ -27,13 +27,13 @@ impl Editor {
     /// 中身のあるタブ
     fn right_open_tabs(&self) -> Vec<RightTab> {
         let mut v = Vec::new();
-        if self.db.is_some() {
+        if self.panels.db.is_some() {
             v.push(RightTab::Database);
         }
-        if self.maven.is_some() {
+        if self.panels.maven.is_some() {
             v.push(RightTab::Maven);
         }
-        if self.md_preview.is_some() {
+        if self.panels.md_preview.is_some() {
             v.push(RightTab::Preview);
         }
         v
@@ -74,10 +74,10 @@ impl Editor {
             RightTab::Database => self.open_db_panel(),
             RightTab::Maven => self.open_maven(),
             RightTab::Preview => {
-                if self.md_preview.is_none() {
+                if self.panels.md_preview.is_none() {
                     self.toggle_md_preview();
                 }
-                if self.md_preview.is_some() {
+                if self.panels.md_preview.is_some() {
                     self.focus_right(RightTab::Preview);
                 }
             }
@@ -202,17 +202,17 @@ impl crate::layout::View for RightView {
         let h = r.h.saturating_sub(HEAD);
         match ed.right_visible() {
             Some(RightTab::Maven) => {
-                if let Some(m) = &mut ed.maven {
+                if let Some(m) = &mut ed.panels.maven {
                     nagi_ui::list::wheel(&mut m.selected, &mut m.scroll, m.rows.len(), h, dy);
                 }
             }
             Some(RightTab::Database) => {
-                if let Some(d) = &mut ed.db {
+                if let Some(d) = &mut ed.panels.db {
                     nagi_ui::list::wheel(&mut d.selected, &mut d.scroll, d.rows.len(), h, dy);
                 }
             }
             Some(RightTab::Preview) => {
-                if let Some(pv) = &mut ed.md_preview {
+                if let Some(pv) = &mut ed.panels.md_preview {
                     // 手で送ったら、エディタのカーソルには付いていかない（欄で j / k を押したときと同じ）
                     pv.follow = false;
                     nagi_ui::list::wheel(&mut pv.selected, &mut pv.scroll, pv.lines.len(), r.h.saturating_sub(1), dy);
@@ -236,7 +236,7 @@ impl crate::layout::View for RightView {
             // データベースは接続先・テーブルごとの詳しいメニュー（db_panel.rs）
             Some(RightTab::Database) => return ed.db_context(row, at.screen),
             Some(RightTab::Maven) => {
-                let Some(mv) = &mut ed.maven else { return false };
+                let Some(mv) = &mut ed.panels.maven else { return false };
                 let len = mv.rows.len();
                 if nagi_ui::list::pick_row(&mut mv.selected, mv.scroll, row, 1, len, 1).is_none() {
                     return false;
@@ -245,7 +245,7 @@ impl crate::layout::View for RightView {
                 m.keys("実行・開閉", &[Enter]).keys("読み直す", &[Char('r')]).keys("欄を閉じる", &[Char('q')])
             }
             Some(RightTab::Preview) => {
-                let Some(pv) = &mut ed.md_preview else { return false };
+                let Some(pv) = &mut ed.panels.md_preview else { return false };
                 let len = pv.lines.len();
                 if nagi_ui::list::pick_row(&mut pv.selected, pv.scroll, row, 1, len, 1).is_none() {
                     return false;
@@ -281,7 +281,7 @@ pub(crate) mod draw {
         let saved = p.cols;
         p.cols = r.x + r.w;
         if tab == RightTab::Preview {
-            if let Some(pv) = &ed.md_preview {
+            if let Some(pv) = &ed.panels.md_preview {
                 draw_md_preview(p, pv, r, focused);
             }
             p.cols = saved;
@@ -294,7 +294,7 @@ pub(crate) mod draw {
             // 上で描いて戻っている
             RightTab::Preview => (0, 0),
             RightTab::Maven => {
-                let Some(m) = &ed.maven else {
+                let Some(m) = &ed.panels.maven else {
                     p.cols = saved;
                     return;
                 };
@@ -309,7 +309,7 @@ pub(crate) mod draw {
                 (m.selected, m.scroll)
             }
             RightTab::Database => {
-                let Some(d) = &ed.db else {
+                let Some(d) = &ed.panels.db else {
                     p.cols = saved;
                     return;
                 };
@@ -366,7 +366,7 @@ pub(crate) mod draw {
         for (k, (depth, fold, (icon, icolor), text, note, color)) in lines.iter().enumerate().skip(scroll).take(body) {
             let y = y0 + (top + k - scroll) as f32 * cell.h;
             let sel = k == selected;
-            let reversed = sel && focused && ed.db.as_ref().is_none_or(|d| d.filter.is_none() || tab != RightTab::Database);
+            let reversed = sel && focused && ed.panels.db.as_ref().is_none_or(|d| d.filter.is_none() || tab != RightTab::Database);
             if reversed {
                 selection(p, x0, y, wpx, cell.h, LIST_SEL_BG);
             } else if sel {
@@ -384,7 +384,7 @@ pub(crate) mod draw {
             }
         }
         // 下の行: パスワード・接続先のフォーム・ドライバーの準備
-        if let (RightTab::Database, Some(d)) = (tab, &ed.db) {
+        if let (RightTab::Database, Some(d)) = (tab, &ed.panels.db) {
             if let Some((i, prompt)) = &d.password {
                 let y = y0 + (r.h - 1) as f32 * cell.h;
                 p.out.push(Instance::fill(x0, y, wpx, cell.h, RAISED_BG));

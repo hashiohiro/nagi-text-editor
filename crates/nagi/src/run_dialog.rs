@@ -190,20 +190,20 @@ impl Editor {
             d.focus = Focus::Name;
             d.dirty = true;
         }
-        self.run_dialog = Some(d);
+        self.panels.run_dialog = Some(d);
         self.set_state(State::RunDialog);
         self.svc.notify.clear();
     }
 
     fn close_run_dialog(&mut self) {
-        self.run_dialog = None;
+        self.panels.run_dialog = None;
         self.set_state(State::Normal);
     }
 
     /// 保存（nagi の構成を .nagi/run.conf に書き出す）。うまくいけば true
     fn save_run_dialog(&mut self) -> bool {
         let path = runconfig::conf_path(&self.nav_root());
-        let Some(d) = &mut self.run_dialog else { return false };
+        let Some(d) = &mut self.panels.run_dialog else { return false };
         d.commit();
         // 名前が重なっていれば保存しない
         let names: Vec<&str> = d.configs.iter().map(|c| c.name.as_str()).collect();
@@ -242,7 +242,7 @@ impl Editor {
             }
             DialogButton::Run => {
                 if self.save_run_dialog() {
-                    let cfg = self.run_dialog.as_ref().and_then(|d| d.current().cloned());
+                    let cfg = self.panels.run_dialog.as_ref().and_then(|d| d.current().cloned());
                     let msg = self.svc.notify.text.clone();
                     self.close_run_dialog();
                     if let Some(c) = cfg {
@@ -257,7 +257,7 @@ impl Editor {
                 self.svc.notify.info("実行の構成の画面を閉じました（保存していない変更は捨てました）");
             }
             DialogButton::Add | DialogButton::Copy | DialogButton::Delete => {
-                if let Some(d) = &mut self.run_dialog {
+                if let Some(d) = &mut self.panels.run_dialog {
                     d.commit();
                     d.focus = Focus::List;
                 }
@@ -272,7 +272,7 @@ impl Editor {
 
     /// IME の確定や貼り付け
     pub(crate) fn run_dialog_insert(&mut self, text: &str) {
-        let Some(d) = &mut self.run_dialog else { return };
+        let Some(d) = &mut self.panels.run_dialog else { return };
         let focus = d.focus;
         if let Some(f) = d.field_mut(focus) {
             if f.insert_text(text) == FieldOut::Changed {
@@ -282,7 +282,7 @@ impl Editor {
     }
 
     pub(crate) fn run_dialog_key(&mut self, key: Key) {
-        let Some(d) = &mut self.run_dialog else {
+        let Some(d) = &mut self.panels.run_dialog else {
             self.set_state(State::Normal);
             return;
         };
@@ -384,11 +384,11 @@ impl Editor {
                     _ => {}
                 }
                 let out = self.feed_field(key, |e| {
-                    let d = e.run_dialog.as_mut()?;
+                    let d = e.panels.run_dialog.as_mut()?;
                     let f = d.focus;
                     d.field_mut(f)
                 });
-                let Some(d) = &mut self.run_dialog else { return };
+                let Some(d) = &mut self.panels.run_dialog else { return };
                 match out {
                     FieldOut::Changed => d.dirty = true,
                     FieldOut::Submit => {
@@ -407,7 +407,7 @@ impl Editor {
 
     /// マウス: 画面の (行, 列) を押した
     pub(crate) fn run_dialog_click(&mut self, row: usize, col: usize, clicks: u32) {
-        let Some(d) = &mut self.run_dialog else { return };
+        let Some(d) = &mut self.panels.run_dialog else { return };
         let button = d.buttons.at(row, col);
         if let Some(b) = button {
             self.run_dialog_button(b);
@@ -451,7 +451,7 @@ impl Editor {
 
     /// 選んだ構成で動かすコマンド（見本として出す）
     pub fn run_dialog_preview(&self) -> String {
-        let Some(d) = &self.run_dialog else { return String::new() };
+        let Some(d) = &self.panels.run_dialog else { return String::new() };
         let Some(c) = d.current() else { return String::new() };
         // 打っている途中の値も映す
         let mut c = c.clone();
@@ -494,13 +494,13 @@ pub struct RunDialogView;
 impl crate::layout::View for RunDialogView {
     fn rect(&self, ed: &crate::editor::Editor, s: crate::layout::Screen) -> Option<crate::panes::Rect> {
         let _ = s;
-        ed.run_dialog.as_ref()?;
+        ed.panels.run_dialog.as_ref()?;
         Some(crate::panes::Rect { x: 0, y: 0, w: s.cols, h: s.rows })
     }
 
     fn draw(&self, ed: &crate::editor::Editor, p: &mut crate::view::Painter, r: crate::panes::Rect, s: crate::layout::Screen) {
         let _ = (r, s);
-        if let Some(d) = &ed.run_dialog {
+        if let Some(d) = &ed.panels.run_dialog {
             draw::draw_run_dialog(p, ed, d, s.cols, s.rows);
         }
     }
@@ -695,13 +695,13 @@ mod tests {
         e.set_screen(140, 40);
         e.open_run_dialog(None);
         assert_eq!(e.state(), State::RunDialog);
-        assert_eq!(e.run_dialog.as_ref().unwrap().configs.len(), 1);
+        assert_eq!(e.panels.run_dialog.as_ref().unwrap().configs.len(), 1);
         // a で追加 → 名前を打つ → Tab で種類 → l で Maven → Tab でゴール
         keys(&mut e, "a");
-        let d = e.run_dialog.as_ref().unwrap();
+        let d = e.panels.run_dialog.as_ref().unwrap();
         assert_eq!((d.focus, d.configs.len()), (Focus::Name, 2));
         keys(&mut e, "テスト<Tab>l<Tab>test -q<CR>");
-        let d = e.run_dialog.as_ref().unwrap();
+        let d = e.panels.run_dialog.as_ref().unwrap();
         assert_eq!(d.configs[1].name, "テスト");
         assert_eq!(d.configs[1].kind.id(), Some("maven"));
         assert!(matches!(&d.configs[1].kind, Kind::Maven { goals, .. } if goals == &["test", "-q"]), "{:?}", d.configs[1].kind);
@@ -710,7 +710,7 @@ mod tests {
         keys(&mut e, "<Esc><Esc>gd");
         assert!(e.svc.notify.text.contains("IntelliJ"), "{}", e.svc.notify.text);
         keys(&mut e, "i<Tab><Tab><Esc>Secho nagi<Esc><Esc>");
-        assert_eq!(e.run_dialog.as_ref().unwrap().configs[0].from, "nagi");
+        assert_eq!(e.panels.run_dialog.as_ref().unwrap().configs[0].from, "nagi");
         // Ctrl+Enter で保存して閉じる
         keys(&mut e, "<C-m>");
         assert_eq!(e.state(), State::Normal, "{}", e.svc.notify.text);
@@ -741,21 +741,21 @@ mod tests {
         e.set_screen(140, 40);
         e.open_run_dialog(Some("a"));
         // 描いた位置の代わりに入れる（行 10: 名前、行 11: 種類、行 12: コマンド。値は 50 列から）
-        let d = e.run_dialog.as_ref().unwrap();
+        let d = e.panels.run_dialog.as_ref().unwrap();
         *d.field_rows.borrow_mut() = vec![(10, Focus::Name, 50), (11, Focus::Kind, 50), (12, Focus::Field(0), 50)];
         d.list_rows.set(vec![(5, 0, 30, 0), (6, 0, 30, 1), (12, 0, 30, 0)]);
         // コマンドの「abc」の b の前を押して打つ
         e.run_dialog_click(12, 56, 1);
-        assert_eq!(e.run_dialog.as_ref().unwrap().focus, Focus::Field(0));
+        assert_eq!(e.panels.run_dialog.as_ref().unwrap().focus, Focus::Field(0));
         keys(&mut e, "X");
-        assert_eq!(e.run_dialog.as_ref().unwrap().fields[0].2.text(), "echo aXbc");
+        assert_eq!(e.panels.run_dialog.as_ref().unwrap().fields[0].2.text(), "echo aXbc");
         // 種類を 2 回押すと、2 回目で次の種類へ
         e.run_dialog_click(11, 50, 1);
         e.run_dialog_click(11, 50, 1);
-        assert_eq!(e.run_dialog.as_ref().unwrap().current().unwrap().kind.id(), Some("maven"));
+        assert_eq!(e.panels.run_dialog.as_ref().unwrap().current().unwrap().kind.id(), Some("maven"));
         // 一覧の 2 行目
         e.run_dialog_click(6, 1, 1);
-        let d = e.run_dialog.as_ref().unwrap();
+        let d = e.panels.run_dialog.as_ref().unwrap();
         assert_eq!((d.selected, d.focus), (1, Focus::List));
     }
 }

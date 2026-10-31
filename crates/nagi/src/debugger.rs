@@ -158,7 +158,7 @@ impl Editor {
 
     /// `path` の止まっている行
     pub(crate) fn exec_line_for(&self, path: Option<&Path>) -> Option<usize> {
-        let (p, l) = self.debug.as_ref()?.at.as_ref()?;
+        let (p, l) = self.panels.debug.as_ref()?.at.as_ref()?;
         let here = std::path::absolute(path?).ok()?;
         (here == *p).then_some(*l)
     }
@@ -204,9 +204,9 @@ impl Editor {
     }
 
     fn send_breakpoints(&mut self) {
-        let Some(lang) = self.debug.as_ref().map(|d| d.lang) else { return };
+        let Some(lang) = self.panels.debug.as_ref().map(|d| d.lang) else { return };
         let bps = self.all_bps(lang);
-        if let Some(tx) = self.debug.as_ref().and_then(|d| d.tx.as_ref()) {
+        if let Some(tx) = self.panels.debug.as_ref().and_then(|d| d.tx.as_ref()) {
             let _ = tx.send(Cmd::Breakpoints(bps));
         }
     }
@@ -220,7 +220,7 @@ impl Editor {
             Lang::Browser => nagi_workers::cdp::start(addr.clone(), hint.to_string(), self.nav_root(), bps, self.waker()),
             Lang::Python => nagi_workers::dap::start(addr.clone(), bps, self.waker()),
         };
-        self.debug = Some(DebugUi {
+        self.panels.debug = Some(DebugUi {
             lang,
             tx: Some(tx),
             task: Some(task),
@@ -382,8 +382,8 @@ impl Editor {
     }
 
     fn debug_send(&mut self, c: Cmd) {
-        match self.debug.as_ref().and_then(|d| d.tx.as_ref()) {
-            Some(tx) if !self.debug.as_ref().is_some_and(|d| d.ended) => {
+        match self.panels.debug.as_ref().and_then(|d| d.tx.as_ref()) {
+            Some(tx) if !self.panels.debug.as_ref().is_some_and(|d| d.ended) => {
                 let _ = tx.send(c);
             }
             _ => self.svc.notify.info("デバッグしていません（Shift+F9 で始める）"),
@@ -392,7 +392,7 @@ impl Editor {
 
     /// 続ける（F5。Visual Studio と同じく、デバッグしていなければ始める）
     pub(crate) fn debug_resume(&mut self) {
-        if !self.debug.as_ref().is_some_and(|d| !d.ended && d.tx.is_some()) {
+        if !self.panels.debug.as_ref().is_some_and(|d| !d.ended && d.tx.is_some()) {
             self.debug_run("");
             return;
         }
@@ -400,7 +400,7 @@ impl Editor {
     }
 
     pub(crate) fn debug_step(&mut self, d: Depth) {
-        if !self.debug.as_ref().is_some_and(|x| x.stopped) {
+        if !self.panels.debug.as_ref().is_some_and(|x| x.stopped) {
             self.svc.notify.info("止まっていないのでステップできません");
             return;
         }
@@ -409,30 +409,30 @@ impl Editor {
 
     /// 止める（JVM を終わらせ、動かしていたターミナルも閉じる）
     pub(crate) fn debug_stop(&mut self) {
-        if !self.debug.as_ref().is_some_and(|d| !d.ended) {
+        if !self.panels.debug.as_ref().is_some_and(|d| !d.ended) {
             self.svc.notify.info("デバッグしていません");
             return;
         }
         self.debug_send(Cmd::Stop);
-        if let Some(t) = self.debug.as_ref().and_then(|d| d.terminal.clone()) {
+        if let Some(t) = self.panels.debug.as_ref().and_then(|d| d.terminal.clone()) {
             self.close_terminal_named(&t);
         }
     }
 
     /// 前のセッションを捨てる
     fn stop_debug_session(&mut self) {
-        if let Some(d) = &mut self.debug {
+        if let Some(d) = &mut self.panels.debug {
             if let Some(tx) = d.tx.take() {
                 let _ = tx.send(Cmd::Detach);
             }
             d.task = None;
         }
-        self.debug = None;
+        self.panels.debug = None;
     }
 
     /// ソースのパス（com/x/Foo.java・/src/App.tsx・絶対のパス）のファイル（開いているもの → プロジェクトの中を探す）
     fn source_path(&mut self, rel: &str) -> Option<PathBuf> {
-        if let Some(p) = self.debug.as_ref().and_then(|d| d.src.get(rel).cloned()) {
+        if let Some(p) = self.panels.debug.as_ref().and_then(|d| d.src.get(rel).cloned()) {
             return p;
         }
         // 絶対のパス（Python・file:// のページ）ならそのまま
@@ -444,7 +444,7 @@ impl Editor {
         let rel_path = PathBuf::from(rel.trim_start_matches('/'));
         let open = self.buffer_list().into_iter().filter_map(|(_, p, ..)| p).find(|p| p.ends_with(&rel_path));
         let found = open.or_else(|| find_under(&self.nav_root(), &rel_path));
-        if let Some(d) = &mut self.debug {
+        if let Some(d) = &mut self.panels.debug {
             d.src.insert(rel.to_string(), found.clone());
         }
         found
@@ -452,9 +452,9 @@ impl Editor {
 
     /// 止まったフレームのファイルの行へ
     fn show_frame(&mut self, i: usize) {
-        let Some(f) = self.debug.as_ref().and_then(|d| d.frames.get(i).cloned()) else { return };
+        let Some(f) = self.panels.debug.as_ref().and_then(|d| d.frames.get(i).cloned()) else { return };
         let (Some(src), Some(line)) = (f.source.as_deref(), f.line) else {
-            if let Some(d) = &mut self.debug {
+            if let Some(d) = &mut self.panels.debug {
                 d.at = None;
             }
             return;
@@ -464,7 +464,7 @@ impl Editor {
                 let p = std::path::absolute(&p).unwrap_or(p);
                 self.jump_to(&p, line - 1, 0);
                 self.with_motion(|m, c| m.first_non_blank(c));
-                if let Some(d) = &mut self.debug {
+                if let Some(d) = &mut self.panels.debug {
                     d.at = Some((p, line - 1));
                 }
             }
@@ -474,7 +474,7 @@ impl Editor {
 
     /// 裏のセッションから届いたもの。変わったら true
     pub(crate) fn poll_debug(&mut self) -> bool {
-        let Some(evs) = self.debug.as_ref().and_then(|d| d.task.as_ref()).map(|t| t.drain()) else { return false };
+        let Some(evs) = self.panels.debug.as_ref().and_then(|d| d.task.as_ref()).map(|t| t.drain()) else { return false };
         if evs.is_empty() {
             return false;
         }
@@ -482,16 +482,16 @@ impl Editor {
             match e {
                 Ev::Connected(v) => self.debug_status(format!("つながりました（{v}）")),
                 Ev::Running => {
-                    if let Some(d) = &mut self.debug {
+                    if let Some(d) = &mut self.panels.debug {
                         d.stopped = false;
                         d.at = None;
                         d.status = "動いています".into();
                     }
                 }
                 Ev::Stopped { reason, thread, frames, frame, vars } => {
-                    let lang = self.debug.as_ref().map_or(Lang::Java, |d| d.lang);
+                    let lang = self.panels.debug.as_ref().map_or(Lang::Java, |d| d.lang);
                     let top = frames.first().map(|f| format!("{}:{}", frame_label(lang, f), f.line.unwrap_or(0))).unwrap_or_default();
-                    if let Some(d) = &mut self.debug {
+                    if let Some(d) = &mut self.panels.debug {
                         d.stopped = true;
                         d.frames = frames;
                         d.frame = frame;
@@ -508,7 +508,7 @@ impl Editor {
                     self.rows = self.text_rows(self.active_rect());
                 }
                 Ev::Vars { frame, vars } => {
-                    if let Some(d) = &mut self.debug {
+                    if let Some(d) = &mut self.panels.debug {
                         d.frame = frame;
                         d.vars = vars.into_iter().map(|var| VarRow { depth: 0, var, open: false }).collect();
                         d.sel_var = 0;
@@ -516,7 +516,7 @@ impl Editor {
                     }
                 }
                 Ev::Children { parent, vars } => {
-                    if let Some(d) = &mut self.debug {
+                    if let Some(d) = &mut self.panels.debug {
                         if let Some(i) = d.vars.iter().position(|r| r.var.children == Some(parent) && !r.open) {
                             let depth = d.vars[i].depth + 1;
                             d.vars[i].open = true;
@@ -527,7 +527,7 @@ impl Editor {
                 }
                 Ev::Note(n) => self.svc.notify.info(n),
                 Ev::Ended(m) => {
-                    if let Some(d) = &mut self.debug {
+                    if let Some(d) = &mut self.panels.debug {
                         d.ended = true;
                         d.stopped = false;
                         d.at = None;
@@ -542,14 +542,14 @@ impl Editor {
     }
 
     fn debug_status(&mut self, s: String) {
-        if let Some(d) = &mut self.debug {
+        if let Some(d) = &mut self.panels.debug {
             d.status = s;
         }
     }
 
     /// 変数の行を開く・閉じる
     pub(crate) fn debug_toggle_var(&mut self, i: usize) {
-        let Some(d) = &mut self.debug else { return };
+        let Some(d) = &mut self.panels.debug else { return };
         let Some(r) = d.vars.get(i).cloned() else { return };
         if r.open {
             let end = (i + 1..d.vars.len()).find(|&j| d.vars[j].depth <= r.depth).unwrap_or(d.vars.len());
@@ -562,10 +562,10 @@ impl Editor {
 
     /// スタックのフレームを選ぶ（そのファイルの行へ移り、変数を出し直す）
     pub(crate) fn debug_select_frame(&mut self, i: usize) {
-        if !self.debug.as_ref().is_some_and(|d| d.stopped && i < d.frames.len()) {
+        if !self.panels.debug.as_ref().is_some_and(|d| d.stopped && i < d.frames.len()) {
             return;
         }
-        if let Some(d) = &mut self.debug {
+        if let Some(d) = &mut self.panels.debug {
             d.sel_frame = i;
         }
         self.debug_send(Cmd::Frame(i));
@@ -574,7 +574,7 @@ impl Editor {
 
     /// 下の欄の「デバッグ」のキー
     pub(crate) fn debug_key(&mut self, key: Key) -> crate::editor::Effect {
-        let Some(d) = &mut self.debug else {
+        let Some(d) = &mut self.panels.debug else {
             if matches!(key, Key::Esc | Key::Char('q')) {
                 self.leave_panel();
             }
@@ -619,7 +619,7 @@ impl Editor {
     pub(crate) fn debug_click(&mut self, row: usize, col: usize, w: usize, clicks: u32) {
         self.list_side = Side::Bottom;
         self.set_state(State::List);
-        let Some(d) = &mut self.debug else { return };
+        let Some(d) = &mut self.panels.debug else { return };
         if row == 0 {
             let hit = d.buttons.borrow().iter().find(|(a, b, _)| col >= *a && col < *b).map(|x| x.2);
             if let Some(k) = hit {
@@ -712,7 +712,7 @@ pub(crate) mod draw {
     pub(crate) fn draw_debug(p: &mut Painter, ed: &Editor, r: Rect, focused: bool) {
         let cell = p.fonts.cell();
         let y = |k: usize| (r.y + k) as f32 * cell.h;
-        let Some(d) = &ed.debug else {
+        let Some(d) = &ed.panels.debug else {
             p.text(" デバッグしていません（Shift+F9 で実行の構成を、:DebugTest でカーソルの位置のテストを、:DebugAttach 5005 で動いている JVM を）", r.x, y(0), STATUS_FG);
             p.text(&format!(" ブレークポイントは行番号の欄を押すか {}", ed.settings.get("keymap.breakpoint")), r.x, y(1), STATUS_FG);
             return;
@@ -851,22 +851,22 @@ mod tests {
             let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
             while std::time::Instant::now() < until {
                 e.poll_debug();
-                if e.debug.as_ref().is_some_and(f) {
+                if e.panels.debug.as_ref().is_some_and(f) {
                     return;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(20));
             }
-            panic!("待ちきれない: {:?}", e.debug.as_ref().map(|d| d.status.clone()));
+            panic!("待ちきれない: {:?}", e.panels.debug.as_ref().map(|d| d.status.clone()));
         };
         wait(&mut e, &|d| d.stopped);
-        assert_eq!(e.exec_line_for(Some(&file)), Some(5), "{}", e.debug.as_ref().unwrap().status);
+        assert_eq!(e.exec_line_for(Some(&file)), Some(5), "{}", e.panels.debug.as_ref().unwrap().status);
         assert_eq!(e.bottom_kind, BottomKind::Debug);
-        let d = e.debug.as_ref().unwrap();
+        let d = e.panels.debug.as_ref().unwrap();
         assert_eq!(d.vars.iter().map(|r| (r.var.name.as_str(), r.var.value.as_str())).collect::<Vec<_>>(), [("args", "String[0]"), ("n", "41")]);
         e.debug_step(Depth::Over);
         wait(&mut e, &|d| d.stopped && d.at.as_ref().is_some_and(|a| a.1 == 6));
         assert_eq!(e.exec_line_for(Some(&file)), Some(6));
-        assert!(e.debug.as_ref().unwrap().vars.iter().any(|r| r.var.name == "n" && r.var.value == "42"));
+        assert!(e.panels.debug.as_ref().unwrap().vars.iter().any(|r| r.var.name == "n" && r.var.value == "42"));
         e.debug_resume();
         wait(&mut e, &|d| d.ended);
         let _ = jvm.wait();
@@ -890,12 +890,12 @@ mod tests {
         let until = std::time::Instant::now() + std::time::Duration::from_secs(40);
         while std::time::Instant::now() < until {
             e.poll_debug();
-            if e.debug.as_ref().is_some_and(f) {
+            if e.panels.debug.as_ref().is_some_and(f) {
                 return;
             }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        panic!("待ちきれない: {:?}", e.debug.as_ref().map(|d| d.status.clone()));
+        panic!("待ちきれない: {:?}", e.panels.debug.as_ref().map(|d| d.status.clone()));
     }
 
     /// 窓なしの Chrome に画面の側からつなぐ: TypeScript の行番号の欄のブレークポイントで止まり、その .ts の行を出す。
@@ -923,8 +923,8 @@ mod tests {
         e.toggle_breakpoint(Some(1));
         e.debug_attach_browser(&port.to_string());
         wait_until(&mut e, &|d| d.stopped);
-        assert_eq!(e.exec_line_for(Some(&file)), Some(1), "{}", e.debug.as_ref().unwrap().status);
-        assert!(e.debug.as_ref().unwrap().vars.iter().any(|r| r.var.name == "b" && r.var.value == "3"));
+        assert_eq!(e.exec_line_for(Some(&file)), Some(1), "{}", e.panels.debug.as_ref().unwrap().status);
+        assert!(e.panels.debug.as_ref().unwrap().vars.iter().any(|r| r.var.name == "b" && r.var.value == "3"));
         e.debug_stop();
         let _ = child.kill();
         let _ = std::fs::remove_dir_all(&dir);
@@ -953,7 +953,7 @@ mod tests {
         e.toggle_breakpoint(Some(2));
         e.debug_attach_python(&port.to_string());
         wait_until(&mut e, &|d| d.stopped);
-        assert_eq!(e.exec_line_for(Some(&file)), Some(2), "{}", e.debug.as_ref().unwrap().status);
+        assert_eq!(e.exec_line_for(Some(&file)), Some(2), "{}", e.panels.debug.as_ref().unwrap().status);
         e.debug_resume();
         wait_until(&mut e, &|d| d.stopped && d.vars.iter().any(|r| r.var.name == "i" && r.var.value == "1"));
         e.toggle_breakpoint(Some(2));

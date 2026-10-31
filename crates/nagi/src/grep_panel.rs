@@ -209,11 +209,11 @@ impl Editor {
     pub(crate) fn open_grep(&mut self, initial: &str) {
         // ログ（コマンドの出力）を出していれば脇に残して、検索のタブに出す
         self.stash_grep_unless(false);
-        if self.grep.is_none() {
+        if self.panels.grep.is_none() {
             self.swap_grep_for(crate::result_grid::BottomKind::Grep);
         }
         // 打って探すときは、打った検索の条件で（参照の検索の条件は捨てる）
-        if let Some(g) = &mut self.grep {
+        if let Some(g) = &mut self.panels.grep {
             g.forced = None;
             g.editing_mask = false;
         }
@@ -223,7 +223,7 @@ impl Editor {
     /// `dir` の中を探す（プロジェクトの木の「このフォルダを検索」・IntelliJ の Find in Path をフォルダで）
     pub(crate) fn open_grep_in(&mut self, dir: PathBuf) {
         self.open_grep("");
-        if let Some(g) = &mut self.grep {
+        if let Some(g) = &mut self.panels.grep {
             g.opts.dir = Some(dir);
         }
         self.restart_grep();
@@ -239,7 +239,7 @@ impl Editor {
             Key::Alt('t') => Chip::Context,
             Key::Alt('d') | Key::Alt('p') => {
                 let here = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()).and_then(|p| p.parent().map(|d| d.to_path_buf()));
-                let Some(g) = &mut self.grep else { return false };
+                let Some(g) = &mut self.panels.grep else { return false };
                 g.forced = None;
                 g.opts.dir = if key == Key::Alt('d') { here.or(g.opts.dir.clone()) } else { None };
                 self.restart_grep();
@@ -254,7 +254,7 @@ impl Editor {
     /// 見出しの札を押した・条件のキー
     pub(crate) fn toggle_chip(&mut self, chip: Chip) {
         let here = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()).and_then(|p| p.parent().map(|d| d.to_path_buf()));
-        let Some(g) = &mut self.grep else { return };
+        let Some(g) = &mut self.panels.grep else { return };
         // 参照の検索の結果を出していれば、打った検索の条件に戻してから
         if g.forced.take().is_some() {
             g.query.set("");
@@ -287,7 +287,7 @@ impl Editor {
             .unwrap_or_default();
         let root = std::path::absolute(&root).unwrap_or(root);
         let opts = default_opts(&self.settings);
-        let g = self.grep.get_or_insert_with(|| GrepPanel {
+        let g = self.panels.grep.get_or_insert_with(|| GrepPanel {
             left: 0,
             query: Prompt::default(),
             mask: Prompt { cursor: opts.mask.len(), text: opts.mask.clone() },
@@ -325,7 +325,7 @@ impl Editor {
     /// 正規表現で探し始める（参照の検索 gr）。パネルに結果を出し、編集画面に戻る
     pub(crate) fn open_grep_regex(&mut self, pattern: &str) {
         self.open_grep("");
-        if let Some(g) = &mut self.grep {
+        if let Some(g) = &mut self.panels.grep {
             g.forced = Some(Opts { regex: true, case: true, ..Default::default() });
             g.query.set(pattern);
         }
@@ -335,7 +335,7 @@ impl Editor {
 
     fn restart_grep(&mut self) {
         let waker = self.waker();
-        let Some(g) = &mut self.grep else { return };
+        let Some(g) = &mut self.panels.grep else { return };
         g.job = None;
         g.hits.clear();
         g.selected = 0;
@@ -357,7 +357,7 @@ impl Editor {
 
     /// 届いた結果を受け取る。変わったら true（描き直す）
     pub fn poll_grep(&mut self) -> bool {
-        let Some(g) = &mut self.grep else { return false };
+        let Some(g) = &mut self.panels.grep else { return false };
         let Some(job) = &g.job else { return false };
         let mut changed = false;
         let mut done = false;
@@ -390,7 +390,7 @@ impl Editor {
 
     /// 最下行で検索語を打っている間のキー
     pub(crate) fn grep_prompt_key(&mut self, key: Key) {
-        let Some(g) = &mut self.grep else {
+        let Some(g) = &mut self.panels.grep else {
             self.set_state(State::Normal);
             return;
         };
@@ -410,7 +410,7 @@ impl Editor {
         if self.grep_option_key(key) {
             return;
         }
-        let Some(g) = &mut self.grep else { return };
+        let Some(g) = &mut self.panels.grep else { return };
         match key {
             // 結果があればパネルは残す（リストモードへは Ctrl-w j かクリックで）
             Key::Esc | Key::Ctrl('c') | Key::Ctrl('[') => {
@@ -442,7 +442,7 @@ impl Editor {
     }
 
     pub(crate) fn grep_insert(&mut self, text: &str) {
-        if let Some(g) = &mut self.grep {
+        if let Some(g) = &mut self.panels.grep {
             if g.editing_mask {
                 g.mask.insert(text);
                 g.opts.mask = g.mask.text.clone();
@@ -457,7 +457,7 @@ impl Editor {
     /// ログの読み取り専用の画面を、今の行と欄の大きさに合わせる（ログを出していなければ何もしない）
     pub(crate) fn sync_output_view(&mut self) {
         let size = self.bottom_content_rect().map(|r| (r.w, r.h.saturating_sub(1).max(1)));
-        let Some(g) = &mut self.grep else { return };
+        let Some(g) = &mut self.panels.grep else { return };
         if g.title.is_none() {
             return;
         }
@@ -477,7 +477,7 @@ impl Editor {
         self.sync_output_view();
         let clip = self.clipboard;
         let mut regs = std::mem::take(&mut self.registers);
-        let out = match self.grep.as_mut().and_then(|g| g.view.as_mut()) {
+        let out = match self.panels.grep.as_mut().and_then(|g| g.view.as_mut()) {
             Some(v) => v.key(key, &mut regs, clip),
             None => ViewOut::None,
         };
@@ -486,11 +486,11 @@ impl Editor {
             ViewOut::Leave => self.set_state(State::Normal),
             ViewOut::Quit => self.close_grep(),
             ViewOut::Open => {
-                if let Some(g) = &mut self.grep {
+                if let Some(g) = &mut self.panels.grep {
                     let line = g.view.as_ref().map_or(0, |v| v.ed.cursor.line);
                     g.select(line);
                 }
-                if self.grep.as_ref().is_some_and(|g| g.hits.get(g.selected).is_some_and(|h| !h.path.is_empty())) {
+                if self.panels.grep.as_ref().is_some_and(|g| g.hits.get(g.selected).is_some_and(|h| !h.path.is_empty())) {
                     self.set_state(State::Normal);
                     self.open_hit(false);
                 }
@@ -505,15 +505,15 @@ impl Editor {
 
     pub(crate) fn list_key(&mut self, key: Key) -> crate::editor::Effect {
         // ログ（コマンドの出力）は読み取り専用の Vim の画面で（Ctrl-w の窓の操作は一覧と同じ）
-        let output = self.bottom_kind == crate::result_grid::BottomKind::Output && self.grep.as_ref().is_some_and(|g| g.title.is_some());
-        if output && key != Key::Ctrl('w') && !self.grep.as_ref().is_some_and(|g| g.pending_w) {
+        let output = self.bottom_kind == crate::result_grid::BottomKind::Output && self.panels.grep.as_ref().is_some_and(|g| g.title.is_some());
+        if output && key != Key::Ctrl('w') && !self.panels.grep.as_ref().is_some_and(|g| g.pending_w) {
             return self.output_view_key(key);
         }
         let half = (self.panel_rect().map_or(10, |r| r.h) / 2).max(1);
-        if !output && self.grep.as_ref().is_some_and(|g| g.title.is_none()) && self.grep_option_key(key) {
+        if !output && self.panels.grep.as_ref().is_some_and(|g| g.title.is_none()) && self.grep_option_key(key) {
             return crate::editor::Effect::None;
         }
-        let Some(g) = &mut self.grep else {
+        let Some(g) = &mut self.panels.grep else {
             self.set_state(State::Normal);
             return crate::editor::Effect::None;
         };
@@ -523,7 +523,7 @@ impl Editor {
             match key {
                 Key::Char('c' | 'q') | Key::Ctrl('c' | 'q') => self.close_grep(),
                 Key::Char('j') | Key::Ctrl('j') => {}
-                Key::Char('h') | Key::Ctrl('h') if self.tree.is_some() => self.open_tree(),
+                Key::Char('h') | Key::Ctrl('h') if self.panels.tree.is_some() => self.open_tree(),
                 _ => self.set_state(State::Normal),
             }
             return crate::editor::Effect::None;
@@ -570,7 +570,7 @@ impl Editor {
     }
 
     pub(crate) fn close_grep(&mut self) {
-        self.grep = None;
+        self.panels.grep = None;
         self.bottom_hidden = true;
         if self.state() == State::GrepPrompt || (self.state() == State::List && self.list_side == crate::editor::Side::Bottom) {
             self.set_state(State::Normal);
@@ -580,7 +580,7 @@ impl Editor {
 
     /// 選んだ一致を作業中の窓で開く。`stay` ならリストモードのまま
     pub(crate) fn open_hit(&mut self, stay: bool) {
-        let Some(g) = &self.grep else { return };
+        let Some(g) = &self.panels.grep else { return };
         let Some(h) = g.hits.get(g.selected).cloned() else { return };
         // ファイルを持たない行（コマンドの出力）
         if h.path.is_empty() {
@@ -604,7 +604,7 @@ impl Editor {
 
     /// `:cn` / `:cp`
     pub(crate) fn next_hit(&mut self, forward: bool, count: usize) {
-        let Some(g) = &mut self.grep else {
+        let Some(g) = &mut self.panels.grep else {
             self.svc.notify.error("E42: 検索の結果がありません");
             return;
         };
@@ -621,24 +621,24 @@ impl Editor {
         let mode = self.state();
         self.open_hit(false);
         self.set_state(if mode == State::List { State::List } else { State::Normal });
-        let g = self.grep.as_ref().unwrap();
+        let g = self.panels.grep.as_ref().unwrap();
         self.svc.notify.info(format!("({} / {}) {}:{}", g.selected + 1, g.hits.len(), g.hits[g.selected].path, g.hits[g.selected].line));
     }
 
     /// 選んでいる行をクリップボードへ（範囲を選んでいれば範囲、無ければ今の行）。範囲の選びは消す
     pub(crate) fn panel_copy(&mut self) {
         // ログ: 読み取り専用の画面の選び（無ければ今の行）
-        if self.grep.as_ref().is_some_and(|g| g.view.is_some() && g.title.is_some()) {
+        if self.panels.grep.as_ref().is_some_and(|g| g.view.is_some() && g.title.is_some()) {
             let clip = self.clipboard;
             let mut regs = std::mem::take(&mut self.registers);
-            let n = self.grep.as_mut().and_then(|g| g.view.as_mut()).map_or(0, |v| v.copy(&mut regs, clip));
+            let n = self.panels.grep.as_mut().and_then(|g| g.view.as_mut()).map_or(0, |v| v.copy(&mut regs, clip));
             self.registers = regs;
             if n > 0 {
                 self.svc.notify.info(format!("{n} 行をコピーしました"));
             }
             return;
         }
-        let Some(g) = &mut self.grep else { return };
+        let Some(g) = &mut self.panels.grep else { return };
         if g.hits.is_empty() {
             return;
         }
@@ -655,11 +655,11 @@ impl Editor {
     /// パネルの上のドラッグ（`row` はパネルの中の行。0 は見出し）。押した行から範囲を選ぶ
     pub(crate) fn panel_drag(&mut self, row: usize, col: usize) {
         // ログ: 押した所からビジュアルで選ぶ
-        if let Some(v) = self.grep.as_mut().filter(|g| g.title.is_some()).and_then(|g| g.view.as_mut()) {
+        if let Some(v) = self.panels.grep.as_mut().filter(|g| g.title.is_some()).and_then(|g| g.view.as_mut()) {
             v.drag(row.saturating_sub(1), col);
             return;
         }
-        let Some(g) = &mut self.grep else { return };
+        let Some(g) = &mut self.panels.grep else { return };
         if g.hits.is_empty() {
             return;
         }
@@ -675,13 +675,13 @@ impl Editor {
     /// パネルの中のクリック（列も）。ログは読み取り専用の画面のその位置へカーソルを置き、ダブルクリックで開く
     pub fn panel_click_at(&mut self, row: usize, col: usize, clicks: u32) {
         self.list_side = crate::editor::Side::Bottom;
-        if self.bottom_kind == crate::result_grid::BottomKind::Output && self.grep.as_ref().is_some_and(|g| g.title.is_some()) {
+        if self.bottom_kind == crate::result_grid::BottomKind::Output && self.panels.grep.as_ref().is_some_and(|g| g.title.is_some()) {
             self.sync_output_view();
             self.focus_panel();
             if row == 0 {
                 return;
             }
-            if let Some(v) = self.grep.as_mut().and_then(|g| g.view.as_mut()) {
+            if let Some(v) = self.panels.grep.as_mut().and_then(|g| g.view.as_mut()) {
                 v.click(row - 1, col);
             }
             if clicks >= 2 {
@@ -692,7 +692,7 @@ impl Editor {
         if self.bottom_kind == crate::result_grid::BottomKind::Result {
             return;
         }
-        let Some(g) = &mut self.grep else { return };
+        let Some(g) = &mut self.panels.grep else { return };
         if row == 0 {
             // 条件の札を押したら切り替える
             if let Some(c) = g.title.is_none().then(|| chip_at(g, col)).flatten() {
@@ -739,7 +739,7 @@ pub struct ListComponent;
 
 impl crate::component::Component for ListComponent {
     fn status(&self, ed: &crate::editor::Editor) -> Option<crate::component::Status> {
-        let g = ed.grep.as_ref()?;
+        let g = ed.panels.grep.as_ref()?;
         crate::component::Status::new("-- 検索結果 --", format!("{}/{} ", (g.selected + 1).min(g.hits.len()), g.hits.len()))
     }
 
@@ -786,12 +786,12 @@ pub struct GrepPopupView;
 
 impl crate::layout::View for GrepPopupView {
     fn rect(&self, ed: &Editor, s: crate::layout::Screen) -> Option<Rect> {
-        (ed.state() == State::GrepPrompt && ed.grep.as_ref().is_some_and(|g| g.title.is_none())).then_some(Rect { x: 0, y: 0, w: s.cols, h: s.rows })
+        (ed.state() == State::GrepPrompt && ed.panels.grep.as_ref().is_some_and(|g| g.title.is_none())).then_some(Rect { x: 0, y: 0, w: s.cols, h: s.rows })
     }
 
     fn draw(&self, ed: &Editor, p: &mut crate::view::Painter, r: Rect, s: crate::layout::Screen) {
         let _ = r;
-        if let Some(g) = &ed.grep {
+        if let Some(g) = &ed.panels.grep {
             draw::draw_grep_popup(p, ed, g, s.cols, s.rows);
         }
     }
@@ -815,7 +815,7 @@ impl crate::layout::View for GrepPopupView {
 impl Editor {
     /// 小窓の札の位置（札, 行, 始めの列, 終わりの列）。見出しの右に大小・単語・正規表現、3 行目にマスク・範囲・文脈
     pub(crate) fn grep_popup_chips(&self, cols: usize, rows: usize) -> Vec<(Chip, usize, usize, usize)> {
-        let Some(g) = &self.grep else { return Vec::new() };
+        let Some(g) = &self.panels.grep else { return Vec::new() };
         let b = popup::rect(cols, rows);
         let w = |s: &str| nagi_core::display_col(s, s.len(), false);
         let cs = chips(g);
@@ -851,7 +851,7 @@ impl Editor {
         }
         let (list_h, _) = popup::heights(b);
         let list_y = b.y + popup::LIST_TOP;
-        let Some(g) = &mut self.grep else { return };
+        let Some(g) = &mut self.panels.grep else { return };
         if row < list_y || row >= list_y + list_h {
             return;
         }
@@ -1039,7 +1039,7 @@ mod tests {
     fn wait(e: &mut Editor) {
         for _ in 0..1000 {
             e.poll_grep();
-            if e.grep.as_ref().is_some_and(|g| !g.searching()) {
+            if e.panels.grep.as_ref().is_some_and(|g| !g.searching()) {
                 return;
             }
             std::thread::sleep(std::time::Duration::from_millis(2));
@@ -1063,7 +1063,7 @@ mod tests {
         e.open_grep("");
         keys(&mut e, "needle");
         wait(&mut e);
-        let n = |e: &Editor| e.grep.as_ref().unwrap().hits.len();
+        let n = |e: &Editor| e.panels.grep.as_ref().unwrap().hits.len();
         assert_eq!(n(&e), 3);
         // 大文字小文字を区別 → Needle は外れる。単語 → needles も外れる
         e.key(Key::Alt('c'));
@@ -1076,11 +1076,11 @@ mod tests {
         e.key(Key::Alt('o'));
         // マスク: Alt+F で打ち、Enter で検索語へ戻る
         e.key(Key::Alt('f'));
-        assert!(e.grep.as_ref().unwrap().editing_mask);
+        assert!(e.panels.grep.as_ref().unwrap().editing_mask);
         keys(&mut e, "*.txt<CR>");
         wait(&mut e);
-        assert!(!e.grep.as_ref().unwrap().editing_mask);
-        assert_eq!(e.grep.as_ref().unwrap().hits.iter().map(|h| h.path.as_str()).collect::<Vec<_>>(), ["docs/b.txt"]);
+        assert!(!e.panels.grep.as_ref().unwrap().editing_mask);
+        assert_eq!(e.panels.grep.as_ref().unwrap().hits.iter().map(|h| h.path.as_str()).collect::<Vec<_>>(), ["docs/b.txt"]);
         e.key(Key::Alt('f'));
         keys(&mut e, "<BS><BS><BS><BS><BS><CR>");
         wait(&mut e);
@@ -1088,9 +1088,9 @@ mod tests {
         // 文脈: コメントの中（Alt+T を 1 回）
         e.key(Key::Alt('t'));
         wait(&mut e);
-        assert_eq!(e.grep.as_ref().unwrap().hits.iter().map(|h| (h.path.as_str(), h.line)).collect::<Vec<_>>(), [("src/a.rs", 1)], "書き方の分からない .txt は本文なので、コメントの中には入らない");
+        assert_eq!(e.panels.grep.as_ref().unwrap().hits.iter().map(|h| (h.path.as_str(), h.line)).collect::<Vec<_>>(), [("src/a.rs", 1)], "書き方の分からない .txt は本文なので、コメントの中には入らない");
         // 見出しの札を押して戻す（文脈の札は 5 つ目の後）
-        let g = e.grep.as_ref().unwrap();
+        let g = e.panels.grep.as_ref().unwrap();
         let mut col = 0;
         for (t, _, c) in chips(g) {
             if c == Chip::Context {
@@ -1103,7 +1103,7 @@ mod tests {
             e.panel_click_at(0, col, 1);
         }
         wait(&mut e);
-        assert_eq!(e.grep.as_ref().unwrap().opts.context, Context::Anywhere);
+        assert_eq!(e.panels.grep.as_ref().unwrap().opts.context, Context::Anywhere);
         assert_eq!(n(&e), 3);
         // 今のファイルのフォルダだけ（Alt+D）・プロジェクト（Alt+P）
         e.set_state(State::GrepPrompt);
@@ -1132,13 +1132,13 @@ mod tests {
         assert!(e.windows_rows() < 40, "パネルの分だけ窓が縮む");
         keys(&mut e, "needle");
         wait(&mut e);
-        let g = e.grep.as_ref().unwrap();
+        let g = e.panels.grep.as_ref().unwrap();
         assert_eq!(g.hits.iter().map(|h| (h.path.as_str(), h.line)).collect::<Vec<_>>(), vec![("src/a.rs", 2), ("src/b.rs", 1), ("src/b.rs", 3)]);
         // Enter で先頭を開く。行頭の空白の後の一致の位置へ
         keys(&mut e, "<CR>");
         assert_eq!(e.state(), State::Normal);
         assert_eq!((e.cursor.line, e.cursor.byte), (1, 8));
-        assert!(e.grep.is_some(), "パネルは残る");
+        assert!(e.panels.grep.is_some(), "パネルは残る");
         // :cn で次へ（別のファイル）
         keys(&mut e, ":cn<CR>");
         assert_eq!(e.buf.line(0), "// Needle here");
@@ -1153,7 +1153,7 @@ mod tests {
         assert_eq!(e.state(), State::Normal);
         e.bottom_click(3, 5, 1);
         assert_eq!(e.state(), State::List, "{}", e.svc.notify.text);
-        assert_eq!(e.grep.as_ref().unwrap().selected, 1);
+        assert_eq!(e.panels.grep.as_ref().unwrap().selected, 1);
         e.bottom_click(3, 5, 2);
         assert_eq!(e.state(), State::Normal);
         assert_eq!(e.buf.line(0), "// Needle here");
@@ -1161,7 +1161,7 @@ mod tests {
         for k in ["ix", "v", "V"] {
             keys(&mut e, k);
             e.bottom_click(2, 5, 1);
-            assert_eq!((e.state(), e.grep.as_ref().unwrap().selected), (State::List, 0), "{k}: {}", e.svc.notify.text);
+            assert_eq!((e.state(), e.panels.grep.as_ref().unwrap().selected), (State::List, 0), "{k}: {}", e.svc.notify.text);
             e.bottom_click(2, 5, 2);
             assert_eq!(e.state(), State::Normal, "{k}");
             keys(&mut e, "<Esc>u");
@@ -1173,19 +1173,19 @@ mod tests {
         e.clipboard = Some(crate::editor::Clipboard { set, get });
         keys(&mut e, "<C-w>jggVjy");
         assert_eq!(get().unwrap(), "src/a.rs:2: let needle = 1;\r\nsrc/b.rs:1: // Needle here");
-        assert!(e.grep.as_ref().unwrap().anchor.is_none());
+        assert!(e.panels.grep.as_ref().unwrap().anchor.is_none());
         keys(&mut e, "<C-c>");
         assert_eq!(get().unwrap(), "src/b.rs:1: // Needle here");
         // ドラッグ（欄の中の行。0 は見出し）でも範囲を選べる
         e.bottom_click(2, 5, 1);
         e.panel_drag(4, 0);
-        assert_eq!(e.grep.as_ref().unwrap().sel_range(), (0, 2));
+        assert_eq!(e.panels.grep.as_ref().unwrap().sel_range(), (0, 2));
         e.panel_copy();
         assert_eq!(get().unwrap().lines().count(), 3);
         keys(&mut e, "<Esc>");
         // パネルで q を押すと閉じ、窓が元の大きさに戻る
         keys(&mut e, "<C-w>jq");
-        assert!(e.grep.is_none());
+        assert!(e.panels.grep.is_none());
         assert_eq!(e.windows_rows(), 40);
     }
 
@@ -1200,13 +1200,13 @@ mod tests {
         e.clipboard = Some(crate::editor::Clipboard { set, get });
         e.open_result_panel("Maven: install");
         for t in ["[INFO] Scanning for projects...", "[INFO] Building shop 1.0", "[ERROR] 失敗しました: OrderTest"] {
-            e.grep.as_mut().unwrap().hits.push(Hit { path: String::new(), line: 0, range: (0, 0), text: t.into() });
+            e.panels.grep.as_mut().unwrap().hits.push(Hit { path: String::new(), line: 0, range: (0, 0), text: t.into() });
         }
         e.sync_output_view();
         e.focus_panel();
         assert_eq!(e.state(), State::List);
         // 末尾を追いかけている。gg で先頭、W で次の語、yiw でヤンク（クリップボードにも）
-        assert_eq!(e.grep.as_ref().unwrap().view.as_ref().unwrap().ed.cursor.line, 2);
+        assert_eq!(e.panels.grep.as_ref().unwrap().view.as_ref().unwrap().ed.cursor.line, 2);
         keys(&mut e, "gg0Wyiw");
         assert_eq!(get().unwrap(), "Scanning");
         // V j y で 2 行
@@ -1214,7 +1214,7 @@ mod tests {
         assert_eq!(get().unwrap(), "[INFO] Scanning for projects...\r\n[INFO] Building shop 1.0");
         // 変える操作は効かない（dd・x・i で打つ）
         keys(&mut e, "ddxiabc<Esc>");
-        let v = e.grep.as_ref().unwrap().view.as_ref().unwrap();
+        let v = e.panels.grep.as_ref().unwrap().view.as_ref().unwrap();
         assert_eq!(v.ed.buf.line(0), "[INFO] Scanning for projects...");
         assert_eq!(v.ed.buf.line_count(), 3);
         assert_eq!(e.state(), State::List, "{}", e.svc.notify.text);
@@ -1222,10 +1222,10 @@ mod tests {
         keys(&mut e, "/失敗<CR>yiw");
         assert_eq!(get().unwrap(), "失敗しました");
         // ログが増えたら（最後の行にいなければ）カーソルはそのまま
-        e.grep.as_mut().unwrap().hits.push(Hit { path: String::new(), line: 0, range: (0, 0), text: "[INFO] BUILD FAILURE".into() });
+        e.panels.grep.as_mut().unwrap().hits.push(Hit { path: String::new(), line: 0, range: (0, 0), text: "[INFO] BUILD FAILURE".into() });
         keys(&mut e, "gg");
         e.sync_output_view();
-        assert_eq!(e.grep.as_ref().unwrap().view.as_ref().unwrap().ed.cursor.line, 0);
+        assert_eq!(e.panels.grep.as_ref().unwrap().view.as_ref().unwrap().ed.cursor.line, 0);
         // Esc で本文へ、q で閉じる
         keys(&mut e, "<Esc>");
         assert_eq!(e.state(), State::Normal);
@@ -1238,22 +1238,22 @@ mod tests {
         e.set_screen(100, 40);
         e.open_result_panel("Maven: install");
         for k in 0..200 {
-            e.grep.as_mut().unwrap().hits.push(Hit { path: String::new(), line: 0, range: (0, 0), text: format!("[INFO] line {k}") });
+            e.panels.grep.as_mut().unwrap().hits.push(Hit { path: String::new(), line: 0, range: (0, 0), text: format!("[INFO] line {k}") });
             if k % 7 == 0 {
                 e.sync_output_view();
             }
         }
         e.sync_output_view();
-        let v = e.grep.as_ref().unwrap().view.as_ref().unwrap();
+        let v = e.panels.grep.as_ref().unwrap().view.as_ref().unwrap();
         assert_eq!((v.ed.state(), v.ed.cursor.line, v.ed.buf.line_count()), (State::Normal, 199, 200));
         // 最後の行の行末にいて、表示も最後の行が見える
         assert_eq!(v.ed.cursor.byte, "[INFO] line 199".len() - 1);
         assert!(v.ed.top + v.ed.rows > 199, "top {} rows {}", v.ed.top, v.ed.rows);
         let push = |e: &mut Editor, t: &str| {
-            e.grep.as_mut().unwrap().hits.push(Hit { path: String::new(), line: 0, range: (0, 0), text: t.into() });
+            e.panels.grep.as_mut().unwrap().hits.push(Hit { path: String::new(), line: 0, range: (0, 0), text: t.into() });
             e.sync_output_view();
         };
-        let line = |e: &Editor| e.grep.as_ref().unwrap().view.as_ref().unwrap().ed.cursor.line;
+        let line = |e: &Editor| e.panels.grep.as_ref().unwrap().view.as_ref().unwrap().ed.cursor.line;
         // カーソルを動かしたら追いかけない
         e.focus_panel();
         keys(&mut e, "5k");

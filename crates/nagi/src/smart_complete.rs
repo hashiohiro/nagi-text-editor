@@ -78,7 +78,7 @@ impl Editor {
             self.svc.notify.info("-- 補完の候補はありません");
             return;
         }
-        self.completion = Some(Completion { start, original: prefix, items: Vec::new(), sel: Some(0), notes: Vec::new(), smart: Some(SmartState { all, shown: Vec::new() }), drawn: Default::default() });
+        self.panels.completion = Some(Completion { start, original: prefix, items: Vec::new(), sel: Some(0), notes: Vec::new(), smart: Some(SmartState { all, shown: Vec::new() }), drawn: Default::default() });
         self.refilter_smart();
     }
 
@@ -89,7 +89,7 @@ impl Editor {
 
     /// 今のファイルの言語の差し込み口（SQL のコンソールは SQL）
     pub(crate) fn language(&self) -> &'static dyn nagi_lang::lang::Language {
-        let console = self.console_source().map(|i| self.db.as_ref().and_then(|p| p.kind(i)));
+        let console = self.console_source().map(|i| self.panels.db.as_ref().and_then(|p| p.kind(i)));
         nagi_lang::registry::pick(self.file_lang(), console)
     }
 
@@ -135,18 +135,18 @@ impl Editor {
             self.data_wait = None;
             return;
         }
-        let sel = self.completion.as_ref().and_then(|c| c.sel.and_then(|s| c.items.get(s).cloned()));
-        if self.completion.as_ref().is_some_and(|c| c.smart.is_some()) || self.completion.is_none() {
+        let sel = self.panels.completion.as_ref().and_then(|c| c.sel.and_then(|s| c.items.get(s).cloned()));
+        if self.panels.completion.as_ref().is_some_and(|c| c.smart.is_some()) || self.panels.completion.is_none() {
             let msg = self.svc.notify.text.clone();
-            self.completion = None;
+            self.panels.completion = None;
             self.data_wait = None;
             self.start_smart_completion();
             // 出せなければ「候補はありません」は出さない
-            if self.completion.is_none() {
+            if self.panels.completion.is_none() {
                 self.svc.notify.info(msg);
             }
             // 選んでいた候補を選び直す
-            if let (Some(c), Some(name)) = (&mut self.completion, sel) {
+            if let (Some(c), Some(name)) = (&mut self.panels.completion, sel) {
                 if let Some(k) = c.items.iter().position(|x| *x == name) {
                     c.sel = Some(k);
                 }
@@ -159,10 +159,10 @@ impl Editor {
         let abs = self.abs();
         // SQL は大文字小文字を区別しない（Oracle の名前は大文字、打つのは小文字が多い）
         let case = if !self.language().lexis().case_sensitive { "none".to_string() } else { self.settings.get("completion.case") };
-        let Some(c) = &mut self.completion else { return };
+        let Some(c) = &mut self.panels.completion else { return };
         let Some(st) = &mut c.smart else { return };
         if abs < c.start {
-            self.completion = None;
+            self.panels.completion = None;
             return;
         }
         let prefix = self.buf.slice_string(c.start, abs);
@@ -177,7 +177,7 @@ impl Editor {
         scored.sort();
         st.shown = scored.into_iter().map(|x| x.4).take(500).collect();
         if st.shown.is_empty() {
-            self.completion = None;
+            self.panels.completion = None;
             return;
         }
         c.original = prefix;
@@ -188,7 +188,7 @@ impl Editor {
 
     /// 補完の一覧を出している間のキー。扱ったら true（false なら一覧を閉じて普通に処理する）
     pub(crate) fn smart_key(&mut self, key: Key) -> bool {
-        let Some(c) = &mut self.completion else { return false };
+        let Some(c) = &mut self.panels.completion else { return false };
         let n = c.items.len();
         match key {
             Key::Down | Key::Ctrl('n') | Key::Ctrl('j') => {
@@ -204,11 +204,11 @@ impl Editor {
                 true
             }
             Key::Esc => {
-                self.completion = None;
+                self.panels.completion = None;
                 true
             }
             Key::Ctrl(' ') => {
-                self.completion = None;
+                self.panels.completion = None;
                 self.start_smart_completion();
                 true
             }
@@ -222,20 +222,20 @@ impl Editor {
                 let start = c.start;
                 let abs = self.abs();
                 if abs <= start {
-                    self.completion = None;
+                    self.panels.completion = None;
                     return false;
                 }
                 let prev = self.buf.slice_string(start, abs).chars().last().map_or(1, char::len_utf8);
                 self.edit(abs - prev, abs, "");
                 self.set_abs(abs - prev);
                 self.refilter_smart();
-                if self.completion.is_none() && abs - prev > start {
+                if self.panels.completion.is_none() && abs - prev > start {
                     // 合うものが無くなっても、打っている途中なら閉じるだけ
                 }
                 true
             }
             _ => {
-                self.completion = None;
+                self.panels.completion = None;
                 false
             }
         }
@@ -244,7 +244,7 @@ impl Editor {
     /// 打ったキーの後に、設定の「自動で出す」の予約をする（語の文字が設定の数だけ並んだとき・`.` の後。続けて打てば待ち直す）
     pub(crate) fn schedule_auto_complete(&mut self, key: Key) {
         self.auto_complete_at = None;
-        if self.state() != crate::editor::State::Insert || self.completion.is_some() || !self.settings.bool("completion.auto") {
+        if self.state() != crate::editor::State::Insert || self.panels.completion.is_some() || !self.settings.bool("completion.auto") {
             return;
         }
         let Key::Char(c) = key else { return };
@@ -266,21 +266,21 @@ impl Editor {
             return false;
         }
         self.auto_complete_at = None;
-        if self.state() != crate::editor::State::Insert || self.completion.is_some() {
+        if self.state() != crate::editor::State::Insert || self.panels.completion.is_some() {
             return false;
         }
         let msg = self.svc.notify.text.clone();
         self.start_smart_completion();
         // 自動で出すときは「候補はありません」を出さない
-        if self.completion.is_none() {
+        if self.panels.completion.is_none() {
             self.svc.notify.info(msg);
         }
-        self.completion.is_some()
+        self.panels.completion.is_some()
     }
 
     /// 選んでいる候補で決める（メソッドは () も入れる）
     fn accept_smart(&mut self) {
-        let Some(c) = self.completion.take() else { return };
+        let Some(c) = self.panels.completion.take() else { return };
         let Some(st) = &c.smart else { return };
         let Some(&i) = c.sel.and_then(|s| st.shown.get(s)) else { return };
         let cand = &st.all[i];
@@ -351,18 +351,18 @@ mod tests {
         assert!(e.nav.index.is_some(), "索引ができない");
         // user. の後で Ctrl+Space
         keys(&mut e, "3G$a<C-Space>");
-        let names = e.completion.as_ref().map(|c| c.items.clone()).unwrap_or_default();
+        let names = e.panels.completion.as_ref().map(|c| c.items.clone()).unwrap_or_default();
         assert!(names.contains(&"getName".to_string()) && names.contains(&"setName".to_string()) && names.contains(&"baseName".to_string()), "{names:?} {}", e.svc.notify.text);
         assert!(!names.contains(&"name".to_string()), "ほかのクラスの private は出さない: {names:?}");
         assert!(!names.contains(&"User".to_string()), "コンストラクタは出さない: {names:?}");
         assert_eq!(&names[..2], ["getName", "setName"], "定義の順（子の型が先）");
         // 打って絞り込む（飛ばし打ち）
         keys(&mut e, "gN");
-        assert_eq!(e.completion.as_ref().unwrap().items[0], "getName");
+        assert_eq!(e.panels.completion.as_ref().unwrap().items[0], "getName");
         // Enter で決める（引数なしは () の後へ）
         keys(&mut e, "<CR>");
         assert_eq!(e.buf.line(2), "    user.getName()");
-        assert!(e.completion.is_none());
+        assert!(e.panels.completion.is_none());
         // setName は引数があるので括弧の中へ
         keys(&mut e, ";<CR>user.<C-Space>setN<Tab>x");
         assert_eq!(e.buf.line(3), "    user.setName(x)");
@@ -372,7 +372,7 @@ mod tests {
         // 入れ子の型: クラスの名前の後に出し、その中のメンバーへ
         let items = |e: &mut Editor, text: &str| -> Vec<String> {
             keys(e, &format!("<Esc>o{text}<C-Space>"));
-            let v = e.completion.as_ref().map(|c| c.items.clone()).unwrap_or_default();
+            let v = e.panels.completion.as_ref().map(|c| c.items.clone()).unwrap_or_default();
             keys(e, "<Esc><Esc>dd");
             v
         };
@@ -409,7 +409,7 @@ mod tests {
         e.buf.path = Some(std::path::PathBuf::from("App.java"));
         e.set_screen(120, 40);
         keys(&mut e, "10GA<C-Space>");
-        let names = e.completion.as_ref().map(|c| c.items.clone()).unwrap_or_default();
+        let names = e.panels.completion.as_ref().map(|c| c.items.clone()).unwrap_or_default();
         for n in ["args", "total", "counter", "helper", "other", "main"] {
             assert!(names.contains(&n.to_string()), "{n}: {names:?}");
         }
@@ -434,7 +434,7 @@ mod tests {
             e.buf.path = path;
             e.set_screen(120, 40);
             keys(e, &format!("{at_line}GA{typed}<C-Space>"));
-            let v = e.completion.as_ref().map(|c| c.items.clone()).unwrap_or_default();
+            let v = e.panels.completion.as_ref().map(|c| c.items.clone()).unwrap_or_default();
             keys(e, "<Esc><Esc>");
             v
         };
@@ -482,7 +482,7 @@ mod tests {
         e.buf.path = Some(std::path::PathBuf::from("svc.ts"));
         e.set_screen(120, 40);
         keys(&mut e, "11GA<C-Space>");
-        let names = e.completion.as_ref().map(|c| c.items.clone()).unwrap_or_default();
+        let names = e.panels.completion.as_ref().map(|c| c.items.clone()).unwrap_or_default();
         for n in ["err", "part", "entry", "items", "HttpClient", "rx", "load"] {
             assert!(names.contains(&n.to_string()), "{n}: {names:?}");
         }
@@ -512,7 +512,7 @@ mod tests {
         e.nav.libs.set(nagi_lang::eco::JVM, std::sync::Arc::new(ix));
         // 小文字で打っても型を出す。決めると import を足す
         keys(&mut e, "5G$aarrayLi<C-Space>");
-        let c = e.completion.as_ref().unwrap_or_else(|| panic!("{} / {:?}", e.svc.notify.text, e.buf.line(4)));
+        let c = e.panels.completion.as_ref().unwrap_or_else(|| panic!("{} / {:?}", e.svc.notify.text, e.buf.line(4)));
         assert_eq!(c.items[0], "ArrayList", "{:?}", c.items);
         keys(&mut e, "<CR>");
         assert_eq!(e.buf.text(), "package app;\n\nimport java.util.ArrayList;\n\nclass App {\n  void f() {\n    ArrayList\n  }\n}\n");
@@ -520,7 +520,7 @@ mod tests {
         // 同じ単純名が 2 つ（java.util.List と java.awt.List）なら両方を出す。2 つ目は名前の順で後ろ
         keys(&mut e, " <Esc>o");
         keys(&mut e, "Lis<C-Space>");
-        let c = e.completion.as_ref().unwrap();
+        let c = e.panels.completion.as_ref().unwrap();
         let notes: Vec<String> = c.items.iter().zip(&c.notes).filter(|(n, _)| *n == "List").map(|(_, x)| x.1.clone()).collect();
         assert!(notes.contains(&"java.util".to_string()) && notes.contains(&"java.awt".to_string()), "{notes:?}");
         // java.lang は import しない
@@ -559,7 +559,7 @@ mod tests {
         }
         let items = |e: &mut Editor, text: &str| -> Vec<String> {
             keys(e, &format!("9GA<CR>{text}<C-Space>"));
-            let v = e.completion.as_ref().map(|c| c.items.clone()).unwrap_or_default();
+            let v = e.panels.completion.as_ref().map(|c| c.items.clone()).unwrap_or_default();
             keys(e, "<Esc><Esc>dd");
             v
         };
@@ -661,7 +661,7 @@ mod tests {
         }
         let items = |e: &mut Editor, text: &str| -> Vec<String> {
             keys(e, &format!("9GA<CR>{text}<C-Space>"));
-            let v = e.completion.as_ref().map(|c| c.items.clone()).unwrap_or_default();
+            let v = e.panels.completion.as_ref().map(|c| c.items.clone()).unwrap_or_default();
             keys(e, "<Esc><Esc>dd");
             v
         };
@@ -680,9 +680,9 @@ mod tests {
         assert!(has(&v, &["filter", "map"]), "連なり: {v:?}");
         // import（; なし）
         keys(&mut e, "9GA<CR>Optiona<C-Space>");
-        let pos = e.completion.as_ref().and_then(|c| c.items.iter().position(|x| x == "Optional"));
-        assert!(pos.is_some(), "{:?}", e.completion.as_ref().map(|c| c.items.clone()));
-        e.completion.as_mut().unwrap().sel = pos;
+        let pos = e.panels.completion.as_ref().and_then(|c| c.items.iter().position(|x| x == "Optional"));
+        assert!(pos.is_some(), "{:?}", e.panels.completion.as_ref().map(|c| c.items.clone()));
+        e.panels.completion.as_mut().unwrap().sel = pos;
         keys(&mut e, "<CR><Esc>");
         assert!(e.buf.text().contains("import java.util.UUID\nimport java.util.Optional\n"), "{}", e.buf.text());
         keys(&mut e, "u");
@@ -722,7 +722,7 @@ mod tests {
         }
         let items = |e: &mut Editor, line: usize, text: &str| -> Vec<String> {
             keys(e, &format!("{line}GA<CR>{text}<C-Space>"));
-            let v = e.completion.as_ref().map(|c| c.items.clone()).unwrap_or_default();
+            let v = e.panels.completion.as_ref().map(|c| c.items.clone()).unwrap_or_default();
             keys(e, "<Esc><Esc>dd");
             v
         };
@@ -781,7 +781,7 @@ mod tests {
         }
         let items = |e: &mut Editor, text: &str| -> Vec<String> {
             keys(e, &format!("GA<CR>{text}<C-Space>"));
-            let v = e.completion.as_ref().map(|c| c.items.clone()).unwrap_or_default();
+            let v = e.panels.completion.as_ref().map(|c| c.items.clone()).unwrap_or_default();
             keys(e, "<Esc><Esc>dd");
             v
         };
@@ -832,12 +832,12 @@ mod tests {
         assert!(e.data_wait.is_some(), "読み込み中なので待つ");
         for _ in 0..1000 {
             e.poll_index();
-            if e.completion.as_ref().is_some_and(|c| c.items.iter().any(|x| x == "trimEnd")) {
+            if e.panels.completion.as_ref().is_some_and(|c| c.items.iter().any(|x| x == "trimEnd")) {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        assert!(e.completion.as_ref().is_some_and(|c| c.items.iter().any(|x| x == "trimEnd")), "{:?} {}", e.completion.as_ref().map(|c| c.items.clone()), e.svc.notify.text);
+        assert!(e.panels.completion.as_ref().is_some_and(|c| c.items.iter().any(|x| x == "trimEnd")), "{:?} {}", e.panels.completion.as_ref().map(|c| c.items.clone()), e.svc.notify.text);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -872,7 +872,7 @@ mod tests {
         }
         let items = |e: &mut Editor, text: &str| -> Vec<String> {
             keys(e, &format!("7GA<CR>{text}<C-Space>"));
-            let v = e.completion.as_ref().map(|c| c.items.clone()).unwrap_or_default();
+            let v = e.panels.completion.as_ref().map(|c| c.items.clone()).unwrap_or_default();
             keys(e, "<Esc><Esc>dd");
             v
         };
@@ -1221,11 +1221,11 @@ mod tests {
         keys(&mut e, "o");
         assert!(e.auto_complete_at.is_some());
         assert!(e.fire_auto_complete(std::time::Instant::now()));
-        let items = e.completion.as_ref().unwrap().items.clone();
+        let items = e.panels.completion.as_ref().unwrap().items.clone();
         assert!(items.contains(&"fooBar".to_string()) && items.contains(&"foobaz".to_string()));
         assert!(!items.contains(&"Fooqux".to_string()), "区別するので Fooqux は出ない: {items:?}");
         // 打つと絞り込む（区別する: B は fooBar だけ）
         keys(&mut e, "oB");
-        assert_eq!(e.completion.as_ref().unwrap().items, ["fooBar"]);
+        assert_eq!(e.panels.completion.as_ref().unwrap().items, ["fooBar"]);
     }
 }

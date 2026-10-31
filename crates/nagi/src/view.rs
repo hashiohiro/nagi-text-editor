@@ -948,14 +948,14 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     let bar = (cell.w / 6.0).round().max(2.0);
     let underline = (cell.h / 16.0).round().max(1.0);
     let mut p = Painter { out: Vec::with_capacity(cols * rows + 64), fonts, r, cols, bar, underline, caret_at: None, tab_hits: Vec::new(), wrap_w: 0, wrap_rows: 1, end_y: 0.0, texts: ed.record_texts.then(Vec::new), ui: false };
-    if let (Some(r), Some(t)) = (ed.tree_rect(), &mut ed.tree) {
+    if let (Some(r), Some(t)) = (ed.tree_rect(), &mut ed.panels.tree) {
         nagi_ui::list::fit(t.selected, &mut t.scroll, r.h.saturating_sub(crate::tree_panel::HEAD));
     }
-    if let (Some(r), Some(g)) = (ed.panel_rect(), &mut ed.grep) {
+    if let (Some(r), Some(g)) = (ed.panel_rect(), &mut ed.panels.grep) {
         // 選んでいる結果が見える範囲に入るように送る（1 行目は見出し）
         nagi_ui::list::fit(g.selected, &mut g.scroll, r.h.saturating_sub(1));
     }
-    if let (Some(r), Some(c)) = (ed.commit_rect(), &mut ed.commit) {
+    if let (Some(r), Some(c)) = (ed.commit_rect(), &mut ed.panels.commit) {
         // 選んでいる項目（見出しの行を含めた位置）が見える範囲に入るように送る
         let h = crate::commit_panel::layout(r.h).list_h;
         let tracked = c.tracked();
@@ -964,10 +964,10 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     }
     if let Some(r) = ed.right_rect() {
         let h = r.h.saturating_sub(crate::right_panel::HEAD);
-        if let Some(m) = &mut ed.maven {
+        if let Some(m) = &mut ed.panels.maven {
             nagi_ui::list::fit(m.selected, &mut m.scroll, h);
         }
-        if let Some(d) = &mut ed.db {
+        if let Some(d) = &mut ed.panels.db {
             nagi_ui::list::fit(d.selected, &mut d.scroll, h);
         }
     }
@@ -982,7 +982,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         }
     };
     if let Some(r) = ed.panel_rect() {
-        if let Some(t) = ed.db_results.active_tab_mut() {
+        if let Some(t) = ed.panels.db_results.active_tab_mut() {
             let head = if t.filterable { 4 } else { 3 };
             fit_grid(t.row, t.col, &mut t.scroll, &mut t.hscroll, &t.widths.clone(), r.h.saturating_sub(head), r.w);
         }
@@ -990,11 +990,11 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     let (wx, ww) = ed.windows_x();
     let wrows = ed.windows_rows();
     let _ = wx;
-    if let Some(te) = &mut ed.db_table {
+    if let Some(te) = &mut ed.panels.db_table {
         let widths = te.widths.clone();
         fit_grid(te.row, te.col, &mut te.scroll, &mut te.hscroll, &widths, wrows.saturating_sub(crate::db_table::HEAD), ww);
     }
-    if let Some(f) = &mut ed.finder {
+    if let Some(f) = &mut ed.panels.finder {
         // 選んでいる候補が見える範囲に入るように送る
         nagi_ui::list::fit(f.selected, &mut f.scroll, finder_height(rows));
     }
@@ -1153,9 +1153,9 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         }
         State::Command => prompt_line(&mut p, ":", &ed.cmdline.text, ed.cmdline.cursor, &ed.preedit, y, true),
         // 全文検索の入力欄・件数は小窓の中（grep_panel.rs の GrepPopupView）
-        State::GrepPrompt if ed.grep.as_ref().is_some_and(|g| g.title.is_none()) => {}
-        State::GrepPrompt if ed.grep.is_some() => {
-            let g = ed.grep.as_ref().unwrap();
+        State::GrepPrompt if ed.panels.grep.as_ref().is_some_and(|g| g.title.is_none()) => {}
+        State::GrepPrompt if ed.panels.grep.is_some() => {
+            let g = ed.panels.grep.as_ref().unwrap();
             let (lead, field) = if g.editing_mask { (crate::grep_panel::MASK_LEAD, &g.mask) } else { (crate::grep_panel::GREP_LEAD, &g.query) };
             prompt_line(&mut p, lead, &field.text, field.cursor, &ed.preedit, y, true);
             let on: String = crate::grep_panel::chips(g).into_iter().filter(|c| c.1).map(|c| c.0 + " ").collect();
@@ -1165,7 +1165,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
             p.text(&info, pc, y, STATUS_FG);
         }
         // ファインダーは入力欄も件数も小窓の中（finder.rs）
-        State::Finder if ed.finder.is_some() => {}
+        State::Finder if ed.panels.finder.is_some() => {}
         // 本文の上の帯で打っている検索・置換（search_bar.rs）
         State::Search | State::Replace if ed.search_bar => {}
         State::Search => {
@@ -1232,7 +1232,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     // 画面を覆うダイアログ（layout.rs）
     crate::layout::draw(crate::layout::Layer::Overlays, ed, &mut p, crate::layout::Screen { rows, cols });
     // タブのアイコンにマウスを載せていれば、その下に名前
-    if let Some((row, col, label)) = ed.hover_tab.as_ref().filter(|_| ed.run_dialog.is_none() && ed.launcher.is_none()) {
+    if let Some((row, col, label)) = ed.hover_tab.as_ref().filter(|_| ed.panels.run_dialog.is_none() && ed.panels.launcher.is_none()) {
         let cell = p.fonts.cell();
         let text = format!(" {label} ");
         let w = p.width(&text);

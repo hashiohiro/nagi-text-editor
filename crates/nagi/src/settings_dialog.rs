@@ -483,7 +483,7 @@ impl Editor {
                     Some((id, i)) => (id, i.parse::<usize>().ok()),
                     None => (rest, None),
                 };
-                let release = idx.and_then(|i| self.settings_dialog.as_ref()?.releases.lock().ok()?.get(id)?.as_ref().ok()?.get(i).cloned());
+                let release = idx.and_then(|i| self.panels.settings_dialog.as_ref()?.releases.lock().ok()?.get(id)?.as_ref().ok()?.get(i).cloned());
                 self.start_tool_download(id, release);
             }
             None => {
@@ -565,7 +565,7 @@ impl Editor {
 
     /// ダウンロードの進み具合を受け取る。変わったら true
     pub fn poll_jdk_download(&mut self) -> bool {
-        let combo = self.settings_dialog.as_mut().is_some_and(|d| d.refresh_tool_combo());
+        let combo = self.panels.settings_dialog.as_mut().is_some_and(|d| d.refresh_tool_combo());
         let changed = combo | self.poll_tool_download() | self.poll_jdk_only();
         if changed {
             self.run_after_tools();
@@ -586,7 +586,7 @@ impl Editor {
             match r {
                 Ok(path) => {
                     // 設定の画面でプロジェクトを保存先にしていれば、そのプロジェクトの版に
-                    let project = self.settings_dialog.as_ref().is_some_and(|d| d.project_scope);
+                    let project = self.panels.settings_dialog.as_ref().is_some_and(|d| d.project_scope);
                     let p = self.set_downloaded(&format!("toolchain.{id}"), &path, project);
                     let scope = if project { "このプロジェクトの設定" } else { "設定" };
                     self.svc.notify.info(format!("{label} を入れました: {p}（{scope}にしました。ターミナル・実行の構成・:Make で使う）"));
@@ -630,7 +630,7 @@ impl Editor {
         self.settings.set(key, &p, project);
         let _ = self.save_settings(&old);
         self.apply_settings(Some(&old));
-        if let Some(d) = &mut self.settings_dialog {
+        if let Some(d) = &mut self.panels.settings_dialog {
             d.work.set(key, &p, project);
             d.base.set(key, &p, project);
         }
@@ -672,14 +672,14 @@ impl Editor {
             let waker = self.waker();
             probe_tools(&self.nav_root(), d.tool_info.clone(), waker);
         }
-        self.settings_dialog = Some(d);
+        self.panels.settings_dialog = Some(d);
         self.set_state(State::Settings);
         self.svc.notify.clear();
     }
 
     /// 適用（保存して、動いている nagi に効かせる）
     fn apply_settings_dialog(&mut self) -> bool {
-        let Some(d) = &mut self.settings_dialog else { return false };
+        let Some(d) = &mut self.panels.settings_dialog else { return false };
         if d.focus == SFocus::Edit {
             if let Some(e) = d.commit_edit() {
                 self.svc.notify.error(e);
@@ -700,7 +700,7 @@ impl Editor {
             self.vim_maps = d.maps.clone();
             self.rc_dirty = true;
         }
-        let Some(d) = &mut self.settings_dialog else { return false };
+        let Some(d) = &mut self.panels.settings_dialog else { return false };
         let mut work = d.work.clone();
         d.dirty = false;
         // 設定の画面で変えた項目だけを書く（ほかの窓が保存した項目は消さない。その値も読み込む）
@@ -727,17 +727,17 @@ impl Editor {
             }
             SButton::Ok => {
                 if self.apply_settings_dialog() {
-                    self.settings_dialog = None;
+                    self.panels.settings_dialog = None;
                     self.set_state(State::Normal);
                 }
             }
             SButton::Cancel => {
-                self.settings_dialog = None;
+                self.panels.settings_dialog = None;
                 self.set_state(State::Normal);
                 self.svc.notify.info("設定の画面を閉じました（適用していない変更は捨てました）");
             }
             SButton::Scope => {
-                if let Some(d) = &mut self.settings_dialog {
+                if let Some(d) = &mut self.panels.settings_dialog {
                     d.project_scope = !d.project_scope;
                 }
             }
@@ -745,7 +745,7 @@ impl Editor {
     }
 
     pub(crate) fn settings_insert(&mut self, text: &str) {
-        let Some(d) = &mut self.settings_dialog else { return };
+        let Some(d) = &mut self.panels.settings_dialog else { return };
         match d.focus {
             SFocus::Edit => {
                 if let Some(f) = &mut d.field {
@@ -770,7 +770,7 @@ impl Editor {
 
     /// 入力欄にいて Insert か（IME を使う）
     pub fn settings_typing(&self) -> bool {
-        self.settings_dialog.as_ref().is_some_and(|d| match d.focus {
+        self.panels.settings_dialog.as_ref().is_some_and(|d| match d.focus {
             SFocus::Edit => d.field.as_ref().is_some_and(|f| f.is_insert()),
             SFocus::Combo => d.combo.as_ref().is_some_and(|c| c.filter.is_insert()),
             SFocus::Filter => d.filter.is_insert(),
@@ -779,7 +779,7 @@ impl Editor {
     }
 
     pub(crate) fn settings_key(&mut self, key: Key) {
-        let Some(d) = &mut self.settings_dialog else {
+        let Some(d) = &mut self.panels.settings_dialog else {
             self.set_state(State::Normal);
             return;
         };
@@ -811,8 +811,8 @@ impl Editor {
                         d.focus = SFocus::Items;
                     }
                     _ => {
-                        self.feed_field(key, |e| Some(&mut e.settings_dialog.as_mut()?.combo.as_mut()?.filter));
-                        if let Some(c) = self.settings_dialog.as_mut().and_then(|d| d.combo.as_mut()) {
+                        self.feed_field(key, |e| Some(&mut e.panels.settings_dialog.as_mut()?.combo.as_mut()?.filter));
+                        if let Some(c) = self.panels.settings_dialog.as_mut().and_then(|d| d.combo.as_mut()) {
                             c.sel = 0;
                             c.top = 0;
                         }
@@ -820,8 +820,8 @@ impl Editor {
                 }
             }
             SFocus::Edit => {
-                let out = self.feed_field(key, |e| e.settings_dialog.as_mut()?.field.as_mut());
-                let Some(d) = &mut self.settings_dialog else { return };
+                let out = self.feed_field(key, |e| e.panels.settings_dialog.as_mut()?.field.as_mut());
+                let Some(d) = &mut self.panels.settings_dialog else { return };
                 match out {
                     FieldOut::Submit => {
                         if let Some(e) = d.commit_edit() {
@@ -836,8 +836,8 @@ impl Editor {
                 }
             }
             SFocus::Filter => {
-                let out = self.feed_field(key, |e| Some(&mut e.settings_dialog.as_mut()?.filter));
-                let Some(d) = &mut self.settings_dialog else { return };
+                let out = self.feed_field(key, |e| Some(&mut e.panels.settings_dialog.as_mut()?.filter));
+                let Some(d) = &mut self.panels.settings_dialog else { return };
                 d.selected = 0;
                 d.top = 0;
                 match out {
@@ -884,7 +884,7 @@ impl Editor {
                     Key::Char('d') | Key::Char('x') | Key::Delete => d.map_delete(),
                     Key::Char('r') => {
                         let base = self.vim_maps_base.clone();
-                        if let Some(d) = &mut self.settings_dialog {
+                        if let Some(d) = &mut self.panels.settings_dialog {
                             d.map_revert(&base);
                         }
                     }
@@ -926,7 +926,7 @@ impl Editor {
     }
 
     fn close_settings(&mut self, confirm: bool) {
-        let Some(d) = &mut self.settings_dialog else { return };
+        let Some(d) = &mut self.panels.settings_dialog else { return };
         if d.dirty && !confirm {
             d.confirm_close = true;
             self.svc.notify.info("適用していない変更があります。もう一度 Esc で捨てて閉じる、Ctrl+Enter で適用して閉じる");
@@ -937,7 +937,7 @@ impl Editor {
 
     /// マウス: 画面の (行, 列) を押した
     pub(crate) fn settings_click(&mut self, row: usize, col: usize, clicks: u32) {
-        let Some(d) = &mut self.settings_dialog else { return };
+        let Some(d) = &mut self.panels.settings_dialog else { return };
         // コンボボックスを開いていれば、その行を押すと決める（外を押すと閉じる）
         if d.combo.is_some() {
             let hit = d.combo_rows.at(row, col);
@@ -1014,13 +1014,13 @@ pub struct SettingsView;
 impl crate::layout::View for SettingsView {
     fn rect(&self, ed: &crate::editor::Editor, s: crate::layout::Screen) -> Option<crate::panes::Rect> {
         let _ = s;
-        ed.settings_dialog.as_ref()?;
+        ed.panels.settings_dialog.as_ref()?;
         Some(crate::panes::Rect { x: 0, y: 0, w: s.cols, h: s.rows })
     }
 
     fn draw(&self, ed: &crate::editor::Editor, p: &mut crate::view::Painter, r: crate::panes::Rect, s: crate::layout::Screen) {
         let _ = (r, s);
-        if let Some(d) = &ed.settings_dialog {
+        if let Some(d) = &ed.panels.settings_dialog {
             draw::draw_settings_dialog(p, ed, d, s.cols, s.rows);
         }
     }
@@ -1036,7 +1036,7 @@ impl crate::layout::View for SettingsView {
         use nagi_vim::Key::*;
         // 押した項目を選んでから（1 回のクリックは選ぶだけ）
         ed.settings_click(row, col, 1);
-        if ed.settings_dialog.as_ref().is_some_and(|d| d.is_maps()) {
+        if ed.panels.settings_dialog.as_ref().is_some_and(|d| d.is_maps()) {
             let m = crate::menu::Menu::new(row, col)
                 .keys("直す", &[Enter])
                 .keys("Action・コマンドを選ぶ", &[Char('a')])
@@ -1360,20 +1360,20 @@ mod tests {
         e.open_settings("");
         let cat = CATEGORIES.iter().position(|c| *c == MAPS_CAT).unwrap();
         keys(&mut e, &format!("{}<Tab>", "j".repeat(cat)));
-        assert!(e.settings_dialog.as_ref().unwrap().is_maps());
+        assert!(e.panels.settings_dialog.as_ref().unwrap().is_maps());
         // 足す: o で「n <leader>」の続きを打つ
         keys(&mut e, "ox :Files<CR>");
-        let d = e.settings_dialog.as_ref().unwrap();
+        let d = e.panels.settings_dialog.as_ref().unwrap();
         assert_eq!(d.maps.len(), 3, "{}", e.svc.notify.text);
         assert_eq!(vim_maps::line_of(&d.maps[2]), "n <leader>x :Files");
         // 1 行目の右辺を Action の一覧から（絞り込んで Enter）
         keys(&mut e, "gaFindInPath<CR>");
-        let d = e.settings_dialog.as_ref().unwrap();
+        let d = e.panels.settings_dialog.as_ref().unwrap();
         assert_eq!(d.maps[0].rhs, ":<C-u>action FindInPath<CR>");
         assert_eq!(d.maps[0].from, vim_maps::SCREEN_FROM);
         // 2 行目を消し、1 行目を元に戻す
         keys(&mut e, "jdgr");
-        let d = e.settings_dialog.as_ref().unwrap();
+        let d = e.panels.settings_dialog.as_ref().unwrap();
         assert_eq!(d.maps.iter().map(vim_maps::line_of).collect::<Vec<_>>(), ["n ew :<C-u>w<CR>", "n <leader>x :Files"]);
         keys(&mut e, "<C-m>");
         assert_eq!(e.state(), State::Normal, "{}", e.svc.notify.text);
@@ -1396,20 +1396,20 @@ mod tests {
         assert_eq!(e.state(), State::Settings);
         // エディタの分類 → 行番号（選択肢）を l で相対に
         keys(&mut e, "j<Tab>");
-        let d = e.settings_dialog.as_ref().unwrap();
+        let d = e.panels.settings_dialog.as_ref().unwrap();
         assert_eq!(d.current().unwrap().key, "editor.line_numbers");
         keys(&mut e, "l");
-        assert_eq!(e.settings_dialog.as_ref().unwrap().work.get("editor.line_numbers"), "relative");
+        assert_eq!(e.panels.settings_dialog.as_ref().unwrap().work.get("editor.line_numbers"), "relative");
         // 絞り込み → 数の項目を直す（範囲の外は断る）
         keys(&mut e, "/インデントの幅<CR>");
-        assert_eq!(e.settings_dialog.as_ref().unwrap().current().unwrap().key, "editor.indent_width");
+        assert_eq!(e.panels.settings_dialog.as_ref().unwrap().current().unwrap().key, "editor.indent_width");
         keys(&mut e, "<CR><Esc>S99<CR>");
         assert!(e.svc.notify.text.contains("1〜16"), "{}", e.svc.notify.text);
         keys(&mut e, "<CR><Esc>S2<CR>");
-        assert_eq!(e.settings_dialog.as_ref().unwrap().work.int("editor.indent_width"), 2);
+        assert_eq!(e.panels.settings_dialog.as_ref().unwrap().work.int("editor.indent_width"), 2);
         // p でこのプロジェクトに。オン・オフは Space
         keys(&mut e, "p");
-        assert!(e.settings_dialog.as_ref().unwrap().project_scope);
+        assert!(e.panels.settings_dialog.as_ref().unwrap().project_scope);
         // Ctrl+Enter で適用して閉じる → Editor.settings に入り、プロジェクトのファイルは書かない（全体に入れたので）
         keys(&mut e, "<C-m>");
         assert_eq!(e.state(), State::Normal, "{}", e.svc.notify.text);
@@ -1431,18 +1431,18 @@ mod tests {
         e.set_screen(140, 40);
         e.open_settings("フォント（英数字）");
         keys(&mut e, "<CR>");
-        let d = e.settings_dialog.as_ref().unwrap();
+        let d = e.panels.settings_dialog.as_ref().unwrap();
         assert_eq!(d.focus, SFocus::Combo);
         let c = d.combo.as_ref().unwrap();
         assert!(c.items.iter().any(|f| f.label == "Consolas" && f.tag == "等幅"), "Consolas は等幅として一覧にある");
         // 打って絞り込み、Enter で決める
         keys(&mut e, "consol<CR>");
-        let d = e.settings_dialog.as_ref().unwrap();
+        let d = e.panels.settings_dialog.as_ref().unwrap();
         assert_eq!(d.focus, SFocus::Items);
         assert_eq!(d.work.get("appearance.font"), "Consolas");
         // Esc でやめると変わらない
         keys(&mut e, "<CR>cour<Esc><Esc>");
-        assert_eq!(e.settings_dialog.as_ref().unwrap().work.get("appearance.font"), "Consolas");
+        assert_eq!(e.panels.settings_dialog.as_ref().unwrap().work.get("appearance.font"), "Consolas");
     }
 
     /// JDK はコンボボックス: 自動・入っているもの・ダウンロード。ダウンロードを選ぶと始める（試験では始めない）
@@ -1452,12 +1452,12 @@ mod tests {
         e.set_screen(140, 40);
         e.open_settings("JDK（コンパイル");
         keys(&mut e, "<CR>");
-        let c = e.settings_dialog.as_ref().unwrap().combo.as_ref().unwrap();
+        let c = e.panels.settings_dialog.as_ref().unwrap().combo.as_ref().unwrap();
         assert!(c.items[0].label.starts_with("自動"));
         assert!(c.items.iter().any(|i| i.value == "download:21"));
         keys(&mut e, "temurin 21<CR>");
         assert!(e.svc.notify.text.contains("JDK 21"), "{}", e.svc.notify.text);
-        assert_eq!(e.settings_dialog.as_ref().unwrap().work.get("maven.jdk"), "", "ダウンロードが終わるまでは変えない");
+        assert_eq!(e.panels.settings_dialog.as_ref().unwrap().work.get("maven.jdk"), "", "ダウンロードが終わるまでは変えない");
     }
 
     /// 言語のツール: 版を調べている間は 1 行、届いたら版ごとの行に。選ぶとその版をダウンロード
@@ -1468,13 +1468,13 @@ mod tests {
         e.set_screen(140, 40);
         e.open_settings("Node.js");
         keys(&mut e, "<CR>");
-        let d = e.settings_dialog.as_ref().unwrap();
+        let d = e.panels.settings_dialog.as_ref().unwrap();
         assert!(d.combo.as_ref().unwrap().items.iter().any(|i| i.value == RELEASES_WAIT), "調べている行");
         // 調べ終えた（試験ではネットワークを使わないので、ここで入れる）
         let rs = vec![Release { version: "24.22.0".into(), url: "u1".into(), note: "LTS".into() }, Release { version: "22.30.0".into(), url: "u2".into(), note: "LTS".into() }];
         d.releases.lock().unwrap().insert("node".into(), Ok(rs));
         assert!(e.poll_jdk_download(), "一覧を作り直す");
-        let c = e.settings_dialog.as_ref().unwrap().combo.as_ref().unwrap();
+        let c = e.panels.settings_dialog.as_ref().unwrap().combo.as_ref().unwrap();
         let labels: Vec<&str> = c.items.iter().map(|i| i.label.as_str()).collect();
         assert!(labels.contains(&"＋ ダウンロード: Node.js 22.30.0") && !c.items.iter().any(|i| i.value == RELEASES_WAIT), "{labels:?}");
         keys(&mut e, "22.30<CR>");

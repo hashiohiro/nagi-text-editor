@@ -99,7 +99,7 @@ fn push_project(p: &Pom, depth: usize, open: &nagi_ui::Folds<String>, rows: &mut
 impl Editor {
     /// `:Maven`（ActivateMavenToolWindow）: Maven タブを出して移る
     pub(crate) fn open_maven(&mut self) {
-        if self.maven.is_none() {
+        if self.panels.maven.is_none() {
             let from = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()).unwrap_or_else(|| self.nav_root());
             let Some(root) = nagi_workers::maven::find_root(&from).or_else(|| nagi_workers::maven::find_root(&self.nav_root())) else {
                 self.svc.notify.warn("pom.xml が見つかりません（Maven のプロジェクトではありません）");
@@ -113,14 +113,14 @@ impl Editor {
                 m.folds.set_open(&format!("l:{}", p.dir.display()), true);
             }
             m.rebuild();
-            self.maven = Some(m);
+            self.panels.maven = Some(m);
         }
         self.focus_right(RightTab::Maven);
     }
 
     /// 読み直す（r）
     fn reload_maven(&mut self) {
-        if let Some(m) = &mut self.maven {
+        if let Some(m) = &mut self.panels.maven {
             m.pom = nagi_workers::maven::load(&m.root);
             m.rebuild();
             self.svc.notify.info("pom.xml を読み直しました");
@@ -129,7 +129,7 @@ impl Editor {
 
     /// `:Maven ゴール…`: 根のプロジェクトで動かす
     pub(crate) fn maven_run(&mut self, goals: &str) {
-        let root = match &self.maven {
+        let root = match &self.panels.maven {
             Some(m) => m.root.clone(),
             None => {
                 let from = self.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()).unwrap_or_else(|| self.nav_root());
@@ -147,7 +147,7 @@ impl Editor {
     }
 
     fn maven_activate(&mut self) {
-        let Some(m) = &mut self.maven else { return };
+        let Some(m) = &mut self.panels.maven else { return };
         let Some(row) = m.rows.get(m.selected).cloned() else { return };
         match row.kind {
             RowKind::Folder(k) => {
@@ -169,7 +169,7 @@ impl Editor {
 
     pub(crate) fn maven_key(&mut self, key: Key) -> Effect {
         let half = (self.windows_rows() / 2).max(1);
-        let Some(m) = &mut self.maven else {
+        let Some(m) = &mut self.panels.maven else {
             self.set_state(State::Normal);
             return Effect::None;
         };
@@ -192,7 +192,7 @@ impl Editor {
             }
             Key::Char('r') => self.reload_maven(),
             Key::Char('q') => {
-                self.maven = None;
+                self.panels.maven = None;
                 self.set_state(State::Normal);
                 self.rows = self.text_rows(self.active_rect());
             }
@@ -206,12 +206,12 @@ impl Editor {
     }
 
     pub(crate) fn maven_click(&mut self, row: usize, clicks: u32) {
-        let Some(m) = &mut self.maven else { return };
+        let Some(m) = &mut self.panels.maven else { return };
         let len = m.rows.len();
         let Some(pick) = nagi_ui::list::pick_row(&mut m.selected, m.scroll, row, 1, len, clicks) else { return };
         let i = m.selected;
         self.focus_right(RightTab::Maven);
-        let folder = matches!(self.maven.as_ref().and_then(|m| m.rows.get(i)).map(|r| &r.kind), Some(RowKind::Folder(_)));
+        let folder = matches!(self.panels.maven.as_ref().and_then(|m| m.rows.get(i)).map(|r| &r.kind), Some(RowKind::Folder(_)));
         // フォルダは 1 回、ゴールはダブルクリックで
         if folder || matches!(pick, nagi_ui::list::Pick::Accept(_)) {
             self.maven_activate();
@@ -241,7 +241,7 @@ mod tests {
         let mut e = Editor::new(buf, None);
         e.set_screen(120, 40);
         e.open_maven();
-        let labels = |e: &Editor| e.maven.as_ref().unwrap().rows.iter().map(|r| r.label.clone()).collect::<Vec<_>>();
+        let labels = |e: &Editor| e.panels.maven.as_ref().unwrap().rows.iter().map(|r| r.label.clone()).collect::<Vec<_>>();
         // 根は開き、ライフサイクルも開いている。モジュールは閉じている
         let l = labels(&e);
         assert_eq!(&l[..3], &["top", "ライフサイクル", "clean"]);
@@ -259,7 +259,7 @@ mod tests {
             e.key(k);
         }
         assert_eq!(labels(&e).last().unwrap(), "g:a");
-        assert_eq!(e.maven.as_ref().unwrap().rows.last().unwrap().note, "test");
+        assert_eq!(e.panels.maven.as_ref().unwrap().rows.last().unwrap().note, "test");
         // コマンドの形（mvnw が無ければ mvn）
         assert_eq!(nagi_workers::maven::command(&dir, &dir.join("core"), "compile"), format!("mvn -B -f \"{}\" compile", dir.join("core").join("pom.xml").display()));
     }

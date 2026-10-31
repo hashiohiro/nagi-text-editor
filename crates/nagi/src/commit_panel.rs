@@ -113,8 +113,8 @@ impl Editor {
         }
         self.left_tab = crate::tree_panel::LeftTab::Commit;
         self.left_hidden = false;
-        if self.commit.is_none() {
-            self.commit = Some(CommitPanel {
+        if self.panels.commit.is_none() {
+            self.panels.commit = Some(CommitPanel {
                 items: Vec::new(),
                 selected: 0,
                 scroll: 0,
@@ -133,7 +133,7 @@ impl Editor {
     }
 
     pub(crate) fn close_commit_panel(&mut self) {
-        self.commit = None;
+        self.panels.commit = None;
         if self.state() == State::CommitMsg || (self.state() == State::List && self.list_side == Side::Commit) {
             self.set_state(State::Normal);
         }
@@ -142,7 +142,7 @@ impl Editor {
 
     /// status の変更を一覧に入れる（チェックは前の状態を引き継ぐ。新しいものは、追跡しているファイルならチェック）
     pub(crate) fn sync_commit_items(&mut self) {
-        let (Some(p), Some(st)) = (&mut self.commit, &self.svc.git.status) else { return };
+        let (Some(p), Some(st)) = (&mut self.panels.commit, &self.svc.git.status) else { return };
         let old: std::collections::HashMap<String, bool> = p.items.iter().map(|i| (i.change.path.clone(), i.checked)).collect();
         let mut tracked: Vec<&Change> = st.changes.iter().filter(|c| c.state != FileState::Untracked).collect();
         let mut untracked: Vec<&Change> = st.changes.iter().filter(|c| c.state == FileState::Untracked).collect();
@@ -158,7 +158,7 @@ impl Editor {
 
     /// 裏の git の結果を受け取る。変わったら true
     pub fn poll_commit(&mut self) -> bool {
-        let Some(p) = &mut self.commit else { return false };
+        let Some(p) = &mut self.panels.commit else { return false };
         let Some((_, rx)) = &p.running else { return false };
         let Ok(r) = rx.try_recv() else { return false };
         let (job, _) = p.running.take().unwrap();
@@ -189,7 +189,7 @@ impl Editor {
     /// コミット（`push` ならその後に送る前の確認を出す）
     pub(crate) fn commit(&mut self, push: bool) {
         let Some(root) = self.svc.git.root.clone() else { return };
-        let Some(p) = &mut self.commit else { return };
+        let Some(p) = &mut self.panels.commit else { return };
         if p.running.is_some() {
             return;
         }
@@ -242,7 +242,7 @@ impl Editor {
     /// Vcs.Push / :Gpush: コミットのパネルを開いて、送る前の確認を出す
     pub(crate) fn push_from_anywhere(&mut self) {
         self.open_commit_panel();
-        if self.commit.is_some() {
+        if self.panels.commit.is_some() {
             self.prepare_push();
         }
     }
@@ -271,12 +271,12 @@ impl Editor {
             None => format!("{branch} → origin/{branch}（新しく作る）"),
         };
         let q = format!("{} 件のコミットを送りますか（{dest}）", log.len());
-        if let Some(p) = &mut self.commit {
+        if let Some(p) = &mut self.panels.commit {
             p.confirm_push = Some((dest, log));
         }
         // 送るコミットは一覧の場所に出し、確認の窓で答える
         self.ask_or(q, |e| e.push(), |e| {
-            if let Some(p) = &mut e.commit {
+            if let Some(p) = &mut e.panels.commit {
                 p.confirm_push = None;
             }
             e.svc.notify.info("プッシュをやめました");
@@ -285,7 +285,7 @@ impl Editor {
 
     fn push(&mut self) {
         let Some(root) = self.svc.git.root.clone() else { return };
-        let Some(p) = &mut self.commit else { return };
+        let Some(p) = &mut self.panels.commit else { return };
         let new_upstream = p.confirm_push.as_ref().is_some_and(|(d, _)| d.contains("新しく作る"));
         p.confirm_push = None;
         let branch = self.svc.git.status.as_ref().map(|s| s.branch.clone()).unwrap_or_default();
@@ -299,7 +299,7 @@ impl Editor {
 
     fn revert_item(&mut self, i: usize) {
         let Some(root) = self.svc.git.root.clone() else { return };
-        let Some(p) = &mut self.commit else { return };
+        let Some(p) = &mut self.panels.commit else { return };
         let Some(it) = p.items.get(i) else { return };
         let c = it.change.clone();
         if c.state == FileState::Untracked {
@@ -328,7 +328,7 @@ impl Editor {
     /// 未追跡のファイルを消す（チェックしたもの。無ければカーソルの行）。消したら戻せないので、聞いてから
     fn ask_delete_untracked(&mut self) {
         let Some(root) = self.svc.git.root.clone() else { return };
-        let Some(p) = &self.commit else { return };
+        let Some(p) = &self.panels.commit else { return };
         let untracked = |it: &&Item| it.change.state == FileState::Untracked;
         let mut paths: Vec<String> = p.items.iter().filter(untracked).filter(|it| it.checked).map(|it| it.change.path.clone()).collect();
         if paths.is_empty() {
@@ -358,7 +358,7 @@ impl Editor {
     pub(crate) fn commit_click(&mut self, row: usize, col: usize, clicks: u32) {
         let Some(r) = self.commit_rect() else { return };
         let l = layout(r.h);
-        let Some(p) = &mut self.commit else { return };
+        let Some(p) = &mut self.panels.commit else { return };
         if row >= l.list && row < l.list + l.list_h {
             // 見出しの行を含めた並びから項目を探す
             let tracked = p.tracked();
@@ -399,7 +399,7 @@ impl Editor {
 
     /// パネルにいる間（リストモード）のキー
     pub(crate) fn commit_list_key(&mut self, key: Key) -> Effect {
-        let Some(p) = &mut self.commit else {
+        let Some(p) = &mut self.panels.commit else {
             self.set_state(State::Normal);
             return Effect::None;
         };
@@ -470,7 +470,7 @@ impl Editor {
     /// メッセージの欄にいる間のキー
     pub(crate) fn commit_msg_key(&mut self, key: Key) {
         use crate::vim_field::FieldOut;
-        if self.commit.is_none() {
+        if self.panels.commit.is_none() {
             self.set_state(State::Normal);
             return;
         }
@@ -479,7 +479,7 @@ impl Editor {
             self.set_state(State::List);
             return;
         }
-        match self.feed_field(key, |e| e.commit.as_mut().map(|c| &mut c.msg)) {
+        match self.feed_field(key, |e| e.panels.commit.as_mut().map(|c| &mut c.msg)) {
             FieldOut::Submit => {
                 self.set_state(State::List);
                 self.commit(false);
@@ -490,7 +490,7 @@ impl Editor {
     }
 
     pub(crate) fn commit_msg_insert(&mut self, text: &str) {
-        if let Some(p) = &mut self.commit {
+        if let Some(p) = &mut self.panels.commit {
             p.msg.insert_text(text);
         }
     }
@@ -539,13 +539,13 @@ pub struct CommitView;
 impl crate::layout::View for CommitView {
     fn rect(&self, ed: &crate::editor::Editor, s: crate::layout::Screen) -> Option<crate::panes::Rect> {
         let _ = s;
-        ed.commit.as_ref()?;
+        ed.panels.commit.as_ref()?;
         ed.commit_rect()
     }
 
     fn draw(&self, ed: &crate::editor::Editor, p: &mut crate::view::Painter, r: crate::panes::Rect, s: crate::layout::Screen) {
         let _ = (r, s);
-        if let Some(c) = &ed.commit {
+        if let Some(c) = &ed.panels.commit {
             draw::draw_commit_panel(p, ed, c, r);
         }
     }
@@ -561,7 +561,7 @@ impl crate::layout::View for CommitView {
 
     fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At, dy: isize, dx: isize) -> bool {
         let _ = (at, r, dx);
-        if let Some(c) = ed.commit.as_mut().filter(|c| !c.items.is_empty()) {
+        if let Some(c) = ed.panels.commit.as_mut().filter(|c| !c.items.is_empty()) {
             c.selected = (c.selected as isize + dy).clamp(0, c.items.len() as isize - 1) as usize;
         }
         true
@@ -577,7 +577,7 @@ impl crate::layout::View for CommitView {
         if ed.state() != crate::editor::State::List {
             return false;
         }
-        let amend = ed.commit.as_ref().is_some_and(|p| p.amend);
+        let amend = ed.panels.commit.as_ref().is_some_and(|p| p.amend);
         let m = crate::menu::Menu::new(row, col)
             .keys("差分を見る", &[Char('d')])
             .keys("開く", &[Enter])
@@ -737,7 +737,7 @@ mod tests {
         while start.elapsed() < std::time::Duration::from_secs(120) {
             e.poll_git();
             e.poll_commit();
-            let busy = e.commit.as_ref().is_some_and(|p| p.running.is_some()) || e.git_status_pending();
+            let busy = e.panels.commit.as_ref().is_some_and(|p| p.running.is_some()) || e.git_status_pending();
             if !busy && e.svc.git.status.is_some() {
                 if std::env::var_os("NAGI_GIT_TIMING").is_some() {
                     eprintln!("wait {:?}", start.elapsed());
@@ -746,7 +746,7 @@ mod tests {
             }
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        panic!("git が終わらない: running={} pending={} status={}", e.commit.as_ref().is_some_and(|p| p.running.is_some()), e.git_status_pending(), e.svc.git.status.is_some());
+        panic!("git が終わらない: running={} pending={} status={}", e.panels.commit.as_ref().is_some_and(|p| p.running.is_some()), e.git_status_pending(), e.svc.git.status.is_some());
     }
 
     #[test]
@@ -773,13 +773,13 @@ mod tests {
         e.start_git();
         e.open_commit_panel();
         wait(&mut e);
-        let p = e.commit.as_ref().unwrap();
+        let p = e.panels.commit.as_ref().unwrap();
         let v: Vec<(&str, bool)> = p.items.iter().map(|i| (i.change.path.as_str(), i.checked)).collect();
         assert_eq!(v, vec![("a.txt", true), ("b.txt", true), ("new.txt", false)], "未追跡は初めはチェックしない");
         // b を外し、new を入れて、メッセージを書いてコミット
         keys(&mut e, "j<Space><Space>");
         keys(&mut e, "cfix a<CR><CR>body<Esc>");
-        assert_eq!(e.commit.as_ref().unwrap().msg.text(), "fix a\n\nbody");
+        assert_eq!(e.panels.commit.as_ref().unwrap().msg.text(), "fix a\n\nbody");
         keys(&mut e, "<C-m>");
         wait(&mut e);
         wait(&mut e);
@@ -788,7 +788,7 @@ mod tests {
         let files = g(&["show", "--name-only", "--format=", "HEAD"]);
         assert_eq!(files.trim(), "a.txt\nnew.txt");
         // b はコミットしていないので残る。一覧も作り直される
-        let p = e.commit.as_ref().unwrap();
+        let p = e.panels.commit.as_ref().unwrap();
         assert_eq!(p.items.iter().map(|i| i.change.path.as_str()).collect::<Vec<_>>(), vec!["b.txt"]);
         assert!(p.msg.text().is_empty());
         // b の変更を戻す（確認してから）
@@ -798,7 +798,7 @@ mod tests {
         wait(&mut e);
         wait(&mut e);
         assert_eq!(std::fs::read_to_string(dir.join("b.txt")).unwrap(), "b\n");
-        assert!(e.commit.as_ref().unwrap().items.is_empty());
+        assert!(e.panels.commit.as_ref().unwrap().items.is_empty());
     }
 
     /// 名前を変えたファイル（git mv）と、git rm で消したファイルもコミットできる（add に渡すと pathspec で断られていた）
@@ -840,14 +840,14 @@ mod tests {
         wait(&mut e);
         assert!(!dir.join("x.txt").exists() && dir.join("y.txt").exists(), "{}", e.svc.notify.text);
         // チェックした y・z をまとめて（a はチェックしていても消さない）
-        let p = e.commit.as_mut().unwrap();
+        let p = e.panels.commit.as_mut().unwrap();
         p.items.iter_mut().for_each(|i| i.checked = true);
         keys(&mut e, "D");
         assert!(e.menu.as_ref().unwrap().title.as_deref().is_some_and(|t| t.contains("2 件を消しますか")));
         keys(&mut e, "y");
         wait(&mut e);
         assert!(!dir.join("y.txt").exists() && !dir.join("z.txt").exists() && dir.join("a.txt").exists());
-        let v: Vec<&str> = e.commit.as_ref().unwrap().items.iter().map(|i| i.change.path.as_str()).collect();
+        let v: Vec<&str> = e.panels.commit.as_ref().unwrap().items.iter().map(|i| i.change.path.as_str()).collect();
         assert_eq!(v, vec!["a.txt"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -880,7 +880,7 @@ mod tests {
         assert!(e.svc.notify.text.starts_with("コミットしました"), "{}", e.svc.notify.text);
         let files = g(&["show", "--name-status", "--format=", "HEAD"]);
         assert!(files.contains("D\tb.txt") && files.contains("c.txt\tc2.txt"), "{files}");
-        assert!(e.commit.as_ref().unwrap().items.is_empty());
+        assert!(e.panels.commit.as_ref().unwrap().items.is_empty());
     }
 
     /// ターミナルなど外でコミットしても、.git の変化を見て一覧を作り直す（タブを切り替えなくても）
@@ -904,14 +904,14 @@ mod tests {
         e.start_git();
         e.open_commit_panel();
         wait(&mut e);
-        assert_eq!(e.commit.as_ref().unwrap().items.len(), 1);
+        assert_eq!(e.panels.commit.as_ref().unwrap().items.len(), 1);
         g(&["commit", "-q", "-am", "outside"]);
         // ほかの試験と並べて流すと git が遅い（数十秒）。時間で待つ
         let start = std::time::Instant::now();
         while start.elapsed() < std::time::Duration::from_secs(120) {
             e.poll_watch();
             e.poll_git();
-            if e.commit.as_ref().unwrap().items.is_empty() {
+            if e.panels.commit.as_ref().unwrap().items.is_empty() {
                 if std::env::var_os("NAGI_GIT_TIMING").is_some() {
                     eprintln!("outside {:?}", start.elapsed());
                 }

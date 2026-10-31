@@ -68,7 +68,7 @@ impl Editor {
             let waker = self.waker();
             self.cmd_files = Some((root, nagi_workers::files::walk(&self.finder_root(), waker), Vec::new()));
         }
-        self.cmd_complete = self.cmd_candidates(&text);
+        self.panels.cmd_complete = self.cmd_candidates(&text);
     }
 
     /// 裏で集めたファイルの一覧を受け取る。集め終えたら候補を出し直す
@@ -153,7 +153,7 @@ impl Editor {
 
     /// 候補 `i` を入力欄へ入れる（マウスで押したとき）
     pub(crate) fn cmd_complete_pick(&mut self, i: usize) {
-        let Some(c) = &mut self.cmd_complete else { return };
+        let Some(c) = &mut self.panels.cmd_complete else { return };
         if i >= c.items.len() {
             return;
         }
@@ -167,7 +167,7 @@ impl Editor {
 
     /// マウス: 画面の (行, 列) が候補の上ならそれを入れる。当たれば true
     pub(crate) fn cmd_complete_click(&mut self, row: usize, col: usize, clicks: u32) -> bool {
-        let Some(c) = &self.cmd_complete else { return false };
+        let Some(c) = &self.panels.cmd_complete else { return false };
         let hit = c.rows.at(row, col);
         let mut sel = c.sel.unwrap_or(0);
         // 候補は 1 回で入れる（メニューと同じ）
@@ -187,10 +187,10 @@ impl Editor {
             Key::Up | Key::Ctrl('p') | Key::Ctrl('k') => false,
             _ => return false,
         };
-        if self.cmd_complete.is_none() {
+        if self.panels.cmd_complete.is_none() {
             self.update_cmd_complete();
         }
-        let Some(c) = &mut self.cmd_complete else { return true };
+        let Some(c) = &mut self.panels.cmd_complete else { return true };
         let n = c.items.len();
         c.sel = match (c.sel, forward) {
             (None, true) => Some(0),
@@ -251,12 +251,12 @@ pub struct CmdCompleteView;
 impl crate::layout::View for CmdCompleteView {
     fn rect(&self, ed: &crate::editor::Editor, s: crate::layout::Screen) -> Option<crate::panes::Rect> {
         let _ = s;
-        (ed.cmd_complete.is_some() && ed.state() == crate::editor::State::Command).then_some(crate::panes::Rect { x: 0, y: 0, w: s.cols, h: s.rows })
+        (ed.panels.cmd_complete.is_some() && ed.state() == crate::editor::State::Command).then_some(crate::panes::Rect { x: 0, y: 0, w: s.cols, h: s.rows })
     }
 
     fn draw(&self, ed: &crate::editor::Editor, p: &mut crate::view::Painter, r: crate::panes::Rect, s: crate::layout::Screen) {
         let _ = (r, s);
-        if let Some(c) = &ed.cmd_complete {
+        if let Some(c) = &ed.panels.cmd_complete {
             draw::draw_cmd_complete(p, ed, c, s.rows, s.cols);
         }
     }
@@ -317,11 +317,11 @@ mod tests {
     fn candidates_and_tab() {
         let mut e = Editor::new(Buffer::from_str("x\n"), None);
         keys(&mut e, ":");
-        assert!(e.cmd_complete.as_ref().unwrap().items.len() > 20, "打つ前から全部出す");
+        assert!(e.panels.cmd_complete.as_ref().unwrap().items.len() > 20, "打つ前から全部出す");
         keys(&mut e, "sp");
-        assert!(e.cmd_complete.is_none(), "sp と完全に同じ名前だけなら出さない");
+        assert!(e.panels.cmd_complete.is_none(), "sp と完全に同じ名前だけなら出さない");
         keys(&mut e, "<BS><BS>no");
-        let names: Vec<&str> = e.cmd_complete.as_ref().unwrap().items.iter().map(|i| i.0.as_str()).collect();
+        let names: Vec<&str> = e.panels.cmd_complete.as_ref().unwrap().items.iter().map(|i| i.0.as_str()).collect();
         assert_eq!(names, vec!["normal", "noh"]);
         // Tab で入れて Enter で実行
         keys(&mut e, "<Tab><Tab>");
@@ -332,14 +332,14 @@ mod tests {
         assert_eq!(e.state(), crate::editor::State::Normal);
         // 範囲の後ろでもコマンド名を出す
         keys(&mut e, ":%no");
-        assert_eq!(e.cmd_complete.as_ref().unwrap().items.len(), 2);
+        assert_eq!(e.panels.cmd_complete.as_ref().unwrap().items.len(), 2);
         keys(&mut e, "<Esc>");
-        assert!(e.cmd_complete.is_none());
+        assert!(e.panels.cmd_complete.is_none());
     }
 
     #[test]
     fn ignore_case_and_ctrl_space() {
-        let names = |e: &Editor| e.cmd_complete.as_ref().map(|c| c.items.iter().map(|i| i.0.clone()).collect::<Vec<_>>()).unwrap_or_default();
+        let names = |e: &Editor| e.panels.cmd_complete.as_ref().map(|c| c.items.iter().map(|i| i.0.clone()).collect::<Vec<_>>()).unwrap_or_default();
         let mut e = Editor::new(Buffer::from_str("x\n"), None);
         // 小文字でも大文字のコマンドを出す。頭が合うものが先、途中に含むものが後
         keys(&mut e, ":gbl");
@@ -354,7 +354,7 @@ mod tests {
         assert!(names(&e).contains(&"Gbranches".to_string()));
         // 打ち切った名前と同じ 1 件は出さないが、Ctrl+Space なら出す
         keys(&mut e, "<C-u>gblame");
-        assert!(e.cmd_complete.is_none());
+        assert!(e.panels.cmd_complete.is_none());
         keys(&mut e, "<C-Space>");
         assert_eq!(names(&e), vec!["Gblame"]);
         // 小文字のまま実行できる
@@ -365,7 +365,7 @@ mod tests {
         // Insert の Ctrl+Space は単語の候補
         let mut e = Editor::new(Buffer::from_str("alpha\nal"), None);
         keys(&mut e, "GA<C-Space>");
-        assert!(e.completion.is_some());
+        assert!(e.panels.completion.is_some());
     }
 
     /// ↑↓・Ctrl-j/k でも選べ、マウスで押した候補も入る
@@ -382,7 +382,7 @@ mod tests {
         e.key(Key::Up);
         assert_eq!(e.cmdline.text, first);
         // 押す（描いた位置の代わりに入れる）
-        let c = e.cmd_complete.as_ref().unwrap();
+        let c = e.panels.cmd_complete.as_ref().unwrap();
         let last = c.items.len() - 1;
         let want = c.items[last].0.clone();
         c.rows.set(vec![(30, 1, 40, last)]);

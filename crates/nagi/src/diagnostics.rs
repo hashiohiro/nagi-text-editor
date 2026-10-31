@@ -295,11 +295,11 @@ impl Editor {
             Ok(job) => {
                 self.diags.clear();
                 self.open_result_panel(title);
-                if let (Some(j), Some(g)) = (&fix, &mut self.grep) {
+                if let (Some(j), Some(g)) = (&fix, &mut self.panels.grep) {
                     let text = format!("JAVA_HOME が使えないので、このコマンドでは {} を使います", j.display());
                     g.hits.push(nagi_workers::grep::Hit { path: String::new(), line: 0, range: (0, 0), text });
                 }
-                if let Some(g) = &mut self.grep {
+                if let Some(g) = &mut self.panels.grep {
                     g.root = root.to_path_buf();
                 }
                 self.make = Some(MakeState { job, cmd: cmd.to_string(), root: root.to_path_buf(), output, status: None, pending: Pending::default() });
@@ -456,7 +456,7 @@ impl Editor {
         // 検索の結果は脇に残して、ログのタブに出す
         self.stash_grep_unless(true);
         self.open_grep_raw("");
-        if let Some(g) = &mut self.grep {
+        if let Some(g) = &mut self.panels.grep {
             g.title = Some(title.to_string());
             g.running = true;
             g.hits.clear();
@@ -512,7 +512,7 @@ mod tests {
         }
         assert!(e.make.is_none(), "終わらない");
         assert_eq!(e.diags.len(), 2);
-        assert_eq!(e.grep.as_ref().unwrap().hits.len(), 2);
+        assert_eq!(e.panels.grep.as_ref().unwrap().hits.len(), 2);
         assert!(e.svc.notify.text.contains("エラー 1 件、警告 1 件"), "{}", e.svc.notify.text);
         // ]e: 次の診断（2 行目の警告）、もう一度で 3 行目のエラー
         e.next_error(true);

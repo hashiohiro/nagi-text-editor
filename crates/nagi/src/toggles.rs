@@ -34,9 +34,9 @@ impl Editor {
     pub fn bottom_exists(&self) -> bool {
         use crate::result_grid::BottomKind::*;
         match self.bottom_kind {
-            Grep | Output => self.grep.is_some(),
-            Result => !self.db_results.is_empty(),
-            Git => self.log.as_ref().is_some_and(|l| l.docked),
+            Grep | Output => self.panels.grep.is_some(),
+            Result => !self.panels.db_results.is_empty(),
+            Git => self.panels.log.as_ref().is_some_and(|l| l.docked),
             Problems | Terminal | Debug => true,
         }
     }
@@ -134,7 +134,7 @@ mod tests {
         assert_eq!((b, r, c), (Button::HideLeft, a.y, a.x + e.left_width() - 2));
         e.press_button(b);
         assert_eq!((e.left_visible(), e.windows_x(), e.state()), (None, (a.x, a.w), State::Normal));
-        assert!(e.tree.is_some());
+        assert!(e.panels.tree.is_some());
         // Alt-1 で出して移り、もう一度で隠す
         e.key(nagi_vim::Key::Alt('1'));
         assert_eq!((e.left_visible(), e.state()), (Some(LeftTab::Project), State::List));
@@ -148,7 +148,7 @@ mod tests {
         // 右の欄の中で : を押しても、コマンドの候補が出る
         e.key(nagi_vim::Key::Char(':'));
         assert_eq!(e.state(), State::Command);
-        assert!(e.cmd_complete.as_ref().is_some_and(|c| c.items.len() > 20), "パネルの中の : でも候補を出す");
+        assert!(e.panels.cmd_complete.as_ref().is_some_and(|c| c.items.len() > 20), "パネルの中の : でも候補を出す");
         let (_, r, c) = e.toggle_buttons().into_iter().find(|b| b.0 == Button::HideRight).unwrap();
         e.key(nagi_vim::Key::Esc);
         e.press_button(Button::HideRight);

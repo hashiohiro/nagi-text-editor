@@ -41,8 +41,8 @@ impl Editor {
         }
         let typing = self.has_prompt()
             || self.in_text_field()
-            || self.log.as_ref().is_some_and(|l| l.filter.is_some() && self.state() == State::Log)
-            || self.db_table.as_ref().is_some_and(|t| (t.editing.is_some() || t.filter_edit.is_some()) && self.state() == State::DbTable);
+            || self.panels.log.as_ref().is_some_and(|l| l.filter.is_some() && self.state() == State::Log)
+            || self.panels.db_table.as_ref().is_some_and(|t| (t.editing.is_some() || t.filter_edit.is_some()) && self.state() == State::DbTable);
         !typing
     }
 
@@ -51,7 +51,7 @@ impl Editor {
     pub fn idle(&self) -> bool {
         match self.state() {
             State::Normal => true,
-            State::Insert => self.plain() && self.completion.is_none(),
+            State::Insert => self.plain() && self.panels.completion.is_none(),
             _ => false,
         }
     }
@@ -120,9 +120,9 @@ impl Editor {
     /// 本文のキー（Vim を使わないとき）。扱ったら true（扱わなければ Insert の処理へ）
     pub(crate) fn plain_key(&mut self, key: Key) -> bool {
         // 入力補完の一覧を出している間の ↑↓・Enter・Tab・Esc は補完へ
-        if self.completion.is_some() && matches!(key, Key::Up | Key::Down | Key::Enter | Key::Tab | Key::Esc | Key::PageUp | Key::PageDown) {
+        if self.panels.completion.is_some() && matches!(key, Key::Up | Key::Down | Key::Enter | Key::Tab | Key::Esc | Key::PageUp | Key::PageDown) {
             if key == Key::Esc {
-                self.completion = None;
+                self.panels.completion = None;
                 return true;
             }
             return false;
@@ -683,7 +683,7 @@ mod tests {
         e.open_tree();
         for _ in 0..200 {
             e.poll_background();
-            if e.tree.as_ref().is_some_and(|t| t.rows.len() >= 2) {
+            if e.panels.tree.as_ref().is_some_and(|t| t.rows.len() >= 2) {
                 break;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
@@ -691,14 +691,14 @@ mod tests {
         assert_eq!(e.state(), State::List);
         // q（Vim なら木を閉じる）は受けない
         e.key(Key::Char('q'));
-        assert!(e.tree.is_some(), "文字のキーは受けない");
+        assert!(e.panels.tree.is_some(), "文字のキーは受けない");
         // 右クリックのメニューの「木を閉じる」は同じ操作
         let r = e.tree_rect().unwrap();
         let s = crate::layout::Screen { rows: 40, cols: 120 };
         assert!(crate::layout::context(&mut e, s, r.y + 1, r.x + 2));
         let i = e.menu.as_ref().unwrap().items.iter().position(|it| it.label == "木を閉じる").unwrap();
         e.menu_run(i);
-        assert!(e.tree.is_none());
+        assert!(e.panels.tree.is_none());
         // 確認の窓はクリックでも答えられる（はい）
         let hit = std::rc::Rc::new(std::cell::Cell::new(false));
         let h2 = hit.clone();
