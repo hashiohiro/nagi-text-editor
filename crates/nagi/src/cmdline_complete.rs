@@ -171,8 +171,8 @@ impl Editor {
         let hit = c.rows.at(row, col);
         let mut sel = c.sel.unwrap_or(0);
         // 候補は 1 回で入れる（メニューと同じ）
-        match crate::list::pick(&mut sel, hit, clicks, 1) {
-            Some(crate::list::Pick::Accept(i)) => {
+        match nagi_ui::list::pick(&mut sel, hit, clicks, 1) {
+            Some(nagi_ui::list::Pick::Accept(i)) => {
                 self.cmd_complete_pick(i);
                 true
             }

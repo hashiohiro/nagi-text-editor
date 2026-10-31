@@ -581,7 +581,7 @@ impl Editor {
             return crate::editor::Effect::None;
         };
         let (n, sel) = if d.on_vars { (d.vars.len(), d.sel_var) } else { (d.frames.len(), d.sel_frame) };
-        if let Some(to) = crate::list::step(key, sel, n, 10) {
+        if let Some(to) = nagi_ui::list::step(key, sel, n, 10) {
             if d.on_vars {
                 d.sel_var = to;
             } else {

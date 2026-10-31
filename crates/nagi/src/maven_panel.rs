@@ -4,7 +4,6 @@
 //! ゴールの上で Enter（ダブルクリック）を押すと、そのモジュールの pom.xml を指定して動かし（根に mvnw があればそれ）、
 //! 出力とコンパイルエラーを下のパネルに出す（`:Make` と同じ。エラーの行から飛べる）。
 
-use std::collections::HashSet;
 use std::path::PathBuf;
 
 use nagi_vim::Key;
@@ -31,10 +30,24 @@ pub struct Row {
     pub kind: RowKind,
 }
 
+impl nagi_ui::TreeRow for Row {
+    type Key = String;
+    fn depth(&self) -> usize {
+        self.depth
+    }
+    fn folder(&self) -> Option<&String> {
+        match &self.kind {
+            RowKind::Folder(k) => Some(k),
+            _ => None,
+        }
+    }
+}
+
 pub struct MavenPanel {
     pub root: PathBuf,
     pub pom: Option<Pom>,
-    pub expanded: HashSet<String>,
+    /// 開いているフォルダ（RowKind::Folder の鍵。初めは閉じている）
+    pub folds: nagi_ui::Folds<String>,
     pub rows: Vec<Row>,
     pub selected: usize,
     pub scroll: usize,
@@ -44,26 +57,26 @@ impl MavenPanel {
     fn rebuild(&mut self) {
         let mut rows = Vec::new();
         if let Some(p) = &self.pom {
-            push_project(p, 0, &self.expanded, &mut rows);
+            push_project(p, 0, &self.folds, &mut rows);
         }
         self.rows = rows;
         self.selected = self.selected.min(self.rows.len().saturating_sub(1));
     }
 
     pub fn is_open(&self, key: &str) -> bool {
-        self.expanded.contains(key)
+        self.folds.is_open(&key.to_string())
     }
 }
 
-fn push_project(p: &Pom, depth: usize, open: &HashSet<String>, rows: &mut Vec<Row>) {
+fn push_project(p: &Pom, depth: usize, open: &nagi_ui::Folds<String>, rows: &mut Vec<Row>) {
     let key = format!("p:{}", p.dir.display());
     rows.push(Row { depth, label: p.label().to_string(), note: p.packaging.clone(), kind: RowKind::Folder(key.clone()) });
-    if !open.contains(&key) {
+    if !open.is_open(&key) {
         return;
     }
     let lk = format!("l:{}", p.dir.display());
     rows.push(Row { depth: depth + 1, label: "ライフサイクル".into(), note: String::new(), kind: RowKind::Folder(lk.clone()) });
-    if open.contains(&lk) {
+    if open.is_open(&lk) {
         for g in LIFECYCLE {
             rows.push(Row { depth: depth + 2, label: g.into(), note: String::new(), kind: RowKind::Goal(p.dir.clone(), g) });
         }
@@ -71,7 +84,7 @@ fn push_project(p: &Pom, depth: usize, open: &HashSet<String>, rows: &mut Vec<Ro
     if !p.deps.is_empty() {
         let dk = format!("d:{}", p.dir.display());
         rows.push(Row { depth: depth + 1, label: "依存".into(), note: format!("{}", p.deps.len()), kind: RowKind::Folder(dk.clone()) });
-        if open.contains(&dk) {
+        if open.is_open(&dk) {
             for d in &p.deps {
                 let v = if d.version.is_empty() { String::new() } else { format!(":{}", d.version) };
                 rows.push(Row { depth: depth + 2, label: format!("{}:{}{v}", d.group, d.artifact), note: d.scope.clone(), kind: RowKind::Leaf });
@@ -92,12 +105,12 @@ impl Editor {
                 self.notify.warn("pom.xml が見つかりません（Maven のプロジェクトではありません）");
                 return;
             };
-            let mut m = MavenPanel { root, pom: None, expanded: HashSet::new(), rows: Vec::new(), selected: 0, scroll: 0 };
+            let mut m = MavenPanel { root, pom: None, folds: nagi_ui::Folds::closed(), rows: Vec::new(), selected: 0, scroll: 0 };
             m.pom = nagi_workers::maven::load(&m.root);
             if let Some(p) = &m.pom {
                 // 根のプロジェクトとそのライフサイクルは開いておく
-                m.expanded.insert(format!("p:{}", p.dir.display()));
-                m.expanded.insert(format!("l:{}", p.dir.display()));
+                m.folds.set_open(&format!("p:{}", p.dir.display()), true);
+                m.folds.set_open(&format!("l:{}", p.dir.display()), true);
             }
             m.rebuild();
             self.maven = Some(m);
@@ -138,9 +151,7 @@ impl Editor {
         let Some(row) = m.rows.get(m.selected).cloned() else { return };
         match row.kind {
             RowKind::Folder(k) => {
-                if !m.expanded.remove(&k) {
-                    m.expanded.insert(k);
-                }
+                m.folds.toggle(&k);
                 m.rebuild();
             }
             RowKind::Goal(dir, goal) => {
@@ -162,31 +173,21 @@ impl Editor {
             self.set_state(State::Normal);
             return Effect::None;
         };
-        let moved = crate::list::step(key, m.selected, m.rows.len(), half * 2);
+        let moved = nagi_ui::list::step(key, m.selected, m.rows.len(), half * 2);
         match key {
             _ if moved.is_some() => m.selected = moved.unwrap_or(m.selected),
             Key::Char('g') => m.selected = 0,
             Key::Enter | Key::Char('o') => self.maven_activate(),
-            // l で開く・h で閉じる（閉じていれば親へ）
-            Key::Char('l') | Key::Right => {
-                if let Some(RowKind::Folder(k)) = m.rows.get(m.selected).map(|r| r.kind.clone()) {
-                    m.expanded.insert(k);
-                    m.rebuild();
-                }
-            }
-            Key::Char('h') | Key::Left => {
-                let cur = m.rows.get(m.selected).cloned();
-                match cur {
-                    Some(Row { kind: RowKind::Folder(k), .. }) if m.expanded.contains(&k) => {
-                        m.expanded.remove(&k);
+            // l で開く・h で閉じる（閉じていれば親へ。木の共通の動き。nagi-ui）
+            Key::Char('l') | Key::Right | Key::Char('h') | Key::Left => {
+                let step = if matches!(key, Key::Char('l') | Key::Right) { nagi_ui::tree::right(&m.rows, m.selected, &m.folds) } else { nagi_ui::tree::left(&m.rows, m.selected, &m.folds) };
+                match step {
+                    nagi_ui::Step::Fold(k, open) => {
+                        m.folds.set_open(&k, open);
                         m.rebuild();
                     }
-                    Some(r) => {
-                        if let Some(p) = m.rows[..m.selected].iter().rposition(|x| x.depth < r.depth) {
-                            m.selected = p;
-                        }
-                    }
-                    None => {}
+                    nagi_ui::Step::Select(i) => m.selected = i,
+                    nagi_ui::Step::None => {}
                 }
             }
             Key::Char('r') => self.reload_maven(),
@@ -207,12 +208,12 @@ impl Editor {
     pub(crate) fn maven_click(&mut self, row: usize, clicks: u32) {
         let Some(m) = &mut self.maven else { return };
         let len = m.rows.len();
-        let Some(pick) = crate::list::pick_row(&mut m.selected, m.scroll, row, 1, len, clicks) else { return };
+        let Some(pick) = nagi_ui::list::pick_row(&mut m.selected, m.scroll, row, 1, len, clicks) else { return };
         let i = m.selected;
         self.focus_right(RightTab::Maven);
         let folder = matches!(self.maven.as_ref().and_then(|m| m.rows.get(i)).map(|r| &r.kind), Some(RowKind::Folder(_)));
         // フォルダは 1 回、ゴールはダブルクリックで
-        if folder || matches!(pick, crate::list::Pick::Accept(_)) {
+        if folder || matches!(pick, nagi_ui::list::Pick::Accept(_)) {
             self.maven_activate();
         }
     }

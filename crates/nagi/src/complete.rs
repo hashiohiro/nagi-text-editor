@@ -129,21 +129,21 @@ impl Editor {
     pub(crate) fn completion_click(&mut self, i: usize, clicks: u32) {
         let Some(c) = &mut self.completion else { return };
         let mut sel = c.sel.unwrap_or(0);
-        let pick = crate::list::pick(&mut sel, (i < c.items.len()).then_some(i), clicks, 2);
+        let pick = nagi_ui::list::pick(&mut sel, (i < c.items.len()).then_some(i), clicks, 2);
         let smart = c.smart.is_some();
         if pick.is_some() {
             c.sel = Some(sel);
         }
         match pick {
-            Some(crate::list::Pick::Accept(_)) if smart => {
+            Some(nagi_ui::list::Pick::Accept(_)) if smart => {
                 self.smart_key(Key::Enter);
             }
-            Some(crate::list::Pick::Accept(_)) => {
+            Some(nagi_ui::list::Pick::Accept(_)) => {
                 self.apply_completion();
                 self.completion_key(Key::Ctrl('y'));
             }
             // Ctrl-n の一覧は、選んだ候補を本文に入れて見せる（Ctrl-n で動かしたときと同じ）
-            Some(crate::list::Pick::Select(_)) if !smart => self.apply_completion(),
+            Some(nagi_ui::list::Pick::Select(_)) if !smart => self.apply_completion(),
             _ => {}
         }
     }

@@ -1268,6 +1268,9 @@ dependencies = [
 [[package]]
 name = "nagi-ui"
 version = "0.7.1"
+dependencies = [
+ "nagi-vim",
+]
 
 [[package]]
 name = "nagi-vim"

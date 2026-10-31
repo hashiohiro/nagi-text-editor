@@ -295,7 +295,7 @@ impl Editor {
         match d.focus {
             Focus::List => {
                 let n = d.configs.len();
-                let moved = crate::list::step(key, d.selected, n, 10);
+                let moved = nagi_ui::list::step(key, d.selected, n, 10);
                 match key {
                     _ if moved.is_some() => d.select(moved.unwrap_or(d.selected)),
                     Key::Char('g') => d.select(0),
@@ -415,11 +415,11 @@ impl Editor {
         }
         let item = d.list_rows.at(row, col);
         let mut sel = d.selected;
-        if let Some(pick) = crate::list::pick(&mut sel, item, clicks, 2) {
+        if let Some(pick) = nagi_ui::list::pick(&mut sel, item, clicks, 2) {
             d.select(sel);
             d.focus = Focus::List;
             // ダブルクリックは Enter と同じ（その構成を直す）
-            if matches!(pick, crate::list::Pick::Accept(_)) {
+            if matches!(pick, nagi_ui::list::Pick::Accept(_)) {
                 self.run_dialog_key(Key::Enter);
             }
             return;

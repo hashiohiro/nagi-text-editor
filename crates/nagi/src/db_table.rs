@@ -576,6 +576,9 @@ impl Editor {
 
 /// この部品の入口（component.rs）
 /// Vim を使わないときの状態行の説明
+/// 表の上の見出しの行数（名前・絞り込みの 2 行と、表の見出しの 2 行。描き方・見える範囲で使う）
+pub const HEAD: usize = 4;
+
 const PLAIN_HELP: &str = "矢印 移動  F2・Enter 値を直す  Ctrl+C・V コピー・貼り付け  Ctrl+Z 戻す  右クリック 操作  Ctrl+Enter 送る ";
 
 pub struct DbTableComponent;
@@ -670,14 +673,14 @@ impl crate::layout::View for DbTableView {
         let len = te.len();
         // 値を打っている間: 別のセルを押したら、打った値を決めてからそのセルへ移って直し始める。同じセルなら何もしない
         if te.editing.is_some() {
-            let hit = crate::list::row_at(te.scroll, at.row, 4, len).zip(crate::result_grid::grid_col_at(te.hscroll, &te.widths, at.col));
+            let hit = nagi_ui::list::row_at(te.scroll, at.row, 4, len).zip(crate::result_grid::grid_col_at(te.hscroll, &te.widths, at.col));
             if !hit.is_some_and(|h| h != (te.row, te.col)) {
                 return crate::layout::Click::Done;
             }
             ed.db_table_commit_edit();
         }
         let Some(te) = &mut ed.db_table else { return crate::layout::Click::Done };
-        let pick = crate::list::pick_row(&mut te.row, te.scroll, at.row, 4, len, clicks);
+        let pick = nagi_ui::list::pick_row(&mut te.row, te.scroll, at.row, 4, len, clicks);
         let cell = crate::result_grid::grid_col_at(te.hscroll, &te.widths, at.col);
         if pick.is_some() {
             if let Some(c) = cell {
@@ -694,9 +697,8 @@ impl crate::layout::View for DbTableView {
     fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At, dy: isize, dx: isize) -> bool {
         let _ = at;
         if let Some(te) = &mut ed.db_table {
-            // 上の 4 行は見出し（view.rs の build と同じ高さ）
             let len = te.len();
-            crate::list::wheel(&mut te.row, &mut te.scroll, len, r.h.saturating_sub(4), dy);
+            nagi_ui::list::wheel(&mut te.row, &mut te.scroll, len, r.h.saturating_sub(HEAD), dy);
             crate::result_grid::grid_hwheel(&mut te.col, &mut te.hscroll, &te.widths, r.w, dx);
         }
         true

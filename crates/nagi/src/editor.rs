@@ -2089,7 +2089,7 @@ impl Editor {
             })
             .max()
             .unwrap_or(0);
-        crate::list::hwheel(&mut self.left, widest + 1, w, cols);
+        nagi_ui::list::hwheel(&mut self.left, widest + 1, w, cols);
         self.left_at = (self.cursor.line, self.cursor.byte);
     }
 

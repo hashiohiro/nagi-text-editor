@@ -528,7 +528,7 @@ impl Editor {
             }
             return crate::editor::Effect::None;
         }
-        let moved = crate::list::step(key, g.selected, g.hits.len(), half * 2);
+        let moved = nagi_ui::list::step(key, g.selected, g.hits.len(), half * 2);
         match key {
             Key::Ctrl('w') => g.pending_w = true,
             // 行の範囲を選ぶ（V）、y・Ctrl+C でコピー（範囲が無ければ今の行）
@@ -703,12 +703,12 @@ impl Editor {
             return;
         }
         let mut sel = g.selected;
-        let pick = crate::list::pick_row(&mut sel, g.scroll, row, 1, g.hits.len(), clicks);
+        let pick = nagi_ui::list::pick_row(&mut sel, g.scroll, row, 1, g.hits.len(), clicks);
         if pick.is_some() {
             g.select(sel);
         }
         g.anchor = None;
-        if matches!(pick, Some(crate::list::Pick::Accept(_))) {
+        if matches!(pick, Some(nagi_ui::list::Pick::Accept(_))) {
             self.set_state(State::Normal);
             self.open_hit(false);
         } else {

@@ -82,7 +82,7 @@ impl Editor {
         }
         let max = pv.lines.len().saturating_sub(h);
         pv.scroll = pv.scroll.min(max);
-        crate::list::fit(pv.selected, &mut pv.scroll, h);
+        nagi_ui::list::fit(pv.selected, &mut pv.scroll, h);
     }
 
     pub(crate) fn md_preview_key(&mut self, key: Key) -> Effect {
@@ -92,7 +92,7 @@ impl Editor {
             return Effect::None;
         };
         pv.follow = false;
-        let moved = crate::list::step(key, pv.selected, pv.lines.len(), h);
+        let moved = nagi_ui::list::step(key, pv.selected, pv.lines.len(), h);
         match key {
             _ if moved.is_some() => pv.selected = moved.unwrap_or(pv.selected),
             Key::Char('g') => pv.selected = 0,
@@ -143,10 +143,10 @@ impl Editor {
     pub(crate) fn md_preview_click(&mut self, row: usize, clicks: u32) {
         let Some(pv) = &mut self.md_preview else { return };
         let len = pv.lines.len();
-        let Some(pick) = crate::list::pick_row(&mut pv.selected, pv.scroll, row, 1, len, clicks) else { return };
+        let Some(pick) = nagi_ui::list::pick_row(&mut pv.selected, pv.scroll, row, 1, len, clicks) else { return };
         pv.follow = false;
         self.focus_right(RightTab::Preview);
-        if matches!(pick, crate::list::Pick::Accept(_)) {
+        if matches!(pick, nagi_ui::list::Pick::Accept(_)) {
             self.md_preview_key(Key::Enter);
         }
     }

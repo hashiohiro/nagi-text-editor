@@ -368,7 +368,7 @@ impl Editor {
         let normal = !l.field.is_insert() && l.field.ed.pending_keys.is_empty() && l.field.visual().is_none();
         let last = l.hits.len().saturating_sub(1);
         let pending_d = std::mem::take(&mut l.pending_d);
-        let moved = crate::list::step_typing(key, l.selected, last + 1);
+        let moved = nagi_ui::list::step_typing(key, l.selected, last + 1);
         match key {
             Key::Enter | Key::Ctrl('m') => {
                 if let Some(e) = l.selected_entry() {
@@ -388,9 +388,9 @@ impl Editor {
             Key::Ctrl('g') => return self.launcher_action('g'),
             Key::Ctrl('r') => return self.launcher_action('r'),
             Key::Ctrl('e') => return self.launcher_action('n'),
-            Key::Char('j' | 'k') if normal => l.selected = crate::list::step(key, l.selected, last + 1, 10).unwrap_or(l.selected),
+            Key::Char('j' | 'k') if normal => l.selected = nagi_ui::list::step(key, l.selected, last + 1, 10).unwrap_or(l.selected),
             Key::Char(c @ ('g' | 'o' | 'w' | 'r' | 'n')) if normal => return self.launcher_action(c),
-            Key::Char('G') if normal => l.selected = crate::list::step(key, l.selected, last + 1, 10).unwrap_or(l.selected),
+            Key::Char('G') if normal => l.selected = nagi_ui::list::step(key, l.selected, last + 1, 10).unwrap_or(l.selected),
 
             Key::Char('p') if normal => self.launcher_pin(),
             Key::Char('d') if normal && pending_d => self.launcher_hide(),
@@ -487,9 +487,9 @@ impl Editor {
         let Some(l) = &mut self.launcher else { return };
         let n = l.hits.len();
         let hit = l.row_map.borrow().iter().find(|(r, _)| *r == row).map(|x| x.1).filter(|&i| i < n);
-        match crate::list::pick(&mut l.selected, hit, clicks, 2) {
-            Some(crate::list::Pick::Accept(_)) => self.launcher_key(Key::Enter),
-            Some(crate::list::Pick::Select(_)) => {
+        match nagi_ui::list::pick(&mut l.selected, hit, clicks, 2) {
+            Some(nagi_ui::list::Pick::Accept(_)) => self.launcher_key(Key::Enter),
+            Some(nagi_ui::list::Pick::Select(_)) => {
                 self.want_preview();
             }
             None => {}
@@ -551,7 +551,7 @@ impl crate::layout::View for LauncherView {
         let Some(l) = &mut ed.launcher else { return false };
         let n = l.hits.len();
         let hit = l.row_map.borrow().iter().find(|(r, _)| *r == row).map(|&(_, h)| h).filter(|&i| i < n);
-        if crate::list::pick(&mut l.selected, hit, 1, 2).is_none() {
+        if nagi_ui::list::pick(&mut l.selected, hit, 1, 2).is_none() {
             return false;
         }
         let pinned = l.selected_entry().is_some_and(|e| e.pinned);

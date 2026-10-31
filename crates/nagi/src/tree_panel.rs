@@ -22,12 +22,22 @@ pub struct Row {
     pub dir: bool,
 }
 
+impl nagi_ui::TreeRow for Row {
+    type Key = PathBuf;
+    fn depth(&self) -> usize {
+        self.depth
+    }
+    fn folder(&self) -> Option<&PathBuf> {
+        self.dir.then_some(&self.path)
+    }
+}
+
 pub struct TreePanel {
     pub root: PathBuf,
     /// 読み終えたフォルダの中身
     children: HashMap<PathBuf, Vec<(String, bool)>>,
     /// 展開しているフォルダ
-    expanded: std::collections::HashSet<PathBuf>,
+    folds: nagi_ui::Folds<PathBuf>,
     /// 画面に出す行（展開の状態から作り直す）
     pub rows: Vec<Row>,
     pub selected: usize,
@@ -45,6 +55,9 @@ pub struct TreePanel {
     pending_g: bool,
     pending_w: bool,
 }
+
+/// 木の上の見出しの行数（描き方・押した行・見える範囲で使う）
+pub const HEAD: usize = 1;
 
 /// 左の欄（プロジェクト・コミット）の幅（36 列。狭い画面では 1/3 まで）
 pub fn tree_width(cols: usize) -> usize {
@@ -87,7 +100,7 @@ impl TreePanel {
         let Some(list) = self.children.get(dir) else { return };
         for (name, is_dir) in list {
             let path = dir.join(name);
-            let open = *is_dir && self.expanded.contains(&path);
+            let open = *is_dir && self.folds.is_open(&path);
             out.push(Row { path: path.clone(), name: name.clone(), depth, dir: *is_dir });
             if open {
                 self.push_children(&path, depth + 1, out);
@@ -96,7 +109,7 @@ impl TreePanel {
     }
 
     pub fn is_expanded(&self, p: &Path) -> bool {
-        self.expanded.contains(p)
+        self.folds.is_open(&p.to_path_buf())
     }
 
     pub fn loading(&self) -> bool {
@@ -111,7 +124,7 @@ impl TreePanel {
     }
 
     fn expand(&mut self, dir: &Path, waker: &nagi_workers::Waker) {
-        self.expanded.insert(dir.to_path_buf());
+        self.folds.set_open(&dir.to_path_buf(), true);
         self.load(dir, waker);
         self.rebuild();
     }
@@ -139,7 +152,7 @@ impl TreePanel {
                 }
                 break;
             }
-            self.expanded.insert(next.clone());
+            self.folds.set_open(&next, true);
             dir = next;
         }
         self.reveal = None;
@@ -246,7 +259,7 @@ impl Editor {
             let mut t = TreePanel {
                 root: root.clone(),
                 children: HashMap::new(),
-                expanded: Default::default(),
+                folds: nagi_ui::Folds::closed(),
                 rows: Vec::new(),
                 left: 0,
                 selected: 0,
@@ -362,7 +375,7 @@ impl Editor {
             }
             return Effect::None;
         }
-        let moved = crate::list::step(key, t.selected, t.rows.len(), half * 2);
+        let moved = nagi_ui::list::step(key, t.selected, t.rows.len(), half * 2);
         match key {
             _ if moved.is_some() => t.selected = moved.unwrap_or(t.selected),
             Key::Ctrl('w') => t.pending_w = true,
@@ -372,10 +385,10 @@ impl Editor {
                 let stay = key == Key::Char('o');
                 let Some(row) = t.rows.get(t.selected).cloned() else { return Effect::None };
                 if row.dir {
-                    if t.expanded.contains(&row.path) {
+                    if t.folds.is_open(&row.path) {
                         // l・→ は開いているフォルダでは何もしない（Enter と o は畳む）
                         if !matches!(key, Key::Char('l') | Key::Right) {
-                            t.expanded.remove(&row.path);
+                            t.folds.set_open(&row.path, false);
                             t.rebuild();
                         }
                     } else {
@@ -387,25 +400,20 @@ impl Editor {
                     self.set_state(if stay { State::List } else { State::Normal });
                 }
             }
-            Key::Char('h') | Key::Left => {
-                let Some(row) = t.rows.get(t.selected).cloned() else { return Effect::None };
-                if row.dir && t.expanded.contains(&row.path) {
-                    t.expanded.remove(&row.path);
+            // 開いたフォルダなら畳む、それ以外は親のフォルダへ（木の共通の動き。nagi-ui）
+            Key::Char('h') | Key::Left => match nagi_ui::tree::left(&t.rows, t.selected, &t.folds) {
+                nagi_ui::Step::Fold(k, open) => {
+                    t.folds.set_open(&k, open);
                     t.rebuild();
-                } else if let Some(parent) = row.path.parent() {
-                    // 親のフォルダへ移って畳む
-                    if let Some(i) = t.rows.iter().position(|r| r.path == parent) {
-                        t.selected = i;
-                        t.expanded.remove(parent);
-                        t.rebuild();
-                    }
                 }
-            }
+                nagi_ui::Step::Select(i) => t.selected = i,
+                nagi_ui::Step::None => {}
+            },
             Key::Char('R') => {
                 t.children.clear();
                 let root = t.root.clone();
                 t.load(&root, &waker);
-                let open: Vec<PathBuf> = t.expanded.iter().cloned().collect();
+                let open: Vec<PathBuf> = t.folds.flipped().cloned().collect();
                 for d in open {
                     t.load(&d, &waker);
                 }
@@ -427,17 +435,17 @@ impl Editor {
         let waker = self.waker_or_noop();
         let Some(t) = &mut self.tree else { return };
         let len = t.rows.len();
-        let Some(pick) = crate::list::pick_row(&mut t.selected, t.scroll, row, 1, len, clicks) else { return };
+        let Some(pick) = nagi_ui::list::pick_row(&mut t.selected, t.scroll, row, HEAD, len, clicks) else { return };
         let r = t.rows[t.selected].clone();
         if r.dir {
             // フォルダは 1 回のクリックで開閉する
-            if t.expanded.contains(&r.path) {
-                t.expanded.remove(&r.path);
+            if t.folds.is_open(&r.path) {
+                t.folds.set_open(&r.path, false);
                 t.rebuild();
             } else {
                 t.expand(&r.path, &waker);
             }
-        } else if matches!(pick, crate::list::Pick::Accept(_)) {
+        } else if matches!(pick, nagi_ui::list::Pick::Accept(_)) {
             self.edit_file(r.path);
             self.set_state(State::Normal);
         }
@@ -489,13 +497,12 @@ impl crate::layout::View for TreeView {
     fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At, dy: isize, dx: isize) -> bool {
         let _ = at;
         if let Some(t) = &mut ed.tree {
-            // 1 行目は見出し（view.rs の build と同じ高さ）
-            let h = r.h.saturating_sub(1);
-            crate::list::wheel(&mut t.selected, &mut t.scroll, t.rows.len(), h, dy);
+            let h = r.h.saturating_sub(HEAD);
+            nagi_ui::list::wheel(&mut t.selected, &mut t.scroll, t.rows.len(), h, dy);
             if dx != 0 {
                 let ind = crate::tree_panel::indent_cols();
                 let widest = t.rows.iter().skip(t.scroll).take(h).map(|x| (x.depth + 1) * ind + crate::metrics::icon_cols(crate::metrics::Icon::Small) + nagi_core::display_col(&x.name, x.name.len(), false)).max().unwrap_or(0);
-                crate::list::hwheel(&mut t.left, widest + 1, r.w, dx);
+                nagi_ui::list::hwheel(&mut t.left, widest + 1, r.w, dx);
             }
         }
         true
@@ -508,7 +515,7 @@ impl crate::layout::View for TreeView {
         // 押した行を選ぶだけ（左クリックと違ってフォルダを開け閉めしない）
         let Some(t) = &mut ed.tree else { return false };
         let len = t.rows.len();
-        if crate::list::pick_row(&mut t.selected, t.scroll, at.row, 1, len, 1).is_none() {
+        if nagi_ui::list::pick_row(&mut t.selected, t.scroll, at.row, crate::tree_panel::HEAD, len, 1).is_none() {
             return false;
         }
         let dir = t.rows[t.selected].dir;
@@ -573,9 +580,9 @@ pub(crate) mod draw {
         // プロジェクトの名前は窓の題名に出す（タブの横には出さない）
         let _ = name;
         draw_left_tabs(p, r, crate::tree_panel::LeftTab::Project, focused, if t.loading() { "…" } else { "" });
-        for k in 0..r.h.saturating_sub(1) {
+        for k in 0..r.h.saturating_sub(crate::tree_panel::HEAD) {
             let Some(row) = t.rows.get(t.scroll + k) else { break };
-            let y = (r.y + 1 + k) as f32 * cell.h;
+            let y = (r.y + crate::tree_panel::HEAD + k) as f32 * cell.h;
             let selected = t.scroll + k == t.selected;
             let reversed = selected && focused;
             if reversed {
@@ -872,11 +879,13 @@ mod tests {
         // フォルダが先、.gitignore の target は出さない、.git も出さない。今のファイルまで展開して選ぶ
         assert_eq!(names, vec!["src", "  view", "    panes.rs", "  main.rs", ".gitignore", "README.md"]);
         assert_eq!(t.rows[t.selected].name, "panes.rs");
-        // h で親へ移って畳む、もう一度 h でさらに親へ
+        // h で親へ移る（畳まない。IntelliJ と同じ）、もう一度 h で畳む
         keys(&mut e, "h");
         let t = e.tree.as_ref().unwrap();
         assert_eq!(t.rows[t.selected].name, "view");
-        assert!(!t.is_expanded(&dir.join("src/view")));
+        assert!(t.is_expanded(&dir.join("src/view")));
+        keys(&mut e, "h");
+        assert!(!e.tree.as_ref().unwrap().is_expanded(&dir.join("src/view")));
         // j で main.rs、Enter で開いて編集画面へ
         keys(&mut e, "j<CR>");
         assert_eq!(e.state(), State::Normal);

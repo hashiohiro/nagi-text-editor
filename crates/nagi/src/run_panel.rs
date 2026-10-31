@@ -127,7 +127,7 @@ impl Editor {
     pub(crate) fn run_panel_key(&mut self, key: Key) -> crate::editor::Effect {
         let h = self.run_panel_rect().map_or(10, |r| r.h.saturating_sub(HEAD));
         let Some(p) = &mut self.run_panel else { return crate::editor::Effect::None };
-        if let Some(i) = crate::list::step(key, p.selected, p.len(), h) {
+        if let Some(i) = nagi_ui::list::step(key, p.selected, p.len(), h) {
             p.selected = i;
             self.run_panel_choose();
             return crate::editor::Effect::None;
@@ -159,11 +159,11 @@ impl Editor {
         }
         let Some(p) = &mut self.run_panel else { return };
         let len = p.len();
-        let pick = crate::list::pick_row(&mut p.selected, p.scroll, row, HEAD, len, clicks);
+        let pick = nagi_ui::list::pick_row(&mut p.selected, p.scroll, row, HEAD, len, clicks);
         if pick.is_some() {
             self.run_panel_choose();
         }
-        if let Some(crate::list::Pick::Accept(_)) = pick {
+        if let Some(nagi_ui::list::Pick::Accept(_)) = pick {
             self.run_panel_tool(Tool::Run);
         }
     }
@@ -210,7 +210,7 @@ impl crate::layout::View for RunPanelView {
         let _ = (at, dx);
         if let Some(p) = &mut ed.run_panel {
             let len = p.len();
-            crate::list::wheel(&mut p.selected, &mut p.scroll, len, r.h.saturating_sub(HEAD), dy);
+            nagi_ui::list::wheel(&mut p.selected, &mut p.scroll, len, r.h.saturating_sub(HEAD), dy);
         }
         true
     }

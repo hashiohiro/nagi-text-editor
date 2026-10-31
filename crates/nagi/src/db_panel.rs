@@ -261,7 +261,8 @@ impl Form {
 pub struct DbPanel {
     pub sources: Vec<DataSource>,
     pub conns: Vec<Conn>,
-    pub expanded: HashSet<String>,
+    /// 開いている接続先・スキーマ・グループ・テーブル（DbRow::key。初めは閉じている）
+    pub folds: nagi_ui::Folds<String>,
     pub rows: Vec<DbRow>,
     pub selected: usize,
     pub scroll: usize,
@@ -400,13 +401,26 @@ pub fn qualified(d: &nagi_lang::sql::Dialect, schema: &str, name: &str) -> Strin
     if schema.is_empty() { d.ident(name) } else { format!("{}.{}", d.ident(schema), d.ident(name)) }
 }
 
+/// ← の動き（nagi-ui の木）に渡す行: 字下げと、開いているフォルダならその鍵（字下げは前の行から決まるので、行だけでは作れない）
+struct TreeLine(usize, Option<String>);
+
+impl nagi_ui::TreeRow for TreeLine {
+    type Key = String;
+    fn depth(&self) -> usize {
+        self.0
+    }
+    fn folder(&self) -> Option<&String> {
+        self.1.as_ref()
+    }
+}
+
 impl DbPanel {
     pub fn kind(&self, i: usize) -> Option<Kind> {
         Kind::of(&self.sources.get(i)?.url)
     }
 
     pub fn is_open(&self, r: &DbRow) -> bool {
-        r.key().is_some_and(|k| self.expanded.contains(&k)) || (!self.filter_text.is_empty() && matches!(r, DbRow::Group(..)))
+        r.key().is_some_and(|k| self.folds.is_open(&k)) || (!self.filter_text.is_empty() && matches!(r, DbRow::Group(..)))
     }
 
     fn matches(&self, name: &str) -> bool {
@@ -417,7 +431,7 @@ impl DbPanel {
         let mut rows = Vec::new();
         for i in 0..self.conns.len() {
             rows.push(DbRow::Source(i));
-            if !self.expanded.contains(&format!("s{i}")) {
+            if !self.folds.is_open(&format!("s{i}")) {
                 continue;
             }
             let c = &self.conns[i];
@@ -618,7 +632,7 @@ impl Editor {
             let mut p = DbPanel {
                 sources,
                 conns,
-                expanded: HashSet::new(),
+                folds: nagi_ui::Folds::closed(),
                 rows: Vec::new(),
                 selected: 0,
                 scroll: 0,
@@ -720,7 +734,7 @@ impl Editor {
         let Some(p) = &mut self.db else { return };
         let s = p.sources[i].clone();
         p.conns[i] = Conn::default();
-        p.expanded.insert(format!("s{i}"));
+        p.folds.set_open(&format!("s{i}"), true);
         let msg = match Client::connect(&s.url, &s.user, &pass, waker) {
             Ok(cl) => {
                 p.conns[i].client = Some(cl);
@@ -770,10 +784,8 @@ impl Editor {
         let Some(k) = r.key() else { return };
         let opened = {
             let Some(p) = &mut self.db else { return };
-            let open = !p.expanded.remove(&k);
-            if open {
-                p.expanded.insert(k);
-            }
+            let open = !p.folds.is_open(&k);
+            p.folds.set_open(&k, open);
             open
         };
         if opened {
@@ -871,8 +883,8 @@ impl Editor {
                 if switch {
                     c.send(Req::SetSchema(default.clone()), Expect::SetSchema(default));
                 }
-                p.expanded.insert(format!("c{i}:{schema}"));
-                p.expanded.insert(format!("g{i}:{schema}:Tables"));
+                p.folds.set_open(&format!("c{i}:{schema}"), true);
+                p.folds.set_open(&format!("g{i}:{schema}:Tables"), true);
                 // 入れたパスワードは保存する（次から聞かない。:DbLogout で消せる）
                 let mut saved = String::new();
                 if let Some((pass, false)) = c.pass.take().filter(|(x, _)| !x.is_empty()) {
@@ -1013,8 +1025,8 @@ impl Editor {
                 if !c.objects.contains_key(&s) {
                     c.send(Req::Objects(s.clone()), Expect::Objects(s.clone()));
                 }
-                p.expanded.insert(format!("c{i}:{s}"));
-                p.expanded.insert(format!("g{i}:{s}:Tables"));
+                p.folds.set_open(&format!("c{i}:{s}"), true);
+                p.folds.set_open(&format!("g{i}:{s}:Tables"), true);
                 self.notify.info(format!("スキーマを {s} にしました"));
             }
             (Some(Expect::Ddl(t)), Reply::Ddl(text)) => self.db_open_text(&format!("{}.ddl.sql", safe_name(&t)), &text),
@@ -1111,7 +1123,7 @@ impl Editor {
         let Some(p) = &mut self.db else { return };
         p.setup_ask = None;
         p.download = Some((i, drivers::download_oracle(waker), "ダウンロードを始めます…".into()));
-        p.expanded.insert(format!("s{i}"));
+        p.folds.set_open(&format!("s{i}"), true);
         p.rebuild();
         self.notify.info("Oracle のドライバーをダウンロードしています…");
     }
@@ -1249,7 +1261,7 @@ impl Editor {
         // 裏のスレッドは、送り口が無くなると今の頼みごとを終えてから接続を閉じる（コミットしていない変更は取り消される）
         p.conns[i] = Conn::default();
         p.then.remove(&i);
-        p.expanded.remove(&format!("s{i}"));
+        p.folds.set_open(&format!("s{i}"), false);
         p.rebuild();
         p.selected = p.rows.iter().position(|r| *r == DbRow::Source(i)).unwrap_or(0);
         let name = p.sources[i].name.clone();
@@ -1478,7 +1490,7 @@ impl Editor {
         let Some(p) = &mut self.db else { return false };
         // 右クリックは押した行を選ぶだけ（決めない）
         let len = p.rows.len();
-        if prow < 2 || crate::list::pick_row(&mut p.selected, p.scroll, prow, 2, len, 1).is_none() {
+        if prow < 2 || nagi_ui::list::pick_row(&mut p.selected, p.scroll, prow, 2, len, 1).is_none() {
             return false;
         }
         let row = p.rows[p.selected].clone();
@@ -1737,7 +1749,7 @@ impl Editor {
             }
             return Effect::None;
         }
-        let moved = crate::list::step(key, p.selected, p.rows.len(), half * 2);
+        let moved = nagi_ui::list::step(key, p.selected, p.rows.len(), half * 2);
         match key {
             _ if moved.is_some() => p.selected = moved.unwrap_or(p.selected),
             Key::Char('g') => p.selected = 0,
@@ -1747,17 +1759,17 @@ impl Editor {
             }
             Key::Enter | Key::Char('l') | Key::Right => self.db_activate(),
             Key::Char('h') | Key::Left => {
-                let k = p.selected;
-                let r = p.rows.get(k).cloned();
-                match r {
-                    Some(r) if r.key().is_some() && p.is_open(&r) => self.db_toggle_row(&r),
-                    Some(_) => {
-                        let d = p.depth(k);
-                        if let Some(j) = (0..k).rev().find(|&j| p.depth(j) < d) {
-                            p.selected = j;
+                // 開いたフォルダなら畳む、それ以外は親へ（木の共通の動き。nagi-ui）
+                let rows: Vec<TreeLine> = (0..p.rows.len()).map(|k| TreeLine(p.depth(k), p.rows[k].key().filter(|_| p.is_open(&p.rows[k])))).collect();
+                // 開いているフォルダにだけ鍵を入れたので、鍵のあるものは開いているとみなす
+                match nagi_ui::tree::left(&rows, p.selected, &nagi_ui::Folds::open()) {
+                    nagi_ui::Step::Fold(..) => {
+                        if let Some(r) = p.rows.get(p.selected).cloned() {
+                            self.db_toggle_row(&r);
                         }
                     }
-                    None => {}
+                    nagi_ui::Step::Select(j) => p.selected = j,
+                    nagi_ui::Step::None => {}
                 }
             }
             Key::Char('o') => self.db_open_selected(),
@@ -1834,8 +1846,8 @@ impl Editor {
             return;
         }
         let len = p.rows.len();
-        let Some(pick) = crate::list::pick_row(&mut p.selected, p.scroll, row.max(2), 2, len, clicks) else { return };
-        let accept = matches!(pick, crate::list::Pick::Accept(_));
+        let Some(pick) = nagi_ui::list::pick_row(&mut p.selected, p.scroll, row.max(2), 2, len, clicks) else { return };
+        let accept = matches!(pick, nagi_ui::list::Pick::Accept(_));
         self.focus_right(RightTab::Database);
         match self.db_selected() {
             Some(DbRow::Object(_, _, _, Group::Tables | Group::Views, _)) if accept => self.db_open_selected(),
@@ -2116,7 +2128,7 @@ pub(crate) mod tests {
             let p = e.db.as_ref().unwrap();
             p.rows.iter().position(|r| *r == DbRow::Source(i)).map(|k| k - p.scroll + 2).unwrap()
         };
-        let open = |e: &Editor| e.db.as_ref().unwrap().expanded.contains(&format!("s{i}"));
+        let open = |e: &Editor| e.db.as_ref().unwrap().folds.is_open(&format!("s{i}"));
         let r = prow(&e);
         e.db_click(r, 1);
         assert!(e.db.as_ref().unwrap().conns[i].client.is_some(), "1 回でつなぎ始める");

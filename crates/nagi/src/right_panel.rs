@@ -18,6 +18,9 @@ pub enum RightTab {
 }
 
 /// タブ（左の欄と同じく、いつも全部をアイコンで並べる。名前は出しているタブの横に出す）
+/// 右の欄の上の行数（タブと見出し。見える範囲で使う）
+pub const HEAD: usize = 2;
+
 pub const RTABS: [(&str, RightTab); 3] = [("データベース", RightTab::Database), ("Maven", RightTab::Maven), ("プレビュー", RightTab::Preview)];
 
 impl Editor {
@@ -196,24 +199,23 @@ impl crate::layout::View for RightView {
 
     fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At, dy: isize, dx: isize) -> bool {
         let _ = (at, dx);
-        // 1 行目はタブ、2 行目は見出し（view.rs の build と同じ高さ）
-        let h = r.h.saturating_sub(2);
+        let h = r.h.saturating_sub(HEAD);
         match ed.right_visible() {
             Some(RightTab::Maven) => {
                 if let Some(m) = &mut ed.maven {
-                    crate::list::wheel(&mut m.selected, &mut m.scroll, m.rows.len(), h, dy);
+                    nagi_ui::list::wheel(&mut m.selected, &mut m.scroll, m.rows.len(), h, dy);
                 }
             }
             Some(RightTab::Database) => {
                 if let Some(d) = &mut ed.db {
-                    crate::list::wheel(&mut d.selected, &mut d.scroll, d.rows.len(), h, dy);
+                    nagi_ui::list::wheel(&mut d.selected, &mut d.scroll, d.rows.len(), h, dy);
                 }
             }
             Some(RightTab::Preview) => {
                 if let Some(pv) = &mut ed.md_preview {
                     // 手で送ったら、エディタのカーソルには付いていかない（欄で j / k を押したときと同じ）
                     pv.follow = false;
-                    crate::list::wheel(&mut pv.selected, &mut pv.scroll, pv.lines.len(), r.h.saturating_sub(1), dy);
+                    nagi_ui::list::wheel(&mut pv.selected, &mut pv.scroll, pv.lines.len(), r.h.saturating_sub(1), dy);
                 }
             }
             None => {}
@@ -236,7 +238,7 @@ impl crate::layout::View for RightView {
             Some(RightTab::Maven) => {
                 let Some(mv) = &mut ed.maven else { return false };
                 let len = mv.rows.len();
-                if crate::list::pick_row(&mut mv.selected, mv.scroll, row, 1, len, 1).is_none() {
+                if nagi_ui::list::pick_row(&mut mv.selected, mv.scroll, row, 1, len, 1).is_none() {
                     return false;
                 }
                 ed.focus_right(RightTab::Maven);
@@ -245,7 +247,7 @@ impl crate::layout::View for RightView {
             Some(RightTab::Preview) => {
                 let Some(pv) = &mut ed.md_preview else { return false };
                 let len = pv.lines.len();
-                if crate::list::pick_row(&mut pv.selected, pv.scroll, row, 1, len, 1).is_none() {
+                if nagi_ui::list::pick_row(&mut pv.selected, pv.scroll, row, 1, len, 1).is_none() {
                     return false;
                 }
                 ed.focus_right(RightTab::Preview);

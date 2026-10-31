@@ -462,7 +462,7 @@ impl Editor {
         }
         let top = b.y + draw::LIST_TOP;
         let hit = (row >= top).then(|| f.scroll + (row - top)).filter(|&i| i < f.hits.len() && row < top + draw::finder_height(rows));
-        if let Some(crate::list::Pick::Accept(_)) = crate::list::pick(&mut f.selected, hit, clicks, 2) {
+        if let Some(nagi_ui::list::Pick::Accept(_)) = nagi_ui::list::pick(&mut f.selected, hit, clicks, 2) {
             let eff = self.accept_finder(None);
             if !matches!(eff, Effect::None) {
                 self.click_effect = Some(eff);

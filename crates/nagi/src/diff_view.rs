@@ -174,7 +174,7 @@ impl Editor {
         };
         let last = d.rows.len().saturating_sub(1);
         let pending = std::mem::take(&mut self.diff_pending);
-        let moved = crate::list::step(key, d.cursor, last + 1, rows);
+        let moved = nagi_ui::list::step(key, d.cursor, last + 1, rows);
         match (pending, key) {
             (Some(']'), Key::Char('c')) => {
                 if let Some(&r) = d.hunk_rows.iter().find(|&&r| r > d.cursor) {
@@ -214,7 +214,7 @@ impl Editor {
         }
         let tw = self.diff_text_w();
         if let Some(d) = &mut self.diff {
-            crate::list::fit(d.cursor, &mut d.top, rows);
+            nagi_ui::list::fit(d.cursor, &mut d.top, rows);
             d.follow(tw);
         }
     }
@@ -344,7 +344,7 @@ impl crate::layout::View for DiffScreenView {
         if dx != 0 {
             let width = |s: &Option<(usize, String)>| s.as_ref().map_or(0, |x| nagi_core::display_col(&x.1, x.1.len(), false));
             let widest = d.rows.iter().skip(d.top).take(body).map(|x| width(&x.left).max(width(&x.right))).max().unwrap_or(0);
-            crate::list::hwheel(&mut d.left, widest + 1, tw, dx);
+            nagi_ui::list::hwheel(&mut d.left, widest + 1, tw, dx);
         }
         true
     }

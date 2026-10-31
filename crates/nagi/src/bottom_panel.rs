@@ -180,7 +180,7 @@ impl Editor {
             }
             return Effect::None;
         }
-        let moved = crate::list::step(key, p.selected, last + 1, h);
+        let moved = nagi_ui::list::step(key, p.selected, last + 1, h);
         match key {
             _ if moved.is_some() => p.selected = moved.unwrap_or(p.selected),
             Key::Char('g') if g => p.selected = 0,
@@ -210,7 +210,7 @@ impl Editor {
             _ => {}
         }
         let p = &mut self.problems;
-        crate::list::fit(p.selected, &mut p.scroll, h);
+        nagi_ui::list::fit(p.selected, &mut p.scroll, h);
         Effect::None
     }
 
@@ -220,7 +220,7 @@ impl Editor {
         self.set_state(State::List);
         let n = self.problem_rows().len();
         let p = &mut self.problems;
-        if crate::list::pick_row(&mut p.selected, p.scroll, row, 0, n, clicks) == Some(crate::list::Pick::Accept(p.selected)) {
+        if nagi_ui::list::pick_row(&mut p.selected, p.scroll, row, 0, n, clicks) == Some(nagi_ui::list::Pick::Accept(p.selected)) {
             self.problems_key(Key::Enter);
         }
     }
@@ -314,14 +314,14 @@ impl crate::layout::View for BottomView {
                     v.ed.hscroll(dx);
                 }
                 Some(g) => {
-                    crate::list::wheel(&mut g.selected, &mut g.scroll, g.hits.len(), h, dy);
+                    nagi_ui::list::wheel(&mut g.selected, &mut g.scroll, g.hits.len(), h, dy);
                     if dx != 0 {
                         let width = |h: &nagi_workers::grep::Hit| {
                             let head = if h.path.is_empty() { 0 } else { nagi_core::display_col(&h.path, h.path.len(), false) + format!(":{}: ", h.line).len() };
                             head + nagi_core::display_col(&h.text, h.text.len(), false)
                         };
                         let widest = g.hits.iter().skip(g.scroll).take(h).map(width).max().unwrap_or(0);
-                        crate::list::hwheel(&mut g.left, widest + 1, r.w, dx);
+                        nagi_ui::list::hwheel(&mut g.left, widest + 1, r.w, dx);
                     }
                 }
                 None => {}
@@ -333,7 +333,7 @@ impl crate::layout::View for BottomView {
                     res.log_scroll = (res.log_scroll as isize - dy).clamp(0, res.log.len().saturating_sub(1) as isize) as usize;
                 } else if let Some(t) = res.active_tab_mut() {
                     let head = if t.filterable { 4 } else { 3 };
-                    crate::list::wheel(&mut t.row, &mut t.scroll, t.rows.len(), r.h.saturating_sub(head), dy);
+                    nagi_ui::list::wheel(&mut t.row, &mut t.scroll, t.rows.len(), r.h.saturating_sub(head), dy);
                     crate::result_grid::grid_hwheel(&mut t.col, &mut t.hscroll, &t.widths, r.w, dx);
                 }
             }

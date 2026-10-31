@@ -179,7 +179,7 @@ impl Editor {
             return;
         }
         m.back = self.state();
-        m.sel = crate::list::snap(0, 0, m.items.len(), |i| m.selectable(i));
+        m.sel = nagi_ui::list::snap(0, 0, m.items.len(), |i| m.selectable(i));
         self.menu = Some(m);
         self.set_state(State::Menu);
     }
@@ -228,7 +228,7 @@ impl Editor {
             _ => None,
         };
         if let Some(to) = to {
-            m.sel = crate::list::snap(m.sel, to, n, |i| m.items[i].run.is_some());
+            m.sel = nagi_ui::list::snap(m.sel, to, n, |i| m.items[i].run.is_some());
             return;
         }
         if let Key::Char(c) = key {
@@ -298,7 +298,7 @@ impl crate::layout::View for MenuView {
             let Some(i) = row.checked_sub(b.y + m.head()) else { return crate::layout::Click::Done };
             let mut sel = m.sel;
             // OS のメニューと同じく 1 回で決める（区切りの行は何もしない）
-            if let Some(crate::list::Pick::Accept(i)) = crate::list::pick(&mut sel, m.selectable(i).then_some(i), clicks, 1) {
+            if let Some(nagi_ui::list::Pick::Accept(i)) = nagi_ui::list::pick(&mut sel, m.selectable(i).then_some(i), clicks, 1) {
                 ed.menu_run(i);
             }
         } else {

@@ -151,14 +151,9 @@ pub enum LogHit {
     DetailArea,
 }
 
-/// ブランチの列の 1 行
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum BranchRow {
-    /// 区分（depth 0）か、名前の / で分けたフォルダ。`key` は区分からの道筋（ローカル/feature）
-    Folder { key: String, name: String, depth: usize },
-    /// ブランチ（branches の番号）
-    Branch { i: usize, depth: usize },
-}
+/// ブランチの列の 1 行（nagi-ui の木の行）: 区分（depth 0）か、名前の / で分けたフォルダ（`key` は区分からの道筋。ローカル/feature）か、
+/// ブランチ（Leaf の `i` は branches の番号）
+pub type BranchRow = nagi_ui::PathRow;
 
 #[derive(Clone, Debug, Default)]
 pub struct Detail {
@@ -250,8 +245,8 @@ pub struct LogView {
     pub branch_sel: Option<usize>,
     /// ブランチの列の先頭に見せている行（見出しの行も数える）
     pub branch_top: usize,
-    /// ブランチの列で畳んでいる区分・フォルダ（BranchRow::Folder の key）
-    pub branch_folded: std::collections::HashSet<String>,
+    /// ブランチの列の区分・フォルダの開き具合（BranchRow::Folder の key。初めは全部開く）
+    pub branch_folds: nagi_ui::Folds<String>,
     /// 右の中身の列の先頭に見せている行と、変えたファイルの左端の列（長いパスを横に送って見る）
     pub detail_top: usize,
     pub detail_left: usize,
@@ -330,7 +325,7 @@ impl LogView {
     #[cfg(test)]
     pub fn branch_at(&self, row: usize) -> Option<usize> {
         match self.branch_rows().get(self.branch_top + row) {
-            Some(BranchRow::Branch { i, .. }) => Some(*i),
+            Some(BranchRow::Leaf { i, .. }) => Some(*i),
             _ => None,
         }
     }
@@ -346,36 +341,13 @@ impl LogView {
             }
         }
         for sec in secs {
-            let items: Vec<(usize, Vec<&str>)> = self.branches.iter().enumerate().filter(|(_, b)| b.0 == sec).map(|(i, b)| (i, b.1.split('/').collect())).collect();
             out.push(BranchRow::Folder { key: sec.to_string(), name: sec.to_string(), depth: 0 });
-            if !self.branch_folded.contains(sec) {
-                self.push_branch_level(sec, &items, 0, 1, &mut out);
+            if self.branch_folds.is_open(&sec.to_string()) {
+                let names: Vec<(usize, &str)> = self.branches.iter().enumerate().filter(|(_, b)| b.0 == sec).map(|(i, b)| (i, b.1.as_str())).collect();
+                out.extend(nagi_ui::tree::path_rows(&names, '/', &format!("{sec}/"), 1, &self.branch_folds));
             }
         }
         out
-    }
-
-    /// `items`（ブランチの番号と、名前を / で分けたもの）の `at` 段目から下を、字下げ `depth` で並べる
-    fn push_branch_level(&self, key: &str, items: &[(usize, Vec<&str>)], at: usize, depth: usize, out: &mut Vec<BranchRow>) {
-        let mut folders: Vec<&str> = Vec::new();
-        for (_, parts) in items {
-            if parts.len() > at + 1 && !folders.contains(&parts[at]) {
-                folders.push(parts[at]);
-            }
-        }
-        for f in folders {
-            let k = format!("{key}/{f}");
-            out.push(BranchRow::Folder { key: k.clone(), name: f.to_string(), depth });
-            if !self.branch_folded.contains(&k) {
-                let sub: Vec<(usize, Vec<&str>)> = items.iter().filter(|(_, p)| p.len() > at + 1 && p[at] == f).cloned().collect();
-                self.push_branch_level(&k, &sub, at + 1, depth + 1, out);
-            }
-        }
-        for (i, parts) in items {
-            if parts.len() == at + 1 {
-                out.push(BranchRow::Branch { i: *i, depth });
-            }
-        }
     }
 
     /// 割り付け（部品の中の座標。幅 `w`・高さ `h`、左の列と右の列の幅 `(bw, dw)`）。0 行目は絞り込み、
@@ -408,9 +380,7 @@ impl LogView {
 
     /// 区分・フォルダを畳む・開く
     pub fn toggle_branch_folder(&mut self, key: &str) {
-        if !self.branch_folded.remove(key) {
-            self.branch_folded.insert(key.to_string());
-        }
+        self.branch_folds.toggle(&key.to_string());
         let n = self.branch_rows().len();
         self.branch_top = self.branch_top.min(n.saturating_sub(1));
     }
@@ -576,7 +546,7 @@ impl Editor {
             docked,
             branch_sel: None,
             branch_top: 0,
-            branch_folded: Default::default(),
+            branch_folds: nagi_ui::Folds::open(),
             detail_top: 0,
             detail_left: 0,
             auto_cols: (10, 10, 7),
@@ -727,9 +697,9 @@ impl Editor {
         }
         // 移動は一覧の共通の動き（list.rs）。グラフだけの行は飛ばす
         let n = l.visible.len();
-        let to = if key == Key::Char('g') { Some(0) } else { crate::list::step(key, l.selected, n, rows) };
+        let to = if key == Key::Char('g') { Some(0) } else { nagi_ui::list::step(key, l.selected, n, rows) };
         if let Some(to) = to {
-            l.selected = crate::list::snap(l.selected, to, n, |i| l.rows[l.visible[i]].commit.is_some());
+            l.selected = nagi_ui::list::snap(l.selected, to, n, |i| l.rows[l.visible[i]].commit.is_some());
             return;
         }
         match key {
@@ -761,7 +731,7 @@ impl Editor {
             _ => {}
         }
         if let Some(l) = &mut self.log {
-            crate::list::fit(l.selected, &mut l.top, rows);
+            nagi_ui::list::fit(l.selected, &mut l.top, rows);
         }
     }
 
@@ -779,7 +749,7 @@ impl Editor {
         let Some(l) = &mut self.log else { return };
         let Some(d) = &l.detail else { return };
         if let Some(k) = detail_lines(d, dw.saturating_sub(1)).iter().position(|x| *x == DetailLine::File(l.file_sel)) {
-            crate::list::fit(k, &mut l.detail_top, rows);
+            nagi_ui::list::fit(k, &mut l.detail_top, rows);
         }
     }
 
@@ -807,23 +777,23 @@ impl Editor {
                     l.focus_files = false;
                     return;
                 }
-                let pick = crate::list::pick(&mut l.selected, Some(k), clicks, 2);
+                let pick = nagi_ui::list::pick(&mut l.selected, Some(k), clicks, 2);
                 if pick.is_some() {
                     l.focus_files = false;
                     l.marked.clear();
                     l.mark_anchor = Some(l.selected);
                 }
-                if matches!(pick, Some(crate::list::Pick::Accept(_))) && l.detail.as_ref().is_some_and(|d| !d.files.is_empty()) {
+                if matches!(pick, Some(nagi_ui::list::Pick::Accept(_))) && l.detail.as_ref().is_some_and(|d| !d.files.is_empty()) {
                     l.focus_files = true;
                 }
             }
             // 右: 中身のうち、ファイルの行
             Some(LogHit::Detail(DetailLine::File(f))) => {
-                let pick = crate::list::pick(&mut l.file_sel, Some(f), clicks, 2);
+                let pick = nagi_ui::list::pick(&mut l.file_sel, Some(f), clicks, 2);
                 if pick.is_some() {
                     l.focus_files = true;
                 }
-                if matches!(pick, Some(crate::list::Pick::Accept(_))) {
+                if matches!(pick, Some(nagi_ui::list::Pick::Accept(_))) {
                     self.log_open_file_diff();
                 }
             }
@@ -834,19 +804,19 @@ impl Editor {
             }
             // 左: ブランチ。押すとそのブランチの指すコミットへ、ダブルクリックでそのブランチの履歴だけを出す
             // （IntelliJ と同じ。チェックアウトは右クリックのメニューから）
-            Some(LogHit::Branch(BranchRow::Branch { i: b, .. })) => {
+            Some(LogHit::Branch(BranchRow::Leaf { i: b, .. })) => {
                 l.focus_files = false;
                 let mut i = l.branch_sel.unwrap_or(0);
-                let Some(pick) = crate::list::pick(&mut i, Some(b), clicks, 2) else { return };
+                let Some(pick) = nagi_ui::list::pick(&mut i, Some(b), clicks, 2) else { return };
                 l.branch_sel = Some(i);
                 if let Some(k) = l.row_of_ref(&l.branches[i].1) {
                     l.selected = k;
                     let rows = self.log_rows();
                     if let Some(l) = &mut self.log {
-                        crate::list::fit(k, &mut l.top, rows);
+                        nagi_ui::list::fit(k, &mut l.top, rows);
                     }
                 }
-                if matches!(pick, crate::list::Pick::Accept(_)) {
+                if matches!(pick, nagi_ui::list::Pick::Accept(_)) {
                     self.log_show_branch(i);
                 }
             }
@@ -969,7 +939,7 @@ impl Editor {
             if dx != 0 {
                 let cw = |t: &str| nagi_core::display_col(t, t.len(), false);
                 let widest = d.files.iter().map(|(st, p)| file_line(*st, p)).map(|(a, b)| cw(&a) + cw(&b)).max().unwrap_or(0);
-                crate::list::hwheel(&mut l.detail_left, widest + 1, tw, dx);
+                nagi_ui::list::hwheel(&mut l.detail_left, widest + 1, tw, dx);
             }
             return;
         }
@@ -981,7 +951,7 @@ impl Editor {
         l.top = (l.top as isize + dy).clamp(0, l.visible.len().saturating_sub(rows) as isize) as usize;
         if dx != 0 {
             let widest = l.visible.iter().skip(l.top).take(rows).map(|&i| l.rows[i].text_width()).max().unwrap_or(0);
-            crate::list::hwheel(&mut l.left, widest + 1, log_text_w(w, cols, right), dx);
+            nagi_ui::list::hwheel(&mut l.left, widest + 1, log_text_w(w, cols, right), dx);
         }
     }
 
@@ -1082,7 +1052,7 @@ impl Editor {
             m = m.item("パスをコピー", move |e| e.copy_text(p, "パス"));
             m
         } else if matches!(hit, Some(LogHit::Branch(_) | LogHit::BranchArea)) {
-            let Some(i) = l.branch_sel.filter(|_| matches!(hit, Some(LogHit::Branch(BranchRow::Branch { .. })))) else { return false };
+            let Some(i) = l.branch_sel.filter(|_| matches!(hit, Some(LogHit::Branch(BranchRow::Leaf { .. })))) else { return false };
             let (sec, name, is_cur) = l.branches[i].clone();
             let local = sec == "ローカル";
             let mut m = crate::menu::Menu::new(at.0, at.1);
@@ -1180,7 +1150,7 @@ impl Editor {
             Some(LogHit::Commit(k)) => Some(k).filter(|&k| l.commit_at(k).is_some_and(|c| l.marked.contains(&c.hash))),
             _ => None,
         };
-        if crate::list::pick(&mut l.selected, hit, 1, 2).is_none() {
+        if nagi_ui::list::pick(&mut l.selected, hit, 1, 2).is_none() {
             return false;
         }
         l.focus_files = false;
@@ -1273,7 +1243,7 @@ impl Editor {
         let Some(p) = l.detail.as_ref().and_then(|d| d.parents.split(' ').next().map(String::from)).filter(|p| !p.is_empty()) else { return };
         if let Some(k) = l.visible.iter().position(|&i| l.rows[i].commit.as_ref().is_some_and(|c| c.hash == p)) {
             l.selected = k;
-            crate::list::fit(k, &mut l.top, rows);
+            nagi_ui::list::fit(k, &mut l.top, rows);
         }
     }
 
@@ -1529,12 +1499,12 @@ pub(crate) mod draw {
             let y = y_of(rect);
             match item {
                 BranchRow::Folder { key, name, depth } => {
-                    let icon = if l.branch_folded.contains(key) { "g_chevronRight" } else { "g_chevronDown" };
+                    let icon = if !l.branch_folds.is_open(key) { "g_chevronRight" } else { "g_chevronDown" };
                     let x = r.x + depth * ind;
                     crate::icons::draw(p, icon, x as f32 * cell.w, crate::metrics::centered(y, px), px, None);
                     p.text(name, x + ind, y, if *depth == 0 { STATUS_FG } else { FG });
                 }
-                BranchRow::Branch { i, depth } => {
+                BranchRow::Leaf { i, depth } => {
                     let (_, full, cur) = &l.branches[*i];
                     let name = full.rsplit('/').next().unwrap_or(full);
                     if l.branch_sel == Some(*i) {
@@ -1687,7 +1657,7 @@ mod tests {
             left: 0,
             branch_sel: None,
             branch_top: 0,
-            branch_folded: Default::default(),
+            branch_folds: nagi_ui::Folds::open(),
             detail_top: 0,
             detail_left: 0,
             auto_cols: auto_cols(&rows),
@@ -1723,7 +1693,7 @@ mod tests {
                 .iter()
                 .map(|r| match r {
                     BranchRow::Folder { name, depth, .. } => format!("{}{name}/", " ".repeat(*depth)),
-                    BranchRow::Branch { i, depth } => format!("{}{}", " ".repeat(*depth), l.branches[*i].1.rsplit('/').next().unwrap()),
+                    BranchRow::Leaf { i, depth } => format!("{}{}", " ".repeat(*depth), l.branches[*i].1.rsplit('/').next().unwrap()),
                 })
                 .collect::<Vec<_>>()
         };
@@ -1819,7 +1789,7 @@ mod tests {
             left: 0,
             branch_sel: None,
             branch_top: 0,
-            branch_folded: Default::default(),
+            branch_folds: nagi_ui::Folds::open(),
             detail_top: 0,
             detail_left: 0,
             auto_cols: (10, 10, 7),
@@ -1915,7 +1885,7 @@ mod tests {
         let l = e.log.as_ref().unwrap();
         assert_eq!(l.branch_top, 5);
         assert_ne!(l.branch_at(0), first);
-        assert_eq!(l.branch_at(0), match &l.branch_rows()[5] { BranchRow::Branch { i, .. } => Some(*i), _ => None });
+        assert_eq!(l.branch_at(0), match &l.branch_rows()[5] { BranchRow::Leaf { i, .. } => Some(*i), _ => None });
         e.log_wheel(-100, 0, r.w, 1);
         assert_eq!(e.log.as_ref().unwrap().branch_top, 0);
         // 列の間の線をつかんで動かす（ダブルクリックで元に戻す）

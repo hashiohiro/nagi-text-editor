@@ -6,3 +6,5 @@ publish.workspace = true
 
 # 画面の部品の共通の型（ADR 0018）。Editor・描画・OS を知らない（依存の向きで守る）。単体で試験する
 [dependencies]
+# キー（一覧の移動）。nagi-vim も OS・描画を知らない
+nagi-vim.workspace = true

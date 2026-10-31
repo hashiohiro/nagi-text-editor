@@ -76,7 +76,6 @@ mod tree_panel;
 mod normal;
 mod stats;
 mod view;
-mod list;
 mod menu;
 mod buffer_tabs;
 mod plain;

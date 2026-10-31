@@ -949,35 +949,35 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     let underline = (cell.h / 16.0).round().max(1.0);
     let mut p = Painter { out: Vec::with_capacity(cols * rows + 64), fonts, r, cols, bar, underline, caret_at: None, tab_hits: Vec::new(), wrap_w: 0, wrap_rows: 1, end_y: 0.0, texts: ed.record_texts.then(Vec::new), ui: false };
     if let (Some(r), Some(t)) = (ed.tree_rect(), &mut ed.tree) {
-        crate::list::fit(t.selected, &mut t.scroll, r.h.saturating_sub(1));
+        nagi_ui::list::fit(t.selected, &mut t.scroll, r.h.saturating_sub(crate::tree_panel::HEAD));
     }
     if let (Some(r), Some(g)) = (ed.panel_rect(), &mut ed.grep) {
         // 選んでいる結果が見える範囲に入るように送る（1 行目は見出し）
-        crate::list::fit(g.selected, &mut g.scroll, r.h.saturating_sub(1));
+        nagi_ui::list::fit(g.selected, &mut g.scroll, r.h.saturating_sub(1));
     }
     if let (Some(r), Some(c)) = (ed.commit_rect(), &mut ed.commit) {
         // 選んでいる項目（見出しの行を含めた位置）が見える範囲に入るように送る
         let h = crate::commit_panel::layout(r.h).list_h;
         let tracked = c.tracked();
         let at = c.selected + 1 + usize::from(c.selected >= tracked);
-        crate::list::fit(at, &mut c.scroll, h);
+        nagi_ui::list::fit(at, &mut c.scroll, h);
     }
     if let Some(r) = ed.right_rect() {
-        let h = r.h.saturating_sub(2);
+        let h = r.h.saturating_sub(crate::right_panel::HEAD);
         if let Some(m) = &mut ed.maven {
-            crate::list::fit(m.selected, &mut m.scroll, h);
+            nagi_ui::list::fit(m.selected, &mut m.scroll, h);
         }
         if let Some(d) = &mut ed.db {
-            crate::list::fit(d.selected, &mut d.scroll, h);
+            nagi_ui::list::fit(d.selected, &mut d.scroll, h);
         }
     }
     // 表: 選んだ行と列が見える範囲に入るように送る
     let fit_grid = |row: usize, col: usize, scroll: &mut usize, hscroll: &mut usize, widths: &[usize], h: usize, w: usize| {
-        crate::list::fit(row, scroll, h);
+        nagi_ui::list::fit(row, scroll, h);
         if col < *hscroll {
             *hscroll = col;
         }
-        while *hscroll < col && widths[*hscroll..=col.min(widths.len().saturating_sub(1))].iter().map(|w| w + 3).sum::<usize>() + 8 > w {
+        while *hscroll < col && !crate::result_grid::grid_fits(widths, *hscroll, col, w) {
             *hscroll += 1;
         }
     };
@@ -992,11 +992,11 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     let _ = wx;
     if let Some(te) = &mut ed.db_table {
         let widths = te.widths.clone();
-        fit_grid(te.row, te.col, &mut te.scroll, &mut te.hscroll, &widths, wrows.saturating_sub(4), ww);
+        fit_grid(te.row, te.col, &mut te.scroll, &mut te.hscroll, &widths, wrows.saturating_sub(crate::db_table::HEAD), ww);
     }
     if let Some(f) = &mut ed.finder {
         // 選んでいる候補が見える範囲に入るように送る
-        crate::list::fit(f.selected, &mut f.scroll, finder_height(rows));
+        nagi_ui::list::fit(f.selected, &mut f.scroll, finder_height(rows));
     }
     // 見えている窓のバッファの git の差分（版が変わったときだけ計算し直す）
     ed.prepare_git();

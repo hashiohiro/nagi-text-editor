@@ -276,8 +276,12 @@ pub struct DbResults {
     pending_g: bool,
 }
 
+/// 表の `from` 列目から `to` 列目までが幅 `w` に入るか（列の幅 + 3 の和 + 行番号の 8 列。描き方の割り付けと同じ数え方）
+pub fn grid_fits(widths: &[usize], from: usize, to: usize, w: usize) -> bool {
+    widths[from..=to.min(widths.len().saturating_sub(1))].iter().map(|w| w + 3).sum::<usize>() + 8 <= w
+}
+
 /// 表の横のホイール: 左端の列 `hscroll` を 1 列ずつ送り、選んでいる列 `col` は見える範囲に留める
-/// （見える範囲は view.rs の build の fit_grid と同じ数え方: 列の幅 + 3 の和 + 8 が `w` 以下）
 pub fn grid_hwheel(col: &mut usize, hscroll: &mut usize, widths: &[usize], w: usize, n: isize) {
     if widths.is_empty() || n == 0 {
         return;
@@ -285,7 +289,7 @@ pub fn grid_hwheel(col: &mut usize, hscroll: &mut usize, widths: &[usize], w: us
     let len = widths.len();
     *hscroll = (*hscroll as isize + n.signum()).clamp(0, len as isize - 1) as usize;
     let mut last = *hscroll;
-    while last + 1 < len && widths[*hscroll..=last + 1].iter().map(|w| w + 3).sum::<usize>() + 8 <= w {
+    while last + 1 < len && grid_fits(widths, *hscroll, last + 1, w) {
         last += 1;
     }
     *col = (*col).clamp(*hscroll, last);
@@ -794,7 +798,7 @@ impl Editor {
                 let Some(t) = r.active_tab_mut() else { return crate::editor::Effect::None };
                 let last_row = t.rows.len().saturating_sub(1);
                 let last_col = t.cols.len().saturating_sub(1);
-                let moved = crate::list::step(k, t.row, last_row + 1, half * 2);
+                let moved = nagi_ui::list::step(k, t.row, last_row + 1, half * 2);
                 match k {
                     Key::Char('l') | Key::Right | Key::Tab => t.col = (t.col + 1).min(last_col),
                     Key::Char('h') | Key::Left => t.col = t.col.saturating_sub(1),
@@ -878,7 +882,7 @@ impl Editor {
         if self.db_results.value_edit.is_some() {
             let other = self.db_results.active_tab().is_some_and(|t| {
                 let head = if t.filterable { 4 } else { 3 };
-                let hit = crate::list::row_at(t.scroll, row, head, t.rows.len()).zip(grid_col_at(t.hscroll, &t.widths, col));
+                let hit = nagi_ui::list::row_at(t.scroll, row, head, t.rows.len()).zip(grid_col_at(t.hscroll, &t.widths, col));
                 hit.is_some_and(|h| h != (t.row, t.col))
             });
             if !other {
@@ -942,14 +946,14 @@ impl Editor {
         }
         // 行と列。直せる結果（テーブルの主キーが分かるもの）なら、セルを押したら 1 回で直し始める（Insert）
         let len = t.rows.len();
-        let pick = crate::list::pick_row(&mut t.row, t.scroll, row, head, len, clicks);
+        let pick = nagi_ui::list::pick_row(&mut t.row, t.scroll, row, head, len, clicks);
         let cell = grid_col_at(t.hscroll, &t.widths, col);
         if let Some(c) = cell {
             t.col = c;
         }
         match pick {
             // ダブルクリックは直せないときにわけを知らせる
-            Some(crate::list::Pick::Accept(_)) => self.result_begin_edit(false),
+            Some(nagi_ui::list::Pick::Accept(_)) => self.result_begin_edit(false),
             Some(_) if cell.is_some() && self.result_plan().is_ok() => self.result_begin_edit(false),
             _ => {}
         }

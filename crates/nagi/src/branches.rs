@@ -21,6 +21,22 @@ pub struct Branch {
     pub track: String,
 }
 
+/// 一覧の 1 行を木の行として見る（字下げ）
+struct TreeLine<'a>(&'a Entry, usize);
+
+impl nagi_ui::TreeRow for TreeLine<'_> {
+    type Key = String;
+    fn depth(&self) -> usize {
+        self.1
+    }
+    fn folder(&self) -> Option<&String> {
+        match self.0 {
+            Entry::Folder(k) => Some(k),
+            _ => None,
+        }
+    }
+}
+
 /// ブランチの小窓の割り付けに置くもの
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PopupHit {
@@ -92,8 +108,8 @@ pub struct BranchPopup {
     pub anchor: Option<usize>,
     /// 行の字下げ（entries と同じ並び。フォルダの中ほど深い）
     pub depth: Vec<usize>,
-    /// 開いているフォルダ（Entry::Folder の鍵）
-    pub open: std::collections::HashSet<String>,
+    /// 開いているフォルダ（Entry::Folder の鍵。初めは閉じている）
+    pub folds: nagi_ui::Folds<String>,
     /// 今のブランチのフォルダを開いたか（初めの 1 回だけ）
     opened_current: bool,
 }
@@ -127,33 +143,21 @@ impl BranchPopup {
         self.branches.iter().find(|b| b.current).map_or_else(|| "HEAD".into(), |b| b.name.clone())
     }
 
-    /// ブランチの名前をフォルダにまとめて並べる（`kind` は L か R。フォルダを先に、名前の順）
-    fn tree(&self, kind: char, items: &[usize], prefix: &[&str], depth: usize, out: &mut Vec<(Entry, usize)>) {
-        let mut folders: Vec<&str> = Vec::new();
-        let mut leaves = Vec::new();
-        for &i in items {
-            let segs: Vec<&str> = self.branches[i].name.split('/').collect();
-            if segs.len() > prefix.len() + 1 {
-                if !folders.contains(&segs[prefix.len()]) {
-                    folders.push(segs[prefix.len()]);
-                }
-            } else {
-                leaves.push(i);
-            }
-        }
-        folders.sort_unstable();
-        for f in folders {
-            let mut path: Vec<&str> = prefix.to_vec();
-            path.push(f);
-            let key = format!("{kind}:{}", path.join("/"));
-            let inside: Vec<usize> = items.iter().copied().filter(|&i| self.branches[i].name.split('/').take(path.len()).eq(path.iter().copied()) && self.branches[i].name.split('/').count() > path.len()).collect();
-            let open = self.open.contains(&key);
-            out.push((Entry::Folder(key), depth));
-            if open {
-                self.tree(kind, &inside, &path, depth + 1, out);
-            }
-        }
-        out.extend(leaves.into_iter().map(|i| (Entry::Branch(i), depth)));
+    /// ブランチの名前を / でフォルダにまとめて並べる（`kind` は L か R。フォルダの鍵は `L:feature` の形。フォルダを先に、名前の順）
+    fn tree(&self, kind: char, items: &[usize]) -> Vec<(Entry, usize)> {
+        let names: Vec<(usize, &str)> = items.iter().map(|&i| (i, self.branches[i].name.as_str())).collect();
+        nagi_ui::tree::path_rows(&names, '/', &format!("{kind}:"), 0, &self.folds)
+            .into_iter()
+            .map(|r| match r {
+                nagi_ui::PathRow::Folder { key, depth, .. } => (Entry::Folder(key), depth),
+                nagi_ui::PathRow::Leaf { i, depth } => (Entry::Branch(i), depth),
+            })
+            .collect()
+    }
+
+    /// 一覧の行を木の行として（字下げとフォルダの鍵。← → の動きに使う）
+    fn tree_rows(&self) -> Vec<TreeLine<'_>> {
+        self.entries.iter().enumerate().map(|(k, e)| TreeLine(e, self.depth.get(k).copied().unwrap_or(0))).collect()
     }
 
     /// フォルダの中のブランチの数
@@ -165,12 +169,8 @@ impl BranchPopup {
 
     /// フォルダを開く・閉じる（選びはそのフォルダのまま）
     pub(crate) fn toggle_folder(&mut self, key: &str, open: Option<bool>) {
-        let now = self.open.contains(key);
-        if open.unwrap_or(!now) {
-            self.open.insert(key.to_string());
-        } else {
-            self.open.remove(key);
-        }
+        let now = self.folds.is_open(&key.to_string());
+        self.folds.set_open(&key.to_string(), open.unwrap_or(!now));
         self.rebuild();
         if let Some(i) = self.entries.iter().position(|e| matches!(e, Entry::Folder(k) if k == key)) {
             self.selected = i;
@@ -184,7 +184,7 @@ impl BranchPopup {
             if let Some(cur) = self.branches.iter().find(|b| b.current) {
                 let segs: Vec<&str> = cur.name.split('/').collect();
                 for n in 1..segs.len() {
-                    self.open.insert(format!("L:{}", segs[..n].join("/")));
+                    self.folds.set_open(&format!("L:{}", segs[..n].join("/")), true);
                 }
                 self.opened_current = true;
             }
@@ -217,9 +217,7 @@ impl BranchPopup {
             e.push(Entry::Header(title));
             depth.push(0);
             if q.is_empty() {
-                let mut rows = Vec::new();
-                self.tree(kind, &items, &[], 0, &mut rows);
-                for (x, d) in rows {
+                for (x, d) in self.tree(kind, &items) {
                     e.push(x);
                     depth.push(d);
                 }
@@ -279,7 +277,7 @@ impl Editor {
                 .map(|b| parse_refs(&String::from_utf8_lossy(&b)));
             ctx.send(r);
         });
-        let mut p = BranchPopup { query: Prompt::default(), branches: Vec::new(), entries: Vec::new(), selected: 0, ops: None, naming: None, rx: Some(rx), anchor: None, depth: Vec::new(), open: Default::default(), opened_current: false };
+        let mut p = BranchPopup { query: Prompt::default(), branches: Vec::new(), entries: Vec::new(), selected: 0, ops: None, naming: None, rx: Some(rx), anchor: None, depth: Vec::new(), folds: nagi_ui::Folds::closed(), opened_current: false };
         p.rebuild();
         self.branch_popup = Some(p);
         self.set_state(State::Branches);
@@ -494,7 +492,7 @@ impl Editor {
         }
         // 操作の一覧
         if let Some((ops, sel)) = &mut p.ops {
-            let moved = crate::list::step_typing(key, *sel, ops.len());
+            let moved = nagi_ui::list::step_typing(key, *sel, ops.len());
             match key {
                 _ if moved.is_some() => *sel = moved.unwrap_or(*sel),
                 Key::Left | Key::Esc | Key::Ctrl('h') => p.ops = None,
@@ -513,25 +511,20 @@ impl Editor {
             Key::Esc => self.close_branches(),
             // 移動は一覧の共通の動き（list.rs）。見出しの行は飛ばす
             Key::Down | Key::Ctrl('n') | Key::Tab | Key::Up | Key::Ctrl('p') => {
-                if let Some(to) = crate::list::step_typing(key, p.selected, p.entries.len()) {
-                    p.selected = crate::list::snap(p.selected, to, p.entries.len(), |i| !matches!(p.entries[i], Entry::Header(_)));
+                if let Some(to) = nagi_ui::list::step_typing(key, p.selected, p.entries.len()) {
+                    p.selected = nagi_ui::list::snap(p.selected, to, p.entries.len(), |i| !matches!(p.entries[i], Entry::Header(_)));
                 }
             }
-            // フォルダ: → で開く、← で閉じる。フォルダの中のブランチで ← なら、そのフォルダを閉じる
+            // フォルダ: → で開く、← で閉じる。フォルダの中のブランチで ← なら、そのフォルダへ（木の共通の動き。nagi-ui）
             Key::Right | Key::Ctrl('l') if matches!(p.entries.get(p.selected), Some(Entry::Folder(_))) => {
-                if let Some(Entry::Folder(k)) = p.entries.get(p.selected).cloned() {
-                    p.toggle_folder(&k, Some(true));
+                if let nagi_ui::Step::Fold(k, open) = nagi_ui::tree::right(&p.tree_rows(), p.selected, &p.folds) {
+                    p.toggle_folder(&k, Some(open));
                 }
             }
-            Key::Left | Key::Ctrl('h') => match p.entries.get(p.selected).cloned() {
-                Some(Entry::Folder(k)) => p.toggle_folder(&k, Some(false)),
-                Some(Entry::Branch(i)) if p.depth.get(p.selected).is_some_and(|d| *d > 0) => {
-                    let b = &p.branches[i];
-                    let parent = b.name.rsplit_once('/').map(|x| x.0.to_string()).unwrap_or_default();
-                    let key = format!("{}:{parent}", if b.remote { 'R' } else { 'L' });
-                    p.toggle_folder(&key, Some(false));
-                }
-                _ => {}
+            Key::Left | Key::Ctrl('h') => match nagi_ui::tree::left(&p.tree_rows(), p.selected, &p.folds) {
+                nagi_ui::Step::Fold(k, open) => p.toggle_folder(&k, Some(open)),
+                nagi_ui::Step::Select(i) => p.selected = i,
+                nagi_ui::Step::None => {}
             },
             Key::Right | Key::Ctrl('l') => {
                 if let Some(b) = p.selected_branch().cloned() {
@@ -595,7 +588,7 @@ impl Editor {
             p.toggle_folder(&k, None);
             return;
         }
-        if let Some(crate::list::Pick::Accept(_)) = crate::list::pick(&mut p.selected, hit, clicks, 2) {
+        if let Some(nagi_ui::list::Pick::Accept(_)) = nagi_ui::list::pick(&mut p.selected, hit, clicks, 2) {
             self.branches_key(Key::Enter);
         }
     }
@@ -730,7 +723,7 @@ pub(crate) mod draw {
                 Entry::Folder(key) => {
                     // ▸ / ▾、フォルダのアイコン、名前と中の数
                     let d = b.depth.get(k).copied().unwrap_or(0);
-                    let open = b.open.contains(key);
+                    let open = b.folds.is_open(key);
                     // 字下げ 1 段と ▸ ▾ の幅はアイコンの幅（プロジェクトの木と同じ。metrics.rs）
                     let ind = crate::tree_panel::indent_cols();
                     let px = crate::metrics::icon(crate::metrics::Icon::Small);
@@ -904,11 +897,11 @@ mod tests {
     #[test]
     fn folders_open_and_close() {
         let b = |name: &str, remote: bool, current: bool| Branch { name: name.into(), remote, current, track: String::new() };
-        let mut p = BranchPopup { query: Prompt::default(), branches: vec![b("feature/sub/c", false, true), b("main", false, false), b("feature/a", false, false), b("bugfix/x", false, false), b("origin/main", true, false), b("origin/feature/a", true, false)], entries: Vec::new(), selected: 0, ops: None, naming: None, rx: None, anchor: None, depth: Vec::new(), open: Default::default(), opened_current: false };
+        let mut p = BranchPopup { query: Prompt::default(), branches: vec![b("feature/sub/c", false, true), b("main", false, false), b("feature/a", false, false), b("bugfix/x", false, false), b("origin/main", true, false), b("origin/feature/a", true, false)], entries: Vec::new(), selected: 0, ops: None, naming: None, rx: None, anchor: None, depth: Vec::new(), folds: nagi_ui::Folds::closed(), opened_current: false };
         p.rebuild();
         let show = |p: &BranchPopup| -> Vec<String> {
             p.entries.iter().zip(&p.depth).filter_map(|(e, d)| match e {
-                Entry::Folder(k) => Some(format!("{}{}{}", "  ".repeat(*d), if p.open.contains(k) { "-" } else { "+" }, k)),
+                Entry::Folder(k) => Some(format!("{}{}{}", "  ".repeat(*d), if p.folds.is_open(k) { "-" } else { "+" }, k)),
                 Entry::Branch(i) => Some(format!("{}{}", "  ".repeat(*d), p.branches[*i].name)),
                 Entry::Header(h) => Some(format!("[{h}]")),
                 _ => None,

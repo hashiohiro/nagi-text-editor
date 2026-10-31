@@ -794,7 +794,7 @@ impl Editor {
                 let normal = d.combo.as_ref().is_some_and(|c| !c.filter.is_insert());
                 // 打って絞り込む一覧: ↑↓ Ctrl+n/p など。ノーマルでは j・k も
                 let sel = d.combo.as_ref().map_or(0, |c| c.sel);
-                let moved = crate::list::step_typing(key, sel, n).or_else(|| if normal { crate::list::step(key, sel, n, 10) } else { None });
+                let moved = nagi_ui::list::step_typing(key, sel, n).or_else(|| if normal { nagi_ui::list::step(key, sel, n, 10) } else { None });
                 match key {
                     _ if moved.is_some() => {
                         if let Some(c) = &mut d.combo {
@@ -870,7 +870,7 @@ impl Editor {
             },
             SFocus::Items if d.is_maps() => {
                 let n = d.maps.len() + 1;
-                let moved = crate::list::step(key, d.selected, n, 10);
+                let moved = nagi_ui::list::step(key, d.selected, n, 10);
                 match key {
                     _ if moved.is_some() => d.selected = moved.unwrap_or(d.selected),
                     Key::Char('g') => d.selected = 0,
@@ -898,7 +898,7 @@ impl Editor {
             }
             SFocus::Items => {
                 let n = d.items().len();
-                let moved = crate::list::step(key, d.selected, n, 10);
+                let moved = nagi_ui::list::step(key, d.selected, n, 10);
                 match key {
                     _ if moved.is_some() => d.selected = moved.unwrap_or(d.selected),
                     Key::Char('g') => d.selected = 0,
@@ -943,8 +943,8 @@ impl Editor {
             let hit = d.combo_rows.at(row, col);
             let mut sel = hit.unwrap_or(0);
             // 選択肢は 1 回で決める（メニューと同じ）
-            match crate::list::pick(&mut sel, hit, clicks, 1) {
-                Some(crate::list::Pick::Accept(i) | crate::list::Pick::Select(i)) => {
+            match nagi_ui::list::pick(&mut sel, hit, clicks, 1) {
+                Some(nagi_ui::list::Pick::Accept(i) | nagi_ui::list::Pick::Select(i)) => {
                     if let Some(v) = d.choose_combo(Some(i)) {
                         self.start_download(&v);
                     }
@@ -963,23 +963,23 @@ impl Editor {
         }
         let cat = d.cat_rows.at(row, col);
         let mut c = d.cat;
-        if let Some(pick) = crate::list::pick(&mut c, cat, clicks, 2) {
+        if let Some(pick) = nagi_ui::list::pick(&mut c, cat, clicks, 2) {
             if c != d.cat {
                 d.selected = 0;
                 d.top = 0;
             }
             d.cat = c;
             // ダブルクリックは Enter と同じ（項目へ）
-            d.focus = if matches!(pick, crate::list::Pick::Accept(_)) { SFocus::Items } else { SFocus::Cats };
+            d.focus = if matches!(pick, nagi_ui::list::Pick::Accept(_)) { SFocus::Items } else { SFocus::Cats };
             return;
         }
         let item = d.item_rows.borrow().iter().find(|(r, _, _)| *r == row).map(|x| (x.1, x.2));
         if let Some((i, vx)) = item {
             let again = d.selected == i && d.focus == SFocus::Items;
-            let pick = crate::list::pick(&mut d.selected, Some(i), clicks, 2);
+            let pick = nagi_ui::list::pick(&mut d.selected, Some(i), clicks, 2);
             d.focus = SFocus::Items;
             // 値の上を押すか、選んでいる項目をもう一度押すか、ダブルクリックで、切り替え・直す
-            if col >= vx || again || matches!(pick, Some(crate::list::Pick::Accept(_))) {
+            if col >= vx || again || matches!(pick, Some(nagi_ui::list::Pick::Accept(_))) {
                 if d.is_maps() { d.map_edit() } else { d.edit() }
             }
         }
