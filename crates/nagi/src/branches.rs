@@ -21,6 +21,118 @@ pub struct Branch {
     pub track: String,
 }
 
+/// ブランチの小窓のキーで、部品の外に及ぶこと（Editor が行う。ADR 0018 の §5）
+#[derive(Clone, Debug)]
+pub enum BranchAction {
+    None,
+    Close,
+    /// ブランチを作ってチェックアウト（名前, 起点）
+    Create(String, Option<String>),
+    /// 名前を変える（今の名前, 新しい名前）
+    Rename(String, String),
+    /// 選んだブランチに操作を行う
+    Run(Op, Branch),
+    Fetch,
+    Checkout(Branch),
+}
+
+impl BranchPopup {
+    /// ブランチの小窓のキー。選び・畳み・操作の一覧・名前の欄（`svc` で動かす）・絞り込みはここで行い、外に及ぶことを返す
+    pub fn key(&mut self, key: Key, svc: &mut crate::editor::Services) -> BranchAction {
+        // 名前を打っている
+        if let Some((_, f)) = &mut self.naming {
+            use crate::vim_field::FieldOut;
+            match f.feed(key, svc) {
+                FieldOut::Cancel => self.naming = None,
+                FieldOut::Submit => {
+                    let (kind, f) = self.naming.take().unwrap();
+                    let name = f.text().trim().to_string();
+                    if !name.is_empty() {
+                        return match kind {
+                            Naming::New(from) => BranchAction::Create(name, from),
+                            Naming::Rename(old) => BranchAction::Rename(old, name),
+                        };
+                    }
+                }
+                _ => {}
+            }
+            return BranchAction::None;
+        }
+        // 操作の一覧
+        if let Some((ops, sel)) = &mut self.ops {
+            let moved = nagi_ui::list::step_typing(key, *sel, ops.len());
+            match key {
+                _ if moved.is_some() => *sel = moved.unwrap_or(*sel),
+                Key::Left | Key::Esc | Key::Ctrl('h') => self.ops = None,
+                Key::Enter | Key::Right => {
+                    let op = ops[*sel];
+                    self.ops = None;
+                    if let Some(b) = self.selected_branch().cloned() {
+                        return BranchAction::Run(op, b);
+                    }
+                }
+                _ => {}
+            }
+            return BranchAction::None;
+        }
+        match key {
+            Key::Esc => return BranchAction::Close,
+            // 移動は一覧の共通の動き（nagi_ui::list）。見出しの行は飛ばす
+            Key::Down | Key::Ctrl('n') | Key::Tab | Key::Up | Key::Ctrl('p') => {
+                if let Some(to) = nagi_ui::list::step_typing(key, self.selected, self.entries.len()) {
+                    self.selected = nagi_ui::list::snap(self.selected, to, self.entries.len(), |i| !matches!(self.entries[i], Entry::Header(_)));
+                }
+            }
+            // フォルダ: → で開く、← で閉じる。フォルダの中のブランチで ← なら、そのフォルダへ（木の共通の動き。nagi-ui）
+            Key::Right | Key::Ctrl('l') if matches!(self.entries.get(self.selected), Some(Entry::Folder(_))) => {
+                if let nagi_ui::Step::Fold(k, open) = nagi_ui::tree::right(&self.tree_rows(), self.selected, &self.folds) {
+                    self.toggle_folder(&k, Some(open));
+                }
+            }
+            Key::Left | Key::Ctrl('h') => match nagi_ui::tree::left(&self.tree_rows(), self.selected, &self.folds) {
+                nagi_ui::Step::Fold(k, open) => self.toggle_folder(&k, Some(open)),
+                nagi_ui::Step::Select(i) => self.selected = i,
+                nagi_ui::Step::None => {}
+            },
+            Key::Right | Key::Ctrl('l') => {
+                if let Some(b) = self.selected_branch().cloned() {
+                    let mut ops = vec![Op::Checkout, Op::NewFrom];
+                    if !b.current {
+                        ops.extend([Op::Merge, Op::Rebase, Op::Compare]);
+                    }
+                    if b.current {
+                        ops.push(Op::Pull);
+                    }
+                    if !b.remote {
+                        ops.push(Op::Rename);
+                        if !b.current {
+                            ops.push(Op::Delete);
+                        }
+                    }
+                    self.ops = Some((ops, 0));
+                }
+            }
+            Key::Enter => match self.entries.get(self.selected).cloned() {
+                Some(Entry::NewBranch) => self.naming = Some((Naming::New(None), crate::vim_field::VimField::new("", false))),
+                Some(Entry::Fetch) => return BranchAction::Fetch,
+                Some(Entry::Branch(_)) => {
+                    if let Some(b) = self.selected_branch().cloned() {
+                        return BranchAction::Checkout(b);
+                    }
+                }
+                Some(Entry::Folder(k)) => self.toggle_folder(&k, None),
+                _ => {}
+            },
+            k => {
+                if self.query.key(k) {
+                    self.rebuild();
+                }
+            }
+        }
+        BranchAction::None
+    }
+}
+
 /// 一覧の 1 行を木の行として見る（字下げ）
 struct TreeLine<'a>(&'a Entry, usize);
 
@@ -445,107 +557,24 @@ impl Editor {
             self.set_state(State::Normal);
             return;
         };
-        // 名前を打っている
-        if p.naming.is_some() {
-            use crate::vim_field::FieldOut;
-            let out = self.feed_field(key, |e| e.panels.branch_popup.as_mut().and_then(|p| p.naming.as_mut()).map(|n| &mut n.1));
-            let Some(p) = &mut self.panels.branch_popup else { return };
-            match out {
-                FieldOut::Cancel => p.naming = None,
-                FieldOut::Submit => {
-                    let (kind, f) = p.naming.take().unwrap();
-                    let name = f.text().trim().to_string();
-                    if name.is_empty() {
-                        return;
-                    }
-                    match kind {
-                        Naming::New(from) => {
-                            let mut args = vec!["checkout", "-q", "-b", name.as_str()];
-                            if let Some(f) = from.as_deref() {
-                                args.push(f);
-                            }
-                            self.git_guarded_args(&args, format!("ブランチ {name} を作ってチェックアウトしました"), close_if_ok);
-                        }
-                        Naming::Rename(old) => self.git_guarded_args(&["branch", "-m", &old, &name], format!("{old} を {name} に変えました"), close_if_ok),
-                    }
+        // 部品の中で済むこと（選び・畳み・操作の一覧・名前の欄・絞り込み）は BranchPopup::key が行い、外に及ぶことを返す（ADR 0018 の §5）
+        match p.key(key, &mut self.svc) {
+            BranchAction::None => {}
+            BranchAction::Close => self.close_branches(),
+            BranchAction::Create(name, from) => {
+                let mut args = vec!["checkout", "-q", "-b", name.as_str()];
+                if let Some(f) = from.as_deref() {
+                    args.push(f);
                 }
-                _ => {}
+                self.git_guarded_args(&args, format!("ブランチ {name} を作ってチェックアウトしました"), close_if_ok);
             }
-            return;
-        }
-        // 操作の一覧
-        if let Some((ops, sel)) = &mut p.ops {
-            let moved = nagi_ui::list::step_typing(key, *sel, ops.len());
-            match key {
-                _ if moved.is_some() => *sel = moved.unwrap_or(*sel),
-                Key::Left | Key::Esc | Key::Ctrl('h') => p.ops = None,
-                Key::Enter | Key::Right => {
-                    let op = ops[*sel];
-                    p.ops = None;
-                    if let Some(b) = p.selected_branch().cloned() {
-                        self.run_op(op, b);
-                    }
-                }
-                _ => {}
+            BranchAction::Rename(old, name) => self.git_guarded_args(&["branch", "-m", &old, &name], format!("{old} を {name} に変えました"), close_if_ok),
+            BranchAction::Run(op, b) => self.run_op(op, b),
+            BranchAction::Fetch => {
+                self.close_branches();
+                self.run_git_job("フェッチ", &["fetch", "--all", "--prune"]);
             }
-            return;
-        }
-        match key {
-            Key::Esc => self.close_branches(),
-            // 移動は一覧の共通の動き（list.rs）。見出しの行は飛ばす
-            Key::Down | Key::Ctrl('n') | Key::Tab | Key::Up | Key::Ctrl('p') => {
-                if let Some(to) = nagi_ui::list::step_typing(key, p.selected, p.entries.len()) {
-                    p.selected = nagi_ui::list::snap(p.selected, to, p.entries.len(), |i| !matches!(p.entries[i], Entry::Header(_)));
-                }
-            }
-            // フォルダ: → で開く、← で閉じる。フォルダの中のブランチで ← なら、そのフォルダへ（木の共通の動き。nagi-ui）
-            Key::Right | Key::Ctrl('l') if matches!(p.entries.get(p.selected), Some(Entry::Folder(_))) => {
-                if let nagi_ui::Step::Fold(k, open) = nagi_ui::tree::right(&p.tree_rows(), p.selected, &p.folds) {
-                    p.toggle_folder(&k, Some(open));
-                }
-            }
-            Key::Left | Key::Ctrl('h') => match nagi_ui::tree::left(&p.tree_rows(), p.selected, &p.folds) {
-                nagi_ui::Step::Fold(k, open) => p.toggle_folder(&k, Some(open)),
-                nagi_ui::Step::Select(i) => p.selected = i,
-                nagi_ui::Step::None => {}
-            },
-            Key::Right | Key::Ctrl('l') => {
-                if let Some(b) = p.selected_branch().cloned() {
-                    let mut ops = vec![Op::Checkout, Op::NewFrom];
-                    if !b.current {
-                        ops.extend([Op::Merge, Op::Rebase, Op::Compare]);
-                    }
-                    if b.current {
-                        ops.push(Op::Pull);
-                    }
-                    if !b.remote {
-                        ops.push(Op::Rename);
-                        if !b.current {
-                            ops.push(Op::Delete);
-                        }
-                    }
-                    p.ops = Some((ops, 0));
-                }
-            }
-            Key::Enter => match p.entries.get(p.selected).cloned() {
-                Some(Entry::NewBranch) => p.naming = Some((Naming::New(None), crate::vim_field::VimField::new("", false))),
-                Some(Entry::Fetch) => {
-                    self.close_branches();
-                    self.run_git_job("フェッチ", &["fetch", "--all", "--prune"]);
-                }
-                Some(Entry::Branch(_)) => {
-                    if let Some(b) = p.selected_branch().cloned() {
-                        self.checkout_branch(&b);
-                    }
-                }
-                Some(Entry::Folder(k)) => p.toggle_folder(&k, None),
-                _ => {}
-            },
-            k => {
-                if p.query.key(k) {
-                    p.rebuild();
-                }
-            }
+            BranchAction::Checkout(b) => self.checkout_branch(&b),
         }
     }
 

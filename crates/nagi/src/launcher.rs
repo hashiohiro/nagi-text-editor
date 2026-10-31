@@ -157,6 +157,84 @@ fn build_preview(dir: PathBuf) -> Preview {
     Preview { kind, modules, git, restore, excludes, readme }
 }
 
+/// ランチャーのキーで、部品の外に及ぶこと（Editor が行う。ADR 0018 の §5）
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LauncherAction {
+    None,
+    /// 選びや絞り込みが変わった（右のプレビューを取り直す）
+    Moved,
+    Open(PathBuf),
+    /// git clone して開く（URL）
+    Clone(String),
+    /// 左の操作（o・w・g・r・n）
+    Action(char),
+    Pin,
+    Hide,
+    Close,
+}
+
+impl Launcher {
+    /// ランチャーのキー。選び・絞り込み・入力欄（`svc` で動かす）・dd の 1 打目はここで行い、外に及ぶことを返す
+    pub fn key(&mut self, key: Key, svc: &mut crate::editor::Services) -> LauncherAction {
+        // フォルダを選ぶダイアログを開いている間は、キーを受けない
+        if self.picking.is_some() {
+            return LauncherAction::None;
+        }
+        self.message.clear();
+        // o・g の入力
+        if let Some((_, f)) = &mut self.ask {
+            match f.feed(key, svc) {
+                FieldOut::Submit => {
+                    let (ask, f) = self.ask.take().unwrap();
+                    let text = f.text().trim().trim_matches('"').to_string();
+                    if matches!(ask, Ask::Clone) && !text.is_empty() {
+                        return LauncherAction::Clone(text);
+                    }
+                }
+                FieldOut::Cancel => self.ask = None,
+                _ => {}
+            }
+            return LauncherAction::None;
+        }
+        let normal = !self.field.is_insert() && self.field.ed.pending_keys.is_empty() && self.field.visual().is_none();
+        let last = self.hits.len().saturating_sub(1);
+        let pending_d = std::mem::take(&mut self.pending_d);
+        let moved = nagi_ui::list::step_typing(key, self.selected, last + 1);
+        match key {
+            Key::Enter | Key::Ctrl('m') => {
+                if let Some(e) = self.selected_entry() {
+                    if e.missing {
+                        self.message = format!("フォルダがありません: {}（dd で一覧から外す）", e.path.display());
+                    } else {
+                        return LauncherAction::Open(e.path.clone());
+                    }
+                }
+                return LauncherAction::None;
+            }
+            _ if moved.is_some() => self.selected = moved.unwrap_or(self.selected),
+            // 左の操作（入力中でも使える Ctrl のキー）
+            Key::Ctrl('o') => return LauncherAction::Action('o'),
+            Key::Ctrl('l') => return LauncherAction::Action('w'),
+            Key::Ctrl('g') => return LauncherAction::Action('g'),
+            Key::Ctrl('r') => return LauncherAction::Action('r'),
+            Key::Ctrl('e') => return LauncherAction::Action('n'),
+            Key::Char('j' | 'k') if normal => self.selected = nagi_ui::list::step(key, self.selected, last + 1, 10).unwrap_or(self.selected),
+            Key::Char(c @ ('g' | 'o' | 'w' | 'r' | 'n')) if normal => return LauncherAction::Action(c),
+            Key::Char('G') if normal => self.selected = nagi_ui::list::step(key, self.selected, last + 1, 10).unwrap_or(self.selected),
+            Key::Char('p') if normal => return LauncherAction::Pin,
+            Key::Char('d') if normal && pending_d => return LauncherAction::Hide,
+            Key::Char('d') if normal => self.pending_d = true,
+            Key::Ctrl('c') => return LauncherAction::Close,
+            k => match self.field.feed(k, svc) {
+                FieldOut::Changed => self.refilter(),
+                FieldOut::Cancel => return LauncherAction::Close,
+                _ => {}
+            },
+        }
+        LauncherAction::Moved
+    }
+}
+
 impl Editor {
     /// ランチャーを出す（一覧は裏で集める）
     /// 選んでいるプロジェクトをピン留めする・外す（p・右クリック）
@@ -342,77 +420,25 @@ impl Editor {
             self.set_state(State::Normal);
             return;
         };
-        // フォルダを選ぶダイアログを開いている間は、キーを受けない
-        if l.picking.is_some() {
-            return;
-        }
-        l.message.clear();
-        // o・g の入力
-        if l.ask.is_some() {
-            let out = self.feed_field(key, |e| e.panels.launcher.as_mut().and_then(|l| l.ask.as_mut()).map(|a| &mut a.1));
-            let Some(l) = &mut self.panels.launcher else { return };
-            match out {
-                FieldOut::Submit => {
-                    let (ask, f) = l.ask.take().unwrap();
-                    let text = f.text().trim().trim_matches('"').to_string();
-                    match ask {
-                        Ask::Clone if !text.is_empty() => self.start_clone(text),
-                        _ => {}
-                    }
-                }
-                FieldOut::Cancel => l.ask = None,
-                _ => {}
+        // 部品の中で済むこと（選び・絞り込み・入力欄・dd の 1 打目）は Launcher::key が行い、外に及ぶことを返す（ADR 0018 の §5）
+        match l.key(key, &mut self.svc) {
+            LauncherAction::None => {}
+            LauncherAction::Moved => {
+                self.want_preview();
             }
-            return;
-        }
-        let normal = !l.field.is_insert() && l.field.ed.pending_keys.is_empty() && l.field.visual().is_none();
-        let last = l.hits.len().saturating_sub(1);
-        let pending_d = std::mem::take(&mut l.pending_d);
-        let moved = nagi_ui::list::step_typing(key, l.selected, last + 1);
-        match key {
-            Key::Enter | Key::Ctrl('m') => {
-                if let Some(e) = l.selected_entry() {
-                    if e.missing {
-                        l.message = format!("フォルダがありません: {}（dd で一覧から外す）", e.path.display());
-                    } else {
-                        let p = e.path.clone();
-                        self.close_launcher_to(p);
-                    }
-                }
-                return;
+            LauncherAction::Open(p) => self.close_launcher_to(p),
+            LauncherAction::Clone(url) => self.start_clone(url),
+            LauncherAction::Action(c) => self.launcher_action(c),
+            LauncherAction::Pin => {
+                self.launcher_pin();
+                self.want_preview();
             }
-            _ if moved.is_some() => l.selected = moved.unwrap_or(l.selected),
-            // 左の操作（入力中でも使える Ctrl のキー）
-            Key::Ctrl('o') => return self.launcher_action('o'),
-            Key::Ctrl('l') => return self.launcher_action('w'),
-            Key::Ctrl('g') => return self.launcher_action('g'),
-            Key::Ctrl('r') => return self.launcher_action('r'),
-            Key::Ctrl('e') => return self.launcher_action('n'),
-            Key::Char('j' | 'k') if normal => l.selected = nagi_ui::list::step(key, l.selected, last + 1, 10).unwrap_or(l.selected),
-            Key::Char(c @ ('g' | 'o' | 'w' | 'r' | 'n')) if normal => return self.launcher_action(c),
-            Key::Char('G') if normal => l.selected = nagi_ui::list::step(key, l.selected, last + 1, 10).unwrap_or(l.selected),
-
-            Key::Char('p') if normal => self.launcher_pin(),
-            Key::Char('d') if normal && pending_d => self.launcher_hide(),
-            Key::Char('d') if normal => l.pending_d = true,
-            Key::Ctrl('c') => {
-                self.close_launcher();
-                return;
+            LauncherAction::Hide => {
+                self.launcher_hide();
+                self.want_preview();
             }
-            k => match self.feed_field(k, |e| e.panels.launcher.as_mut().map(|l| &mut l.field)) {
-                FieldOut::Changed => {
-                    if let Some(l) = &mut self.panels.launcher {
-                        l.refilter();
-                    }
-                }
-                FieldOut::Cancel => {
-                    self.close_launcher();
-                    return;
-                }
-                _ => {}
-            },
+            LauncherAction::Close => self.close_launcher(),
         }
-        self.want_preview();
     }
 
     /// git clone して開く（置き場所は %USERPROFILE%\IdeaProjects の下、リポジトリの名前）
