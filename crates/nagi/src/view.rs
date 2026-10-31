@@ -620,6 +620,16 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
         None => Vec::new(),
     };
     let t_hl = t0.elapsed();
+    // 色分けの範囲を見える行ごとに振り分けておく（行ごとに全部の範囲を見ると、行の数 × 範囲の数の手間になる）。
+    // 行は位置の順なので、範囲がかかる最初の行を二分探索で探す。振り分けの順は元の順のまま（後のものが内側を上書きする）
+    let mut spans_of: Vec<Vec<usize>> = vec![Vec::new(); heads.len()];
+    for (j, (rg, _)) in spans.iter().enumerate() {
+        let mut i = heads.partition_point(|(s, abs, _)| abs + s.len() <= rg.start);
+        while i < heads.len() && heads[i].1 < rg.end {
+            spans_of[i].push(j);
+            i += 1;
+        }
+    }
         let visible_matches: Vec<(usize, usize)>;
     let all_matches: &[(usize, usize)] = if highlight && heads.iter().any(|h| h.2) {
         // 長い行は見えている部分だけを探す
@@ -771,7 +781,7 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
         }
         // byte ごとの文字色。外側のキャプチャの後に内側が来るので、後から塗ったものが勝つ
         let mut colors = vec![FG; line.len()];
-        for (rg, hl) in spans.iter().filter(|(rg, _)| rg.end > abs && rg.start < abs + line.len()) {
+        for (rg, hl) in spans_of[i].iter().map(|&j| &spans[j]) {
             let (a, b) = (rg.start.max(abs) - abs, rg.end.min(abs + line.len()) - abs);
             colors[a..b].fill(hl_color(*hl));
         }

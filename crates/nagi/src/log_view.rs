@@ -113,22 +113,30 @@ pub fn wrap(s: &str, w: usize) -> Vec<String> {
     }
     let mut out = Vec::new();
     let mut cur = String::new();
+    // 今の行の幅は足し上げて持つ（1 文字ごとに行全体を数え直さない）
+    let mut cur_w = 0;
     for ch in s.chars() {
         let mut b = [0u8; 4];
-        if !cur.is_empty() && cw(&cur) + cw(ch.encode_utf8(&mut b)) > w {
+        let chw = cw(ch.encode_utf8(&mut b));
+        if !cur.is_empty() && cur_w + chw > w {
             match cur.rfind(' ').filter(|&i| i > 0 && ch != ' ') {
                 Some(i) => {
                     let rest = cur[i + 1..].to_string();
                     cur.truncate(i);
+                    cur_w = cw(&rest);
                     out.push(std::mem::replace(&mut cur, rest));
                 }
-                None => out.push(std::mem::take(&mut cur)),
+                None => {
+                    out.push(std::mem::take(&mut cur));
+                    cur_w = 0;
+                }
             }
             if ch == ' ' {
                 continue;
             }
         }
         cur.push(ch);
+        cur_w += chw;
     }
     out.push(cur);
     out
@@ -276,6 +284,8 @@ pub struct LogView {
     pub detail_left: usize,
     /// 中身に合わせた作者・日時・ハッシュの列の幅（履歴が届いたときに測る）
     pub auto_cols: (usize, usize, usize),
+    /// 右の列の行の覚え（(コミット, 比べる相手, 幅) → 行）。折り返しを毎フレームやり直さない
+    detail_cache: std::cell::RefCell<Option<((String, Option<String>, usize), std::rc::Rc<Vec<DetailLine>>)>>,
     /// 読み直すための元（ファイルの履歴のパス・比べる範囲）
     src_path: Option<String>,
     src_range: Option<String>,
@@ -394,8 +404,8 @@ impl LogView {
         ui.put(Rect { x: cx, y: 1, w: cw, h: body }, LogHit::CommitArea);
         let dx = cx + cw + 1;
         if let Some(d) = &self.detail {
-            for (k, line) in detail_lines(d, dw.saturating_sub(1)).into_iter().skip(self.detail_top).take(body).enumerate() {
-                ui.put(Rect::row(1 + k, dx, w.saturating_sub(dx)), LogHit::Detail(line));
+            for (k, line) in self.lines_of(d, dw.saturating_sub(1)).iter().skip(self.detail_top).take(body).enumerate() {
+                ui.put(Rect::row(1 + k, dx, w.saturating_sub(dx)), LogHit::Detail(line.clone()));
             }
         }
         ui.put(Rect { x: dx, y: 1, w: w.saturating_sub(dx), h: body }, LogHit::DetailArea);
@@ -486,6 +496,19 @@ impl LogView {
         };
         nagi_ui::list::fit(self.selected, &mut self.top, rows);
         act
+    }
+
+    /// 右の列の行（detail_lines を、コミット・比べる相手・幅が同じあいだは覚えて使う）
+    fn lines_of(&self, d: &Detail, w: usize) -> std::rc::Rc<Vec<DetailLine>> {
+        let key = (d.hash.clone(), d.base.clone(), w);
+        if let Some((k, v)) = self.detail_cache.borrow().as_ref() {
+            if *k == key {
+                return v.clone();
+            }
+        }
+        let v = std::rc::Rc::new(detail_lines(d, w));
+        *self.detail_cache.borrow_mut() = Some((key, v.clone()));
+        v
     }
 
     /// 区分・フォルダを畳む・開く
@@ -660,6 +683,7 @@ impl Editor {
             detail_top: 0,
             detail_left: 0,
             auto_cols: (10, 10, 7),
+            detail_cache: Default::default(),
             src_path: path.clone(),
             src_range: range.clone(),
             rows: Vec::new(),
@@ -1719,6 +1743,7 @@ mod tests {
             detail_top: 0,
             detail_left: 0,
             auto_cols: auto_cols(&rows),
+            detail_cache: Default::default(),
             src_path: None,
             src_range: None,
             docked: true,
@@ -1851,6 +1876,7 @@ mod tests {
             detail_top: 0,
             detail_left: 0,
             auto_cols: (10, 10, 7),
+            detail_cache: Default::default(),
             src_path: None,
             src_range: None,
             docked: true,
