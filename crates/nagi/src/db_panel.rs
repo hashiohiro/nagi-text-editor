@@ -613,6 +613,169 @@ impl DbPanel {
     }
 }
 
+/// データベースの木のキーで、部品の外に及ぶこと（Editor が行う。ADR 0018 の §5）
+#[derive(Clone, Debug)]
+pub enum DbAction {
+    None,
+    /// パスワードを入れてつなぐ（接続先の番号, パスワード）
+    Connect(usize, String),
+    /// フォームで作った接続先を足してつなぐ
+    AddSource(DataSource),
+    /// 選んだ行で Enter（開く・つなぐ・開閉）
+    Activate,
+    /// その行を畳む・開く（読み込みが要れば読み込む）
+    Toggle(DbRow),
+    OpenSelected,
+    Ddl,
+    /// 新しいクエリ（false）・コンソール（true）を、選んだ接続先で
+    Query(bool),
+    Disconnect,
+    Reload,
+    Close,
+    ToText,
+    Command,
+}
+
+impl DbPanel {
+    /// データベースの木のキー（`half` は半画面の行数）。パスワード・接続先のフォーム・絞り込み（入力欄は `svc` で動かす）・選び・畳みはここで行い、外に及ぶことを返す
+    pub fn key(&mut self, key: Key, half: usize, svc: &mut crate::editor::Services) -> DbAction {
+        // パスワードの入力中
+        if let Some((i, prompt)) = &mut self.password {
+            match key {
+                Key::Esc => {
+                    self.password = None;
+                    svc.notify.info("やめました");
+                }
+                Key::Enter => {
+                    let (i, pass) = (*i, std::mem::take(&mut prompt.text));
+                    self.password = None;
+                    return DbAction::Connect(i, pass);
+                }
+                k => {
+                    prompt.key(k);
+                }
+            }
+            return DbAction::None;
+        }
+        // 接続先を足すフォーム
+        if let Some(f) = &mut self.form {
+            // 欄の行き来と種類はフォームが受け、ほかは今の欄（Vim 風）へ
+            let out = match key {
+                Key::Tab | Key::Down => {
+                    f.at = (f.at + 1).min(f.fields.len() - 1);
+                    f.fields[f.at].1.reinsert();
+                    FieldOut::None
+                }
+                Key::Up => {
+                    f.at = f.at.saturating_sub(1);
+                    f.fields[f.at].1.reinsert();
+                    FieldOut::None
+                }
+                Key::Left | Key::Right | Key::Char(' ') if f.at == 0 => {
+                    // 名前の順
+                    let order = [Kind::Oracle, Kind::Postgres, Kind::Salesforce, Kind::Sqlite];
+                    let k = order.iter().position(|k| *k == f.kind).unwrap_or(0);
+                    let k = if key == Key::Left { (k + order.len() - 1) % order.len() } else { (k + 1) % order.len() };
+                    f.set_kind(order[k]);
+                    FieldOut::None
+                }
+                Key::Esc if f.at == 0 => FieldOut::Cancel,
+                Key::Enter if f.at == 0 => FieldOut::Submit,
+                k => {
+                    let at = f.at;
+                    f.fields[at].1.feed(k, svc)
+                }
+            };
+            match out {
+                FieldOut::Cancel => {
+                    self.form = None;
+                    svc.notify.info("やめました");
+                }
+                FieldOut::Submit if f.at + 1 < f.fields.len() => {
+                    f.at += 1;
+                    f.fields[f.at].1.reinsert();
+                }
+                FieldOut::Submit => match f.source() {
+                    Ok(ds) => {
+                        self.form = None;
+                        return DbAction::AddSource(ds);
+                    }
+                    Err(e) => svc.notify.error(e),
+                },
+                _ => {}
+            }
+            return DbAction::None;
+        }
+        // 絞り込みの入力中（Vim 風。Enter で決める、ノーマルの Esc で消す）
+        if let Some(f) = &mut self.filter {
+            match f.feed(key, svc) {
+                FieldOut::Changed => {
+                    self.filter_text = f.text();
+                    self.rebuild();
+                    self.selected = self.rows.iter().position(|r| matches!(r, DbRow::Object(..))).unwrap_or(self.selected);
+                }
+                FieldOut::Submit => self.filter = None,
+                FieldOut::Cancel => {
+                    self.filter = None;
+                    self.filter_text.clear();
+                    self.rebuild();
+                }
+                FieldOut::None => {}
+            }
+            return DbAction::None;
+        }
+        let moved = nagi_ui::list::step(key, self.selected, self.rows.len(), half * 2);
+        match key {
+            _ if moved.is_some() => self.selected = moved.unwrap_or(self.selected),
+            Key::Char('g') => self.selected = 0,
+            Key::Char('/') => {
+                self.filter = Some(VimField::new(&self.filter_text, false));
+                svc.notify.info("絞り込み: 名前の一部を打つ（Enter で決める・Esc 2 回で消す）");
+            }
+            Key::Enter | Key::Char('l') | Key::Right => return DbAction::Activate,
+            Key::Char('h') | Key::Left => {
+                // 開いたフォルダなら畳む、それ以外は親へ（木の共通の動き。nagi-ui）
+                let rows: Vec<TreeLine> = (0..self.rows.len()).map(|k| TreeLine(self.depth(k), self.rows[k].key().filter(|_| self.is_open(&self.rows[k])))).collect();
+                // 開いているフォルダにだけ鍵を入れたので、鍵のあるものは開いているとみなす
+                match nagi_ui::tree::left(&rows, self.selected, &nagi_ui::Folds::open()) {
+                    nagi_ui::Step::Fold(..) => {
+                        if let Some(r) = self.rows.get(self.selected).cloned() {
+                            return DbAction::Toggle(r);
+                        }
+                    }
+                    nagi_ui::Step::Select(j) => self.selected = j,
+                    nagi_ui::Step::None => {}
+                }
+            }
+            Key::Char('o') => return DbAction::OpenSelected,
+            Key::Char('a') => {
+                self.form = Some(Form::new(Kind::Oracle));
+                if let Some(f) = &mut self.form {
+                    f.fields[f.at].1.reinsert();
+                }
+                svc.notify.info("接続先を足す: Tab で次の欄、種類は ← →、最後の欄で Enter で保存してつなぐ");
+            }
+            Key::Char('D') => return DbAction::Ddl,
+            // 新しいクエリ・コンソール（テーブルの上なら SELECT を書き入れて）
+            Key::Char('n') => return DbAction::Query(false),
+            Key::Char('c') => return DbAction::Query(true),
+            Key::Char('x') => return DbAction::Disconnect,
+            Key::Char('r') => return DbAction::Reload,
+            Key::Char('q') => {
+                if self.conns.iter().any(|c| c.pending > 0) {
+                    svc.notify.info("まだコミットしていない変更があります。先にコミットかロールバックを");
+                } else {
+                    return DbAction::Close;
+                }
+            }
+            Key::Esc => return DbAction::ToText,
+            Key::Char(':') => return DbAction::Command,
+            _ => {}
+        }
+        DbAction::None
+    }
+}
+
 impl Editor {
     /// `:Db`（ActivateDatabaseToolWindow）: データベースのタブを出して移る
     pub(crate) fn open_db_panel(&mut self) {
@@ -1661,176 +1824,53 @@ impl Editor {
             self.set_state(State::Normal);
             return Effect::None;
         };
-        // パスワードの入力中
-        if let Some((i, prompt)) = &mut p.password {
-            match key {
-                Key::Esc => {
-                    p.password = None;
-                    self.svc.notify.info("やめました");
-                }
-                Key::Enter => {
-                    let (i, pass) = (*i, std::mem::take(&mut prompt.text));
-                    p.password = None;
-                    self.db_connect(i, pass);
-                }
-                k => {
-                    prompt.key(k);
-                }
+        // 部品の中で済むこと（パスワード・接続先のフォーム・絞り込み・選び・畳み）は DbPanel::key が行い、外に及ぶことを返す（ADR 0018 の §5）
+        match p.key(key, half, &mut self.svc) {
+            DbAction::None => {}
+            DbAction::Connect(i, pass) => self.db_connect(i, pass),
+            DbAction::AddSource(ds) => {
+                self.db_push_source(ds, true);
+                let i = self.panels.db.as_ref().map_or(0, |p| p.sources.len().saturating_sub(1));
+                self.db_begin_connect(i);
             }
-            return Effect::None;
-        }
-        // 接続先を足すフォーム
-        if let Some(f) = &mut p.form {
-            // 欄の行き来と種類はフォームが受け、ほかは今の欄（Vim 風）へ
-            let out = match key {
-                Key::Tab | Key::Down => {
-                    f.at = (f.at + 1).min(f.fields.len() - 1);
-                    f.fields[f.at].1.reinsert();
-                    FieldOut::None
-                }
-                Key::Up => {
-                    f.at = f.at.saturating_sub(1);
-                    f.fields[f.at].1.reinsert();
-                    FieldOut::None
-                }
-                Key::Left | Key::Right | Key::Char(' ') if f.at == 0 => {
-                    // 名前の順
-                    let order = [Kind::Oracle, Kind::Postgres, Kind::Salesforce, Kind::Sqlite];
-                    let k = order.iter().position(|k| *k == f.kind).unwrap_or(0);
-                    let k = if key == Key::Left { (k + order.len() - 1) % order.len() } else { (k + 1) % order.len() };
-                    f.set_kind(order[k]);
-                    FieldOut::None
-                }
-                Key::Esc if f.at == 0 => FieldOut::Cancel,
-                Key::Enter if f.at == 0 => FieldOut::Submit,
-                k => self.feed_field(k, |e| e.panels.db.as_mut().and_then(|p| p.form.as_mut()).map(|f| &mut f.fields[f.at].1)),
-            };
-            let Some(p) = &mut self.panels.db else { return Effect::None };
-            let Some(f) = &mut p.form else { return Effect::None };
-            match out {
-                FieldOut::Cancel => {
-                    p.form = None;
-                    self.svc.notify.info("やめました");
-                }
-                FieldOut::Submit if f.at + 1 < f.fields.len() => {
-                    f.at += 1;
-                    f.fields[f.at].1.reinsert();
-                }
-                FieldOut::Submit => match f.source() {
-                    Ok(ds) => {
-                        p.form = None;
-                        self.db_push_source(ds, true);
-                        let i = self.panels.db.as_ref().unwrap().sources.len() - 1;
-                        self.db_begin_connect(i);
-                    }
-                    Err(e) => self.svc.notify.error(e),
-                },
-                _ => {}
-            }
-            return Effect::None;
-        }
-        // 絞り込みの入力中（Vim 風。Enter で決める、ノーマルの Esc で消す）
-        if p.filter.is_some() {
-            let out = self.feed_field(key, |e| e.panels.db.as_mut().and_then(|p| p.filter.as_mut()));
-            let Some(p) = &mut self.panels.db else { return Effect::None };
-            match out {
-                FieldOut::Changed => {
-                    p.filter_text = p.filter.as_ref().map(|f| f.text()).unwrap_or_default();
-                    p.rebuild();
-                    p.selected = p.rows.iter().position(|r| matches!(r, DbRow::Object(..))).unwrap_or(p.selected);
-                }
-                FieldOut::Submit => p.filter = None,
-                FieldOut::Cancel => {
-                    p.filter = None;
-                    p.filter_text.clear();
-                    p.rebuild();
-                }
-                FieldOut::None => {}
-            }
-            return Effect::None;
-        }
-        let moved = nagi_ui::list::step(key, p.selected, p.rows.len(), half * 2);
-        match key {
-            _ if moved.is_some() => p.selected = moved.unwrap_or(p.selected),
-            Key::Char('g') => p.selected = 0,
-            Key::Char('/') => {
-                p.filter = Some(VimField::new(&p.filter_text, false));
-                self.svc.notify.info("絞り込み: 名前の一部を打つ（Enter で決める・Esc 2 回で消す）");
-            }
-            Key::Enter | Key::Char('l') | Key::Right => self.db_activate(),
-            Key::Char('h') | Key::Left => {
-                // 開いたフォルダなら畳む、それ以外は親へ（木の共通の動き。nagi-ui）
-                let rows: Vec<TreeLine> = (0..p.rows.len()).map(|k| TreeLine(p.depth(k), p.rows[k].key().filter(|_| p.is_open(&p.rows[k])))).collect();
-                // 開いているフォルダにだけ鍵を入れたので、鍵のあるものは開いているとみなす
-                match nagi_ui::tree::left(&rows, p.selected, &nagi_ui::Folds::open()) {
-                    nagi_ui::Step::Fold(..) => {
-                        if let Some(r) = p.rows.get(p.selected).cloned() {
-                            self.db_toggle_row(&r);
-                        }
-                    }
-                    nagi_ui::Step::Select(j) => p.selected = j,
-                    nagi_ui::Step::None => {}
-                }
-            }
-            Key::Char('o') => self.db_open_selected(),
-            Key::Char('a') => {
-                p.form = Some(Form::new(Kind::Oracle));
-                if let Some(f) = &mut p.form {
-                    f.fields[f.at].1.reinsert();
-                }
-                self.svc.notify.info("接続先を足す: Tab で次の欄、種類は ← →、最後の欄で Enter で保存してつなぐ");
-            }
-            Key::Char('D') => self.db_ddl(),
-            // 新しいクエリ（テーブルの上なら SELECT を書き入れて）
-            Key::Char('n') => {
+            DbAction::Activate => self.db_activate(),
+            DbAction::Toggle(r) => self.db_toggle_row(&r),
+            DbAction::OpenSelected => self.db_open_selected(),
+            DbAction::Ddl => self.db_ddl(),
+            DbAction::Query(console) => {
                 if let Some(r) = self.db_selected() {
                     let sf = self.panels.db.as_ref().and_then(|p| p.kind(r.source())) == Some(Kind::Salesforce);
+                    // テーブルの上なら SELECT を書き入れる（コンソールは書き足す）
+                    let end = if console { ";" } else { "" };
                     let init = match &r {
                         DbRow::Object(_, _, t, Group::Tables | Group::Views, _) if sf => Some(format!("SELECT Id, Name FROM {t} LIMIT 100")),
-                        DbRow::Object(_, s, t, Group::Tables | Group::Views, _) => Some(format!("SELECT * FROM {}", qualified(self.db_dialect(r.source()), s, t))),
+                        DbRow::Object(_, s, t, Group::Tables | Group::Views, _) => Some(format!("SELECT * FROM {}{end}", qualified(self.db_dialect(r.source()), s, t))),
                         _ => None,
                     };
-                    self.db_new_query(r.source(), init);
+                    if console {
+                        self.open_console(r.source(), init);
+                    } else {
+                        self.db_new_query(r.source(), init);
+                    }
                 }
             }
-            // コンソール（テーブルの上なら SELECT を書き足して）
-            Key::Char('c') => {
-                if let Some(r) = self.db_selected() {
-                    let sf = self.panels.db.as_ref().and_then(|p| p.kind(r.source())) == Some(Kind::Salesforce);
-                    let init = match &r {
-                        DbRow::Object(_, _, t, Group::Tables | Group::Views, _) if sf => Some(format!("SELECT Id, Name FROM {t} LIMIT 100")),
-                        DbRow::Object(_, s, t, Group::Tables | Group::Views, _) => Some(format!("SELECT * FROM {};", qualified(self.db_dialect(r.source()), s, t))),
-                        _ => None,
-                    };
-                    self.open_console(r.source(), init);
-                }
-            }
-            // 切る
-            Key::Char('x') => {
+            DbAction::Disconnect => {
                 if let Some(r) = self.db_selected() {
                     self.db_disconnect(r.source());
                 }
             }
-            // 読み直す
-            Key::Char('r') => {
+            DbAction::Reload => {
                 if let Some(r) = self.db_selected() {
                     self.db_reload(r.source());
                 }
             }
-            Key::Char('q') => {
-                if self.panels.db.as_ref().is_some_and(|p| p.conns.iter().any(|c| c.pending > 0)) {
-                    self.svc.notify.info("まだコミットしていない変更があります。先にコミットかロールバックを");
-                } else {
-                    self.panels.db = None;
-                    self.set_state(State::Normal);
-                    self.rows = self.text_rows(self.active_rect());
-                }
+            DbAction::Close => {
+                self.panels.db = None;
+                self.set_state(State::Normal);
+                self.rows = self.text_rows(self.active_rect());
             }
-            Key::Esc => self.set_state(State::Normal),
-            Key::Char(':') => {
-                self.enter_command("");
-            }
-            _ => {}
+            DbAction::ToText => self.set_state(State::Normal),
+            DbAction::Command => self.enter_command(""),
         }
         Effect::None
     }
