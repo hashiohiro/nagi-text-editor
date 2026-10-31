@@ -581,7 +581,11 @@ impl crate::editor::Editor {
         self.ec_cache.borrow_mut().clear();
         self.sync_clipboard();
         self.sync_tab();
-        nagi_core::set_ambiguous_wide(self.settings.bool("appearance.ambiguous_wide"));
+        // 曖昧な幅はプロセス全体で 1 つ（裏のスレッドも使う）なので、値が変わったときだけ当てる（最初は既定の半角から変えるときだけ）
+        let wide = self.settings.bool("appearance.ambiguous_wide");
+        if old.map_or(wide, |o| o.bool("appearance.ambiguous_wide") != wide) {
+            nagi_core::set_ambiguous_wide(wide);
+        }
         nagi_core::encoding::set_fallback(match self.settings.get("editor.encoding_fallback").as_str() {
             "auto" => None,
             n => nagi_core::encoding::by_name(n),
