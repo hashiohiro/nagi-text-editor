@@ -208,6 +208,44 @@ pub fn remember_recent(path: &Path) {
     });
 }
 
+/// ファインダーのキーで、部品の外に及ぶこと（Editor が行う。ADR 0018 の §5）
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FinderAction {
+    None,
+    Close,
+    /// 選んだ候補を開く（None はそのまま、Some(true) は左右に分けて、Some(false) は上下に分けて）
+    Accept(Option<bool>),
+}
+
+impl Finder {
+    /// ファインダーのキー。候補を選ぶ・打って絞り込むはここで行い（入力欄は `svc` のレジスタとクリップボードで）、外に及ぶことを返す
+    pub fn key(&mut self, key: Key, svc: &mut crate::editor::Services) -> FinderAction {
+        let normal = !self.field.is_insert() && self.field.ed.pending_keys.is_empty() && self.field.visual().is_none();
+        // 上が一番良い候補（IntelliJ と同じ）。↓ で次の候補へ
+        let up = |f: &mut Finder| f.selected = f.selected.saturating_sub(1);
+        let down = |f: &mut Finder| f.selected = (f.selected + 1).min(f.hits.len().saturating_sub(1));
+        match key {
+            Key::Ctrl('c') | Key::Ctrl('g') => return FinderAction::Close,
+            Key::Enter => return FinderAction::Accept(None),
+            Key::Ctrl('v') => return FinderAction::Accept(Some(true)),
+            Key::Ctrl('x') | Key::Ctrl('s') => return FinderAction::Accept(Some(false)),
+            // 良い候補は下にあるので、上へ = 次の候補
+            Key::Up | Key::Ctrl('p') | Key::Ctrl('k') => up(self),
+            Key::Down | Key::Ctrl('n') | Key::Ctrl('j') | Key::Tab => down(self),
+            // ノーマルでは j / k で候補を選ぶ
+            Key::Char('j') if normal => down(self),
+            Key::Char('k') if normal => up(self),
+            k => match self.field.feed(k, svc) {
+                FieldOut::Changed => self.sync_query(),
+                FieldOut::Submit => return FinderAction::Accept(None),
+                FieldOut::Cancel => return FinderAction::Close,
+                FieldOut::None => self.query.cursor = self.field.cursor().1.min(self.query.text.len()),
+            },
+        }
+        FinderAction::None
+    }
+}
+
 impl Editor {
     /// ファインダーを開く
     pub(crate) fn open_finder(&mut self, source: Source) {
@@ -404,37 +442,15 @@ impl Editor {
             self.set_state(State::Normal);
             return Effect::None;
         };
-        let normal = !f.field.is_insert() && f.field.ed.pending_keys.is_empty() && f.field.visual().is_none();
-        // 上が一番良い候補（IntelliJ と同じ）。↓ で次の候補へ
-        let up = |f: &mut Finder| f.selected = f.selected.saturating_sub(1);
-        let down = |f: &mut Finder| f.selected = (f.selected + 1).min(f.hits.len().saturating_sub(1));
-        match key {
-            Key::Ctrl('c') | Key::Ctrl('g') => self.close_finder(),
-            Key::Enter => return self.accept_finder(None),
-            Key::Ctrl('v') => return self.accept_finder(Some(true)),
-            Key::Ctrl('x') | Key::Ctrl('s') => return self.accept_finder(Some(false)),
-            // 良い候補は下にあるので、上へ = 次の候補
-            Key::Up | Key::Ctrl('p') | Key::Ctrl('k') => up(f),
-            Key::Down | Key::Ctrl('n') | Key::Ctrl('j') | Key::Tab => down(f),
-            // ノーマルでは j / k で候補を選ぶ
-            Key::Char('j') if normal => down(f),
-            Key::Char('k') if normal => up(f),
-            k => match self.feed_field(k, |e| e.panels.finder.as_mut().map(|f| &mut f.field)) {
-                FieldOut::Changed => {
-                    if let Some(f) = &mut self.panels.finder {
-                        f.sync_query();
-                    }
-                }
-                FieldOut::Submit => return self.accept_finder(None),
-                FieldOut::Cancel => self.close_finder(),
-                FieldOut::None => {
-                    if let Some(f) = &mut self.panels.finder {
-                        f.query.cursor = f.field.cursor().1.min(f.query.text.len());
-                    }
-                }
-            },
+        // 部品の中で済むこと（候補を選ぶ・打って絞り込む）は Finder::key が部品の状態と Services で行い、外に及ぶことを返す（ADR 0018 の §5）
+        match f.key(key, &mut self.svc) {
+            FinderAction::None => Effect::None,
+            FinderAction::Close => {
+                self.close_finder();
+                Effect::None
+            }
+            FinderAction::Accept(split) => self.accept_finder(split),
         }
-        Effect::None
     }
 
     pub(crate) fn finder_insert(&mut self, text: &str) {
