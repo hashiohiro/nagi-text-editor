@@ -33,6 +33,18 @@ pub struct Stats {
     next: usize,
 }
 
+/// UI のスレッドがこれまでに使った CPU のサイクル数。経過時間と違い、ほかのプロセスに CPU を取られた時間や待ちが入らないので、
+/// 速さの比べ（tools/bench_ab.py）でぶれが小さい
+pub fn thread_cycles() -> u64 {
+    let mut c = 0u64;
+    #[cfg(windows)]
+    unsafe {
+        use windows::Win32::System::{Threading::GetCurrentThread, WindowsProgramming::QueryThreadCycleTime};
+        let _ = QueryThreadCycleTime(GetCurrentThread(), &mut c);
+    }
+    c
+}
+
 pub fn us(d: Duration) -> u32 {
     d.as_micros().min(u32::MAX as u128) as u32
 }

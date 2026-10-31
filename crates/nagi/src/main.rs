@@ -325,6 +325,8 @@ struct Frame {
     /// 今のマウスのカーソルの形（区切りの上では ↔ / ↕）
     cursor_icon: winit::window::CursorIcon,
     stats: stats::Stats,
+    /// 直前のフレームの組み立てに使った CPU のサイクル数（NAGI_DEBUG_STATS）
+    build_cycles: u64,
     /// `--replay` の残りの手順（1 回のイベント処理で 1 つずつ。キーと、試験用のマウス・待ち・確かめ。replay.rs）
     replay: std::collections::VecDeque<replay::Step>,
     replay_deadline: Option<Instant>,
@@ -585,6 +587,7 @@ impl Frame {
         let t1 = Instant::now();
         r.wait_frame();
         let t2 = Instant::now();
+        let c2 = stats::thread_cycles();
         let status = ed.status_rows();
         let rows = ((r.size().1 as f32 / f.cell().h) as usize).saturating_sub(status).max(1);
         ed.set_screen((r.size().0 as f32 / f.cell().w) as usize, rows);
@@ -608,6 +611,7 @@ impl Frame {
             }
         }
         let t3 = Instant::now();
+        self.build_cycles = stats::thread_cycles() - c2;
         if let Err(e) = r.draw(&insts, view::theme_color(view::BG)) {
             nagi_core::log::error(&format!("描けません: {e}"));
         }
@@ -811,6 +815,7 @@ impl Frame {
     /// 1 回のキー入力を処理して描き、かかった時間を記録する
     fn handle_keys(&mut self, keys: Vec<VKey>, el: &ActiveEventLoop) {
         let t0 = Instant::now();
+        let c0 = stats::thread_cycles();
         let keys_label: String = keys.iter().map(|k| k.label()).collect();
         self.stop_scroll();
         for k in keys {
@@ -830,7 +835,7 @@ impl Frame {
         if std::env::var_os("NAGI_DEBUG_STATS").is_some() {
             let (rt, rn) = self.renderer.as_mut().map_or(Default::default(), |r| r.take_raster_stats());
             eprintln!(
-                "stat {:?} total={} edit={} wait={} build={} present={} ime_after={} raster={}us/{rn} mode={:?}",
+                "stat {:?} total={} edit={} wait={} build={} present={} ime_after={} raster={}us/{rn} mode={:?} cyc_total={} cyc_build={}",
                 keys_label,
                 sample.total(),
                 sample.edit,
@@ -839,7 +844,9 @@ impl Frame {
                 sample.present,
                 ime.as_micros(),
                 rt.as_micros(),
-                self.ed.as_ref().map(|e| e.state())
+                self.ed.as_ref().map(|e| e.state()),
+                stats::thread_cycles() - c0,
+                self.build_cycles
             );
         }
         self.stats.push(sample);
@@ -2011,6 +2018,7 @@ fn new_frame(opts: Opts, pending: Pending, proxy: winit::event_loop::EventLoopPr
         shift_alone: false,
         shift_up: None,
         stats: stats::Stats::default(),
+        build_cycles: 0,
         replay: Default::default(),
         replay_deadline: None,
         prefetched_top: None,
