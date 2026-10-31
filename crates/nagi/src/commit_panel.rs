@@ -101,6 +101,84 @@ fn run_git<F: FnOnce() -> nagi_core::Result<String> + Send + 'static>(waker: Opt
     rx
 }
 
+/// コミットの一覧のキーで、部品の外に及ぶこと（Editor が行う。ADR 0018 の §5）
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CommitAction {
+    None,
+    /// メッセージの欄へ
+    EditMessage,
+    /// コミットする（true ならその後 push）
+    Commit(bool),
+    /// この項目（番号, パス）の変更を戻すか確かめる
+    AskRevert(usize, String),
+    AskDeleteUntracked,
+    Refresh,
+    /// ファイルを開く（true なら一覧に残る）
+    Open(PathBuf, bool),
+    /// HEAD との差分を開く（根, 相対パス）
+    Diff(PathBuf, String),
+    Close,
+    ToText,
+    Command,
+}
+
+impl CommitPanel {
+    /// コミットの一覧のキー。選び・チェック・amend の切り替え・断る知らせは部品の状態と `svc` で行い、外に及ぶことを返す
+    pub fn key(&mut self, key: Key, svc: &mut crate::editor::Services) -> CommitAction {
+        let last = self.items.len().saturating_sub(1);
+        let moved = nagi_ui::list::step(key, self.selected, self.items.len(), 10);
+        match key {
+            _ if moved.is_some() => self.selected = moved.unwrap_or(self.selected),
+            Key::Char('g') => self.selected = 0,
+            Key::Char(' ') => {
+                if let Some(it) = self.items.get_mut(self.selected) {
+                    it.checked = !it.checked;
+                }
+                self.selected = (self.selected + 1).min(last);
+            }
+            // すべての選択を切り替える
+            Key::Char('a') => {
+                let all = self.items.iter().all(|i| i.checked);
+                self.items.iter_mut().for_each(|i| i.checked = !all);
+            }
+            Key::Char('A') => self.amend = !self.amend,
+            Key::Char('c') | Key::Char('i') => {
+                self.msg.reinsert();
+                return CommitAction::EditMessage;
+            }
+            Key::Ctrl('m') => return CommitAction::Commit(false),
+            Key::Char('P') => return CommitAction::Commit(true),
+            Key::Char('u') => {
+                // 未追跡は戻せない（聞く前に知らせる）
+                if self.items.get(self.selected).is_some_and(|it| it.change.state == FileState::Untracked) {
+                    svc.notify.warn("未追跡のファイルは戻せません（消すなら D）");
+                } else if let Some(it) = self.items.get(self.selected) {
+                    return CommitAction::AskRevert(self.selected, it.change.path.clone());
+                }
+            }
+            Key::Char('D') => return CommitAction::AskDeleteUntracked,
+            Key::Char('r') => return CommitAction::Refresh,
+            Key::Enter | Key::Char('o') => {
+                let (Some(root), Some(it)) = (svc.git.root.clone(), self.items.get(self.selected)) else { return CommitAction::None };
+                if it.change.state == FileState::Deleted {
+                    svc.notify.warn("消したファイルは開けません");
+                    return CommitAction::None;
+                }
+                return CommitAction::Open(root.join(&it.change.path), key == Key::Char('o'));
+            }
+            Key::Char('d') => {
+                let (Some(root), Some(it)) = (svc.git.root.clone(), self.items.get(self.selected)) else { return CommitAction::None };
+                return CommitAction::Diff(root, it.change.path.clone());
+            }
+            Key::Char('q') => return CommitAction::Close,
+            Key::Esc | Key::Ctrl('w') => return CommitAction::ToText,
+            Key::Char(':') => return CommitAction::Command,
+            _ => {}
+        }
+        CommitAction::None
+    }
+}
+
 impl Editor {
     /// `:Git`（CheckinProject / ChangesView）: コミットのパネルを開いて移る
     pub(crate) fn open_commit_panel(&mut self) {
@@ -403,66 +481,22 @@ impl Editor {
             self.set_state(State::Normal);
             return Effect::None;
         };
-        let last = p.items.len().saturating_sub(1);
-        let moved = nagi_ui::list::step(key, p.selected, p.items.len(), 10);
-        match key {
-            _ if moved.is_some() => p.selected = moved.unwrap_or(p.selected),
-            Key::Char('g') => p.selected = 0,
-            Key::Char(' ') => {
-                if let Some(it) = p.items.get_mut(p.selected) {
-                    it.checked = !it.checked;
-                }
-                p.selected = (p.selected + 1).min(last);
-            }
-            // すべての選択を切り替える
-            Key::Char('a') => {
-                let all = p.items.iter().all(|i| i.checked);
-                p.items.iter_mut().for_each(|i| i.checked = !all);
-            }
-            Key::Char('A') => p.amend = !p.amend,
-            Key::Char('c') | Key::Char('i') => {
-                p.msg.reinsert();
-                self.set_state(State::CommitMsg);
-            }
-            Key::Ctrl('m') => self.commit(false),
-            Key::Char('P') => self.commit(true),
-            Key::Char('u') => {
-                // 未追跡は戻せない（聞く前に知らせる）
-                if p.items.get(p.selected).is_some_and(|it| it.change.state == FileState::Untracked) {
-                    self.svc.notify.warn("未追跡のファイルは戻せません（消すなら D）");
-                } else if !p.items.is_empty() {
-                    let i = p.selected;
-                    let q = format!("{} の変更を戻しますか", p.items[i].change.path);
-                    self.ask(q, move |e| e.revert_item(i));
-                }
-            }
-            Key::Char('D') => self.ask_delete_untracked(),
-            Key::Char('r') => {
-                self.refresh_git();
-            }
-            Key::Enter | Key::Char('o') => {
-                let (Some(root), Some(it)) = (self.svc.git.root.clone(), p.items.get(p.selected)) else { return Effect::None };
-                if it.change.state == FileState::Deleted {
-                    self.svc.notify.warn("消したファイルは開けません");
-                    return Effect::None;
-                }
-                let path: PathBuf = root.join(&it.change.path);
-                let stay = key == Key::Char('o');
+        // 部品の中で済むこと（選び・チェック・amend・知らせ）は CommitPanel::key が部品の状態と Services で行い、外に及ぶことを返す（ADR 0018 の §5）
+        match p.key(key, &mut self.svc) {
+            CommitAction::None => {}
+            CommitAction::EditMessage => self.set_state(State::CommitMsg),
+            CommitAction::Commit(push) => self.commit(push),
+            CommitAction::AskRevert(i, path) => self.ask(format!("{path} の変更を戻しますか"), move |e| e.revert_item(i)),
+            CommitAction::AskDeleteUntracked => self.ask_delete_untracked(),
+            CommitAction::Refresh => self.refresh_git(),
+            CommitAction::Open(path, stay) => {
                 self.edit_file(path);
                 self.set_state(if stay { State::List } else { State::Normal });
             }
-            Key::Char('d') => {
-                let (Some(root), Some(it)) = (self.svc.git.root.clone(), p.items.get(p.selected)) else { return Effect::None };
-                let rel = it.change.path.clone();
-                self.open_file_diff(&root, &rel);
-            }
-            Key::Char('q') => self.close_commit_panel(),
-            Key::Esc => self.set_state(State::Normal),
-            Key::Ctrl('w') => self.set_state(State::Normal),
-            Key::Char(':') => {
-                self.enter_command("");
-            }
-            _ => {}
+            CommitAction::Diff(root, rel) => self.open_file_diff(&root, &rel),
+            CommitAction::Close => self.close_commit_panel(),
+            CommitAction::ToText => self.set_state(State::Normal),
+            CommitAction::Command => self.enter_command(""),
         }
         Effect::None
     }

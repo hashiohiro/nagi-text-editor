@@ -49,6 +49,65 @@ pub struct ProblemsView {
     pending_w: bool,
 }
 
+/// 問題の一覧のキーで、部品の外に及ぶこと（Editor が行う。ADR 0018 の §5）
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProblemAction {
+    None,
+    ToText,
+    HideBottom,
+    Command,
+    /// その問題（diags の番号）へ跳ぶ（true なら一覧に残る）
+    Jump(usize, bool),
+}
+
+impl ProblemsView {
+    /// 問題の一覧のキー（`rows` は一覧の行、`h` は見える行数）。移動はここで行い、外に及ぶことを返す
+    pub fn key(&mut self, key: Key, rows: &[ProblemRow], h: usize) -> ProblemAction {
+        let last = rows.len().saturating_sub(1);
+        let g = std::mem::take(&mut self.pending_g);
+        if std::mem::take(&mut self.pending_w) {
+            return if matches!(key, Key::Char('k') | Key::Ctrl('k') | Key::Char('w') | Key::Ctrl('w') | Key::Char('p')) { ProblemAction::ToText } else { ProblemAction::None };
+        }
+        let moved = nagi_ui::list::step(key, self.selected, last + 1, h);
+        let act = match key {
+            _ if moved.is_some() => {
+                self.selected = moved.unwrap_or(self.selected);
+                ProblemAction::None
+            }
+            Key::Char('g') if g => {
+                self.selected = 0;
+                ProblemAction::None
+            }
+            Key::Char('g') => {
+                self.pending_g = true;
+                ProblemAction::None
+            }
+            Key::Ctrl('w') => {
+                self.pending_w = true;
+                ProblemAction::None
+            }
+            Key::Enter | Key::Char('o') => {
+                let target = match rows.get(self.selected) {
+                    Some(ProblemRow::Item(i)) => Some(*i),
+                    // ファイルの行なら最初の問題へ
+                    Some(ProblemRow::File(..)) => match rows.get(self.selected + 1) {
+                        Some(ProblemRow::Item(i)) => Some(*i),
+                        _ => None,
+                    },
+                    None => None,
+                };
+                target.map_or(ProblemAction::None, |i| ProblemAction::Jump(i, key == Key::Char('o')))
+            }
+            Key::Char('q') => ProblemAction::HideBottom,
+            Key::Esc => ProblemAction::ToText,
+            Key::Char(':') => ProblemAction::Command,
+            _ => ProblemAction::None,
+        };
+        nagi_ui::list::fit(self.selected, &mut self.scroll, h);
+        act
+    }
+}
+
 impl Editor {
     /// 出すタブ（クエリの結果は結果があるときだけ）
     pub fn bottom_tabs(&self) -> Vec<(&'static str, BottomKind)> {
@@ -171,46 +230,19 @@ impl Editor {
     pub(crate) fn problems_key(&mut self, key: Key) -> Effect {
         let rows = self.problem_rows();
         let h = self.bottom_content_rect().map_or(10, |r| r.h).max(1);
-        let last = rows.len().saturating_sub(1);
-        let p = &mut self.panels.problems;
-        let g = std::mem::take(&mut p.pending_g);
-        if std::mem::take(&mut p.pending_w) {
-            if matches!(key, Key::Char('k') | Key::Ctrl('k') | Key::Char('w') | Key::Ctrl('w') | Key::Char('p')) {
-                self.set_state(State::Normal);
+        // 部品の中で済むことは ProblemsView::key が行い、外に及ぶことを返す（ADR 0018 の §5）
+        match self.panels.problems.key(key, &rows, h) {
+            ProblemAction::None => {}
+            ProblemAction::ToText => self.set_state(State::Normal),
+            ProblemAction::HideBottom => self.hide_bottom(),
+            ProblemAction::Command => self.enter_command(""),
+            ProblemAction::Jump(i, stay) => {
+                let d = self.diags[i].clone();
+                self.jump_to(&d.path, d.line, d.col);
+                self.set_state(if stay { State::List } else { State::Normal });
+                self.list_side = Side::Bottom;
             }
-            return Effect::None;
         }
-        let moved = nagi_ui::list::step(key, p.selected, last + 1, h);
-        match key {
-            _ if moved.is_some() => p.selected = moved.unwrap_or(p.selected),
-            Key::Char('g') if g => p.selected = 0,
-            Key::Char('g') => p.pending_g = true,
-            Key::Ctrl('w') => p.pending_w = true,
-            Key::Enter | Key::Char('o') => {
-                let stay = key == Key::Char('o');
-                let target = match rows.get(p.selected) {
-                    Some(ProblemRow::Item(i)) => Some(*i),
-                    // ファイルの行なら最初の問題へ
-                    Some(ProblemRow::File(..)) => match rows.get(p.selected + 1) {
-                        Some(ProblemRow::Item(i)) => Some(*i),
-                        _ => None,
-                    },
-                    None => None,
-                };
-                if let Some(i) = target {
-                    let d = self.diags[i].clone();
-                    self.jump_to(&d.path, d.line, d.col);
-                    self.set_state(if stay { State::List } else { State::Normal });
-                    self.list_side = Side::Bottom;
-                }
-            }
-            Key::Char('q') => self.hide_bottom(),
-            Key::Esc => self.set_state(State::Normal),
-            Key::Char(':') => self.enter_command(""),
-            _ => {}
-        }
-        let p = &mut self.panels.problems;
-        nagi_ui::list::fit(p.selected, &mut p.scroll, h);
         Effect::None
     }
 
