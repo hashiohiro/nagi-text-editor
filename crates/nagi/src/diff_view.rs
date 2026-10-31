@@ -47,12 +47,88 @@ pub struct DiffView {
     pub work: Option<(PathBuf, String, PathBuf)>,
     hunks: Vec<Hunk>,
     old_text: String,
+    /// 押しかけのキー（`]c`・`[c`・`gg` の 1 文字目）
+    pending: Option<char>,
+}
+
+/// 差分の画面のキーで、部品の外に及ぶこと（Editor が行う。ADR 0018 の §5）
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DiffAction {
+    None,
+    Close,
+    /// カーソルの変更を戻す（false）・ステージする（true）
+    Apply(bool),
+    /// 作業中のファイルのその行を開く（ファイル, 行）
+    OpenAt(Option<PathBuf>, Option<usize>),
 }
 
 /// 行番号の欄の幅（"{:>5} "）
 pub const NUM_W: usize = 6;
 
 impl DiffView {
+    /// 差分の画面のキー（`rows` は見える行数、`tw` は本文の幅）。移動・横の移動・変更へ跳ぶはここで行い、外に及ぶことを返す
+    pub fn key(&mut self, key: Key, rows: usize, tw: usize) -> DiffAction {
+        let last = self.rows.len().saturating_sub(1);
+        let pending = self.pending.take();
+        let moved = nagi_ui::list::step(key, self.cursor, last + 1, rows);
+        let act = match (pending, key) {
+            (Some(']'), Key::Char('c')) => {
+                if let Some(&r) = self.hunk_rows.iter().find(|&&r| r > self.cursor) {
+                    self.cursor = r;
+                }
+                DiffAction::None
+            }
+            (Some('['), Key::Char('c')) => {
+                if let Some(&r) = self.hunk_rows.iter().rev().find(|&&r| r < self.cursor) {
+                    self.cursor = r;
+                }
+                DiffAction::None
+            }
+            (Some('g'), Key::Char('g')) => {
+                self.cursor = 0;
+                DiffAction::None
+            }
+            // 横の移動（読むだけでも、どこを見ているか分かるように列のカーソルを持つ）
+            (_, Key::Char('h') | Key::Left) => {
+                self.col = self.shown_col().saturating_sub(1);
+                DiffAction::None
+            }
+            (_, Key::Char('l') | Key::Right) => {
+                let t = self.cursor_text();
+                self.col = (self.shown_col() + 1).min(nagi_core::display_col(t, t.len(), false).saturating_sub(1));
+                DiffAction::None
+            }
+            (_, Key::Char('0')) => {
+                self.col = 0;
+                DiffAction::None
+            }
+            (_, Key::Char('$')) => {
+                self.col = usize::MAX;
+                DiffAction::None
+            }
+            (_, Key::Char(c @ (']' | '[' | 'g'))) => {
+                self.pending = Some(c);
+                DiffAction::None
+            }
+            _ if moved.is_some() => {
+                self.cursor = moved.unwrap_or(self.cursor);
+                DiffAction::None
+            }
+            (_, Key::Char('q') | Key::Esc) => return DiffAction::Close,
+            (_, Key::Char('u')) => return DiffAction::Apply(false),
+            (_, Key::Char('s')) => return DiffAction::Apply(true),
+            (_, Key::Enter) => {
+                // その行を作業中のファイルで開く
+                let target = self.rows[self.cursor].right.as_ref().map(|r| r.0).or_else(|| self.rows[..self.cursor].iter().rev().find_map(|r| r.right.as_ref().map(|x| x.0 + 1)));
+                return DiffAction::OpenAt(self.work.as_ref().map(|w| w.2.clone()), target);
+            }
+            _ => DiffAction::None,
+        };
+        nagi_ui::list::fit(self.cursor, &mut self.top, rows);
+        self.follow(tw);
+        act
+    }
+
     /// カーソルの行で、カーソルを出す側の本文（右に無ければ左）
     pub fn cursor_text(&self) -> &str {
         let Some(r) = self.rows.get(self.cursor) else { return "" };
@@ -155,7 +231,7 @@ impl Editor {
             self.svc.notify.info("差分はありません");
         }
         let cursor = hunk_rows.first().copied().unwrap_or(0);
-        self.panels.diff = Some(DiffView { left_title, right_title, rows, top: cursor.saturating_sub(5), cursor, col: 0, on_left: false, left: 0, hunk_rows, work, hunks, old_text: old.to_string() });
+        self.panels.diff = Some(DiffView { left_title, right_title, rows, top: cursor.saturating_sub(5), cursor, col: 0, on_left: false, left: 0, hunk_rows, work, hunks, old_text: old.to_string(), pending: None });
         self.diff_return = Some(self.state());
         self.set_state(State::Diff);
     }
@@ -172,54 +248,23 @@ impl Editor {
     /// 差分の画面のキー
     pub(crate) fn diff_key(&mut self, key: Key) {
         let rows = self.screen.1.saturating_sub(2).max(1);
+        let tw = self.diff_text_w();
         let Some(d) = &mut self.panels.diff else {
             self.set_state(State::Normal);
             return;
         };
-        let last = d.rows.len().saturating_sub(1);
-        let pending = std::mem::take(&mut self.diff_pending);
-        let moved = nagi_ui::list::step(key, d.cursor, last + 1, rows);
-        match (pending, key) {
-            (Some(']'), Key::Char('c')) => {
-                if let Some(&r) = d.hunk_rows.iter().find(|&&r| r > d.cursor) {
-                    d.cursor = r;
-                }
-            }
-            (Some('['), Key::Char('c')) => {
-                if let Some(&r) = d.hunk_rows.iter().rev().find(|&&r| r < d.cursor) {
-                    d.cursor = r;
-                }
-            }
-            (Some('g'), Key::Char('g')) => d.cursor = 0,
-            // 横の移動（読むだけでも、どこを見ているか分かるように列のカーソルを持つ）
-            (_, Key::Char('h') | Key::Left) => d.col = d.shown_col().saturating_sub(1),
-            (_, Key::Char('l') | Key::Right) => {
-                let t = d.cursor_text();
-                d.col = (d.shown_col() + 1).min(nagi_core::display_col(t, t.len(), false).saturating_sub(1));
-            }
-            (_, Key::Char('0')) => d.col = 0,
-            (_, Key::Char('$')) => d.col = usize::MAX,
-            (_, Key::Char(c @ (']' | '[' | 'g'))) => self.diff_pending = Some(c),
-            _ if moved.is_some() => d.cursor = moved.unwrap_or(d.cursor),
-            (_, Key::Char('q') | Key::Esc) => self.close_diff(),
-            (_, Key::Char('u')) => self.diff_apply(false),
-            (_, Key::Char('s')) => self.diff_apply(true),
-            (_, Key::Enter) => {
-                // その行を作業中のファイルで開く
-                let target = d.rows[d.cursor].right.as_ref().map(|r| r.0).or_else(|| d.rows[..d.cursor].iter().rev().find_map(|r| r.right.as_ref().map(|x| x.0 + 1)));
-                let path = d.work.as_ref().map(|w| w.2.clone());
+        // 部品の中で済むことは DiffView::key が行い、外に及ぶことを返す（ADR 0018 の §5）
+        match d.key(key, rows, tw) {
+            DiffAction::None => {}
+            DiffAction::Close => self.close_diff(),
+            DiffAction::Apply(stage) => self.diff_apply(stage),
+            DiffAction::OpenAt(path, line) => {
                 self.close_diff();
                 self.set_state(State::Normal);
-                if let (Some(p), Some(l)) = (path, target) {
+                if let (Some(p), Some(l)) = (path, line) {
                     self.jump_to(&p, l, 0);
                 }
             }
-            _ => {}
-        }
-        let tw = self.diff_text_w();
-        if let Some(d) = &mut self.panels.diff {
-            nagi_ui::list::fit(d.cursor, &mut d.top, rows);
-            d.follow(tw);
         }
     }
 

@@ -96,6 +96,62 @@ fn push_project(p: &Pom, depth: usize, open: &nagi_ui::Folds<String>, rows: &mut
     }
 }
 
+/// Maven の欄のキーで、部品の外に及ぶこと（Editor が行う。ADR 0018 の §5）
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MavenAction {
+    None,
+    /// ゴールを動かす（根, pom.xml のあるフォルダ, ゴール）
+    Run(PathBuf, PathBuf, &'static str),
+    Reload,
+    Close,
+    ToText,
+    Command,
+}
+
+impl MavenPanel {
+    /// 選んでいる行で Enter: フォルダは開閉、ゴールは動かす
+    pub fn activate(&mut self) -> MavenAction {
+        let Some(row) = self.rows.get(self.selected).cloned() else { return MavenAction::None };
+        match row.kind {
+            RowKind::Folder(k) => {
+                self.folds.toggle(&k);
+                self.rebuild();
+                MavenAction::None
+            }
+            RowKind::Goal(dir, goal) => MavenAction::Run(self.root.clone(), dir, goal),
+            RowKind::Leaf => MavenAction::None,
+        }
+    }
+
+    /// Maven の欄のキー（`half` は半画面の行数）。移動と開閉はここで行い、外に及ぶことを返す
+    pub fn key(&mut self, key: Key, half: usize) -> MavenAction {
+        let moved = nagi_ui::list::step(key, self.selected, self.rows.len(), half * 2);
+        match key {
+            _ if moved.is_some() => self.selected = moved.unwrap_or(self.selected),
+            Key::Char('g') => self.selected = 0,
+            Key::Enter | Key::Char('o') => return self.activate(),
+            // l で開く・h で閉じる（閉じていれば親へ。木の共通の動き。nagi-ui）
+            Key::Char('l') | Key::Right | Key::Char('h') | Key::Left => {
+                let step = if matches!(key, Key::Char('l') | Key::Right) { nagi_ui::tree::right(&self.rows, self.selected, &self.folds) } else { nagi_ui::tree::left(&self.rows, self.selected, &self.folds) };
+                match step {
+                    nagi_ui::Step::Fold(k, open) => {
+                        self.folds.set_open(&k, open);
+                        self.rebuild();
+                    }
+                    nagi_ui::Step::Select(i) => self.selected = i,
+                    nagi_ui::Step::None => {}
+                }
+            }
+            Key::Char('r') => return MavenAction::Reload,
+            Key::Char('q') => return MavenAction::Close,
+            Key::Esc => return MavenAction::ToText,
+            Key::Char(':') => return MavenAction::Command,
+            _ => {}
+        }
+        MavenAction::None
+    }
+}
+
 impl Editor {
     /// `:Maven`（ActivateMavenToolWindow）: Maven タブを出して移る
     pub(crate) fn open_maven(&mut self) {
@@ -148,14 +204,15 @@ impl Editor {
 
     fn maven_activate(&mut self) {
         let Some(m) = &mut self.panels.maven else { return };
-        let Some(row) = m.rows.get(m.selected).cloned() else { return };
-        match row.kind {
-            RowKind::Folder(k) => {
-                m.folds.toggle(&k);
-                m.rebuild();
-            }
-            RowKind::Goal(dir, goal) => {
-                let root = m.root.clone();
+        let act = m.activate();
+        self.maven_do(act);
+    }
+
+    /// Maven の欄の Action を行う（部品の外に及ぶこと）
+    fn maven_do(&mut self, act: MavenAction) {
+        match act {
+            MavenAction::None => {}
+            MavenAction::Run(root, dir, goal) => {
                 let cmd = nagi_workers::maven::command(&root, &dir, goal);
                 let name = dir.file_name().map_or(String::new(), |n| n.to_string_lossy().into_owned());
                 self.run_job(&cmd, &root, &format!("Maven: {goal}（{name}）"), true);
@@ -163,7 +220,14 @@ impl Editor {
                 self.set_state(State::List);
                 self.list_side = crate::editor::Side::Right;
             }
-            RowKind::Leaf => {}
+            MavenAction::Reload => self.reload_maven(),
+            MavenAction::Close => {
+                self.panels.maven = None;
+                self.set_state(State::Normal);
+                self.rows = self.text_rows(self.active_rect());
+            }
+            MavenAction::ToText => self.set_state(State::Normal),
+            MavenAction::Command => self.enter_command(""),
         }
     }
 
@@ -173,35 +237,9 @@ impl Editor {
             self.set_state(State::Normal);
             return Effect::None;
         };
-        let moved = nagi_ui::list::step(key, m.selected, m.rows.len(), half * 2);
-        match key {
-            _ if moved.is_some() => m.selected = moved.unwrap_or(m.selected),
-            Key::Char('g') => m.selected = 0,
-            Key::Enter | Key::Char('o') => self.maven_activate(),
-            // l で開く・h で閉じる（閉じていれば親へ。木の共通の動き。nagi-ui）
-            Key::Char('l') | Key::Right | Key::Char('h') | Key::Left => {
-                let step = if matches!(key, Key::Char('l') | Key::Right) { nagi_ui::tree::right(&m.rows, m.selected, &m.folds) } else { nagi_ui::tree::left(&m.rows, m.selected, &m.folds) };
-                match step {
-                    nagi_ui::Step::Fold(k, open) => {
-                        m.folds.set_open(&k, open);
-                        m.rebuild();
-                    }
-                    nagi_ui::Step::Select(i) => m.selected = i,
-                    nagi_ui::Step::None => {}
-                }
-            }
-            Key::Char('r') => self.reload_maven(),
-            Key::Char('q') => {
-                self.panels.maven = None;
-                self.set_state(State::Normal);
-                self.rows = self.text_rows(self.active_rect());
-            }
-            Key::Esc => self.set_state(State::Normal),
-            Key::Char(':') => {
-                self.enter_command("");
-            }
-            _ => {}
-        }
+        // 部品の中で済むことは MavenPanel::key が行い、外に及ぶことを返す（ADR 0018 の §5）
+        let act = m.key(key, half);
+        self.maven_do(act);
         Effect::None
     }
 

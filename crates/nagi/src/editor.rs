@@ -515,7 +515,6 @@ pub struct Editor {
     /// 裏で動かしているフェッチ・pull（見出し, 引数（止まったらもう一度動かす）, 結果）
     pub git_job: Option<(String, Vec<String>, nagi_core::task::Task<nagi_core::Result<String>>)>,
     pub(crate) diff_return: Option<State>,
-    pub(crate) diff_pending: Option<char>,
     /// 動いている診断のコマンドと、その結果
     pub(crate) make: Option<crate::diagnostics::MakeState>,
     pub diags: Vec<crate::diagnostics::Diag>,
@@ -829,7 +828,6 @@ impl Editor {
             right_pending_w: false,
             git_job: None,
             diff_return: None,
-            diff_pending: None,
             diags: Vec::new(),
             block_insert: None,
             reg_blocks: HashMap::new(),
