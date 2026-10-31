@@ -443,17 +443,9 @@ pub struct Editor {
     pub grammar_failed: std::collections::HashSet<String>,
     pub right_tab: crate::right_panel::RightTab,
     pub right_hidden: bool,
-    pub right_w: Option<usize>,
     pub(crate) right_pending_w: bool,
-    /// ドラッグで変えた左の欄の幅・下のパネルの高さ（None は既定の大きさ）
-    pub left_w: Option<usize>,
-    /// 履歴の左のブランチの列・右の中身の列の幅（ドラッグで変えたとき）
-    pub log_branch_w: Option<usize>,
-    pub log_detail_w: Option<usize>,
-    /// 履歴のコミットの作者・日時の列の幅（ドラッグで変えたとき。None は中身に合わせる）
-    pub log_author_w: Option<usize>,
-    pub log_date_w: Option<usize>,
-    pub bottom_h: Option<usize>,
+    /// ドラッグで変えた大きさ（欄の幅・高さ、履歴の列の幅。名前は resize.rs。無ければ既定の大きさ）
+    pub sizes: nagi_ui::Sizes,
     /// 最後に描いた入力欄の縦棒カーソル（列, y の px）。IME の候補の窓の位置に使う
     pub prompt_caret: std::cell::Cell<Option<(usize, f32)>>,
     /// マウスを載せている SQL コンソールの帯のボタン
@@ -754,11 +746,7 @@ impl Editor {
             hover_bar: None,
             hover_buftab: None,
             prompt_caret: Default::default(),
-            left_w: None,
-            log_branch_w: None,
-            log_detail_w: None,
-            log_author_w: None,
-            log_date_w: None,
+            sizes: Default::default(),
             db: None,
             maven: None,
             db_results: Default::default(),
@@ -793,9 +781,7 @@ impl Editor {
             grammar_failed: Default::default(),
             right_tab: Default::default(),
             right_hidden: false,
-            right_w: None,
             right_pending_w: false,
-            bottom_h: None,
             git_job: None,
             diff: None,
             diff_return: None,

@@ -1190,6 +1190,7 @@ dependencies = [
  "nagi-render",
  "nagi-syntax",
  "nagi-text",
+ "nagi-ui",
  "nagi-vim",
  "nagi-workers",
  "regex",
@@ -1263,6 +1264,10 @@ dependencies = [
  "unicode-segmentation",
  "unicode-width",
 ]
+
+[[package]]
+name = "nagi-ui"
+version = "0.7.1"
 
 [[package]]
 name = "nagi-vim"

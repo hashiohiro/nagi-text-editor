@@ -570,13 +570,13 @@ impl crate::editor::Editor {
         // 欄の大きさを覚えていれば、まだ決めていない欄に入れる
         if self.settings.bool("appearance.remember_panels") {
             let num = |k: &str| self.settings.global.get(k).and_then(|v| v.parse::<usize>().ok());
-            self.left_w = self.left_w.or(num("state.left_width"));
-            self.right_w = self.right_w.or(num("state.right_width"));
-            self.bottom_h = self.bottom_h.or(num("state.bottom_height"));
-            self.log_branch_w = self.log_branch_w.or(num("state.log_branch_width"));
-            self.log_detail_w = self.log_detail_w.or(num("state.log_detail_width"));
-            self.log_author_w = self.log_author_w.or(num("state.log_author_width"));
-            self.log_date_w = self.log_date_w.or(num("state.log_date_width"));
+            // 大きさの表の名前（resize.rs）は _width・_height で終わる
+            let keys: Vec<String> = self.settings.global.keys().filter_map(|k| k.strip_prefix("state.")).filter(|k| k.ends_with("_width") || k.ends_with("_height")).map(String::from).collect();
+            for k in keys {
+                if let Some(v) = num(&format!("state.{k}")) {
+                    self.sizes.set_default(&k, v);
+                }
+            }
         }
         self.ec_cache.borrow_mut().clear();
         self.sync_clipboard();
@@ -658,18 +658,8 @@ impl crate::editor::Editor {
             return;
         }
         let old = self.settings.clone();
-        for (k, v) in [
-            ("state.left_width", self.left_w),
-            ("state.right_width", self.right_w),
-            ("state.bottom_height", self.bottom_h),
-            ("state.log_branch_width", self.log_branch_w),
-            ("state.log_detail_width", self.log_detail_w),
-            ("state.log_author_width", self.log_author_w),
-            ("state.log_date_width", self.log_date_w),
-        ] {
-            if let Some(v) = v {
-                self.settings.global.insert(k.to_string(), v.to_string());
-            }
+        for (k, v) in self.sizes.iter() {
+            self.settings.global.insert(format!("state.{k}"), v.to_string());
         }
         if let Err(e) = self.save_settings(&old) {
             self.notify.error(format!("欄の大きさを覚えられません: {e}"));

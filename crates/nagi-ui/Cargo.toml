@@ -1,0 +1,8 @@
+[package]
+name = "nagi-ui"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+# 画面の部品の共通の型（ADR 0018）。Editor・描画・OS を知らない（依存の向きで守る）。単体で試験する
+[dependencies]

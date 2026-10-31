@@ -937,19 +937,38 @@ impl Editor {
 
     /// 履歴（幅 `w`）の左のブランチの列と右の中身の列の幅
     pub(crate) fn log_cols_for(&self, w: usize) -> (usize, usize) {
-        log_cols(w, self.log_branch_w, self.log_detail_w)
+        log_cols(w, self.sizes.get("log_branch_width"), self.sizes.get("log_detail_width"))
     }
 
     /// コミットの作者・日時・ハッシュの列の幅（作者・日時はドラッグで変えていればその幅、でなければ中身に合わせる）
     pub(crate) fn log_right_cols(&self) -> (usize, usize, usize) {
         let auto = self.log.as_ref().map_or((10, 10, 7), |l| l.auto_cols);
-        (self.log_author_w.unwrap_or(auto.0).clamp(4, 40), self.log_date_w.unwrap_or(auto.1).clamp(4, 40), auto.2)
+        (self.sizes.get("log_author_width").unwrap_or(auto.0).clamp(4, 40), self.sizes.get("log_date_width").unwrap_or(auto.1).clamp(4, 40), auto.2)
     }
 
     /// コミットの列（`end` はその右端の次の列）の、題名と作者の境目・作者と日時の境目の列（描き方と同じ割り付け）
     pub(crate) fn log_commit_seps(&self, end: usize) -> (usize, usize) {
         let (aw, dw, hw) = self.log_right_cols();
         (end.saturating_sub(aw + dw + hw + 4), end.saturating_sub(dw + hw + 3))
+    }
+
+    /// 履歴の区切り（見出しの行より下）: ブランチの列の右・中身の列の左・コミットの題名と作者の境目・作者と日時の境目（resize.rs が当てる）
+    pub(crate) fn log_splitters(&self) -> Vec<nagi_ui::Splitter> {
+        use nagi_ui::{Axis, Splitter};
+        let Some(r) = self.log_rect() else { return Vec::new() };
+        let (bw, dw) = self.log_cols_for(r.w);
+        let (_, tw, hw) = self.log_right_cols();
+        let (end, span) = (r.x + r.w, r.y + 1..r.y + r.h);
+        // コミットの列の右端の次の列
+        let cend = end.saturating_sub(dw + 1);
+        let (author, date) = self.log_commit_seps(cend);
+        let sep = |key, line, origin, forward, extra| Splitter { key, axis: Axis::Cols, line, span: span.clone(), origin, forward, extra };
+        vec![
+            sep("log_branch_width", r.x + bw, r.x, true, 0),
+            sep("log_detail_width", cend, end, false, 1),
+            sep("log_author_width", author, cend, false, 4 + tw + hw),
+            sep("log_date_width", date, cend, false, 3 + hw),
+        ]
     }
 
     /// 履歴を出している矩形（窓の領域いっぱいか、下の欄の中身）。区切りをつかむのに使う

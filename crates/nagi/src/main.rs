@@ -1168,7 +1168,7 @@ impl Frame {
                         self.last_click = None;
                         return;
                     }
-                    let bottom = sep == resize::Sep::Bottom;
+                    let bottom = sep.is_bottom();
                     self.sep_drag = Some(sep);
                     if !bottom {
                         return;

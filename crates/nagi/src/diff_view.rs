@@ -484,7 +484,7 @@ mod tests {
         e.open_tree();
         e.show_diff("a".into(), "b".into(), "a\n", "b\n", None);
         let l = e.left_rect().unwrap();
-        assert_eq!(e.sep_at(5, l.x + l.w), Some(crate::resize::Sep::Left), "差分の間も左の欄の大きさを変えられる");
+        assert!(matches!(e.sep_at(5, l.x + l.w), Some(crate::resize::Sep::Size(s)) if s.key == "left_width"), "差分の間も左の欄の大きさを変えられる");
         // 欄に移っても差分は残る
         e.set_state(State::List);
         assert!(e.diff.is_some());

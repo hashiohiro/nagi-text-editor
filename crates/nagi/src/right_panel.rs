@@ -50,7 +50,7 @@ impl Editor {
         let left = self.left_rect().map_or(0, |r| r.w + 1);
         // プレビューは広め（画面の 45%）
         let def = if self.right_visible() == Some(RightTab::Preview) { cols * 45 / 100 } else { 40.min(cols / 3) };
-        let w = self.right_w.unwrap_or(def.max(10));
+        let w = self.sizes.get("right_width").unwrap_or(def.max(10));
         w.min(cols.saturating_sub(left + 21)).max(10.min(cols))
     }
 

@@ -7,6 +7,13 @@
 //!   真ん中のコミットの題名と作者・作者と日時の境目（列の幅）
 //!
 //! 線の上ではマウスのカーソルを ↔ / ↕ にする。ダブルクリックで元の大きさ（等分）に戻す。
+//!
+//! 窓の並びの区切りのほかは、大きさを `Editor::sizes`（nagi_ui::Sizes）の名前で持ち、区切りは `nagi_ui::Splitter` で表す
+//! （ADR 0018 の段 2）。区切りは持ち主が返す（欄は `frame_splitters`、履歴の列は log_view.rs の `log_splitters`）。
+//! 大きさの名前（覚えるときは設定の `state.名前`。_width・_height で終わる）:
+//! left_width・right_width・bottom_height・log_branch_width・log_detail_width・log_author_width・log_date_width
+
+use nagi_ui::{Axis, Splitter};
 
 use crate::editor::Editor;
 use crate::panes::{Layout, Rect, split_sizes};
@@ -14,28 +21,24 @@ use crate::panes::{Layout, Rect, split_sizes};
 /// つかんだ区切り
 #[derive(Clone, Debug, PartialEq)]
 pub enum Sep {
-    Left,
-    Right,
-    Bottom,
+    /// 大きさの表の区切り（欄・履歴の列）
+    Size(Splitter),
     /// 窓の並び（根からの道筋）の、`idx` 番目と次の子の間。`area` はその並びの矩形
     Split { path: Vec<usize>, idx: usize, vertical: bool, area: Rect },
-    /// 履歴のブランチの列の右の線（`x` は履歴の左端）
-    LogBranch { x: usize },
-    /// 履歴の中身の列の左の線（`end` は履歴の右端の次の列）
-    LogDetail { end: usize },
-    /// 履歴のコミットの題名と作者の境目・作者と日時の境目（`end` はコミットの列の右端の次の列）
-    LogAuthor { end: usize },
-    LogDate { end: usize },
 }
 
 impl Sep {
     /// 左右に動かす区切りか（カーソルの形）
     pub fn horizontal_drag(&self) -> bool {
         match self {
-            Sep::Left | Sep::Right | Sep::LogBranch { .. } | Sep::LogDetail { .. } | Sep::LogAuthor { .. } | Sep::LogDate { .. } => true,
-            Sep::Bottom => false,
+            Sep::Size(s) => s.axis == Axis::Cols,
             Sep::Split { vertical, .. } => *vertical,
         }
+    }
+
+    /// 下の欄の見出しの区切りか（つかみつつ、従来どおり欄へも渡す）
+    pub fn is_bottom(&self) -> bool {
+        matches!(self, Sep::Size(s) if s.key == "bottom_height")
     }
 }
 
@@ -80,57 +83,47 @@ impl Editor {
     /// 左の欄の幅（ドラッグで変えていればその幅）
     pub fn left_width(&self) -> usize {
         let cols = self.area().w;
-        let w = self.left_w.unwrap_or_else(|| crate::tree_panel::tree_width(cols));
+        let w = self.sizes.get("left_width").unwrap_or_else(|| crate::tree_panel::tree_width(cols));
         // 右の欄が出ていればその分も除いて、窓に 20 列は残す
-        let right = if self.right_visible().is_some() { self.right_w.unwrap_or(10).min(40) + 1 } else { 0 };
+        let right = if self.right_visible().is_some() { self.sizes.get("right_width").unwrap_or(10).min(40) + 1 } else { 0 };
         w.clamp(10.min(cols), cols.saturating_sub(20 + right).max(10))
     }
 
     /// 下のパネルの高さ（ドラッグで変えていればその高さ）
     pub fn bottom_height(&self) -> usize {
         let rows = self.screen.1;
-        let h = self.bottom_h.unwrap_or_else(|| crate::grep_panel::panel_height(rows));
+        let h = self.sizes.get("bottom_height").unwrap_or_else(|| crate::grep_panel::panel_height(rows));
         h.clamp(3.min(rows), rows.saturating_sub(4).max(1))
     }
 
-    /// 画面の (行, 列) にある区切り
-    pub fn sep_at(&self, row: usize, col: usize) -> Option<Sep> {
-        // 履歴の列の間の線（見出しの行より下）
-        if let Some(r) = self.log_rect().filter(|r| row > r.y && row < r.y + r.h) {
-            let (bw, dw) = self.log_cols_for(r.w);
-            if col == r.x + bw {
-                return Some(Sep::LogBranch { x: r.x });
-            }
-            if col + dw + 1 == r.x + r.w {
-                return Some(Sep::LogDetail { end: r.x + r.w });
-            }
-            let end = (r.x + r.w).saturating_sub(dw + 1);
-            let (author, date) = self.log_commit_seps(end);
-            if col == author {
-                return Some(Sep::LogAuthor { end });
-            }
-            if col == date {
-                return Some(Sep::LogDate { end });
-            }
-        }
-        // 全画面の履歴は欄を覆うので区切りは無い（差分・テーブルは窓の範囲だけを覆うので、欄の大きさは変えられる）
+    /// 欄（左・右・下）の区切り。全画面の履歴は欄を覆うので無い
+    fn frame_splitters(&self) -> Vec<Splitter> {
+        let mut out = Vec::new();
         if self.log_fullscreen() {
-            return None;
+            return out;
         }
+        let a = self.area();
         if let Some(r) = self.left_rect() {
-            if col == r.x + r.w && row >= r.y && row < r.y + r.h {
-                return Some(Sep::Left);
-            }
+            out.push(Splitter { key: "left_width", axis: Axis::Cols, line: r.x + r.w, span: r.y..r.y + r.h, origin: a.x, forward: true, extra: 0 });
         }
-        if let Some(r) = self.right_rect() {
-            if r.x > self.area().x && col == r.x - 1 && row >= r.y && row < r.y + r.h {
-                return Some(Sep::Right);
-            }
+        if let Some(r) = self.right_rect().filter(|r| r.x > a.x) {
+            out.push(Splitter { key: "right_width", axis: Axis::Cols, line: r.x - 1, span: r.y..r.y + r.h, origin: a.x + a.w, forward: false, extra: 1 });
         }
         if let Some(r) = self.panel_rect() {
-            if row == r.y {
-                return Some(Sep::Bottom);
-            }
+            out.push(Splitter { key: "bottom_height", axis: Axis::Rows, line: r.y, span: 0..usize::MAX, origin: self.screen.1, forward: false, extra: 0 });
+        }
+        out
+    }
+
+    /// 画面の (行, 列) にある区切り（履歴の列、欄、窓の並びの順に当てる）
+    pub fn sep_at(&self, row: usize, col: usize) -> Option<Sep> {
+        let mut seps = self.log_splitters();
+        seps.extend(self.frame_splitters());
+        if let Some(s) = nagi_ui::hit(&seps, row, col) {
+            return Some(Sep::Size(s.clone()));
+        }
+        if self.log_fullscreen() {
+            return None;
         }
         let ((x, cols), rows) = (self.windows_x(), self.windows_rows());
         let mut out = Vec::new();
@@ -147,22 +140,7 @@ impl Editor {
     /// ドラッグ中: マウスの (行, 列) に区切りを合わせる
     pub(crate) fn drag_sep(&mut self, sep: &Sep, row: usize, col: usize) {
         match sep {
-            Sep::Left => self.left_w = Some(col.saturating_sub(self.area().x)),
-            Sep::Right => {
-                let a = self.area();
-                self.right_w = Some((a.x + a.w).saturating_sub(col + 1));
-            }
-            Sep::Bottom => self.bottom_h = Some(self.screen.1.saturating_sub(row)),
-            Sep::LogBranch { x } => self.log_branch_w = Some(col.saturating_sub(*x)),
-            Sep::LogDetail { end } => self.log_detail_w = Some(end.saturating_sub(col + 1)),
-            Sep::LogAuthor { end } => {
-                let (_, dw, hw) = self.log_right_cols();
-                self.log_author_w = Some(end.saturating_sub(col + 4 + dw + hw).max(4));
-            }
-            Sep::LogDate { end } => {
-                let (_, _, hw) = self.log_right_cols();
-                self.log_date_w = Some(end.saturating_sub(col + 3 + hw).max(4));
-            }
+            Sep::Size(s) => s.drag(&mut self.sizes, row, col),
             Sep::Split { path, idx, vertical, area } => {
                 let Some(Layout::Split { kids, weights, .. }) = node_mut(&mut self.layout, path) else { return };
                 let n = kids.len();
@@ -186,13 +164,7 @@ impl Editor {
     /// ダブルクリック: 元の大きさ（等分）に戻す
     pub(crate) fn reset_sep(&mut self, sep: &Sep) {
         match sep {
-            Sep::Left => self.left_w = None,
-            Sep::Right => self.right_w = None,
-            Sep::Bottom => self.bottom_h = None,
-            Sep::LogBranch { .. } => self.log_branch_w = None,
-            Sep::LogDetail { .. } => self.log_detail_w = None,
-            Sep::LogAuthor { .. } => self.log_author_w = None,
-            Sep::LogDate { .. } => self.log_date_w = None,
+            Sep::Size(s) => self.sizes.reset(s.key),
             Sep::Split { path, .. } => {
                 if let Some(Layout::Split { weights, .. }) = node_mut(&mut self.layout, path) {
                     *weights = vec![1.0; weights.len()];
@@ -247,12 +219,23 @@ mod tests {
         // 左の欄の幅
         e.open_tree();
         let w = e.left_width();
-        assert_eq!(e.sep_at(3, a.x + w), Some(Sep::Left));
-        e.drag_sep(&Sep::Left, 3, a.x + 50);
+        let left = e.sep_at(3, a.x + w).expect("左の欄の右の線");
+        assert!(matches!(&left, Sep::Size(s) if s.key == "left_width") && left.horizontal_drag());
+        e.drag_sep(&left, 3, a.x + 50);
         assert_eq!((e.left_width(), e.windows_x()), (50, (a.x + 51, a.w - 51)));
-        e.drag_sep(&Sep::Left, 3, 95);
+        e.drag_sep(&left, 3, 95);
         assert_eq!(e.left_width(), a.w - 20, "窓に 20 列は残す");
-        e.reset_sep(&Sep::Left);
+        e.reset_sep(&left);
         assert_eq!(e.left_width(), crate::tree_panel::tree_width(a.w));
+        // 下の欄の高さ（見出しの行をつかむ）と、覚える・読み込む（設定の state.名前）
+        e.toggle_bottom_tab(crate::result_grid::BottomKind::Problems);
+        let p = e.panel_rect().unwrap();
+        let bottom = e.sep_at(p.y, p.x + 3).expect("下の欄の見出し");
+        assert!(bottom.is_bottom() && !bottom.horizontal_drag());
+        e.drag_sep(&bottom, p.y - 2, p.x + 3);
+        assert_eq!(e.bottom_height(), p.h + 2);
+        e.drag_sep(&left, 3, a.x + 30);
+        let saved: Vec<(String, usize)> = e.sizes.iter().map(|(k, v)| (k.to_string(), v)).collect();
+        assert_eq!(saved, [("bottom_height".to_string(), p.h + 2), ("left_width".to_string(), 30)]);
     }
 }
