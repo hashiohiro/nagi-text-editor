@@ -1422,26 +1422,20 @@ pub(crate) fn sort_of(order: &str) -> Option<(String, bool)> {
 pub(crate) fn draw_filter_row(p: &mut Painter, r: Rect, y: f32, where_: &str, order: &str, editing: Option<&(crate::result_grid::Field, crate::vim_field::VimField)>, right: &str, preedit: &str) {
     use crate::result_grid::Field;
     let cell = p.fonts.cell();
-    let mut c = p.text(" WHERE ", r.x, y, FINDER_MATCH);
-    let w_box = 36;
-    p.out.push(Instance::fill(c as f32 * cell.w, y + 1.0, w_box as f32 * cell.w, cell.h - 2.0, POPUP_BG));
-    match editing.filter(|e| e.0 == Field::Where) {
-        Some((_, f)) => {
-            draw_vim_field(p, f, c + 1, y, preedit);
-        }
-        None => {
-            p.text(where_, c + 1, y, FG);
-        }
-    }
-    c += w_box + 2;
-    let c2 = p.text("ORDER BY ", c, y, FINDER_MATCH);
-    p.out.push(Instance::fill(c2 as f32 * cell.w, y + 1.0, 28.0 * cell.w, cell.h - 2.0, POPUP_BG));
-    match editing.filter(|e| e.0 == Field::Order) {
-        Some((_, f)) => {
-            draw_vim_field(p, f, c2 + 1, y, preedit);
-        }
-        None => {
-            p.text(order, c2 + 1, y, FG);
+    // 割り付け（result_grid::filter_row。押した欄もこれで決める）
+    let fr = crate::result_grid::filter_row();
+    p.text(" WHERE ", r.x + fr.where_label, y, FINDER_MATCH);
+    p.text("ORDER BY ", r.x + fr.order_label, y, FINDER_MATCH);
+    for (field, b, text) in [(Field::Where, fr.where_box, where_), (Field::Order, fr.order_box, order)] {
+        let c = r.x + b.x;
+        p.out.push(Instance::fill(c as f32 * cell.w, y + 1.0, b.w as f32 * cell.w, cell.h - 2.0, POPUP_BG));
+        match editing.filter(|e| e.0 == field) {
+            Some((_, f)) => {
+                draw_vim_field(p, f, c + 1, y, preedit);
+            }
+            None => {
+                p.text(text, c + 1, y, FG);
+            }
         }
     }
     let rw = p.width(right);

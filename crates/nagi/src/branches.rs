@@ -21,6 +21,15 @@ pub struct Branch {
     pub track: String,
 }
 
+/// ブランチの小窓の割り付けに置くもの
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PopupHit {
+    /// 絞り込み・名前を打つ欄
+    Field,
+    /// 一覧の行（entries の番号）
+    Entry(usize),
+}
+
 /// 一覧の 1 行
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Entry {
@@ -97,6 +106,21 @@ impl BranchPopup {
             Some(c) => (1, c.min(cols.saturating_sub(w + 1)), w),
             None => (2, cols.saturating_sub(w) / 2, w),
         }
+    }
+
+    /// 小窓の矩形（画面の位置。本文の行数 `rows`・画面の列数 `cols`）と、その中の割り付け: 0 行目は絞り込み（名前を打つ欄）、
+    /// その下に一覧（選んだ行が見えるように流す）。描き方と押した位置の両方がこれを使う（ADR 0018 の §1）
+    pub fn ui(&self, rows: usize, cols: usize) -> (nagi_ui::Rect, nagi_ui::Ui<PopupHit>) {
+        use nagi_ui::Rect;
+        let (top, x0, w) = self.frame(cols);
+        let list_h = self.entries.len().min(rows.saturating_sub(8)).max(1);
+        let mut ui = nagi_ui::Ui::default();
+        ui.put(Rect::row(0, 0, w), PopupHit::Field);
+        let scroll = (self.selected + 1).saturating_sub(list_h);
+        for k in (scroll..self.entries.len()).take(list_h) {
+            ui.put(Rect::row(1 + k - scroll, 0, w), PopupHit::Entry(k));
+        }
+        (Rect { x: x0, y: top, w, h: list_h + 1 }, ui)
     }
 
     pub fn current_name(&self) -> String {
@@ -553,18 +577,19 @@ impl Editor {
     /// 小窓の外を押したら閉じる。名前を打っている間・操作の一覧を出している間は、キーで
     pub(crate) fn branches_click(&mut self, row: usize, col: usize, rows: usize, cols: usize, clicks: u32) {
         let Some(p) = &mut self.branch_popup else { return };
-        // 描き方（draw_branch_popup）と同じ割り付け: 枠は 2 行目から、1 行目は絞り込み、その下に一覧
-        let (top, x0, w) = p.frame(cols);
-        let list_h = p.entries.len().min(rows.saturating_sub(8)).max(1);
-        if row < top || row > top + list_h || col < x0 || col >= x0 + w {
+        // 描き方（draw_branch_popup）と同じ割り付けで当てる
+        let (frame, ui) = p.ui(rows, cols);
+        if !frame.contains(row, col) {
             self.close_branches();
             return;
         }
-        if p.naming.is_some() || p.ops.is_some() || row == top {
+        if p.naming.is_some() || p.ops.is_some() {
             return;
         }
-        let scroll = (p.selected + 1).saturating_sub(list_h);
-        let hit = Some(scroll + row - top - 1).filter(|&i| i < p.entries.len() && !matches!(p.entries[i], Entry::Header(_)));
+        let hit = match ui.hit(row - frame.y, col - frame.x) {
+            Some((PopupHit::Entry(i), _)) => Some(*i).filter(|&i| !matches!(p.entries[i], Entry::Header(_))),
+            _ => return,
+        };
         // フォルダは 1 回で開く・閉じる
         if let Some(Entry::Folder(k)) = hit.and_then(|i| p.entries.get(i)).cloned() {
             p.toggle_folder(&k, None);
@@ -660,11 +685,11 @@ pub(crate) mod draw {
     pub(crate) fn draw_branch_popup(p: &mut Painter, b: &crate::branches::BranchPopup, rows: usize, cols: usize, preedit: &str) {
         use crate::branches::Entry;
         let cell = p.fonts.cell();
-        let (top, x0, w) = b.frame(cols);
-        let list_h = b.entries.len().min(rows.saturating_sub(8)).max(1);
-        let h = list_h + 1;
-        let (x, y) = (x0 as f32 * cell.w, top as f32 * cell.h);
-        popup_frame(p, x, y, w as f32 * cell.w, h as f32 * cell.h);
+        // 割り付け（BranchPopup::ui。押した位置もこれで当てる）
+        let (frame, ui) = b.ui(rows, cols);
+        let (x0, w) = (frame.x, frame.w);
+        let (x, y) = (x0 as f32 * cell.w, frame.y as f32 * cell.h);
+        popup_frame(p, x, y, w as f32 * cell.w, frame.h as f32 * cell.h);
         let saved = p.cols;
         p.cols = x0 + w;
         // 上の欄: 名前を打っているときはその欄、そうでなければ絞り込み
@@ -683,10 +708,11 @@ pub(crate) mod draw {
             }
         }
         p.out.push(Instance::fill(x, y + cell.h - 1.0, w as f32 * cell.w, 1.0, LINE_NO));
-        // 一覧（選んだ行が見えるように流す）
-        let scroll = (b.selected + 1).saturating_sub(list_h);
-        for (k, e) in b.entries.iter().enumerate().skip(scroll).take(list_h) {
-            let yy = y + (1 + k - scroll) as f32 * cell.h;
+        // 一覧
+        for (rect, hit) in ui.iter() {
+            let crate::branches::PopupHit::Entry(k) = *hit else { continue };
+            let e = &b.entries[k];
+            let yy = (frame.y + rect.y) as f32 * cell.h;
             let sel = k == b.selected && b.naming.is_none();
             if sel {
                 selection(p, x, yy, w as f32 * cell.w, cell.h, LIST_SEL_BG);
@@ -746,7 +772,7 @@ pub(crate) mod draw {
             let labels: Vec<String> = ops.iter().map(|o| format!(" {} ", o.label(&cur))).collect();
             let ow = labels.iter().map(|l| p.width(l)).max().unwrap_or(10);
             let ox = (x0 + w + 1).min(cols.saturating_sub(ow + 1));
-            let oy = top + 1 + b.selected.saturating_sub(scroll);
+            let oy = frame.y + ui.iter().find(|(_, h)| **h == crate::branches::PopupHit::Entry(b.selected)).map_or(1, |(r, _)| r.y);
             let (fx, fy) = (ox as f32 * cell.w, oy as f32 * cell.h);
             p.out.push(Instance::fill(fx - 1.0, fy - 1.0, ow as f32 * cell.w + 2.0, labels.len() as f32 * cell.h + 2.0, STATUS_FG));
             p.out.push(Instance::fill(fx, fy, ow as f32 * cell.w, labels.len() as f32 * cell.h, RAISED_BG));

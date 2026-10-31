@@ -134,6 +134,23 @@ pub fn wrap(s: &str, w: usize) -> Vec<String> {
     out
 }
 
+/// 履歴の割り付け（`LogView::ui`）に置くもの。描き方と押した位置の両方がこれを使う（ADR 0018 の §1）
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LogHit {
+    /// 0 行目の絞り込み
+    Filter,
+    /// 左の列の 1 行（区分・フォルダ・ブランチ）
+    Branch(BranchRow),
+    BranchArea,
+    /// 真ん中のコミットの行（visible の番号）と、グラフだけの行
+    Commit(usize),
+    Graph(usize),
+    CommitArea,
+    /// 右の中身の 1 行
+    Detail(DetailLine),
+    DetailArea,
+}
+
 /// ブランチの列の 1 行
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BranchRow {
@@ -310,6 +327,7 @@ fn spawn<T: Send + 'static>(waker: Option<std::sync::Arc<dyn Fn() + Send + Sync>
 
 impl LogView {
     /// ブランチの列の行（見出しの下を 0 とする）→ ブランチの番号（区分・フォルダの行は None）
+    #[cfg(test)]
     pub fn branch_at(&self, row: usize) -> Option<usize> {
         match self.branch_rows().get(self.branch_top + row) {
             Some(BranchRow::Branch { i, .. }) => Some(*i),
@@ -358,6 +376,34 @@ impl LogView {
                 out.push(BranchRow::Branch { i: *i, depth });
             }
         }
+    }
+
+    /// 割り付け（部品の中の座標。幅 `w`・高さ `h`、左の列と右の列の幅 `(bw, dw)`）。0 行目は絞り込み、
+    /// 1 行目から左にブランチ、真ん中にコミット、右に中身。列の間の 1 列は区切り（どれにも当たらない）
+    pub fn ui(&self, w: usize, h: usize, (bw, dw): (usize, usize)) -> nagi_ui::Ui<LogHit> {
+        use nagi_ui::Rect;
+        let mut ui = nagi_ui::Ui::default();
+        let body = h.saturating_sub(1);
+        ui.put(Rect::row(0, 0, w), LogHit::Filter);
+        for (k, b) in self.branch_rows().into_iter().skip(self.branch_top).take(body).enumerate() {
+            ui.put(Rect::row(1 + k, 0, bw), LogHit::Branch(b));
+        }
+        ui.put(Rect { x: 0, y: 1, w: bw, h: body }, LogHit::BranchArea);
+        let cx = bw + 1;
+        let cw = w.saturating_sub(bw + dw + 2);
+        for (k, &i) in self.visible.iter().enumerate().skip(self.top).take(body) {
+            let hit = if self.rows[i].commit.is_some() { LogHit::Commit(k) } else { LogHit::Graph(k) };
+            ui.put(Rect::row(1 + k - self.top, cx, cw), hit);
+        }
+        ui.put(Rect { x: cx, y: 1, w: cw, h: body }, LogHit::CommitArea);
+        let dx = cx + cw + 1;
+        if let Some(d) = &self.detail {
+            for (k, line) in detail_lines(d, dw.saturating_sub(1)).into_iter().skip(self.detail_top).take(body).enumerate() {
+                ui.put(Rect::row(1 + k, dx, w.saturating_sub(dx)), LogHit::Detail(line));
+            }
+        }
+        ui.put(Rect { x: dx, y: 1, w: w.saturating_sub(dx), h: body }, LogHit::DetailArea);
+        ui
     }
 
     /// 区分・フォルダを畳む・開く
@@ -719,6 +765,12 @@ impl Editor {
         }
     }
 
+    /// 履歴の中の (行, 列) にあるもの（幅 `w`。描き方と同じ割り付け）
+    fn log_hit(&self, row: usize, col: usize, w: usize) -> Option<LogHit> {
+        let h = self.log_rect().map_or(row + 1, |r| r.h);
+        self.log.as_ref()?.ui(w, h, self.log_cols_for(w)).hit(row, col).map(|h| h.0.clone())
+    }
+
     /// 選んでいるファイルの行が、右の中身の列の見える範囲に入るように送る
     fn log_fit_detail(&mut self) {
         let rows = self.log_rows();
@@ -735,76 +787,74 @@ impl Editor {
     /// 真ん中はコミットを選ぶ（ダブルクリックで変えたファイルへ）、右は変えたファイルを選ぶ（ダブルクリックで差分）
     pub(crate) fn log_click(&mut self, row: usize, col: usize, w: usize, clicks: u32) {
         self.set_state(State::Log);
-        let (bw, dw) = self.log_cols_for(w);
         let mods = self.click_mods;
+        // 描き方（draw_log_view）と同じ割り付けで当てる
+        let hit = self.log_hit(row, col, w);
         let Some(l) = &mut self.log else { return };
-        // 0 行目（「/ で絞り込み」の見出し）を押したら絞り込みの欄を開く
-        if row == 0 {
+        if hit == Some(LogHit::Filter) {
+            // 0 行目（「/ で絞り込み」の見出し）を押したら絞り込みの欄を開く
             if l.filter.is_none() {
                 l.filter = Some(crate::vim_field::VimField::new(&l.filter_text, false));
             }
             return;
         }
         l.filter = None;
-        // 描き方（draw_log_view）と同じ割り付け
-        let cx = bw + 1;
-        let cw = w.saturating_sub(bw + dw + 2);
-        let dx = cx + cw + 1;
-        if col >= cx && col < cx + cw {
-            let hit = crate::list::row_at(l.top, row, 1, l.visible.len()).filter(|&k| l.rows[l.visible[k]].commit.is_some());
-            // Ctrl+クリックで 1 つずつ足す・外す、Shift+クリックで範囲を選ぶ
-            if let Some(k) = hit.filter(|_| mods.ctrl || mods.shift) {
-                l.mark_click(k, mods.shift);
-                l.focus_files = false;
-                return;
-            }
-            let pick = crate::list::pick(&mut l.selected, hit, clicks, 2);
-            if pick.is_some() {
-                l.focus_files = false;
-                l.marked.clear();
-                l.mark_anchor = Some(l.selected);
-            }
-            if matches!(pick, Some(crate::list::Pick::Accept(_))) && l.detail.as_ref().is_some_and(|d| !d.files.is_empty()) {
-                l.focus_files = true;
-            }
-        } else if col >= dx {
-            // 右: 中身の行（detail_lines。描き方と同じ割り付け）のうち、ファイルの行
-            let Some(d) = &l.detail else { return };
-            let hit = match detail_lines(d, dw.saturating_sub(1)).get(l.detail_top + row - 1) {
-                Some(DetailLine::File(k)) => Some(*k),
-                _ => None,
-            };
-            let pick = crate::list::pick(&mut l.file_sel, hit, clicks, 2);
-            if pick.is_some() {
-                l.focus_files = true;
-            }
-            if matches!(pick, Some(crate::list::Pick::Accept(_))) {
-                self.log_open_file_diff();
-            }
-        } else if col < bw {
-            // 左: ブランチ。押すとそのブランチの指すコミットへ、ダブルクリックでそのブランチの履歴だけを出す
-            // （IntelliJ と同じ。チェックアウトは右クリックのメニューから）
-            l.focus_files = false;
-            // 区分・フォルダは 1 回のクリックで畳む・開く（プロジェクトの木と同じ）
-            if let Some(BranchRow::Folder { key, .. }) = l.branch_rows().get(l.branch_top + row - 1).cloned() {
-                l.toggle_branch_folder(&key);
-                return;
-            }
-            let mut i = l.branch_sel.unwrap_or(0);
-            let Some(pick) = crate::list::pick(&mut i, l.branch_at(row - 1), clicks, 2) else { return };
-            l.branch_sel = Some(i);
-            if let Some(k) = l.row_of_ref(&l.branches[i].1) {
-                l.selected = k;
-                let rows = self.log_rows();
-                if let Some(l) = &mut self.log {
-                    crate::list::fit(k, &mut l.top, rows);
+        match hit {
+            Some(LogHit::Commit(k)) => {
+                // Ctrl+クリックで 1 つずつ足す・外す、Shift+クリックで範囲を選ぶ
+                if mods.ctrl || mods.shift {
+                    l.mark_click(k, mods.shift);
+                    l.focus_files = false;
+                    return;
+                }
+                let pick = crate::list::pick(&mut l.selected, Some(k), clicks, 2);
+                if pick.is_some() {
+                    l.focus_files = false;
+                    l.marked.clear();
+                    l.mark_anchor = Some(l.selected);
+                }
+                if matches!(pick, Some(crate::list::Pick::Accept(_))) && l.detail.as_ref().is_some_and(|d| !d.files.is_empty()) {
+                    l.focus_files = true;
                 }
             }
-            if matches!(pick, crate::list::Pick::Accept(_)) {
-                self.log_show_branch(i);
+            // 右: 中身のうち、ファイルの行
+            Some(LogHit::Detail(DetailLine::File(f))) => {
+                let pick = crate::list::pick(&mut l.file_sel, Some(f), clicks, 2);
+                if pick.is_some() {
+                    l.focus_files = true;
+                }
+                if matches!(pick, Some(crate::list::Pick::Accept(_))) {
+                    self.log_open_file_diff();
+                }
             }
-        } else {
-            l.focus_files = false;
+            // 左: 区分・フォルダは 1 回のクリックで畳む・開く（プロジェクトの木と同じ）
+            Some(LogHit::Branch(BranchRow::Folder { key, .. })) => {
+                l.focus_files = false;
+                l.toggle_branch_folder(&key);
+            }
+            // 左: ブランチ。押すとそのブランチの指すコミットへ、ダブルクリックでそのブランチの履歴だけを出す
+            // （IntelliJ と同じ。チェックアウトは右クリックのメニューから）
+            Some(LogHit::Branch(BranchRow::Branch { i: b, .. })) => {
+                l.focus_files = false;
+                let mut i = l.branch_sel.unwrap_or(0);
+                let Some(pick) = crate::list::pick(&mut i, Some(b), clicks, 2) else { return };
+                l.branch_sel = Some(i);
+                if let Some(k) = l.row_of_ref(&l.branches[i].1) {
+                    l.selected = k;
+                    let rows = self.log_rows();
+                    if let Some(l) = &mut self.log {
+                        crate::list::fit(k, &mut l.top, rows);
+                    }
+                }
+                if matches!(pick, crate::list::Pick::Accept(_)) {
+                    self.log_show_branch(i);
+                }
+            }
+            Some(LogHit::BranchArea) => l.focus_files = false,
+            // グラフだけの行・中身の見出しなど・空いた所は選ばない
+            Some(LogHit::Graph(_) | LogHit::CommitArea | LogHit::Detail(_) | LogHit::DetailArea | LogHit::Filter) => {}
+            // 列の間の区切り
+            None => l.focus_files = false,
         }
     }
 
@@ -999,13 +1049,14 @@ impl Editor {
         if self.log_marked_at(row, col, w) {
             return self.log_context_picked(at);
         }
+        // 押す前の割り付けで当てる（押すとフォルダが畳まれて行が変わる）
+        let hit = self.log_hit(row, col, w);
         self.log_click(row, col, w, 1);
-        let (bw, dw) = self.log_cols_for(w);
         let Some(l) = &self.log else { return false };
         let cur = self.git.status.as_ref().map(|s| s.branch.clone()).unwrap_or_default();
         let upstream = self.git.status.as_ref().and_then(|s| s.upstream.clone());
-        // 右の列（選んだコミットの変えたファイル）は w - dw から（割り付けは log_click と同じ）
-        let menu = if l.focus_files && col >= w.saturating_sub(dw) {
+        // 右の列（選んだコミットの変えたファイル）
+        let menu = if l.focus_files && matches!(hit, Some(LogHit::Detail(_) | LogHit::DetailArea)) {
             let Some(d) = &l.detail else { return false };
             let Some((_, path)) = d.files.get(l.file_sel).cloned() else { return false };
             let (h, short) = (d.hash.clone(), d.hash[..7.min(d.hash.len())].to_string());
@@ -1030,8 +1081,8 @@ impl Editor {
             let p = path.clone();
             m = m.item("パスをコピー", move |e| e.copy_text(p, "パス"));
             m
-        } else if col < bw {
-            let Some(i) = l.branch_sel.filter(|_| row >= 1 && l.branch_at(row - 1).is_some()) else { return false };
+        } else if matches!(hit, Some(LogHit::Branch(_) | LogHit::BranchArea)) {
+            let Some(i) = l.branch_sel.filter(|_| matches!(hit, Some(LogHit::Branch(BranchRow::Branch { .. })))) else { return false };
             let (sec, name, is_cur) = l.branches[i].clone();
             let local = sec == "ローカル";
             let mut m = crate::menu::Menu::new(at.0, at.1);
@@ -1120,14 +1171,15 @@ impl Editor {
 
     /// 真ん中の列の (row, col) が、複数選んだコミットの行か（そうなら、その行を今の行にする）
     fn log_marked_at(&mut self, row: usize, col: usize, w: usize) -> bool {
-        let (bw, dw) = self.log_cols_for(w);
+        let hit = self.log_hit(row, col, w);
         let Some(l) = &mut self.log else { return false };
-        let cx = bw + 1;
-        let cw = w.saturating_sub(bw + dw + 2);
-        if l.marked.len() < 2 || row == 0 || col < cx || col >= cx + cw {
+        if l.marked.len() < 2 {
             return false;
         }
-        let hit = crate::list::row_at(l.top, row, 1, l.visible.len()).filter(|&k| l.commit_at(k).is_some_and(|c| l.marked.contains(&c.hash)));
+        let hit = match hit {
+            Some(LogHit::Commit(k)) => Some(k).filter(|&k| l.commit_at(k).is_some_and(|c| l.marked.contains(&c.hash))),
+            _ => None,
+        };
         if crate::list::pick(&mut l.selected, hit, 1, 2).is_none() {
             return false;
         }
@@ -1466,11 +1518,15 @@ pub(crate) mod draw {
         // 左: ブランチ
         let saved = p.cols;
         p.cols = r.x + bw;
-        // 区分（ローカル・リモート・タグ）・フォルダとブランチを、先頭の行（branch_top）から。字下げ 1 段と ▸ ▾ の幅はアイコンの幅
+        // 割り付け（LogView::ui。押した位置もこれで当てる）の行に描く
+        let ui = l.ui(r.w, r.h, (bw, dw));
+        let y_of = |rect: nagi_ui::Rect| (r.y + rect.y) as f32 * cell.h;
+        // 区分（ローカル・リモート・タグ）・フォルダとブランチ。字下げ 1 段と ▸ ▾ の幅はアイコンの幅
         let ind = crate::metrics::icon_cols(crate::metrics::Icon::Small).max(2);
         let px = crate::metrics::icon(crate::metrics::Icon::Small);
-        for (k, item) in l.branch_rows().iter().skip(l.branch_top).take(body).enumerate() {
-            let y = y0 + (1 + k) as f32 * cell.h;
+        for (rect, hit) in ui.iter() {
+            let LogHit::Branch(item) = hit else { continue };
+            let y = y_of(rect);
             match item {
                 BranchRow::Folder { key, name, depth } => {
                     let icon = if l.branch_folded.contains(key) { "g_chevronRight" } else { "g_chevronDown" };
@@ -1498,9 +1554,10 @@ pub(crate) mod draw {
         // 中央: コミット
         let saved = p.cols;
         p.cols = cx + cw;
-        for (k, &i) in l.visible.iter().enumerate().skip(l.top).take(body) {
-            let row = &l.rows[i];
-            let y = y0 + (1 + k - l.top) as f32 * cell.h;
+        for (rect, hit) in ui.iter() {
+            let (LogHit::Commit(k) | LogHit::Graph(k)) = *hit else { continue };
+            let row = &l.rows[l.visible[k]];
+            let y = y_of(rect);
             let sel = k == l.selected;
             let focused = sel && !l.focus_files;
             let marked = row.commit.as_ref().is_some_and(|c| l.marked.contains(&c.hash));
@@ -1557,10 +1614,10 @@ pub(crate) mod draw {
         let saved = p.cols;
         p.cols = r.x + r.w;
         if let Some(d) = &l.detail {
-            // 中身の行（detail_lines）を detail_top から。メッセージは折り返し、ファイルは detail_left だけ横に送る
-            let tw = dw.saturating_sub(1);
-            for (k, line) in crate::log_view::detail_lines(d, tw).iter().skip(l.detail_top).take(body).enumerate() {
-                let y = y0 + (1 + k) as f32 * cell.h;
+            // 中身の行（detail_lines を detail_top から）。メッセージは折り返し、ファイルは detail_left だけ横に送る
+            for (rect, hit) in ui.iter() {
+                let LogHit::Detail(line) = hit else { continue };
+                let y = y_of(rect);
                 match line {
                     DetailLine::Info(t) => {
                         p.text(t, dx + 1, y, STATUS_FG);

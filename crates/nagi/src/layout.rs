@@ -21,20 +21,8 @@ pub struct Screen {
     pub cols: usize,
 }
 
-/// 押した位置。`row`・`col` は部品の中（rect の左上が 0, 0）。`screen` は画面の位置で、メニューを出す所や、
-/// 画面の位置で割り付けを覚えている部品（画面全体を持つ小窓・候補の窓）が使う（ADR 0018 の §1）
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct At {
-    pub row: usize,
-    pub col: usize,
-    pub screen: (usize, usize),
-}
-
-impl At {
-    pub fn new(r: Rect, row: usize, col: usize) -> At {
-        At { row: row - r.y, col: col - r.x, screen: (row, col) }
-    }
-}
+/// 押した位置（部品の中の行・列と画面の位置。nagi-ui。ADR 0018 の §1）
+pub use nagi_ui::At;
 
 /// 押したときの結果
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

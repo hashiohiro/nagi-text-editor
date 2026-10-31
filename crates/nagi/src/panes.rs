@@ -82,20 +82,8 @@ pub(crate) fn split_sizes(avail: usize, weights: &[f32]) -> Vec<usize> {
         .collect()
 }
 
-/// セル単位の矩形。分割中は最後の行が窓ごとの状態行
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Rect {
-    pub x: usize,
-    pub y: usize,
-    pub w: usize,
-    pub h: usize,
-}
-
-impl Rect {
-    pub fn contains(&self, row: usize, col: usize) -> bool {
-        row >= self.y && row < self.y + self.h && col >= self.x && col < self.x + self.w
-    }
-}
+/// セル単位の矩形（nagi-ui）。分割中は最後の行が窓ごとの状態行
+pub use nagi_ui::Rect;
 
 impl Layout {
     /// 書き出す形（開き直すため。session.rs）: 窓は並びの順の番号、分割は `(v 1 1 : 0 1)`（向き・比率・子）

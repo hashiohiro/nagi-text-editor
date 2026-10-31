@@ -235,9 +235,30 @@ pub enum Field {
     Order,
 }
 
-/// 絞り込みの行の、押した列の欄（`col` は行の左端から。view.rs の draw_filter_row と同じ割り付け: WHERE の箱は 43 列まで）
+/// 絞り込みの行の割り付け（行の左端から）: ` WHERE ` と 36 列の箱、2 列あけて `ORDER BY ` と 28 列の箱。
+/// 押した所は、WHERE の箱の後の 2 列までが WHERE、その先が ORDER BY（view.rs の draw_filter_row もこれで描く）
+pub(crate) struct FilterRow {
+    pub where_label: usize,
+    pub where_box: nagi_ui::Rect,
+    pub order_label: usize,
+    pub order_box: nagi_ui::Rect,
+    pub ui: nagi_ui::Ui<Field>,
+}
+
+pub(crate) fn filter_row() -> FilterRow {
+    use nagi_ui::Rect;
+    let where_box = Rect::row(0, " WHERE ".len(), 36);
+    let order_label = where_box.x + where_box.w + 2;
+    let order_box = Rect::row(0, order_label + "ORDER BY ".len(), 28);
+    let mut ui = nagi_ui::Ui::default();
+    ui.put(Rect::row(0, 0, order_label - 1), Field::Where);
+    ui.put(Rect::row(0, order_label - 1, usize::MAX / 2), Field::Order);
+    FilterRow { where_label: 0, where_box, order_label, order_box, ui }
+}
+
+/// 絞り込みの行の、押した列の欄（`col` は行の左端から）
 pub(crate) fn filter_field_at(col: usize) -> Field {
-    if col < 44 { Field::Where } else { Field::Order }
+    filter_row().ui.hit(0, col).map_or(Field::Order, |h| *h.0)
 }
 
 #[derive(Default)]
