@@ -440,6 +440,14 @@ impl Editor {
     }
 
     pub(crate) fn nav_root(&self) -> PathBuf {
+        // 根を求めるには上のフォルダを 1 つずつ OS に問い合わせる（Windows では 1 回で数百 µs になる）ので、
+        // 開いているファイルのパスと今のフォルダが同じなら前に求めた根を使う（上の帯が毎フレーム呼ぶ）
+        let key = (self.core.buf.path.clone(), self.cwd.clone());
+        if let Some((k, root)) = self.nav_root_cache.borrow().as_ref() {
+            if *k == key {
+                return root.clone();
+            }
+        }
         let root = self
             .core.buf
             .path
@@ -448,7 +456,9 @@ impl Editor {
             .and_then(|p| nagi_workers::files::project_root(&p))
             .or_else(|| Some(self.cwd.clone()))
             .unwrap_or_default();
-        std::path::absolute(&root).unwrap_or(root)
+        let root = std::path::absolute(&root).unwrap_or(root);
+        *self.nav_root_cache.borrow_mut() = Some((key, root.clone()));
+        root
     }
 
     /// 結果のパネルを空にして開く（見出し付き。フォーカスは編集画面のまま）

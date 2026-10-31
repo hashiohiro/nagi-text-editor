@@ -249,6 +249,8 @@ pub(crate) struct Painter<'a> {
     pub(crate) texts: Option<Vec<(usize, usize, String)>>,
     /// 画面の部品の文字（等幅でないフォント。IntelliJ の UI と同じ）で描く。本文・ターミナル・入力欄は等幅のまま
     pub(crate) ui: bool,
+    /// NAGI_DEBUG_BUILD: 文字を並べる（items）・描く（draw）にかかった時間と字の数を足し上げる
+    pub(crate) prof: Option<(std::time::Duration, std::time::Duration, usize, std::time::Duration, usize)>,
 }
 
 /// 部品の文字の中で、アイコンで描く印の字（icons.rs の名前）
@@ -269,6 +271,14 @@ impl Painter<'_> {
         s.graphemes(true).map(|g| Item { g: Cow::Borrowed(g), width: self.cell_width(g), fg, bg: None, underline: false }).collect()
     }
 
+    /// NAGI_DEBUG_BUILD: 描く処理の時間を足す
+    fn prof_draw(&mut self, t: std::time::Instant, n: usize) {
+        if let Some(p) = &mut self.prof {
+            p.1 += t.elapsed();
+            p.2 += n;
+        }
+    }
+
     /// 書記素 1 つのセル幅（タブは設定のタブの表示幅）
     pub(crate) fn cell_width(&self, g: &str) -> usize {
         if g == "\t" { nagi_core::tab_width() } else { self.fonts.width(g) }
@@ -276,6 +286,13 @@ impl Painter<'_> {
 
     /// 部品の並びを (col, y) から描く。戻り値は描き終えた列
     pub(crate) fn draw(&mut self, items: &[Item<'_>], col: usize, y: f32) -> usize {
+        let t = std::time::Instant::now();
+        let c = self.draw_inner(items, col, y);
+        self.prof_draw(t, items.len());
+        c
+    }
+
+    fn draw_inner(&mut self, items: &[Item<'_>], col: usize, y: f32) -> usize {
         if self.ui && self.wrap_w == 0 && self.fonts.ui.is_some() {
             return self.draw_ui(items, col, y);
         }
@@ -378,7 +395,11 @@ impl Painter<'_> {
     }
 
     pub(crate) fn text(&mut self, s: &str, col: usize, y: f32, fg: [f32; 4]) -> usize {
+        let t = std::time::Instant::now();
         let items = self.items(s, fg);
+        if let Some(p) = &mut self.prof {
+            p.0 += t.elapsed();
+        }
         self.draw(&items, col, y)
     }
 
@@ -947,7 +968,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     ed.sync_terminal();
     let bar = (cell.w / 6.0).round().max(2.0);
     let underline = (cell.h / 16.0).round().max(1.0);
-    let mut p = Painter { out: Vec::with_capacity(cols * rows + 64), fonts, r, cols, bar, underline, caret_at: None, tab_hits: Vec::new(), wrap_w: 0, wrap_rows: 1, end_y: 0.0, texts: ed.record_texts.then(Vec::new), ui: false };
+    let mut p = Painter { out: Vec::with_capacity(cols * rows + 64), fonts, r, cols, bar, underline, caret_at: None, tab_hits: Vec::new(), wrap_w: 0, wrap_rows: 1, end_y: 0.0, texts: ed.record_texts.then(Vec::new), ui: false, prof: std::env::var_os("NAGI_DEBUG_BUILD").map(|_| Default::default()) };
     if let (Some(r), Some(t)) = (ed.tree_rect(), &mut ed.panels.tree) {
         nagi_ui::list::fit(t.selected, &mut t.scroll, r.h.saturating_sub(crate::tree_panel::HEAD));
     }
@@ -1064,7 +1085,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     // 欄・小窓（layout.rs の表の順に下から）
     crate::layout::draw(crate::layout::Layer::Panels, ed, &mut p, crate::layout::Screen { rows, cols });
     if std::env::var_os("NAGI_DEBUG_BUILD").is_some() {
-        eprintln!("build-parts windows={}us panels={}us", (t_panels - t_windows).as_micros(), t_panels.elapsed().as_micros());
+        eprintln!("build-parts windows={}us panels={}us text-items={:?}", (t_panels - t_windows).as_micros(), t_panels.elapsed().as_micros(), p.prof);
     }
     draw_toggle_buttons(&mut p, ed, cols, false);
     // ---- 最下行: 左にモード・メッセージ・入力欄、右に位置（Vim の showmode と ruler と同じ形）

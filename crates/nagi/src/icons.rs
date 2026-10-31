@@ -100,6 +100,15 @@ fn rasterize(svg: &str, px: u32, mono: bool) -> Option<nagi_text::GlyphImage> {
 
 /// アイコンを (x, y) から `px` 四方に描く。`tint` があれば形をその色で塗り、無ければ SVG の色のまま
 pub(crate) fn draw(p: &mut Painter, name: &str, x: f32, y: f32, px: f32, tint: Option<[f32; 4]>) {
+    let t = std::time::Instant::now();
+    draw_inner(p, name, x, y, px, tint);
+    if let Some(pr) = &mut p.prof {
+        pr.3 += t.elapsed();
+        pr.4 += 1;
+    }
+}
+
+fn draw_inner(p: &mut Painter, name: &str, x: f32, y: f32, px: f32, tint: Option<[f32; 4]>) {
     let Some(i) = index(name) else { return };
     let px = px.round().clamp(8.0, 64.0) as u32;
     let dark = crate::view::THEME.load(std::sync::atomic::Ordering::Relaxed) != 2;

@@ -497,6 +497,8 @@ pub struct Editor {
     pub hover_chrome: Option<crate::chrome::Hit>,
     /// ファイルの中の検索を本文の上の帯で打っている（Ctrl+F・Ctrl+R。search_bar.rs）
     pub search_bar: bool,
+    /// nav_root の覚え（(開いているファイル, 今のフォルダ) → 根）
+    pub(crate) nav_root_cache: std::cell::RefCell<Option<((Option<PathBuf>, PathBuf), PathBuf)>>,
     /// 全文検索の小窓のプレビューに読んだファイル（パス, 行）
     pub grep_preview: std::cell::RefCell<Option<(std::path::PathBuf, std::sync::Arc<Vec<String>>)>>,
     /// 部品を左クリックしている間の修飾キー（Ctrl・Shift+クリックで一覧の複数を選ぶ）。押した間だけ App が入れる
@@ -788,6 +790,7 @@ impl Editor {
             hover_button: None,
             hover_chrome: None,
             search_bar: false,
+            nav_root_cache: Default::default(),
             grep_preview: Default::default(),
             click_mods: Default::default(),
             hover_tab: None,
