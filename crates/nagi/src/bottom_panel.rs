@@ -45,8 +45,6 @@ pub enum ProblemRow {
 pub struct ProblemsView {
     pub selected: usize,
     pub scroll: usize,
-    pending_g: bool,
-    pending_w: bool,
 }
 
 /// 問題の一覧のキーで、部品の外に及ぶこと（Editor が行う。ADR 0018 の §5）
@@ -54,57 +52,56 @@ pub struct ProblemsView {
 pub enum ProblemAction {
     None,
     ToText,
-    HideBottom,
-    Command,
     /// その問題（diags の番号）へ跳ぶ（true なら一覧に残る）
     Jump(usize, bool),
 }
 
+/// 問題の一覧のアクション（ui_action.rs。ADR 0019）
+pub static ACTIONS: [crate::ui_action::UiAction; 3] = {
+    use crate::ui_action::{Scope::Problems, UiAction};
+    fn any(e: &Editor) -> bool {
+        !e.diags.is_empty()
+    }
+    fn shown(e: &Editor) -> bool {
+        e.bottom_visible() && e.bottom_kind == BottomKind::Problems
+    }
+    [
+        UiAction { id: "problems.open", label: "開く", scope: Problems, enabled: any, run: |e| e.problems_open(false) },
+        UiAction { id: "problems.openKeep", label: "開いて欄に残る", scope: Problems, enabled: any, run: |e| e.problems_open(true) },
+        UiAction { id: "problems.hide", label: "欄を隠す", scope: Problems, enabled: shown, run: |e| e.hide_bottom() },
+    ]
+};
+
 impl ProblemsView {
     /// 問題の一覧のキー（`rows` は一覧の行、`h` は見える行数）。移動はここで行い、外に及ぶことを返す
+    /// 標準のキーだけ（ADR 0019。開いて欄に残る・隠すはアクション）
     pub fn key(&mut self, key: Key, rows: &[ProblemRow], h: usize) -> ProblemAction {
         let last = rows.len().saturating_sub(1);
-        let g = std::mem::take(&mut self.pending_g);
-        if std::mem::take(&mut self.pending_w) {
-            return if matches!(key, Key::Char('k') | Key::Ctrl('k') | Key::Char('w') | Key::Ctrl('w') | Key::Char('p')) { ProblemAction::ToText } else { ProblemAction::None };
-        }
-        let moved = nagi_ui::list::step(key, self.selected, last + 1, h);
+        let moved = nagi_ui::list::nav(key, self.selected, last + 1, h);
         let act = match key {
             _ if moved.is_some() => {
                 self.selected = moved.unwrap_or(self.selected);
                 ProblemAction::None
             }
-            Key::Char('g') if g => {
-                self.selected = 0;
-                ProblemAction::None
-            }
-            Key::Char('g') => {
-                self.pending_g = true;
-                ProblemAction::None
-            }
-            Key::Ctrl('w') => {
-                self.pending_w = true;
-                ProblemAction::None
-            }
-            Key::Enter | Key::Char('o') => {
-                let target = match rows.get(self.selected) {
-                    Some(ProblemRow::Item(i)) => Some(*i),
-                    // ファイルの行なら最初の問題へ
-                    Some(ProblemRow::File(..)) => match rows.get(self.selected + 1) {
-                        Some(ProblemRow::Item(i)) => Some(*i),
-                        _ => None,
-                    },
-                    None => None,
-                };
-                target.map_or(ProblemAction::None, |i| ProblemAction::Jump(i, key == Key::Char('o')))
-            }
-            Key::Char('q') => ProblemAction::HideBottom,
+            Key::Enter => self.jump(rows, false),
             Key::Esc => ProblemAction::ToText,
-            Key::Char(':') => ProblemAction::Command,
             _ => ProblemAction::None,
         };
         nagi_ui::list::fit(self.selected, &mut self.scroll, h);
         act
+    }
+
+    /// 選んでいる問題へ（ファイルの行なら最初の問題へ。`stay` なら一覧に残る）
+    pub fn jump(&self, rows: &[ProblemRow], stay: bool) -> ProblemAction {
+        let target = match rows.get(self.selected) {
+            Some(ProblemRow::Item(i)) => Some(*i),
+            Some(ProblemRow::File(..)) => match rows.get(self.selected + 1) {
+                Some(ProblemRow::Item(i)) => Some(*i),
+                _ => None,
+            },
+            None => None,
+        };
+        target.map_or(ProblemAction::None, |i| ProblemAction::Jump(i, stay))
     }
 }
 
@@ -232,11 +229,22 @@ impl Editor {
         let rows = self.problem_rows();
         let h = self.bottom_content_rect().map_or(10, |r| r.h).max(1);
         // 部品の中で済むことは ProblemsView::key が行い、外に及ぶことを返す（ADR 0018 の §5）
-        match self.panels.problems.key(key, &rows, h) {
+        let a = self.panels.problems.key(key, &rows, h);
+        self.problems_do(a);
+        Effect::None
+    }
+
+    /// 選んでいる問題を開く（`stay` なら一覧に残る）
+    pub(crate) fn problems_open(&mut self, stay: bool) {
+        let rows = self.problem_rows();
+        let a = self.panels.problems.jump(&rows, stay);
+        self.problems_do(a);
+    }
+
+    fn problems_do(&mut self, a: ProblemAction) {
+        match a {
             ProblemAction::None => {}
             ProblemAction::ToText => self.set_state(State::Normal),
-            ProblemAction::HideBottom => self.hide_bottom(),
-            ProblemAction::Command => self.enter_command(""),
             ProblemAction::Jump(i, stay) => {
                 let d = self.diags[i].clone();
                 self.jump_to(&d.path, d.line, d.col);
@@ -244,7 +252,6 @@ impl Editor {
                 self.list_side = Side::Bottom;
             }
         }
-        Effect::None
     }
 
     /// 問題の一覧のクリック（中身の行。2 回で開く）
@@ -291,7 +298,12 @@ pub struct ProblemsComponent;
 impl crate::component::Component for ProblemsComponent {
     fn status(&self, ed: &crate::editor::Editor) -> Option<crate::component::Status> {
         let _ = ed;
-        crate::component::Status::keys("-- 問題 --", "j/k 移動  Enter 開く  o 欄に残って開く  ]e [e 次・前  q 隠す  Ctrl-w k 窓へ ", "↑↓ 選ぶ  Enter 開く  右クリック 操作  Esc 窓へ ")
+        crate::component::Status::new("-- 問題 --", "↑↓ 選ぶ  Enter 開く  右クリック 操作  Esc 窓へ ")
+    }
+
+    fn scope(&self, ed: &crate::editor::Editor) -> Option<crate::ui_action::Scope> {
+        let _ = ed;
+        Some(crate::ui_action::Scope::Problems)
     }
 
     fn key(&self, ed: &mut crate::editor::Editor, key: nagi_vim::Key) -> crate::editor::Effect {
@@ -408,15 +420,15 @@ impl crate::layout::View for BottomView {
                 if !in_range {
                     ed.panel_click_at(prow, pcol, 1);
                 }
-                let m = if ed.bottom_kind == BottomKind::Grep { m.keys("開く", &[Enter]).keys("開いて欄に残る", &[Char('o')]) } else { m };
-                let m = m.keys("コピー", &[Char('y')]);
+                let m = if ed.bottom_kind == BottomKind::Grep { m.action(ed, "grep.open").action(ed, "grep.openKeep") } else { m };
+                let m = m.item_shortcut("コピー", "Ctrl+C", |e| e.panel_copy());
                 let m = if ed.bottom_kind == BottomKind::Grep && ed.panels.grep.as_ref().is_some_and(|g| g.title.is_none()) {
                     // 検索の条件（見出しの札・Alt+C などと同じ）
                     use crate::grep_panel::Chip;
                     let on = ed.panels.grep.as_ref().map(crate::grep_panel::chips).unwrap_or_default();
                     let mark = |c: Chip| if on.iter().any(|x| x.2 == c && x.1) { "✓ " } else { "   " };
                     let ctx = ed.panels.grep.as_ref().map_or("", |g| g.opts.context.label());
-                    m.keys("検索し直す", &[Char('/')])
+                    m.action(ed, "grep.search")
                         .sep()
                         .item(format!("{}大文字小文字を区別（Alt+C）", mark(Chip::Case)), |e| e.toggle_chip(Chip::Case))
                         .item(format!("{}単語として（Alt+O）", mark(Chip::Words)), |e| e.toggle_chip(Chip::Words))
@@ -425,15 +437,15 @@ impl crate::layout::View for BottomView {
                         .item(format!("{}今のファイルのフォルダだけ（Alt+D・Alt+P で全体）", mark(Chip::Scope)), |e| e.toggle_chip(Chip::Scope))
                         .item(format!("   文脈: {ctx} → 次へ（Alt+T）"), |e| e.toggle_chip(Chip::Context))
                 } else if ed.bottom_kind == BottomKind::Grep {
-                    m.keys("検索し直す", &[Char('/')])
+                    m.action(ed, "grep.search")
                 } else {
                     m
                 };
-                m.sep().keys("欄を閉じる", &[Char('q')])
+                m.sep().action(ed, "grep.close")
             }
             BottomKind::Problems => {
                 ed.problems_click(prow, 1);
-                m.keys("開く", &[Enter]).keys("開いて欄に残る", &[Char('o')]).sep().keys("欄を隠す", &[Char('q')])
+                m.action(ed, "problems.open").action(ed, "problems.openKeep").sep().action(ed, "problems.hide")
             }
             BottomKind::Result => {
                 ed.result_click(prow, pcol.saturating_sub(1), 1);

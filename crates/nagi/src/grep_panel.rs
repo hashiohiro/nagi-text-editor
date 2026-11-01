@@ -38,11 +38,7 @@ pub struct GrepPanel {
     pub running: bool,
     /// 選びを手で動かしたか（動かしていなければ、結果が届いても先頭を選んだまま）
     moved: bool,
-    /// リストモードで `g` を 1 回押した（`gg` の途中）
-    pending_g: bool,
-    /// リストモードで `Ctrl-w` を押した（窓の操作の途中）
-    pending_w: bool,
-    /// 行の範囲を選んでいる（`V` かドラッグ）。範囲はここから `selected` まで
+    /// 行の範囲を選んでいる（ドラッグ）。範囲はここから `selected` まで
     pub anchor: Option<usize>,
     /// ログ（コマンドの出力）の、読み取り専用の Vim の画面
     pub view: Option<crate::read_view::ReadView>,
@@ -179,6 +175,33 @@ pub fn panel_height(rows: usize) -> usize {
     (rows * 35 / 100).max(6).min(rows.saturating_sub(4)).max(1)
 }
 
+/// 検索の結果のアクション（ui_action.rs。ADR 0019）
+pub static ACTIONS: [crate::ui_action::UiAction; 4] = {
+    use crate::ui_action::{Scope::Grep, UiAction};
+    fn hit(e: &Editor) -> bool {
+        e.panels.grep.as_ref().is_some_and(|g| g.title.is_none() && g.hits.get(g.selected).is_some_and(|h| !h.path.is_empty()))
+    }
+    fn open(e: &Editor) -> bool {
+        e.panels.grep.is_some()
+    }
+    [
+        UiAction { id: "grep.open", label: "開く", scope: Grep, enabled: hit, run: |e| {
+            e.set_state(State::Normal);
+            e.open_hit(false);
+        } },
+        UiAction { id: "grep.openKeep", label: "開いて欄に残る", scope: Grep, enabled: hit, run: |e| e.open_hit(true) },
+        // 今の検索の条件のまま入力欄へ（まだ検索していなければ新しく）
+        UiAction { id: "grep.search", label: "検索し直す", scope: Grep, enabled: crate::ui_action::always, run: |e| {
+            if e.panels.grep.as_ref().is_some_and(|g| g.title.is_none()) {
+                e.set_state(State::GrepPrompt);
+            } else {
+                e.open_grep("");
+            }
+        } },
+        UiAction { id: "grep.close", label: "欄を閉じる", scope: Grep, enabled: open, run: |e| e.close_grep() },
+    ]
+};
+
 impl Editor {
     /// パネルの矩形（開いていなければ None）。1 行目は見出し
     pub fn panel_rect(&self) -> Option<Rect> {
@@ -303,8 +326,6 @@ impl Editor {
             title: None,
             running: false,
             moved: false,
-            pending_g: false,
-            pending_w: false,
             anchor: None,
             view: None,
             refs: None,
@@ -506,7 +527,7 @@ impl Editor {
     pub(crate) fn list_key(&mut self, key: Key) -> crate::editor::Effect {
         // ログ（コマンドの出力）は読み取り専用の Vim の画面で（Ctrl-w の窓の操作は一覧と同じ）
         let output = self.bottom_kind == crate::result_grid::BottomKind::Output && self.panels.grep.as_ref().is_some_and(|g| g.title.is_some());
-        if output && key != Key::Ctrl('w') && !self.panels.grep.as_ref().is_some_and(|g| g.pending_w) {
+        if output {
             return self.output_view_key(key);
         }
         let half = (self.panel_rect().map_or(10, |r| r.h) / 2).max(1);
@@ -517,43 +538,21 @@ impl Editor {
             self.set_state(State::Normal);
             return crate::editor::Effect::None;
         };
-        let g_pending = std::mem::take(&mut g.pending_g);
-        if std::mem::take(&mut g.pending_w) {
-            // Ctrl-w の続き: 上・左右・直前の窓へは編集画面へ戻る。c / q はパネルを閉じる
-            match key {
-                Key::Char('c' | 'q') | Key::Ctrl('c' | 'q') => self.close_grep(),
-                Key::Char('j') | Key::Ctrl('j') => {}
-                Key::Char('h') | Key::Ctrl('h') if self.panels.tree.is_some() => self.open_tree(),
-                _ => self.set_state(State::Normal),
-            }
-            return crate::editor::Effect::None;
-        }
-        let moved = nagi_ui::list::step(key, g.selected, g.hits.len(), half * 2);
+        // 標準のキーだけ（ADR 0019。開いて欄に残る・検索し直す・閉じるはアクション）
+        let moved = nagi_ui::list::nav(key, g.selected, g.hits.len(), half * 2);
         match key {
-            Key::Ctrl('w') => g.pending_w = true,
-            // 行の範囲を選ぶ（V）、y・Ctrl+C でコピー（範囲が無ければ今の行）
-            Key::Char('V') | Key::Char('v') => g.anchor = if g.anchor.is_some() { None } else { Some(g.selected) },
-            Key::Char('y') | Key::Char('Y') | Key::Ctrl('c') => {
-                self.panel_copy();
-            }
+            // Ctrl+C でコピー（ドラッグで選んだ範囲、無ければ今の行）
+            Key::Ctrl('c') => self.panel_copy(),
             Key::Esc if g.anchor.is_some() => g.anchor = None,
             _ if moved.is_some() => {
                 let i = moved.unwrap_or(g.selected);
                 g.select(i);
             }
-            Key::Char('g') if g_pending => g.select(0),
-            Key::Char('g') => g.pending_g = true,
             Key::Enter => {
                 self.set_state(State::Normal);
                 self.open_hit(false);
             }
-            Key::Char('o') => self.open_hit(true),
-            Key::Char('/') => self.set_state(State::GrepPrompt),
-            Key::Char('q') => self.close_grep(),
             Key::Esc => self.set_state(State::Normal),
-            Key::Char(':') => {
-                self.enter_command("");
-            }
             _ => {}
         }
         crate::editor::Effect::None
@@ -754,6 +753,11 @@ impl crate::component::Component for ListComponent {
 
     fn text(&self, ed: &mut crate::editor::Editor, text: &str) {
         ed.bottom_text(text);
+    }
+
+    fn scope(&self, ed: &crate::editor::Editor) -> Option<crate::ui_action::Scope> {
+        // ログ（コマンドの出力）は読み取り専用の本文の画面（VimField と同じ扱い）
+        (ed.bottom_kind == crate::result_grid::BottomKind::Grep).then_some(crate::ui_action::Scope::Grep)
     }
 }
 
@@ -1148,10 +1152,10 @@ mod tests {
         keys(&mut e, ":cn<CR>");
         assert_eq!(e.core.buf.line(0), "// Needle here");
         assert_eq!((e.core.cursor.line, e.core.cursor.byte), (0, 3));
-        // Ctrl-w j でパネルへ、G で最後、Enter で開いて編集画面へ
+        // 本文（Vim）の Ctrl-w j でパネルへ、End で最後、Enter で開いて編集画面へ
         keys(&mut e, "<C-w>j");
         assert_eq!(e.state(), State::List);
-        keys(&mut e, "G<CR>");
+        keys(&mut e, "<End><CR>");
         assert_eq!(e.state(), State::Normal);
         assert_eq!(e.core.cursor.line, 2);
         // 本文へ移った後に、結果をマウスで選び直せる（下の欄の 0 行目はタブ、1 行目は見出し、2 行目から結果）
@@ -1171,12 +1175,15 @@ mod tests {
             assert_eq!(e.state(), State::Normal, "{k}");
             keys(&mut e, "<Esc>u");
         }
-        // V で行の範囲を選び、y でコピー（検索の結果は パス:行: 本文）。範囲が無ければ今の行
+        // ドラッグで行の範囲を選び、Ctrl+C でコピー（検索の結果は パス:行: 本文）。範囲が無ければ今の行
         thread_local! { static CLIP: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) }; }
         fn set(t: &str) { CLIP.with(|c| *c.borrow_mut() = t.to_string()); }
         fn get() -> Option<String> { CLIP.with(|c| Some(c.borrow().clone())) }
         e.svc.clipboard = Some(crate::editor::Clipboard { set, get });
-        keys(&mut e, "<C-w>jggVjy");
+        e.bottom_click(2, 5, 1);
+        // ドラッグの行は欄の中の行（0 は見出し）
+        e.panel_drag(2, 0);
+        keys(&mut e, "<C-c>");
         assert_eq!(get().unwrap(), "src/a.rs:2: let needle = 1;\r\nsrc/b.rs:1: // Needle here");
         assert!(e.panels.grep.as_ref().unwrap().anchor.is_none());
         keys(&mut e, "<C-c>");
@@ -1188,8 +1195,10 @@ mod tests {
         e.panel_copy();
         assert_eq!(get().unwrap().lines().count(), 3);
         keys(&mut e, "<Esc>");
-        // パネルで q を押すと閉じ、窓が元の大きさに戻る
+        // パネルの q は何もしない（ADR 0019）。「欄を閉じる」で閉じ、窓が元の大きさに戻る
         keys(&mut e, "<C-w>jq");
+        assert!(e.panels.grep.is_some());
+        assert!(e.run_ui_action("grep.close"));
         assert!(e.panels.grep.is_none());
         assert_eq!(e.windows_rows(), 40);
     }
