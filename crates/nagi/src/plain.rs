@@ -36,7 +36,8 @@ impl Editor {
         if self.vim_on || !matches!(key, Key::Char(c) if c != ' ') {
             return false;
         }
-        if !matches!(self.focus, Some(Panel::List | Panel::Log | Panel::Diff | Panel::DbTable | Panel::Settings | Panel::RunDialog)) {
+        // 部品のアクションに移した部品（履歴など）は、打った字を絞り込みに使うので落とさない（ADR 0019。全部移したらこの関数ごと消す）
+        if !matches!(self.focus, Some(Panel::List | Panel::Diff | Panel::DbTable | Panel::Settings | Panel::RunDialog)) {
             return false;
         }
         let typing = self.has_prompt()

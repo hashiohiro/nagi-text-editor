@@ -183,6 +183,46 @@ pub enum LogAction {
     Copy,
 }
 
+/// 履歴のアクション（ui_action.rs。ADR 0019）。対象は選んでいるコミット（複数選んでいればコピー・チェリーピックはそれら）
+pub static ACTIONS: [crate::ui_action::UiAction; 8] = {
+    use crate::ui_action::{Scope::Log, UiAction};
+    fn open(e: &Editor) -> bool {
+        e.panels.log.is_some()
+    }
+    fn commit(e: &Editor) -> bool {
+        e.panels.log.as_ref().is_some_and(|l| l.current().is_some())
+    }
+    fn docked(e: &Editor) -> bool {
+        e.panels.log.as_ref().is_some_and(|l| l.docked)
+    }
+    /// 選んでいるコミットの (ハッシュ, 短いハッシュ)
+    fn cur(e: &Editor) -> Option<(String, String)> {
+        e.panels.log.as_ref().and_then(|l| l.current()).map(|c| (c.hash.clone(), c.short.clone()))
+    }
+    [
+        UiAction { id: "log.copyHash", label: "ハッシュをコピー", scope: Log, enabled: commit, run: |e| e.log_act(LogAction::Copy) },
+        UiAction { id: "log.copyHashSubject", label: "ハッシュと題名をコピー", scope: Log, enabled: commit, run: |e| e.log_copy_picked(true) },
+        UiAction { id: "log.cherryPick", label: "チェリーピック", scope: Log, enabled: commit, run: |e| e.log_act(LogAction::CherryPick) },
+        UiAction { id: "log.checkout", label: "このリビジョンをチェックアウト", scope: Log, enabled: commit, run: |e| {
+            if let Some((h, _)) = cur(e) {
+                e.log_act(LogAction::AskCheckout(h));
+            }
+        } },
+        UiAction { id: "log.newBranch", label: "新しいブランチ…", scope: Log, enabled: commit, run: |e| {
+            if let Some((_, s)) = cur(e) {
+                e.log_act(LogAction::PromptBranch(s));
+            }
+        } },
+        UiAction { id: "log.filter", label: "絞り込み", scope: Log, enabled: open, run: |e| {
+            if let Some(l) = &mut e.panels.log {
+                l.filter = Some(crate::vim_field::VimField::new(&l.filter_text, false));
+            }
+        } },
+        UiAction { id: "log.hide", label: "欄を隠す", scope: Log, enabled: docked, run: |e| e.log_act(LogAction::HideBottom) },
+        UiAction { id: "log.close", label: "履歴を閉じる", scope: Log, enabled: open, run: |e| e.log_act(LogAction::Close) },
+    ]
+};
+
 /// ブランチの列の 1 行（nagi-ui の木の行）: 区分（depth 0）か、名前の / で分けたフォルダ（`key` は区分からの道筋。ローカル/feature）か、
 /// ブランチ（Leaf の `i` は branches の番号）
 pub type BranchRow = nagi_ui::PathRow;
@@ -435,63 +475,60 @@ impl LogView {
             self.mark_anchor = None;
             return LogAction::None;
         }
-        // 下の欄に収めているとき: Esc は本文へ戻るだけ、q は欄を隠す（どちらも履歴は残す）
-        if self.docked && !self.focus_files {
-            match key {
-                Key::Esc => return LogAction::ToText,
-                Key::Char('q') => return LogAction::HideBottom,
-                _ => {}
-            }
+        // 下の欄に収めているとき: Esc は本文へ戻るだけ（履歴は残す）
+        if self.docked && !self.focus_files && key == Key::Esc {
+            return LogAction::ToText;
         }
+        // 標準のキーだけ（ADR 0019。チェックアウト・チェリーピック・コピーなどはアクション）
         if self.focus_files {
             let n = self.detail.as_ref().map_or(0, |d| d.files.len());
             return match key {
-                Key::Char('j') | Key::Down => {
+                Key::Down => {
                     self.file_sel = (self.file_sel + 1).min(n.saturating_sub(1));
                     LogAction::FitDetail
                 }
-                Key::Char('k') | Key::Up => {
+                Key::Up => {
                     self.file_sel = self.file_sel.saturating_sub(1);
                     LogAction::FitDetail
                 }
-                Key::Tab | Key::Esc | Key::Char('h') => {
+                Key::Tab | Key::Esc | Key::Left => {
                     self.focus_files = false;
                     LogAction::None
                 }
                 Key::Enter => LogAction::OpenFileDiff,
-                Key::Char('q') => LogAction::Close,
                 _ => LogAction::None,
             };
         }
         // 移動は一覧の共通の動き（nagi_ui::list）。グラフだけの行は飛ばす
         let n = self.visible.len();
-        let to = if key == Key::Char('g') { Some(0) } else { nagi_ui::list::step(key, self.selected, n, rows) };
-        if let Some(to) = to {
+        if let Some(to) = nagi_ui::list::nav(key, self.selected, n, rows) {
             self.selected = nagi_ui::list::snap(self.selected, to, n, |i| self.rows[self.visible[i]].commit.is_some());
             return LogAction::None;
         }
         let act = match key {
-            Key::Char('/') => {
-                self.filter = Some(crate::vim_field::VimField::new(&self.filter_text, false));
-                LogAction::None
-            }
-            Key::Tab | Key::Enter | Key::Char('l') => {
+            Key::Tab | Key::Enter | Key::Right => {
                 if self.detail.as_ref().is_some_and(|d| !d.files.is_empty()) {
                     self.focus_files = true;
                 }
                 LogAction::None
             }
-            Key::Char('o') => self.current().map_or(LogAction::None, |c| LogAction::AskCheckout(c.hash.clone())),
             Key::Char(' ') => {
                 let k = self.selected;
                 self.toggle_mark(k);
                 self.mark_anchor = Some(k);
                 LogAction::None
             }
-            Key::Char('c') => LogAction::CherryPick,
-            Key::Char('b') => self.current().map_or(LogAction::None, |c| LogAction::PromptBranch(c.short.clone())),
-            Key::Char('y') => LogAction::Copy,
-            Key::Char('q') | Key::Esc => LogAction::Close,
+            // 打った字は絞り込みの欄へ（IntelliJ のスピードサーチと同じ）
+            Key::Char(_) => {
+                let mut f = crate::vim_field::VimField::new(&self.filter_text, false);
+                f.feed(key, svc);
+                self.filter_text = f.text();
+                self.filter = Some(f);
+                self.refilter();
+                self.detail = None;
+                LogAction::None
+            }
+            Key::Esc => LogAction::Close,
             _ => LogAction::None,
         };
         nagi_ui::list::fit(self.selected, &mut self.top, rows);
@@ -774,7 +811,13 @@ impl Editor {
             return;
         };
         // 部品の中で済むこと（絞り込みの欄を含む）は LogView::key が部品の状態と Services で行い、外に及ぶことを返す（ADR 0018 の §5）
-        match l.key(key, rows, &mut self.svc) {
+        let a = l.key(key, rows, &mut self.svc);
+        self.log_act(a);
+    }
+
+    /// 履歴の操作を行う（キー・アクションから）
+    pub(crate) fn log_act(&mut self, a: LogAction) {
+        match a {
             LogAction::None => {}
             LogAction::ToText => self.set_state(State::Normal),
             LogAction::HideBottom => self.hide_bottom(),
@@ -1146,15 +1189,7 @@ impl Editor {
             let is_head = head.as_deref() == Some(c.hash.as_str());
             let (h, short) = (c.hash.clone(), c.short.clone());
             let mut m = crate::menu::Menu::new(at.0, at.1);
-            let x = h.clone();
-            m = m.item("ハッシュをコピー", move |e| e.copy_text(x, "ハッシュ"));
-            m = m.item("ハッシュと題名をコピー", |e| e.log_copy_picked(true));
-            let x = h.clone();
-            m = m.item("チェリーピック", move |e| e.log_ask(Confirm::CherryPick(x)));
-            let x = h.clone();
-            m = m.item("このリビジョンをチェックアウト", move |e| e.log_ask(Confirm::Checkout(x)));
-            let x = short.clone();
-            m = m.item("新しいブランチ…", move |e| e.prompt_command("Gbranch ", &format!(" {x}")));
+            m = m.action(self, "log.copyHash").action(self, "log.copyHashSubject").action(self, "log.cherryPick").action(self, "log.checkout").action(self, "log.newBranch");
             let x = short.clone();
             m = m.item("新しいタグ…", move |e| e.prompt_command("Gtag ", &format!(" {x}")));
             m = m.sep();
@@ -1434,12 +1469,17 @@ impl crate::component::Component for LogComponent {
             Some(l) => format!("/{}", l.filter_text),
             None => "-- 履歴 --".into(),
         };
-        crate::component::Status::keys(name, "j/k 移動  / 絞り込み  Tab ファイル  Enter 差分  o チェックアウト  b ブランチ  c チェリーピック  y ハッシュ  q 閉じる ", "↑↓ 選ぶ  ダブルクリック ファイル  右クリック 操作  Esc 窓へ ")
+        crate::component::Status::new(name, "↑↓ 選ぶ  Tab ファイル  ダブルクリック ファイル  右クリック 操作  打つと絞り込み  Esc 窓へ ")
     }
 
     fn key(&self, ed: &mut crate::editor::Editor, key: nagi_vim::Key) -> crate::editor::Effect {
         ed.log_key(key);
         crate::editor::Effect::None
+    }
+
+    fn scope(&self, ed: &crate::editor::Editor) -> Option<crate::ui_action::Scope> {
+        let _ = ed;
+        Some(crate::ui_action::Scope::Log)
     }
 
     /// 絞り込みの欄に打っている間の文字
@@ -1713,19 +1753,17 @@ mod tests {
     fn keys_without_editor() {
         let mut svc = crate::editor::Services::default();
         let mut l = view("*\x1fa1\x1f\x1f一\x1fA\x1f1\x1fa1\n|\n*\x1fb2\x1f\x1f二\x1fA\x1f2\x1fb2\n", &[], Some(parse_detail("a1\x1fA\x1f1\x1fp\x1f件名\x1e\n\nM\ta.rs\nA\tb.rs\n")));
-        assert_eq!(l.key(Key::Char('j'), 10, &mut svc), LogAction::None);
+        assert_eq!(l.key(Key::Down, 10, &mut svc), LogAction::None);
         assert_eq!(l.selected, 2, "グラフだけの行は飛ばす");
-        assert_eq!(l.key(Key::Char('o'), 10, &mut svc), LogAction::AskCheckout("b2".into()));
         assert_eq!(l.key(Key::Tab, 10, &mut svc), LogAction::None);
         assert!(l.focus_files);
-        assert_eq!(l.key(Key::Char('j'), 10, &mut svc), LogAction::FitDetail);
+        assert_eq!(l.key(Key::Down, 10, &mut svc), LogAction::FitDetail);
         assert_eq!((l.file_sel, l.key(Key::Enter, 10, &mut svc)), (1, LogAction::OpenFileDiff));
         assert_eq!(l.key(Key::Esc, 10, &mut svc), LogAction::None);
         assert_eq!(l.key(Key::Esc, 10, &mut svc), LogAction::ToText, "下の欄に収めているときの Esc は本文へ");
-        // 絞り込みの欄も部品の中で（打つと絞り込む。Enter で決めて欄を閉じる）
-        l.key(Key::Char('/'), 10, &mut svc);
-        assert!(l.filter.is_some());
+        // 絞り込みの欄も部品の中で（打った字から絞り込む。Enter で決めて欄を閉じる。1 文字キーの操作は無い: ADR 0019）
         l.key(Key::Char('二'), 10, &mut svc);
+        assert!(l.filter.is_some());
         assert_eq!(l.filter_text, "二");
         assert_eq!(l.visible.iter().filter(|&&i| l.rows[i].commit.is_some()).count(), 1);
         l.key(Key::Enter, 10, &mut svc);
@@ -1856,7 +1894,7 @@ mod tests {
         // キーで選びを上へ動かすと、見える範囲へ戻る
         e.log_wheel(-1000, 0, r.w, r.w - 2);
         e.set_state(State::Log);
-        e.key(nagi_vim::Key::Char('k'));
+        e.key(nagi_vim::Key::Up);
         let l = e.panels.log.as_ref().unwrap();
         let k = detail_lines(l.detail.as_ref().unwrap(), dw - 1).iter().position(|x| *x == DetailLine::File(38)).unwrap();
         assert!(l.detail_top <= k && k < l.detail_top + rows, "{} {k}", l.detail_top);
