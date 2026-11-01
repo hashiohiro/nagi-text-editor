@@ -304,7 +304,7 @@ pub enum TableOp {
 }
 
 /// テーブルの画面のアクション（ui_action.rs。ADR 0019）
-pub static ACTIONS: [crate::ui_action::UiAction; 14] = {
+pub static ACTIONS: [crate::ui_action::UiAction; 9] = {
     use crate::ui_action::{Scope::Table, UiAction};
     fn open(e: &Editor) -> bool {
         e.panels.db_table.is_some()
@@ -318,9 +318,6 @@ pub static ACTIONS: [crate::ui_action::UiAction; 14] = {
     fn clean(e: &Editor) -> bool {
         e.panels.db_table.as_ref().is_some_and(|t| t.changes() == 0)
     }
-    fn dirty(e: &Editor) -> bool {
-        e.panels.db_table.as_ref().is_some_and(|t| t.changes() > 0)
-    }
     fn more(e: &Editor) -> bool {
         e.panels.db_table.as_ref().is_some_and(|t| t.changes() == 0 && t.more)
     }
@@ -328,20 +325,15 @@ pub static ACTIONS: [crate::ui_action::UiAction; 14] = {
         e.panels.db_table.as_ref().is_some_and(|t| t.changes() == 0 && t.offset > 0)
     }
     [
-        UiAction { id: "table.edit", label: "値を直す", scope: Table, enabled: cell, run: |e| e.db_table_op(TableOp::Edit) },
         UiAction { id: "table.replace", label: "値を入れ替える", scope: Table, enabled: cell, run: |e| e.db_table_op(TableOp::Replace) },
         UiAction { id: "table.setNull", label: "NULL にする", scope: Table, enabled: cell, run: |e| e.db_table_op(TableOp::SetNull) },
         UiAction { id: "table.addRow", label: "行を足す", scope: Table, enabled: cols, run: |e| e.db_table_op(TableOp::AddRow) },
-        UiAction { id: "table.deleteRow", label: "行を消す（取り消し）", scope: Table, enabled: cell, run: |e| e.db_table_op(TableOp::DeleteRow) },
-        UiAction { id: "table.undo", label: "戻す", scope: Table, enabled: dirty, run: |e| e.db_table_op(TableOp::Undo) },
-        UiAction { id: "table.send", label: "変更を送る", scope: Table, enabled: dirty, run: |e| e.db_table_op(TableOp::Send) },
         UiAction { id: "table.where", label: "絞り込み（WHERE）", scope: Table, enabled: clean, run: |e| e.db_table_op(TableOp::Where) },
         UiAction { id: "table.order", label: "並べ替え（ORDER BY）", scope: Table, enabled: clean, run: |e| e.db_table_op(TableOp::Order) },
         UiAction { id: "table.sortColumn", label: "この列で並べ替え", scope: Table, enabled: clean, run: |e| e.db_table_op(TableOp::SortColumn) },
         UiAction { id: "table.nextPage", label: "次のページ", scope: Table, enabled: more, run: |e| e.db_table_op(TableOp::NextPage) },
         UiAction { id: "table.prevPage", label: "前のページ", scope: Table, enabled: back, run: |e| e.db_table_op(TableOp::PrevPage) },
         UiAction { id: "table.reload", label: "読み直す", scope: Table, enabled: open, run: |e| e.db_table_op(TableOp::Reload) },
-        UiAction { id: "table.close", label: "閉じる", scope: Table, enabled: open, run: |e| e.db_table_op(TableOp::Close) },
     ]
 };
 

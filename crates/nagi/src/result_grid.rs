@@ -484,7 +484,7 @@ pub enum ResultOp {
 }
 
 /// クエリの結果のアクション（ui_action.rs。ADR 0019）
-pub static ACTIONS: [crate::ui_action::UiAction; 17] = {
+pub static ACTIONS: [crate::ui_action::UiAction; 14] = {
     use crate::ui_action::{Scope::Results, UiAction};
     fn table(e: &Editor) -> bool {
         e.panels.db_results.active_tab().is_some()
@@ -517,10 +517,7 @@ pub static ACTIONS: [crate::ui_action::UiAction; 17] = {
         UiAction { id: "results.nextPage", label: "次のページ", scope: Results, enabled: more, run: |e| e.result_op(ResultOp::NextPage) },
         UiAction { id: "results.prevPage", label: "前のページ", scope: Results, enabled: back, run: |e| e.result_op(ResultOp::PrevPage) },
         UiAction { id: "results.reload", label: "読み直す", scope: Results, enabled: filterable, run: |e| e.result_op(ResultOp::Reload) },
-        UiAction { id: "results.edit", label: "値を直す", scope: Results, enabled: editable, run: |e| e.result_op(ResultOp::Edit) },
         UiAction { id: "results.setNull", label: "NULL にする", scope: Results, enabled: editable, run: |e| e.result_op(ResultOp::SetNull) },
-        UiAction { id: "results.undo", label: "戻す", scope: Results, enabled: editable, run: |e| e.result_op(ResultOp::Undo) },
-        UiAction { id: "results.send", label: "変更を送る", scope: Results, enabled: editable, run: |e| e.result_op(ResultOp::Send) },
         UiAction { id: "results.export", label: "書き出す（CSV・TSV・INSERT）…", scope: Results, enabled: table, run: |e| e.result_op(ResultOp::Export) },
         UiAction { id: "results.close", label: "閉じる", scope: Results, enabled: any, run: |e| e.result_op(ResultOp::CloseTab) },
         UiAction { id: "results.nextTab", label: "次のタブ", scope: Results, enabled: tabs, run: |e| e.result_op(ResultOp::NextTab) },

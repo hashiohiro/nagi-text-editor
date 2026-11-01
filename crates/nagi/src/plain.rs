@@ -29,24 +29,6 @@ impl Editor {
         !self.vim_on
     }
 
-    /// Vim を使わないとき、このキーを受けないか: 一覧のパネル・ダイアログでは文字のキーを受けない（操作はマウス・右クリックの
-    /// メニュー・矢印・Enter・Esc・Tab・Space・Ctrl の組み合わせで）。入力欄に打っている間は受ける
-    pub(crate) fn plain_drops(&self, key: Key) -> bool {
-        use crate::editor::Panel;
-        if self.vim_on || !matches!(key, Key::Char(c) if c != ' ') {
-            return false;
-        }
-        // 部品のアクションに移した部品（履歴など）は、打った字を絞り込みに使うので落とさない（ADR 0019。全部移したらこの関数ごと消す）
-        if !matches!(self.focus, Some(Panel::RunDialog)) {
-            return false;
-        }
-        let typing = self.has_prompt()
-            || self.in_text_field()
-            || self.panels.log.as_ref().is_some_and(|l| l.filter.is_some() && self.state() == State::Log)
-            || self.panels.db_table.as_ref().is_some_and(|t| (t.editing.is_some() || t.filter_edit.is_some()) && self.state() == State::DbTable);
-        !typing
-    }
-
     /// 本文で何もしていない（Vim なら Normal、使わないなら打てる状態で選んでいない）。
     /// 変更の差分・blame の小窓、カーソルの診断の文はこのときに出す
     pub fn idle(&self) -> bool {

@@ -1706,13 +1706,13 @@ impl Editor {
         match row {
             DbRow::Source(_) => {
                 if c.client.is_none() {
-                    m = m.item("つなぐ", move |e| e.db_begin_connect(i));
+                    m = m.action(self, "db.connect");
                 } else {
-                    m = m.item("つなぎ直す", move |e| e.db_reconnect(i)).item("切る", move |e| e.db_disconnect(i));
+                    m = m.item("つなぎ直す", move |e| e.db_reconnect(i)).action(self, "db.disconnect");
                 }
-                m = m.item("新しいクエリ", move |e| e.db_new_query(i, None)).item("コンソールを開く", move |e| e.open_console(i, None));
+                m = m.action(self, "db.newQuery").action(self, "db.console");
                 if c.connected {
-                    m = m.item("読み直す", move |e| e.db_reload(i));
+                    m = m.action(self, "db.reload");
                 }
                 m = m.sep();
                 if !src.schema.is_empty() {
@@ -1754,16 +1754,8 @@ impl Editor {
             DbRow::Object(_, s, t, g, _) => {
                 let q = qualified(self.db_dialect(i), &s, &t);
                 if matches!(g, Group::Tables | Group::Views) {
-                    let (s2, t2) = (s.clone(), t.clone());
-                    m = m.item("データを開く", move |e| {
-                        if sf {
-                            e.db_execute(i, format!("SELECT FIELDS(STANDARD) FROM {t2} LIMIT 200"));
-                        } else {
-                            e.db_open_table(i, &s2, &t2);
-                        }
-                    });
-                    let init = if sf { format!("SELECT Id, Name FROM {t} LIMIT 100") } else { format!("SELECT * FROM {q}") };
-                    m = m.item("新しいクエリ", move |e| e.db_new_query(i, Some(init)));
+                    // データを開く・新しいクエリ（SELECT を書き入れて）は選んでいる行に対するアクション
+                    m = m.action(self, "db.openData").action(self, "db.newQuery");
                     if !sf {
                         let q2 = q.clone();
                         m = m.item("件数を数える", move |e| e.db_execute(i, format!("SELECT COUNT(*) FROM {q2}")));
@@ -1774,8 +1766,7 @@ impl Editor {
                             m = m.item(format!("{label} 文を作る（新しいクエリに）"), move |e| e.db_generate(i, &s2, &t2, w));
                         }
                     }
-                    let (s2, t2) = (s.clone(), t.clone());
-                    m = m.item("DDL を開く", move |e| e.db_ddl_of(i, &s2, &t2, g));
+                    m = m.action(self, "db.ddl");
                 }
                 m = m.sep();
                 let t2 = t.clone();
@@ -1797,7 +1788,7 @@ impl Editor {
             }
             DbRow::Sub(..) | DbRow::Key(..) | DbRow::Index(..) | DbRow::Info(..) => {}
         }
-        let m = m.sep().action(self, "db.addSource");
+        let m = m.sep().action(self, "db.addSource").action(self, "db.filter").action(self, "db.close");
         self.open_menu(m);
         true
     }

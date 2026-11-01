@@ -121,6 +121,80 @@ impl Editor {
 mod tests {
     use super::*;
 
+    /// 試験の外のソース（src/*.rs の #[cfg(test)] より前）
+    fn sources() -> Vec<(String, String)> {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().is_some_and(|x| x == "rs"))
+            .map(|p| {
+                let s = std::fs::read_to_string(&p).unwrap();
+                // 試験のモジュールより前（ファイルの途中の #[cfg(test)] の関数では切らない）
+                let body = s.split("\n#[cfg(test)]\nmod tests").next().unwrap_or("").split("\n#[cfg(test)]\npub(crate) mod tests").next().unwrap_or("").to_string();
+                (p.file_name().unwrap().to_string_lossy().into_owned(), body)
+            })
+            .collect()
+    }
+
+    /// すべてのアクションに、マウスの入口（右クリックのメニューの項目かボタン）がある（ADR 0019。ショートカットは既定で付けないので、
+    /// 入口が無いとパレットからしか届かない）。メニューは Menu::action・action_as、ボタンは run_ui_action で呼ぶ
+    #[test]
+    fn every_action_has_mouse_entry() {
+        let src: String = sources().into_iter().filter(|(n, _)| n != "ui_action.rs").map(|(_, b)| b).collect();
+        let missing: Vec<&str> = all()
+            .map(|a| a.id)
+            .filter(|id| {
+                let q = format!("\"{id}\"");
+                !src.contains(&format!(".action(ed, {q})")) && !src.contains(&format!(".action(self, {q})")) && !src.contains(&format!("action_as(ed, {q}")) && !src.contains(&format!("action_as(self, {q}")) && !src.contains(&format!("run_ui_action({q})"))
+            })
+            .collect();
+        assert!(missing.is_empty(), "メニューにもボタンにも無いアクション: {missing:?}");
+    }
+
+    /// 部品の上で印字できる文字を打っても、部品から抜けない・メニューも出ない・部品も閉じない（1 文字キーの操作は無い。ADR 0019）。
+    /// 打った字は絞り込みの欄へ入ってよい。Vim を使うときも使わないときも
+    #[test]
+    fn printable_keys_do_nothing_in_panels() {
+        use crate::editor::State;
+        use nagi_vim::Key;
+        let dir = std::env::temp_dir().join(format!("nagi-ui-letters-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/a.rs"), "fn a() {}\n").unwrap();
+        std::fs::write(dir.join("b.txt"), "b\n").unwrap();
+        type Open = fn(&mut Editor, &std::path::Path);
+        let panels: [(&str, Open, fn(&Editor) -> bool); 5] = [
+            ("プロジェクトの木", |e, _| e.open_tree(), |e| e.panels.tree.is_some()),
+            ("問題", |e, d| {
+                e.diags = vec![crate::diagnostics::Diag { path: d.join("src/a.rs"), line: 0, col: 0, error: true, msg: "m".into() }];
+                e.toggle_bottom_tab(crate::result_grid::BottomKind::Problems);
+            }, |e| e.bottom_visible()),
+            ("差分", |e, _| e.show_diff("a".into(), "b".into(), "x\n", "y\n", None), |e| e.panels.diff.is_some()),
+            ("設定", |e, _| e.open_settings(""), |e| e.panels.settings_dialog.is_some()),
+            ("実行の構成", |e, _| e.open_run_dialog(None), |e| e.panels.run_dialog.is_some()),
+        ];
+        for vim in [false, true] {
+            for (name, open, alive) in panels {
+                let mut buf = nagi_core::Buffer::open(&dir.join("b.txt")).unwrap();
+                buf.path = Some(dir.join("b.txt"));
+                let mut e = Editor::new(buf, None);
+                e.set_screen(140, 40);
+                e.set_vim(vim);
+                open(&mut e, &dir);
+                let state = e.state();
+                assert_ne!(state, State::Normal, "{name}: 部品にいる");
+                for c in (0x21u8..0x7f).map(char::from) {
+                    e.key(Key::Char(c));
+                    assert!(alive(&e) && e.menu.is_none(), "{name} vim={vim}: {c} で閉じた・メニューが出た");
+                    assert_eq!(e.state(), state, "{name} vim={vim}: {c} で部品から抜けた");
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn ids_unique_and_unbound_by_default() {
         let ids: Vec<&str> = all().map(|a| a.id).collect();

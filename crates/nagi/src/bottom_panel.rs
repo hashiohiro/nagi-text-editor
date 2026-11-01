@@ -471,7 +471,7 @@ impl crate::layout::View for BottomView {
                 } else {
                     m
                 };
-                m.sep().action(ed, "results.export").action(ed, "results.close")
+                m.sep().action(ed, "results.export").action(ed, "results.prevTab").action(ed, "results.nextTab").action(ed, "results.close")
             }
             BottomKind::Debug => {
                 let w = ed.bottom_content_rect().map_or(0, |c| c.w);

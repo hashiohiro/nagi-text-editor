@@ -1,12 +1,13 @@
 //! 一覧の選択とスクロール（パネル・ダイアログ・表で共通）。
 //!
-//! 一覧は「選んでいる行」と「先頭に見せている行」の 2 つの数を持つ。キーでの移動は `step`、
-//! 描く前に選んでいる行を見える範囲に収めるのは `fit`。パネル独自のキー（Enter・o・g など）はパネルが先に見る。
+//! 一覧は「選んでいる行」と「先頭に見せている行」の 2 つの数を持つ。キーでの移動は `nav`（標準のキーだけ。欄・ダイアログはこれ）、
+//! 描く前に選んでいる行を見える範囲に収めるのは `fit`。部品の中で Vim のキーは受けない（ADR 0019）。
 
 use nagi_vim::Key;
 
 /// 移動のキーなら、選び直した位置（`len` 行の中で。`page` は 1 画面の行数）。移動のキーでなければ None。
-/// j k ↓ ↑・Ctrl+d Ctrl+u（半画面）・Ctrl+f Ctrl+b PageDown PageUp（1 画面）・G End（最後）・Home（最初）
+/// j k ↓ ↑・Ctrl+d Ctrl+u（半画面）・Ctrl+f Ctrl+b PageDown PageUp（1 画面）・G End（最後）・Home（最初）。
+/// Vim のキーも受けるので、使うのは入力欄（VimField）が Normal の間に一覧を送るときだけ（ランチャー・コンボ）。欄の上は `nav`
 pub fn step(key: Key, sel: usize, len: usize, page: usize) -> Option<usize> {
     let last = len.saturating_sub(1);
     let page = page.max(1);

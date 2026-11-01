@@ -1224,7 +1224,7 @@ impl Editor {
             }
             m = m.sep();
             m = m.item("親のコミットへ", |e| e.log_goto_parent());
-            m
+            m.sep().action(self, "log.filter").action(self, "log.hide").action(self, "log.close")
         };
         self.open_menu(menu);
         true
