@@ -57,6 +57,28 @@ impl RunPanel {
     }
 }
 
+/// 実行の欄のアクション（ui_action.rs。ADR 0019）
+pub static ACTIONS: [crate::ui_action::UiAction; 6] = {
+    use crate::ui_action::{Scope::Run, UiAction};
+    fn open(e: &Editor) -> bool {
+        e.panels.run_panel.is_some()
+    }
+    fn chosen(e: &Editor) -> bool {
+        e.panels.run_panel.as_ref().is_some_and(|p| p.current().is_some())
+    }
+    fn running(e: &Editor) -> bool {
+        e.panels.run_panel.as_ref().and_then(|p| p.current()).is_some_and(|c| e.run_is_running(&c.name))
+    }
+    [
+        UiAction { id: "run.run", label: "実行", scope: Run, enabled: chosen, run: |e| e.run_panel_tool(Tool::Run) },
+        UiAction { id: "run.stop", label: "■ 止める", scope: Run, enabled: running, run: |e| e.run_panel_tool(Tool::Stop) },
+        UiAction { id: "run.edit", label: "✎ 構成の編集…", scope: Run, enabled: chosen, run: |e| e.run_panel_tool(Tool::Edit) },
+        UiAction { id: "run.add", label: "＋ 構成を追加…", scope: Run, enabled: crate::ui_action::always, run: |e| e.run_panel_tool(Tool::Add) },
+        UiAction { id: "run.reload", label: "読み直す", scope: Run, enabled: open, run: |e| e.open_run_panel() },
+        UiAction { id: "run.close", label: "欄を閉じる", scope: Run, enabled: open, run: |e| e.close_run_panel() },
+    ]
+};
+
 impl Editor {
     /// 構成の名前が動いているか
     pub fn run_is_running(&self, name: &str) -> bool {
@@ -127,20 +149,15 @@ impl Editor {
     pub(crate) fn run_panel_key(&mut self, key: Key) -> crate::editor::Effect {
         let h = self.run_panel_rect().map_or(10, |r| r.h.saturating_sub(HEAD));
         let Some(p) = &mut self.panels.run_panel else { return crate::editor::Effect::None };
-        if let Some(i) = nagi_ui::list::step(key, p.selected, p.len(), h) {
+        // 標準のキーだけ（ADR 0019。止める・編集・追加・読み直す・閉じるはアクションと欄のボタン）
+        if let Some(i) = nagi_ui::list::nav(key, p.selected, p.len(), h) {
             p.selected = i;
             self.run_panel_choose();
             return crate::editor::Effect::None;
         }
         match key {
             Key::Enter => self.run_panel_tool(Tool::Run),
-            Key::Char('s') => self.run_panel_tool(Tool::Stop),
-            Key::Char('e') => self.run_panel_tool(Tool::Edit),
-            Key::Char('a') => self.run_panel_tool(Tool::Add),
-            Key::Char('r') => self.open_run_panel(),
-            Key::Char('q') => self.close_run_panel(),
             Key::Esc => self.set_state(State::Normal),
-            Key::Char(':') => self.enter_command(""),
             _ => {}
         }
         crate::editor::Effect::None
@@ -175,7 +192,12 @@ pub struct RunPanelComponent;
 impl crate::component::Component for RunPanelComponent {
     fn status(&self, ed: &Editor) -> Option<crate::component::Status> {
         let _ = ed;
-        crate::component::Status::keys("-- 実行 --", "Enter 実行  s 止める  e 編集  a 追加  r 読み直す  q 閉じる ", "Enter・ダブルクリック 実行  右クリック 操作  Esc 本文へ ")
+        crate::component::Status::new("-- 実行 --", "Enter・ダブルクリック 実行  右クリック 操作  Esc 本文へ ")
+    }
+
+    fn scope(&self, ed: &Editor) -> Option<crate::ui_action::Scope> {
+        let _ = ed;
+        Some(crate::ui_action::Scope::Run)
     }
 
     fn key(&self, ed: &mut Editor, key: Key) -> crate::editor::Effect {
@@ -218,22 +240,21 @@ impl crate::layout::View for RunPanelView {
     fn context(&self, ed: &mut Editor, r: crate::panes::Rect, at: crate::layout::At) -> bool {
         let (row, col) = at.screen;
         let _ = r;
-        use nagi_vim::Key::*;
         // 押した行を選ぶ（ボタンの行・タブの行ならメニューを出さない）
         if at.row < HEAD {
             return false;
         }
         ed.run_panel_click(at.row, at.col, 1);
         let Some(c) = ed.panels.run_panel.as_ref().and_then(|p| p.current().cloned()) else {
-            let m = crate::menu::Menu::new(row, col).keys("構成を追加…", &[Char('a')]).keys("読み直す", &[Char('r')]).sep().keys("欄を閉じる", &[Char('q')]);
+            let m = crate::menu::Menu::new(row, col).action(ed, "run.add").action(ed, "run.reload").sep().action(ed, "run.close");
             ed.open_menu(m);
             return true;
         };
-        let mut m = crate::menu::Menu::new(row, col).keys(format!("▶ {} を実行", c.name), &[Enter]);
+        let mut m = crate::menu::Menu::new(row, col).action_as(ed, "run.run", &format!("▶ {} を実行", c.name));
         if ed.run_is_running(&c.name) {
-            m = m.keys("■ 止める", &[Char('s')]);
+            m = m.action(ed, "run.stop");
         }
-        let m = m.keys("✎ 構成の編集…", &[Char('e')]).keys("＋ 構成を追加…", &[Char('a')]).sep().keys("読み直す", &[Char('r')]).keys("欄を閉じる", &[Char('q')]);
+        let m = m.action(ed, "run.edit").action(ed, "run.add").sep().action(ed, "run.reload").action(ed, "run.close");
         ed.open_menu(m);
         true
     }

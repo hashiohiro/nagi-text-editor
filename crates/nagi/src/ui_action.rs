@@ -22,6 +22,7 @@ pub enum Scope {
     Diff,
     Grep,
     Problems,
+    Run,
 }
 
 impl Scope {
@@ -37,6 +38,7 @@ impl Scope {
             Scope::Diff => "差分",
             Scope::Grep => "検索",
             Scope::Problems => "問題",
+            Scope::Run => "実行",
         }
     }
 }
@@ -62,7 +64,7 @@ pub const KEY: &str = "keymap.ui.";
 
 /// すべてのアクション（部品の表をつなげたもの）
 pub fn all() -> impl Iterator<Item = &'static UiAction> {
-    [&crate::db_panel::ACTIONS[..], &crate::tree_panel::ACTIONS, &crate::maven_panel::ACTIONS, &crate::md_preview::ACTIONS, &crate::commit_panel::ACTIONS, &crate::log_view::ACTIONS, &crate::diff_view::ACTIONS, &crate::grep_panel::ACTIONS, &crate::bottom_panel::ACTIONS].into_iter().flatten()
+    [&crate::db_panel::ACTIONS[..], &crate::tree_panel::ACTIONS, &crate::maven_panel::ACTIONS, &crate::md_preview::ACTIONS, &crate::commit_panel::ACTIONS, &crate::log_view::ACTIONS, &crate::diff_view::ACTIONS, &crate::grep_panel::ACTIONS, &crate::bottom_panel::ACTIONS, &crate::run_panel::ACTIONS].into_iter().flatten()
 }
 
 pub fn find(id: &str) -> Option<&'static UiAction> {

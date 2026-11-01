@@ -575,13 +575,14 @@ impl Editor {
     /// 下の欄の「デバッグ」のキー
     pub(crate) fn debug_key(&mut self, key: Key) -> crate::editor::Effect {
         let Some(d) = &mut self.panels.debug else {
-            if matches!(key, Key::Esc | Key::Char('q')) {
+            if key == Key::Esc {
                 self.leave_panel();
             }
             return crate::editor::Effect::None;
         };
+        // 標準のキーだけ（ADR 0019。続ける・次へ・中へ・外へ・止めるは全体のキーマップ（F9・F8 など）と欄のボタン）
         let (n, sel) = if d.on_vars { (d.vars.len(), d.sel_var) } else { (d.frames.len(), d.sel_frame) };
-        if let Some(to) = nagi_ui::list::step(key, sel, n, 10) {
+        if let Some(to) = nagi_ui::list::nav(key, sel, n, 10) {
             if d.on_vars {
                 d.sel_var = to;
             } else {
@@ -590,12 +591,12 @@ impl Editor {
             return crate::editor::Effect::None;
         }
         match key {
-            Key::Tab | Key::Char('h') if !d.on_vars || key == Key::Tab => d.on_vars = !d.on_vars,
-            Key::Enter | Key::Char('l') | Key::Char(' ') if d.on_vars => {
+            Key::Tab => d.on_vars = !d.on_vars,
+            Key::Enter | Key::Right | Key::Char(' ') if d.on_vars => {
                 let i = d.sel_var;
                 self.debug_toggle_var(i);
             }
-            Key::Char('h') => {
+            Key::Left if d.on_vars => {
                 // 閉じる（開いた行の中なら親へ）
                 let i = d.sel_var;
                 if d.vars.get(i).is_some_and(|r| r.open) {
@@ -604,12 +605,7 @@ impl Editor {
                     d.sel_var = p;
                 }
             }
-            Key::Char('c') => self.debug_resume(),
-            Key::Char('n') => self.debug_step(Depth::Over),
-            Key::Char('s') => self.debug_step(Depth::Into),
-            Key::Char('o') => self.debug_step(Depth::Out),
-            Key::Char('x') => self.debug_stop(),
-            Key::Esc | Key::Char('q') => self.leave_panel(),
+            Key::Esc => self.leave_panel(),
             _ => {}
         }
         crate::editor::Effect::None
@@ -690,11 +686,7 @@ impl crate::component::Component for DebugComponent {
         let _ = ed;
         let k = |key: &str| ed.settings.get(key);
         let (go, over, into, out, stop) = (k("keymap.debug_resume"), k("keymap.step_over"), k("keymap.step_into"), k("keymap.step_out"), k("keymap.debug_stop"));
-        crate::component::Status::keys(
-            "-- デバッグ --",
-            format!("j/k 選ぶ  Tab スタック⇔変数  Enter 開く  c 続ける({go})  n 次へ({over})  s 中へ({into})  o 外へ({out})  x 止める  q 隠す "),
-            format!("{go} 続ける  {over} 次へ  {into} 中へ  {out} 外へ  {stop} 止める "),
-        )
+        crate::component::Status::new("-- デバッグ --", format!("Tab スタック⇔変数  {go} 続ける  {over} 次へ  {into} 中へ  {out} 外へ  {stop} 止める "))
     }
 
     fn key(&self, ed: &mut Editor, key: Key) -> crate::editor::Effect {
