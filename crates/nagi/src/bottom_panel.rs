@@ -402,7 +402,6 @@ impl crate::layout::View for BottomView {
     fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At) -> bool {
         let _ = r;
         let (row, col) = at.screen;
-        use nagi_vim::Key::*;
         // 1 行目はタブなので、2 行目から中身
         if at.row == 0 {
             return false;
@@ -451,42 +450,44 @@ impl crate::layout::View for BottomView {
                 ed.result_click(prow, pcol.saturating_sub(1), 1);
                 let filterable = ed.panels.db_results.active_tab().is_some_and(|t| t.filterable);
                 let editable = ed.panels.db_results.active_tab().is_some_and(|t| t.target.is_some());
-                let m = m.keys("値をコピー", &[Char('y')]).keys("行をコピー", &[Char('Y')]).keys("表全体をコピー（タブ区切り）", &[Char('g'), Char('y')]);
+                let m = m.action(ed, "results.copyValue").action(ed, "results.copyRow").action(ed, "results.copyTable");
                 let m = if filterable {
                     m.sep()
-                        .keys("絞り込み（WHERE）", &[Char('f')])
-                        .keys("並べ替え（ORDER BY）", &[Char('F')])
-                        .keys("この列で並べ替え", &[Char('s')])
-                        .keys("次のページ", &[Char('>')])
-                        .keys("前のページ", &[Char('<')])
-                        .keys("読み直す", &[Char('R')])
+                        .action(ed, "results.where")
+                        .action(ed, "results.order")
+                        .action(ed, "results.sortColumn")
+                        .action(ed, "results.nextPage")
+                        .action(ed, "results.prevPage")
+                        .action(ed, "results.reload")
                 } else {
                     m
                 };
                 let m = if editable {
                     m.sep()
-                        .keys("値を直す（F2）", &[F(2)])
-                        .keys("NULL にする", &[Char('x')])
-                        .keys("戻す（Ctrl+Z）", &[Ctrl('z')])
-                        .keys("変更を送る（Ctrl+Enter）", &[Ctrl('m')])
+                        .item_shortcut("値を直す", "F2", |e| e.result_op(crate::result_grid::ResultOp::Edit))
+                        .action(ed, "results.setNull")
+                        .item_shortcut("戻す", "Ctrl+Z", |e| e.result_op(crate::result_grid::ResultOp::Undo))
+                        .item_shortcut("変更を送る", "Ctrl+Enter", |e| e.result_op(crate::result_grid::ResultOp::Send))
                 } else {
                     m
                 };
-                m.sep().keys("書き出す（CSV・TSV・INSERT）…", &[Char('E')]).keys("閉じる", &[Char('q')])
+                m.sep().action(ed, "results.export").action(ed, "results.close")
             }
             BottomKind::Debug => {
                 let w = ed.bottom_content_rect().map_or(0, |c| c.w);
                 ed.debug_click(prow + 1, pcol, w, 1);
                 let k = |key: &str| ed.settings.get(key);
-                m.keys("開く・閉じる", &[Enter])
-                    .sep()
-                    .keys(format!("続ける（{}）", k("keymap.debug_resume")), &[Char('c')])
-                    .keys(format!("次へ（{}）", k("keymap.step_over")), &[Char('n')])
-                    .keys(format!("中へ（{}）", k("keymap.step_into")), &[Char('s')])
-                    .keys(format!("外へ（{}）", k("keymap.step_out")), &[Char('o')])
-                    .keys("止める", &[Char('x')])
-                    .sep()
-                    .keys("欄を隠す", &[Char('q')])
+                m.item("開く・閉じる", |e| {
+                    e.debug_key(nagi_vim::Key::Enter);
+                })
+                .sep()
+                .item_shortcut("続ける", &k("keymap.debug_resume"), |e| e.debug_resume())
+                .item_shortcut("次へ", &k("keymap.step_over"), |e| e.debug_step(nagi_workers::jdwp::Depth::Over))
+                .item_shortcut("中へ", &k("keymap.step_into"), |e| e.debug_step(nagi_workers::jdwp::Depth::Into))
+                .item_shortcut("外へ", &k("keymap.step_out"), |e| e.debug_step(nagi_workers::jdwp::Depth::Out))
+                .item_shortcut("止める", &k("keymap.debug_stop"), |e| e.debug_stop())
+                .sep()
+                .item("欄を隠す", |e| e.hide_bottom())
             }
             BottomKind::Terminal => {
                 if ed.panels.terminals.list.is_empty() {
