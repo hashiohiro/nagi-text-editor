@@ -119,61 +119,112 @@ pub enum CommitAction {
     Diff(PathBuf, String),
     Close,
     ToText,
-    Command,
 }
+
+/// コミットの欄の操作（キー・アクションから）
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommitOp {
+    Toggle,
+    ToggleAll,
+    Amend,
+    EditMessage,
+    Commit(bool),
+    Revert,
+    DeleteUntracked,
+    Refresh,
+    Open(bool),
+    Diff,
+    Close,
+}
+
+/// コミットの欄のアクション（ui_action.rs。ADR 0019）
+pub static ACTIONS: [crate::ui_action::UiAction; 12] = {
+    use crate::ui_action::{Scope::Commit, UiAction};
+    fn open(e: &Editor) -> bool {
+        e.panels.commit.is_some()
+    }
+    fn item(e: &Editor) -> bool {
+        e.panels.commit.as_ref().is_some_and(|p| p.selected < p.items.len())
+    }
+    fn any(e: &Editor) -> bool {
+        e.panels.commit.as_ref().is_some_and(|p| !p.items.is_empty())
+    }
+    [
+        UiAction { id: "commit.diff", label: "差分を見る", scope: Commit, enabled: item, run: |e| e.commit_op(CommitOp::Diff) },
+        UiAction { id: "commit.open", label: "開く", scope: Commit, enabled: item, run: |e| e.commit_op(CommitOp::Open(false)) },
+        UiAction { id: "commit.openKeep", label: "開いて欄に残る", scope: Commit, enabled: item, run: |e| e.commit_op(CommitOp::Open(true)) },
+        UiAction { id: "commit.toggle", label: "選ぶ・外す", scope: Commit, enabled: item, run: |e| e.commit_op(CommitOp::Toggle) },
+        UiAction { id: "commit.toggleAll", label: "すべて選ぶ・外す", scope: Commit, enabled: any, run: |e| e.commit_op(CommitOp::ToggleAll) },
+        UiAction { id: "commit.revert", label: "変更を戻す…", scope: Commit, enabled: item, run: |e| e.commit_op(CommitOp::Revert) },
+        UiAction { id: "commit.deleteUntracked", label: "未追跡のファイルを削除…", scope: Commit, enabled: any, run: |e| e.commit_op(CommitOp::DeleteUntracked) },
+        UiAction { id: "commit.message", label: "メッセージを書く", scope: Commit, enabled: open, run: |e| e.commit_op(CommitOp::EditMessage) },
+        UiAction { id: "commit.amend", label: "直前のコミットを直す（切り替え）", scope: Commit, enabled: open, run: |e| e.commit_op(CommitOp::Amend) },
+        UiAction { id: "commit.commitPush", label: "コミットしてプッシュ", scope: Commit, enabled: open, run: |e| e.commit_op(CommitOp::Commit(true)) },
+        UiAction { id: "commit.refresh", label: "読み直す", scope: Commit, enabled: open, run: |e| e.commit_op(CommitOp::Refresh) },
+        UiAction { id: "commit.close", label: "欄を閉じる", scope: Commit, enabled: open, run: |e| e.commit_op(CommitOp::Close) },
+    ]
+};
 
 impl CommitPanel {
     /// コミットの一覧のキー。選び・チェック・amend の切り替え・断る知らせは部品の状態と `svc` で行い、外に及ぶことを返す
+    /// 標準のキーだけ（ADR 0019。↑↓ 選ぶ・Space 選ぶ/外す・Enter 開く・Ctrl+Enter コミット・Esc 本文へ。ほかはアクション）
     pub fn key(&mut self, key: Key, svc: &mut crate::editor::Services) -> CommitAction {
-        let last = self.items.len().saturating_sub(1);
-        let moved = nagi_ui::list::step(key, self.selected, self.items.len(), 10);
+        let moved = nagi_ui::list::nav(key, self.selected, self.items.len(), 10);
         match key {
             _ if moved.is_some() => self.selected = moved.unwrap_or(self.selected),
-            Key::Char('g') => self.selected = 0,
-            Key::Char(' ') => {
+            Key::Char(' ') => return self.op(CommitOp::Toggle, svc),
+            Key::Ctrl('m') => return self.op(CommitOp::Commit(false), svc),
+            Key::Enter => return self.op(CommitOp::Open(false), svc),
+            Key::Esc => return CommitAction::ToText,
+            _ => {}
+        }
+        CommitAction::None
+    }
+
+    /// 操作を行う。選び・チェック・amend・断る知らせは部品の状態と `svc` で行い、外に及ぶことを返す
+    pub fn op(&mut self, op: CommitOp, svc: &mut crate::editor::Services) -> CommitAction {
+        let last = self.items.len().saturating_sub(1);
+        match op {
+            CommitOp::Toggle => {
                 if let Some(it) = self.items.get_mut(self.selected) {
                     it.checked = !it.checked;
                 }
                 self.selected = (self.selected + 1).min(last);
             }
             // すべての選択を切り替える
-            Key::Char('a') => {
+            CommitOp::ToggleAll => {
                 let all = self.items.iter().all(|i| i.checked);
                 self.items.iter_mut().for_each(|i| i.checked = !all);
             }
-            Key::Char('A') => self.amend = !self.amend,
-            Key::Char('c') | Key::Char('i') => {
+            CommitOp::Amend => self.amend = !self.amend,
+            CommitOp::EditMessage => {
                 self.msg.reinsert();
                 return CommitAction::EditMessage;
             }
-            Key::Ctrl('m') => return CommitAction::Commit(false),
-            Key::Char('P') => return CommitAction::Commit(true),
-            Key::Char('u') => {
+            CommitOp::Commit(push) => return CommitAction::Commit(push),
+            CommitOp::Revert => {
                 // 未追跡は戻せない（聞く前に知らせる）
                 if self.items.get(self.selected).is_some_and(|it| it.change.state == FileState::Untracked) {
-                    svc.notify.warn("未追跡のファイルは戻せません（消すなら D）");
+                    svc.notify.warn("未追跡のファイルは戻せません（消すなら「未追跡のファイルを削除」）");
                 } else if let Some(it) = self.items.get(self.selected) {
                     return CommitAction::AskRevert(self.selected, it.change.path.clone());
                 }
             }
-            Key::Char('D') => return CommitAction::AskDeleteUntracked,
-            Key::Char('r') => return CommitAction::Refresh,
-            Key::Enter | Key::Char('o') => {
+            CommitOp::DeleteUntracked => return CommitAction::AskDeleteUntracked,
+            CommitOp::Refresh => return CommitAction::Refresh,
+            CommitOp::Open(stay) => {
                 let (Some(root), Some(it)) = (svc.git.root.clone(), self.items.get(self.selected)) else { return CommitAction::None };
                 if it.change.state == FileState::Deleted {
                     svc.notify.warn("消したファイルは開けません");
                     return CommitAction::None;
                 }
-                return CommitAction::Open(root.join(&it.change.path), key == Key::Char('o'));
+                return CommitAction::Open(root.join(&it.change.path), stay);
             }
-            Key::Char('d') => {
+            CommitOp::Diff => {
                 let (Some(root), Some(it)) = (svc.git.root.clone(), self.items.get(self.selected)) else { return CommitAction::None };
                 return CommitAction::Diff(root, it.change.path.clone());
             }
-            Key::Char('q') => return CommitAction::Close,
-            Key::Esc | Key::Ctrl('w') => return CommitAction::ToText,
-            Key::Char(':') => return CommitAction::Command,
-            _ => {}
+            CommitOp::Close => return CommitAction::Close,
         }
         CommitAction::None
     }
@@ -459,7 +510,7 @@ impl Editor {
             if (3..6).contains(&col) {
                 p.items[i].checked = !p.items[i].checked;
             } else if matches!(pick, nagi_ui::list::Pick::Accept(_)) {
-                self.commit_list_key(Key::Char('d'));
+                self.commit_op(CommitOp::Diff);
             }
         } else if row >= l.msg && row < l.msg + l.msg_h {
             p.msg.reinsert();
@@ -482,7 +533,20 @@ impl Editor {
             return Effect::None;
         };
         // 部品の中で済むこと（選び・チェック・amend・知らせ）は CommitPanel::key が部品の状態と Services で行い、外に及ぶことを返す（ADR 0018 の §5）
-        match p.key(key, &mut self.svc) {
+        let a = p.key(key, &mut self.svc);
+        self.commit_do(a);
+        Effect::None
+    }
+
+    /// コミットの欄の操作（アクションから）
+    pub(crate) fn commit_op(&mut self, op: CommitOp) {
+        let Some(p) = &mut self.panels.commit else { return };
+        let a = p.op(op, &mut self.svc);
+        self.commit_do(a);
+    }
+
+    fn commit_do(&mut self, a: CommitAction) {
+        match a {
             CommitAction::None => {}
             CommitAction::EditMessage => self.set_state(State::CommitMsg),
             CommitAction::Commit(push) => self.commit(push),
@@ -491,14 +555,15 @@ impl Editor {
             CommitAction::Refresh => self.refresh_git(),
             CommitAction::Open(path, stay) => {
                 self.edit_file(path);
+                if stay {
+                    self.list_side = crate::editor::Side::Commit;
+                }
                 self.set_state(if stay { State::List } else { State::Normal });
             }
             CommitAction::Diff(root, rel) => self.open_file_diff(&root, &rel),
             CommitAction::Close => self.close_commit_panel(),
             CommitAction::ToText => self.set_state(State::Normal),
-            CommitAction::Command => self.enter_command(""),
         }
-        Effect::None
     }
 
     /// メッセージの欄にいる間のキー
@@ -538,11 +603,15 @@ pub struct CommitListComponent;
 impl crate::component::Component for CommitListComponent {
     fn status(&self, ed: &crate::editor::Editor) -> Option<crate::component::Status> {
         let _ = ed;
-        crate::component::Status::keys("-- コミット --", "Space 選択  d 差分  u 戻す  c メッセージ  Ctrl-Enter コミット  P プッシュも  Alt-1 プロジェクト  q 閉じる ", "Space 選ぶ  ダブルクリック 差分  右クリック 操作  Ctrl+Enter コミット ")
+        crate::component::Status::new("-- コミット --", "Space 選ぶ  ダブルクリック 差分  右クリック 操作  Ctrl+Enter コミット  Esc 窓へ ")
     }
 
     fn key(&self, ed: &mut crate::editor::Editor, key: nagi_vim::Key) -> crate::editor::Effect {
         ed.commit_list_key(key)
+    }
+    fn scope(&self, ed: &crate::editor::Editor) -> Option<crate::ui_action::Scope> {
+        let _ = ed;
+        Some(crate::ui_action::Scope::Commit)
     }
 }
 
@@ -604,7 +673,6 @@ impl crate::layout::View for CommitView {
     fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At) -> bool {
         let _ = r;
         let (row, col) = at.screen;
-        use nagi_vim::Key::*;
         // 押した行を選ぶ（チェックボックスの列は避けて、切り替えない）
         let Some(l) = ed.left_rect() else { return false };
         ed.commit_click(row - l.y, 10, 1);
@@ -613,21 +681,21 @@ impl crate::layout::View for CommitView {
         }
         let amend = ed.panels.commit.as_ref().is_some_and(|p| p.amend);
         let m = crate::menu::Menu::new(row, col)
-            .keys("差分を見る", &[Char('d')])
-            .keys("開く", &[Enter])
-            .keys("開いて欄に残る", &[Char('o')])
-            .keys("選ぶ・外す", &[Char(' ')])
-            .keys("すべて選ぶ・外す", &[Char('a')])
-            .keys("変更を戻す…", &[Char('u')])
-            .keys("未追跡のファイルを削除…", &[Char('D')])
+            .action(ed, "commit.diff")
+            .action(ed, "commit.open")
+            .action(ed, "commit.openKeep")
+            .action(ed, "commit.toggle")
+            .action(ed, "commit.toggleAll")
+            .action(ed, "commit.revert")
+            .action(ed, "commit.deleteUntracked")
             .sep()
-            .keys("メッセージを書く", &[Char('c')])
-            .keys(if amend { "直前のコミットを直す: やめる" } else { "直前のコミットを直す" }, &[Char('A')])
-            .keys("コミット", &[Ctrl('m')])
-            .keys("コミットしてプッシュ", &[Char('P')])
+            .action(ed, "commit.message")
+            .action_as(ed, "commit.amend", if amend { "直前のコミットを直す: やめる" } else { "直前のコミットを直す" })
+            .item_shortcut("コミット", "Ctrl+Enter", |e| e.commit_op(CommitOp::Commit(false)))
+            .action(ed, "commit.commitPush")
             .sep()
-            .keys("読み直す", &[Char('r')])
-            .keys("欄を閉じる", &[Char('q')]);
+            .action(ed, "commit.refresh")
+            .action(ed, "commit.close");
         ed.open_menu(m);
         true
     }
@@ -811,8 +879,9 @@ mod tests {
         let v: Vec<(&str, bool)> = p.items.iter().map(|i| (i.change.path.as_str(), i.checked)).collect();
         assert_eq!(v, vec![("a.txt", true), ("b.txt", true), ("new.txt", false)], "未追跡は初めはチェックしない");
         // b を外し、new を入れて、メッセージを書いてコミット
-        keys(&mut e, "j<Space><Space>");
-        keys(&mut e, "cfix a<CR><CR>body<Esc>");
+        keys(&mut e, "<Down><Space><Space>");
+        assert!(e.run_ui_action("commit.message"));
+        keys(&mut e, "fix a<CR><CR>body<Esc>");
         assert_eq!(e.panels.commit.as_ref().unwrap().msg.text(), "fix a\n\nbody");
         keys(&mut e, "<C-m>");
         wait(&mut e);
@@ -826,7 +895,7 @@ mod tests {
         assert_eq!(p.items.iter().map(|i| i.change.path.as_str()).collect::<Vec<_>>(), vec!["b.txt"]);
         assert!(p.msg.text().is_empty());
         // b の変更を戻す（確認してから）
-        keys(&mut e, "u");
+        assert!(e.run_ui_action("commit.revert"));
         assert_eq!(e.state(), State::Menu, "確認の窓");
         keys(&mut e, "y");
         wait(&mut e);
@@ -836,7 +905,7 @@ mod tests {
     }
 
     /// 名前を変えたファイル（git mv）と、git rm で消したファイルもコミットできる（add に渡すと pathspec で断られていた）
-    /// D で未追跡のファイルを消す（チェックしたもの、無ければカーソルの行。聞いてから）。追跡しているファイルは消さない
+    /// 「未追跡のファイルを削除」で未追跡のファイルを消す（チェックしたもの、無ければカーソルの行。聞いてから）。追跡しているファイルは消さない
     #[test]
     fn delete_untracked_files() {
         let dir = std::env::temp_dir().join(format!("nagi-commit-del-{}", std::process::id()));
@@ -860,23 +929,23 @@ mod tests {
         e.open_commit_panel();
         wait(&mut e);
         // 追跡しているファイルの上では消さない
-        keys(&mut e, "D");
+        assert!(e.run_ui_action("commit.deleteUntracked"));
         assert!(e.menu.is_none());
         assert!(dir.join("a.txt").exists(), "{}", e.svc.notify.text);
         // カーソルの行（x）だけ。いいえなら消さない
-        keys(&mut e, "j");
-        keys(&mut e, "D");
+        keys(&mut e, "<Down>");
+        assert!(e.run_ui_action("commit.deleteUntracked"));
         assert!(e.menu.as_ref().unwrap().title.as_deref().is_some_and(|t| t.contains("x.txt を消しますか")));
         keys(&mut e, "n");
         assert!(dir.join("x.txt").exists());
-        keys(&mut e, "D");
+        assert!(e.run_ui_action("commit.deleteUntracked"));
         keys(&mut e, "y");
         wait(&mut e);
         assert!(!dir.join("x.txt").exists() && dir.join("y.txt").exists(), "{}", e.svc.notify.text);
         // チェックした y・z をまとめて（a はチェックしていても消さない）
         let p = e.panels.commit.as_mut().unwrap();
         p.items.iter_mut().for_each(|i| i.checked = true);
-        keys(&mut e, "D");
+        assert!(e.run_ui_action("commit.deleteUntracked"));
         assert!(e.menu.as_ref().unwrap().title.as_deref().is_some_and(|t| t.contains("2 件を消しますか")));
         keys(&mut e, "y");
         wait(&mut e);
@@ -908,7 +977,8 @@ mod tests {
         e.start_git();
         e.open_commit_panel();
         wait(&mut e);
-        keys(&mut e, "cmv<Esc><Esc><C-m>");
+        assert!(e.run_ui_action("commit.message"));
+        keys(&mut e, "mv<Esc><Esc><C-m>");
         wait(&mut e);
         wait(&mut e);
         assert!(e.svc.notify.text.starts_with("コミットしました"), "{}", e.svc.notify.text);

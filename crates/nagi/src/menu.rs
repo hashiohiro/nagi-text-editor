@@ -68,10 +68,16 @@ impl Menu {
     }
 
     /// 部品のアクション（ui_action.rs）の項目: 名前・付けたショートカット・できるかを表から出す
-    pub fn action(mut self, ed: &Editor, id: &'static str) -> Menu {
+    pub fn action(self, ed: &Editor, id: &'static str) -> Menu {
+        let label = crate::ui_action::find(id).map_or("", |a| a.label);
+        self.action_as(ed, id, label)
+    }
+
+    /// 名前を今の状態に合わせて差し替えたアクションの項目（「直前のコミットを直す: やめる」など）
+    pub fn action_as(mut self, ed: &Editor, id: &'static str, label: &str) -> Menu {
         let Some(a) = crate::ui_action::find(id) else { return self };
         self.items.push(MenuItem {
-            label: a.label.to_string(),
+            label: label.to_string(),
             run: Some(Box::new(move |e: &mut Editor| {
                 e.run_ui_action(id);
             })),
@@ -79,6 +85,12 @@ impl Menu {
             shortcut: ed.ui_shortcut(id),
             enabled: (a.enabled)(ed),
         });
+        self
+    }
+
+    /// 標準のキー（付け替えない。Ctrl+Enter など）を右に出す項目
+    pub fn item_shortcut(mut self, label: impl Into<String>, shortcut: &str, run: impl FnOnce(&mut Editor) + 'static) -> Menu {
+        self.items.push(MenuItem { label: label.into(), run: Some(Box::new(run)), accel: None, shortcut: Some(shortcut.to_string()), enabled: true });
         self
     }
 

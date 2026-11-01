@@ -17,6 +17,7 @@ pub enum Scope {
     ProjectTree,
     Maven,
     Preview,
+    Commit,
 }
 
 impl Scope {
@@ -27,6 +28,7 @@ impl Scope {
             Scope::ProjectTree => "プロジェクト",
             Scope::Maven => "Maven",
             Scope::Preview => "プレビュー",
+            Scope::Commit => "コミット",
         }
     }
 }
@@ -52,7 +54,7 @@ pub const KEY: &str = "keymap.ui.";
 
 /// すべてのアクション（部品の表をつなげたもの）
 pub fn all() -> impl Iterator<Item = &'static UiAction> {
-    [&crate::db_panel::ACTIONS[..], &crate::tree_panel::ACTIONS, &crate::maven_panel::ACTIONS, &crate::md_preview::ACTIONS].into_iter().flatten()
+    [&crate::db_panel::ACTIONS[..], &crate::tree_panel::ACTIONS, &crate::maven_panel::ACTIONS, &crate::md_preview::ACTIONS, &crate::commit_panel::ACTIONS].into_iter().flatten()
 }
 
 pub fn find(id: &str) -> Option<&'static UiAction> {
