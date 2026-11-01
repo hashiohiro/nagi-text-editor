@@ -198,10 +198,10 @@ pub static ACTIONS: [crate::ui_action::UiAction; 4] = {
         e.panels.tree.as_ref().is_some_and(|t| t.selected < t.rows.len())
     }
     [
-        UiAction { id: "tree.open", label: "開く・畳む", scope: ProjectTree, enabled: selected, run: |e| e.tree_do(TreeAction::Activate(false)) },
+        UiAction { id: "tree.open", label: "ソースに移動", scope: ProjectTree, enabled: selected, run: |e| e.tree_do(TreeAction::Activate(false)) },
         UiAction { id: "tree.openKeep", label: "開いて木に残る", scope: ProjectTree, enabled: file, run: |e| e.tree_do(TreeAction::Activate(true)) },
-        UiAction { id: "tree.reload", label: "読み直す", scope: ProjectTree, enabled: open, run: |e| e.tree_do(TreeAction::Reload) },
-        UiAction { id: "tree.close", label: "木を閉じる", scope: ProjectTree, enabled: open, run: |e| e.tree_do(TreeAction::Close) },
+        UiAction { id: "tree.reload", label: "ディスクからの再読み込み", scope: ProjectTree, enabled: open, run: |e| e.tree_do(TreeAction::Reload) },
+        UiAction { id: "tree.close", label: "非表示", scope: ProjectTree, enabled: open, run: |e| e.tree_do(TreeAction::Close) },
     ]
 };
 
@@ -586,7 +586,7 @@ impl crate::layout::View for TreeView {
         ed.list_side = crate::editor::Side::Left;
         ed.set_state(crate::editor::State::List);
         let m = crate::menu::Menu::new(row, col).action(ed, "tree.open").action(ed, "tree.openKeep");
-        let m = m.sep().item("このフォルダを検索…（Find in Path）", move |e| e.open_grep_in(folder));
+        let m = m.sep().item("複数ファイル内検索…", move |e| e.open_grep_in(folder));
         let m = m.sep().action(ed, "tree.reload").action(ed, "tree.close");
         ed.open_menu(m);
         true

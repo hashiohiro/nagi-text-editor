@@ -41,7 +41,7 @@ pub static ACTIONS: [crate::ui_action::UiAction; 2] = {
     }
     [
         UiAction { id: "preview.openLink", label: "リンクを開く", scope: Preview, enabled: link, run: |e| e.md_open_selected_link() },
-        UiAction { id: "preview.close", label: "欄を閉じる", scope: Preview, enabled: open, run: |e| e.close_md_preview() },
+        UiAction { id: "preview.close", label: "非表示", scope: Preview, enabled: open, run: |e| e.close_md_preview() },
     ]
 };
 

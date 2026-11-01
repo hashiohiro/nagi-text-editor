@@ -472,7 +472,7 @@ impl crate::layout::View for HunkPopupView {
             })
             .sep()
             .item("この変更をステージ", |e| e.stage_hunk())
-            .item("この変更を戻す", |e| e.revert_hunk())
+            .item("行のロールバック", |e| e.revert_hunk())
             .item("閉じる", |e| e.svc.git.popup = None);
         ed.open_menu(m);
         true

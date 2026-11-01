@@ -198,9 +198,9 @@ impl crate::layout::View for BufferTabsView {
         let tab = ed.buftab_at(row, col).map(|t| t.0);
         let mut m = crate::menu::Menu::new(row, col);
         if let Some(doc) = tab {
-            m = m.item("閉じる", move |e| e.tab_close(doc)).item("ほかのタブを閉じる", move |e| e.tab_close_others(Some(doc)));
+            m = m.item("タブを閉じる", move |e| e.tab_close(doc)).item("他のタブを閉じる", move |e| e.tab_close_others(Some(doc)));
         }
-        m = m.item("すべてのタブを閉じる", |e| e.tab_close_others(None)).sep().item("開いているファイルの一覧…", |e| e.open_finder(crate::finder::Source::Buffers));
+        m = m.item("すべてのタブを閉じる", |e| e.tab_close_others(None)).sep().item("タブの一覧…", |e| e.open_finder(crate::finder::Source::Buffers));
         ed.open_menu(m);
         true
     }

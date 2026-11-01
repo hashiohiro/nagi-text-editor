@@ -200,25 +200,25 @@ pub static ACTIONS: [crate::ui_action::UiAction; 8] = {
         e.panels.log.as_ref().and_then(|l| l.current()).map(|c| (c.hash.clone(), c.short.clone()))
     }
     [
-        UiAction { id: "log.copyHash", label: "ハッシュをコピー", scope: Log, enabled: commit, run: |e| e.log_act(LogAction::Copy) },
+        UiAction { id: "log.copyHash", label: "リビジョン番号のコピー", scope: Log, enabled: commit, run: |e| e.log_act(LogAction::Copy) },
         UiAction { id: "log.copyHashSubject", label: "ハッシュと題名をコピー", scope: Log, enabled: commit, run: |e| e.log_copy_picked(true) },
-        UiAction { id: "log.cherryPick", label: "チェリーピック", scope: Log, enabled: commit, run: |e| e.log_act(LogAction::CherryPick) },
-        UiAction { id: "log.checkout", label: "このリビジョンをチェックアウト", scope: Log, enabled: commit, run: |e| {
+        UiAction { id: "log.cherryPick", label: "cherry-pick", scope: Log, enabled: commit, run: |e| e.log_act(LogAction::CherryPick) },
+        UiAction { id: "log.checkout", label: "リビジョンのチェックアウト", scope: Log, enabled: commit, run: |e| {
             if let Some((h, _)) = cur(e) {
                 e.log_act(LogAction::AskCheckout(h));
             }
         } },
-        UiAction { id: "log.newBranch", label: "新しいブランチ…", scope: Log, enabled: commit, run: |e| {
+        UiAction { id: "log.newBranch", label: "新規ブランチ…", scope: Log, enabled: commit, run: |e| {
             if let Some((_, s)) = cur(e) {
                 e.log_act(LogAction::PromptBranch(s));
             }
         } },
-        UiAction { id: "log.filter", label: "絞り込み", scope: Log, enabled: open, run: |e| {
+        UiAction { id: "log.filter", label: "フィルター", scope: Log, enabled: open, run: |e| {
             if let Some(l) = &mut e.panels.log {
                 l.filter = Some(crate::vim_field::VimField::new(&l.filter_text, false));
             }
         } },
-        UiAction { id: "log.hide", label: "欄を隠す", scope: Log, enabled: docked, run: |e| e.log_act(LogAction::HideBottom) },
+        UiAction { id: "log.hide", label: "非表示", scope: Log, enabled: docked, run: |e| e.log_act(LogAction::HideBottom) },
         UiAction { id: "log.close", label: "履歴を閉じる", scope: Log, enabled: open, run: |e| e.log_act(LogAction::Close) },
     ]
 };
@@ -1128,16 +1128,16 @@ impl Editor {
             let Some((_, path)) = d.files.get(l.file_sel).cloned() else { return false };
             let (h, short) = (d.hash.clone(), d.hash[..7.min(d.hash.len())].to_string());
             let mut m = crate::menu::Menu::new(at.0, at.1);
-            m = m.item("差分を見る（このコミットでの変更）", |e| e.log_open_file_diff());
+            m = m.item("差分の表示", |e| e.log_open_file_diff());
             let (x, p) = (h.clone(), path.clone());
-            m = m.item("作業中のファイルと比べる", move |e| e.log_compare_worktree(&x, &p));
+            m = m.item("ローカルと比較", move |e| e.log_compare_worktree(&x, &p));
             let p = path.clone();
-            m = m.item("ファイルを開く", move |e| e.log_open_worktree_file(&p));
+            m = m.item("ソースに移動", move |e| e.log_open_worktree_file(&p));
             let p = path.clone();
-            m = m.item("このファイルの履歴", move |e| e.open_log_file(&p));
+            m = m.item("履歴の表示", move |e| e.open_log_file(&p));
             m = m.sep();
             let (x, p, s) = (h.clone(), path.clone(), short.clone());
-            m = m.item("この版に戻す…", move |e| {
+            m = m.item("このリビジョンから取得…", move |e| {
                 let q = format!("{p} を {s} の版に戻しますか（作業中の変更は消える）");
                 e.ask(q, move |e| {
                     e.git_guarded_args(&["checkout", &x, "--", &p], format!("{p} を {s} の版に戻しました"), |e, ok| {
@@ -1159,24 +1159,24 @@ impl Editor {
                 m = m.item("チェックアウト", move |e| e.log_checkout_branch(i));
             }
             let n = name.clone();
-            m = m.item(format!("{name} から新しいブランチ…"), move |e| e.prompt_command("Gbranch ", &format!(" {n}")));
+            m = m.item(format!("{name} から新規ブランチ…"), move |e| e.prompt_command("Gbranch ", &format!(" {n}")));
             if !is_cur && sec != "タグ" {
                 let (n, c) = (name.clone(), cur.clone());
-                m = m.item(format!("チェックアウトして {cur} の上へリベース"), move |e| e.log_ask(Confirm::CheckoutRebase(n, c)));
+                m = m.item(format!("チェックアウトして {cur} でリベース"), move |e| e.log_ask(Confirm::CheckoutRebase(n, c)));
                 let n = name.clone();
                 let c = cur.clone();
-                m = m.item(format!("{cur} と比べる"), move |e| e.open_log_range(&format!("{c}..{n}")));
+                m = m.item(format!("{cur} と比較"), move |e| e.open_log_range(&format!("{c}..{n}")));
                 let n = name.clone();
-                m = m.item(format!("{cur} を {name} の上へリベース"), move |e| e.log_ask(Confirm::Rebase(n)));
+                m = m.item(format!("{name} で {cur} をリベース"), move |e| e.log_ask(Confirm::Rebase(n)));
                 let n = name.clone();
-                m = m.item(format!("{name} を {cur} へマージ"), move |e| e.git_guarded_args(&["merge", "--no-edit", &n], format!("{n} をマージしました"), |e, _| e.reload_log()));
+                m = m.item(format!("{name} を {cur} にマージ"), move |e| e.git_guarded_args(&["merge", "--no-edit", &n], format!("{n} をマージしました"), |e, _| e.reload_log()));
             }
             if local {
                 m = m.sep();
                 let n = name.clone();
-                m = m.item("名前を変える…", move |e| e.prompt_command(&format!("Grename {n} "), ""));
+                m = m.item("名前の変更…", move |e| e.prompt_command(&format!("Grename {n} "), ""));
                 let n = name.clone();
-                m = m.item("プッシュ", move |e| e.run_git_job("push ", &["push", "-u", "origin", &n]));
+                m = m.item("プッシュ…", move |e| e.run_git_job("push ", &["push", "-u", "origin", &n]));
                 if !is_cur {
                     let n = name.clone();
                     m = m.item("削除", move |e| e.log_ask(Confirm::DeleteBranch(n, false)));
@@ -1189,41 +1189,43 @@ impl Editor {
             let is_head = head.as_deref() == Some(c.hash.as_str());
             let (h, short) = (c.hash.clone(), c.short.clone());
             let mut m = crate::menu::Menu::new(at.0, at.1);
-            m = m.action(self, "log.copyHash").action(self, "log.copyHashSubject").action(self, "log.cherryPick").action(self, "log.checkout").action(self, "log.newBranch");
-            let x = short.clone();
-            m = m.item("新しいタグ…", move |e| e.prompt_command("Gtag ", &format!(" {x}")));
+            // IntelliJ の Git の履歴と同じ並び: コピー → cherry-pick・チェックアウト → リセット・revert → 書き換え → プッシュ → 新規ブランチ・タグ → 親へ
+            m = m.action(self, "log.copyHash").action(self, "log.copyHashSubject").sep().action(self, "log.cherryPick").action(self, "log.checkout");
             m = m.sep();
             let x = h.clone();
-            m = m.item(format!("{cur} をここまでリセット（--soft）"), move |e| e.log_ask(Confirm::Reset(x, "--soft")));
+            m = m.item(format!("現在のブランチをここにリセット（--soft）"), move |e| e.log_ask(Confirm::Reset(x, "--soft")));
             let x = h.clone();
-            m = m.item(format!("{cur} をここまでリセット（--mixed）"), move |e| e.log_ask(Confirm::Reset(x, "--mixed")));
+            m = m.item(format!("現在のブランチをここにリセット（--mixed）"), move |e| e.log_ask(Confirm::Reset(x, "--mixed")));
             let x = h.clone();
-            m = m.item(format!("{cur} をここまでリセット（--hard）"), move |e| e.log_ask(Confirm::Reset(x, "--hard")));
+            m = m.item(format!("現在のブランチをここにリセット（--hard）"), move |e| e.log_ask(Confirm::Reset(x, "--hard")));
             let x = h.clone();
-            m = m.item(format!("{cur} をここまでリセット（--keep）"), move |e| e.log_ask(Confirm::Reset(x, "--keep")));
+            m = m.item(format!("現在のブランチをここにリセット（--keep）"), move |e| e.log_ask(Confirm::Reset(x, "--keep")));
             let x = h.clone();
-            m = m.item("コミットを取り消す（revert）", move |e| e.log_ask(Confirm::Revert(x)));
+            m = m.item("コミットを revert", move |e| e.log_ask(Confirm::Revert(x)));
             if is_head {
                 let x = h.clone();
-                m = m.item("コミットを元に戻す（undo）", move |e| e.log_ask(Confirm::Undo(x)));
+                m = m.item("コミットの取り消し…", move |e| e.log_ask(Confirm::Undo(x)));
             }
             m = m.sep();
             let (x, subject) = (short.clone(), c.subject.clone());
-            m = m.item("メッセージを編集…", move |e| e.prompt_command(&format!("Greword {x} "), &subject));
+            m = m.item("コミットメッセージの編集…", move |e| e.prompt_command(&format!("Greword {x} "), &subject));
             let x = h.clone();
-            m = m.item("1 つ前にまとめる（フィックスアップ）", move |e| e.log_ask(Confirm::Squash(x, false)));
+            m = m.item("フィックスアップ…", move |e| e.log_ask(Confirm::Squash(x, false)));
             let x = h.clone();
-            m = m.item("1 つ前にまとめる（スカッシュ）", move |e| e.log_ask(Confirm::Squash(x, true)));
+            m = m.item("スカッシュイン…", move |e| e.log_ask(Confirm::Squash(x, true)));
             let x = h.clone();
-            m = m.item("コミットを消す", move |e| e.log_ask(Confirm::Drop(x)));
+            m = m.item("コミットの破棄", move |e| e.log_ask(Confirm::Drop(x)));
             let x = h.clone();
-            m = m.item(format!("{cur} をここへリベース"), move |e| e.log_ask(Confirm::Rebase(x)));
+            m = m.item(format!("ここで {cur} をリベース"), move |e| e.log_ask(Confirm::Rebase(x)));
             if let Some(up) = upstream {
                 let x = h.clone();
-                m = m.item(format!("ここまでプッシュ（{up}）"), move |e| e.log_ask(Confirm::PushTo(x, up)));
+                m = m.item(format!("ここまでのすべてをプッシュ（{up}）…"), move |e| e.log_ask(Confirm::PushTo(x, up)));
             }
+            m = m.sep().action(self, "log.newBranch");
+            let x = short.clone();
+            m = m.item("新規タグ…", move |e| e.prompt_command("Gtag ", &format!(" {x}")));
             m = m.sep();
-            m = m.item("親のコミットへ", |e| e.log_goto_parent());
+            m = m.item("親コミットに移動", |e| e.log_goto_parent());
             m.sep().action(self, "log.filter").action(self, "log.hide").action(self, "log.close")
         };
         self.open_menu(menu);
@@ -1255,18 +1257,17 @@ impl Editor {
         let Some(l) = &self.panels.log else { return false };
         let picked = l.picked();
         let n = picked.len();
-        let cur = self.svc.git.status.as_ref().map(|s| s.branch.clone()).unwrap_or_default();
         let mut m = crate::menu::Menu::new(at.0, at.1);
-        m = m.item(format!("{n} 件のハッシュをコピー"), |e| e.log_copy_picked(false));
+        m = m.item(format!("{n} 件のリビジョン番号のコピー"), |e| e.log_copy_picked(false));
         m = m.item(format!("{n} 件のハッシュと題名をコピー"), |e| e.log_copy_picked(true));
         if n == 2 {
             let (new, old) = (picked[0].hash.clone(), picked[1].hash.clone());
-            m = m.item("2 つのコミットを比べる", move |e| e.log_compare_two(&old, &new));
+            m = m.item("バージョンの比較", move |e| e.log_compare_two(&old, &new));
         }
         m = m.sep();
-        m = m.item(format!("{n} 件を {cur} にチェリーピック"), |e| e.log_cherry_pick_picked());
+        m = m.item(format!("{n} 件を cherry-pick"), |e| e.log_cherry_pick_picked());
         let hs: Vec<String> = picked.iter().map(|c| c.hash.clone()).collect();
-        m = m.item(format!("{n} 件を取り消す（revert）"), move |e| e.log_ask(Confirm::RevertMany(hs)));
+        m = m.item(format!("{n} 件のコミットを revert"), move |e| e.log_ask(Confirm::RevertMany(hs)));
         m = m.sep();
         m = m.item("選びを外す", |e| {
             if let Some(l) = &mut e.panels.log {
@@ -2104,7 +2105,7 @@ mod tests {
         let w = e.bottom_content_rect().unwrap().w;
         assert!(e.log_context(1 + k, 60, w, (10, 60)));
         assert_eq!(e.state(), State::Menu);
-        let i = e.menu.as_ref().unwrap().items.iter().position(|it| it.label == "コミットを消す").unwrap();
+        let i = e.menu.as_ref().unwrap().items.iter().position(|it| it.label == "コミットの破棄").unwrap();
         e.menu_run(i);
         // 確認の窓（はい・いいえ）。y で答える
         assert_eq!(e.state(), State::Menu);
@@ -2196,9 +2197,9 @@ mod tests {
         let w = e.bottom_content_rect().unwrap().w;
         assert!(e.log_context(1 + ka, 60, w, (10, 60)));
         let labels: Vec<String> = e.menu.as_ref().unwrap().items.iter().map(|it| it.label.clone()).collect();
-        assert!(labels.contains(&"2 件を side にチェリーピック".to_string()), "{labels:?}");
+        assert!(labels.contains(&"2 件を cherry-pick".to_string()), "{labels:?}");
         assert_eq!(e.panels.log.as_ref().unwrap().marked.len(), 2, "右クリックで選びを外さない");
-        let i = labels.iter().position(|s| s == "2 つのコミットを比べる").unwrap();
+        let i = labels.iter().position(|s| s == "バージョンの比較").unwrap();
         e.menu_run(i);
         wait(&mut e, &|e| e.panels.log.as_ref().unwrap().detail.as_ref().is_some_and(|d| d.base.is_some()));
         let l = e.panels.log.as_ref().unwrap();
@@ -2210,7 +2211,7 @@ mod tests {
         click(&mut e, kb, Default::default());
         click(&mut e, kc, ctrl);
         assert!(e.log_context(1 + kb, 60, w, (10, 60)));
-        let i = e.menu.as_ref().unwrap().items.iter().position(|it| it.label == "2 件を side にチェリーピック").unwrap();
+        let i = e.menu.as_ref().unwrap().items.iter().position(|it| it.label == "2 件を cherry-pick").unwrap();
         e.menu_run(i);
         assert!(e.menu.as_ref().unwrap().title.as_deref().is_some_and(|t| t.contains("2 件のコミット")));
         e.key(Key::Char('y'));

@@ -253,14 +253,14 @@ impl Editor {
             m = m.item(format!("▶ {n} を実行（Shift+F10）"), |e| e.run_command(""));
         }
         let running = self.panels.terminals.list.iter().any(|t| t.name.starts_with(RUN_PREFIX) && !t.exited);
-        m = m.item("構成を選んで実行…（Alt+Shift+F10）", |e| e.open_run_chooser());
+        m = m.item("実行…（Alt+Shift+F10）", |e| e.open_run_chooser());
         if self.run_last.is_some() {
-            m = m.item("もう一度実行（Ctrl+F5）", |e| e.run_again());
+            m = m.item("再実行（Ctrl+F5）", |e| e.run_again());
         }
         if running {
-            m = m.item("■ 止める（Ctrl+F2）", |e| e.run_stop());
+            m = m.item("■ 停止（Ctrl+F2）", |e| e.run_stop());
         }
-        m = m.sep().item("構成の編集…", move |e| e.open_run_dialog(name.as_deref())).item("実行の欄（Alt+8）", |e| e.open_run_panel());
+        m = m.sep().item("実行構成の編集…", move |e| e.open_run_dialog(name.as_deref())).item("実行の欄（Alt+8）", |e| e.open_run_panel());
         self.open_menu(m);
     }
 

@@ -71,11 +71,11 @@ pub static ACTIONS: [crate::ui_action::UiAction; 6] = {
     }
     [
         UiAction { id: "run.run", label: "実行", scope: Run, enabled: chosen, run: |e| e.run_panel_tool(Tool::Run) },
-        UiAction { id: "run.stop", label: "■ 止める", scope: Run, enabled: running, run: |e| e.run_panel_tool(Tool::Stop) },
-        UiAction { id: "run.edit", label: "✎ 構成の編集…", scope: Run, enabled: chosen, run: |e| e.run_panel_tool(Tool::Edit) },
-        UiAction { id: "run.add", label: "＋ 構成を追加…", scope: Run, enabled: crate::ui_action::always, run: |e| e.run_panel_tool(Tool::Add) },
-        UiAction { id: "run.reload", label: "読み直す", scope: Run, enabled: open, run: |e| e.open_run_panel() },
-        UiAction { id: "run.close", label: "欄を閉じる", scope: Run, enabled: open, run: |e| e.close_run_panel() },
+        UiAction { id: "run.stop", label: "■ 停止", scope: Run, enabled: running, run: |e| e.run_panel_tool(Tool::Stop) },
+        UiAction { id: "run.edit", label: "✎ 実行構成の編集…", scope: Run, enabled: chosen, run: |e| e.run_panel_tool(Tool::Edit) },
+        UiAction { id: "run.add", label: "＋ 新規構成の追加…", scope: Run, enabled: crate::ui_action::always, run: |e| e.run_panel_tool(Tool::Add) },
+        UiAction { id: "run.reload", label: "リフレッシュ", scope: Run, enabled: open, run: |e| e.open_run_panel() },
+        UiAction { id: "run.close", label: "非表示", scope: Run, enabled: open, run: |e| e.close_run_panel() },
     ]
 };
 

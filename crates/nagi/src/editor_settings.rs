@@ -438,16 +438,16 @@ impl Editor {
         use nagi_core::encoding as enc;
         let mut m = crate::menu::Menu::new(row, col);
         let cur = (self.core.buf.encoding, self.core.buf.bom);
-        m = m.item(format!("{}改行を LF に", if self.core.buf.crlf { "  " } else { "● " }), |e| e.set_fileformat(false));
-        m = m.item(format!("{}改行を CRLF に", if self.core.buf.crlf { "● " } else { "  " }), |e| e.set_fileformat(true));
+        m = m.item(format!("{}LF - Unix および macOS (\\n)", if self.core.buf.crlf { "  " } else { "● " }), |e| e.set_fileformat(false));
+        m = m.item(format!("{}CRLF - Windows (\\r\\n)", if self.core.buf.crlf { "● " } else { "  " }), |e| e.set_fileformat(true));
         m = m.sep();
         for (e, bom, name) in [(enc::UTF_8, false, "UTF-8"), (enc::UTF_8, true, "UTF-8（BOM 付き）"), (enc::SHIFT_JIS, false, "Shift_JIS（CP932）"), (enc::EUC_JP, false, "EUC-JP"), (enc::UTF_16LE, true, "UTF-16LE")] {
             let mark = if cur == (e, bom) { "● " } else { "  " };
-            m = m.item(format!("{mark}{name} で保存する"), move |ed| ed.set_file_encoding(e, bom));
+            m = m.item(format!("{mark}'{name}' に変換"), move |ed| ed.set_file_encoding(e, bom));
         }
         m = m.sep();
         for (e, name) in [(enc::UTF_8, "UTF-8"), (enc::SHIFT_JIS, "Shift_JIS"), (enc::EUC_JP, "EUC-JP")] {
-            m = m.item(format!("  {name} で読み直す"), move |ed| ed.reload_as(e, false));
+            m = m.item(format!("  '{name}' で再読み込み"), move |ed| ed.reload_as(e, false));
         }
         self.open_menu(m);
     }

@@ -238,7 +238,7 @@ pub static UI_ACTIONS: [crate::ui_action::UiAction; 2] = {
             e.launcher_pin();
             e.want_preview();
         } },
-        UiAction { id: "launcher.hide", label: "一覧から外す", scope: Launcher, enabled: chosen, run: |e| {
+        UiAction { id: "launcher.hide", label: "最近のプロジェクトから除去", scope: Launcher, enabled: chosen, run: |e| {
             e.launcher_hide();
             e.want_preview();
         } },

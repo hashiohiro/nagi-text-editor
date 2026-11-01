@@ -119,9 +119,9 @@ pub static ACTIONS: [crate::ui_action::UiAction; 3] = {
         e.panels.maven.as_ref().is_some_and(|m| m.selected < m.rows.len())
     }
     [
-        UiAction { id: "maven.run", label: "実行・開閉", scope: Maven, enabled: selected, run: |e| e.maven_do(MavenAction::Activate) },
-        UiAction { id: "maven.reload", label: "読み直す", scope: Maven, enabled: open, run: |e| e.maven_do(MavenAction::Reload) },
-        UiAction { id: "maven.close", label: "欄を閉じる", scope: Maven, enabled: open, run: |e| e.maven_do(MavenAction::Close) },
+        UiAction { id: "maven.run", label: "Maven ビルドの実行", scope: Maven, enabled: selected, run: |e| e.maven_do(MavenAction::Activate) },
+        UiAction { id: "maven.reload", label: "すべての Maven プロジェクトを再ロード", scope: Maven, enabled: open, run: |e| e.maven_do(MavenAction::Reload) },
+        UiAction { id: "maven.close", label: "非表示", scope: Maven, enabled: open, run: |e| e.maven_do(MavenAction::Close) },
     ]
 };
 

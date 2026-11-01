@@ -373,18 +373,19 @@ impl Editor {
             .item("切り取り", run("Cut"))
             .item("コピー", run("Copy"))
             .item("貼り付け", run("Paste"))
-            .item("すべて選ぶ", run("SelectAll"))
+            .item("すべて選択", run("SelectAll"))
             .sep()
-            .item("定義へ", run("GotoDefinition"))
-            .item("実装へ", run("GotoImplementation"))
-            .item("使っている所", run("Refs"))
+            .item("使用箇所の検索", run("Refs"))
+            .item("宣言または使用箇所に移動", run("GotoDefinition"))
+            .item("実装に移動", run("GotoImplementation"))
             .sep()
-            .item("行コメント", run("CommentLine"))
-            .item("行のコミット（blame）", run("Gblame"))
-            .item("HEAD との差分", run("Gdiff"))
+            .item("行コメントでコメント化", run("CommentLine"))
+            .sep()
+            .item("Git: 注釈", run("Gblame"))
+            .item("Git: 差分の表示", run("Gdiff"))
             .sep()
             // どのコマンドもマウスからたどれるように
-            .item("コマンドパレット…", run("Commands"));
+            .item("アクションの検索…", run("Commands"));
         self.open_menu(m);
     }
 
@@ -675,11 +676,11 @@ mod tests {
         // q（Vim なら木を閉じる）は受けない
         e.key(Key::Char('q'));
         assert!(e.panels.tree.is_some(), "文字のキーは受けない");
-        // 右クリックのメニューの「木を閉じる」は同じ操作
+        // 右クリックのメニューの「非表示」は同じ操作
         let r = e.tree_rect().unwrap();
         let s = crate::layout::Screen { rows: 40, cols: 120 };
         assert!(crate::layout::context(&mut e, s, r.y + 1, r.x + 2));
-        let i = e.menu.as_ref().unwrap().items.iter().position(|it| it.label == "木を閉じる").unwrap();
+        let i = e.menu.as_ref().unwrap().items.iter().position(|it| it.label == "非表示").unwrap();
         e.menu_run(i);
         assert!(e.panels.tree.is_none());
         // 確認の窓はクリックでも答えられる（はい）

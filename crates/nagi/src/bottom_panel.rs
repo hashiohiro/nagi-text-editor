@@ -66,9 +66,9 @@ pub static ACTIONS: [crate::ui_action::UiAction; 3] = {
         e.bottom_visible() && e.bottom_kind == BottomKind::Problems
     }
     [
-        UiAction { id: "problems.open", label: "開く", scope: Problems, enabled: any, run: |e| e.problems_open(false) },
+        UiAction { id: "problems.open", label: "ソースに移動", scope: Problems, enabled: any, run: |e| e.problems_open(false) },
         UiAction { id: "problems.openKeep", label: "開いて欄に残る", scope: Problems, enabled: any, run: |e| e.problems_open(true) },
-        UiAction { id: "problems.hide", label: "欄を隠す", scope: Problems, enabled: shown, run: |e| e.hide_bottom() },
+        UiAction { id: "problems.hide", label: "非表示", scope: Problems, enabled: shown, run: |e| e.hide_bottom() },
     ]
 };
 
@@ -450,28 +450,30 @@ impl crate::layout::View for BottomView {
                 ed.result_click(prow, pcol.saturating_sub(1), 1);
                 let filterable = ed.panels.db_results.active_tab().is_some_and(|t| t.filterable);
                 let editable = ed.panels.db_results.active_tab().is_some_and(|t| t.target.is_some());
+                // DataGrip の結果の表と同じ並び: 編集 → コピー → フィルター・並べ替え → ページ → エクスポート
+                let m = if editable {
+                    m.item_shortcut("編集", "F2", |e| e.result_op(crate::result_grid::ResultOp::Edit))
+                        .action(ed, "results.setNull")
+                        .item_shortcut("選択項目の復元", "Ctrl+Z", |e| e.result_op(crate::result_grid::ResultOp::Undo))
+                        .item_shortcut("送信", "Ctrl+Enter", |e| e.result_op(crate::result_grid::ResultOp::Send))
+                        .sep()
+                } else {
+                    m
+                };
                 let m = m.action(ed, "results.copyValue").action(ed, "results.copyRow").action(ed, "results.copyTable");
                 let m = if filterable {
                     m.sep()
                         .action(ed, "results.where")
                         .action(ed, "results.order")
                         .action(ed, "results.sortColumn")
-                        .action(ed, "results.nextPage")
+                        .sep()
                         .action(ed, "results.prevPage")
+                        .action(ed, "results.nextPage")
                         .action(ed, "results.reload")
                 } else {
                     m
                 };
-                let m = if editable {
-                    m.sep()
-                        .item_shortcut("値を直す", "F2", |e| e.result_op(crate::result_grid::ResultOp::Edit))
-                        .action(ed, "results.setNull")
-                        .item_shortcut("戻す", "Ctrl+Z", |e| e.result_op(crate::result_grid::ResultOp::Undo))
-                        .item_shortcut("変更を送る", "Ctrl+Enter", |e| e.result_op(crate::result_grid::ResultOp::Send))
-                } else {
-                    m
-                };
-                m.sep().action(ed, "results.export").action(ed, "results.prevTab").action(ed, "results.nextTab").action(ed, "results.close")
+                m.sep().action(ed, "results.export").sep().action(ed, "results.prevTab").action(ed, "results.nextTab").action(ed, "results.close")
             }
             BottomKind::Debug => {
                 let w = ed.bottom_content_rect().map_or(0, |c| c.w);
@@ -481,13 +483,13 @@ impl crate::layout::View for BottomView {
                     e.debug_key(nagi_vim::Key::Enter);
                 })
                 .sep()
-                .item_shortcut("続ける", &k("keymap.debug_resume"), |e| e.debug_resume())
-                .item_shortcut("次へ", &k("keymap.step_over"), |e| e.debug_step(nagi_workers::jdwp::Depth::Over))
-                .item_shortcut("中へ", &k("keymap.step_into"), |e| e.debug_step(nagi_workers::jdwp::Depth::Into))
-                .item_shortcut("外へ", &k("keymap.step_out"), |e| e.debug_step(nagi_workers::jdwp::Depth::Out))
-                .item_shortcut("止める", &k("keymap.debug_stop"), |e| e.debug_stop())
+                .item_shortcut("再開", &k("keymap.debug_resume"), |e| e.debug_resume())
+                .item_shortcut("ステップオーバー", &k("keymap.step_over"), |e| e.debug_step(nagi_workers::jdwp::Depth::Over))
+                .item_shortcut("ステップイン", &k("keymap.step_into"), |e| e.debug_step(nagi_workers::jdwp::Depth::Into))
+                .item_shortcut("ステップアウト", &k("keymap.step_out"), |e| e.debug_step(nagi_workers::jdwp::Depth::Out))
+                .item_shortcut("停止", &k("keymap.debug_stop"), |e| e.debug_stop())
                 .sep()
-                .item("欄を隠す", |e| e.hide_bottom())
+                .item("非表示", |e| e.hide_bottom())
             }
             BottomKind::Terminal => {
                 if ed.panels.terminals.list.is_empty() {
@@ -499,9 +501,9 @@ impl crate::layout::View for BottomView {
                 })
                 .item("貼り付け", |e| e.terminal_key(nagi_vim::Key::Paste))
                 .sep()
-                .item("新しいターミナル…", |e| e.panels.terminals.open_chooser())
-                .item("このターミナルを閉じる", |e| e.close_terminal())
-                .item("本文へ", |e| e.set_state(State::Normal))
+                .item("新規タブ…", |e| e.panels.terminals.open_chooser())
+                .item("セッションを閉じる", |e| e.close_terminal())
+                .item("エディターに移動", |e| e.set_state(State::Normal))
             }
         };
         ed.open_menu(m);

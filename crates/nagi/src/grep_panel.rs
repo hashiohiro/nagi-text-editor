@@ -185,20 +185,20 @@ pub static ACTIONS: [crate::ui_action::UiAction; 4] = {
         e.panels.grep.is_some()
     }
     [
-        UiAction { id: "grep.open", label: "開く", scope: Grep, enabled: hit, run: |e| {
+        UiAction { id: "grep.open", label: "ソースに移動", scope: Grep, enabled: hit, run: |e| {
             e.set_state(State::Normal);
             e.open_hit(false);
         } },
         UiAction { id: "grep.openKeep", label: "開いて欄に残る", scope: Grep, enabled: hit, run: |e| e.open_hit(true) },
         // 今の検索の条件のまま入力欄へ（まだ検索していなければ新しく）
-        UiAction { id: "grep.search", label: "検索し直す", scope: Grep, enabled: crate::ui_action::always, run: |e| {
+        UiAction { id: "grep.search", label: "再実行", scope: Grep, enabled: crate::ui_action::always, run: |e| {
             if e.panels.grep.as_ref().is_some_and(|g| g.title.is_none()) {
                 e.set_state(State::GrepPrompt);
             } else {
                 e.open_grep("");
             }
         } },
-        UiAction { id: "grep.close", label: "欄を閉じる", scope: Grep, enabled: open, run: |e| e.close_grep() },
+        UiAction { id: "grep.close", label: "非表示", scope: Grep, enabled: open, run: |e| e.close_grep() },
     ]
 };
 

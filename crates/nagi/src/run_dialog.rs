@@ -315,8 +315,8 @@ pub static ACTIONS: [crate::ui_action::UiAction; 3] = {
     }
     [
         UiAction { id: "runConfig.run", label: "実行", scope: RunConfig, enabled: chosen, run: |e| e.run_dialog_button(DialogButton::Run) },
-        UiAction { id: "runConfig.add", label: "構成を追加", scope: RunConfig, enabled: open, run: |e| e.run_dialog_button(DialogButton::Add) },
-        UiAction { id: "runConfig.duplicate", label: "この構成を複製", scope: RunConfig, enabled: chosen, run: |e| e.run_dialog_button(DialogButton::Copy) },
+        UiAction { id: "runConfig.add", label: "新規構成の追加", scope: RunConfig, enabled: open, run: |e| e.run_dialog_button(DialogButton::Add) },
+        UiAction { id: "runConfig.duplicate", label: "構成のコピー", scope: RunConfig, enabled: chosen, run: |e| e.run_dialog_button(DialogButton::Copy) },
     ]
 };
 
@@ -554,7 +554,7 @@ impl crate::layout::View for RunDialogView {
             .action(ed, "runConfig.run")
             .action(ed, "runConfig.add")
             .action(ed, "runConfig.duplicate")
-            .item_shortcut("消す", "Delete", |e| e.run_dialog_button(DialogButton::Delete))
+            .item_shortcut("構成の除去", "Delete", |e| e.run_dialog_button(DialogButton::Delete))
             .sep()
             .item_shortcut("閉じる", "Esc", |e| e.run_dialog_key(nagi_vim::Key::Esc));
         ed.open_menu(m);

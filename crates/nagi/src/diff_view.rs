@@ -71,12 +71,12 @@ pub static ACTIONS: [crate::ui_action::UiAction; 6] = {
         e.panels.diff.as_ref().is_some_and(|d| d.work.is_some())
     }
     [
-        UiAction { id: "diff.next", label: "次の変更", scope: Diff, enabled: open, run: |e| e.diff_hunk(true) },
-        UiAction { id: "diff.prev", label: "前の変更", scope: Diff, enabled: open, run: |e| e.diff_hunk(false) },
+        UiAction { id: "diff.next", label: "次の差分", scope: Diff, enabled: open, run: |e| e.diff_hunk(true) },
+        UiAction { id: "diff.prev", label: "前の差分", scope: Diff, enabled: open, run: |e| e.diff_hunk(false) },
         UiAction { id: "diff.stage", label: "この変更をステージ", scope: Diff, enabled: work, run: |e| e.diff_apply(true) },
-        UiAction { id: "diff.revert", label: "この変更を戻す", scope: Diff, enabled: work, run: |e| e.diff_apply(false) },
-        UiAction { id: "diff.open", label: "ファイルを開く", scope: Diff, enabled: open, run: |e| e.diff_key(Key::Enter) },
-        UiAction { id: "diff.close", label: "差分を閉じる", scope: Diff, enabled: open, run: |e| e.close_diff() },
+        UiAction { id: "diff.revert", label: "行のロールバック", scope: Diff, enabled: work, run: |e| e.diff_apply(false) },
+        UiAction { id: "diff.open", label: "ソースに移動", scope: Diff, enabled: open, run: |e| e.diff_key(Key::Enter) },
+        UiAction { id: "diff.close", label: "閉じる", scope: Diff, enabled: open, run: |e| e.close_diff() },
     ]
 };
 
@@ -425,8 +425,8 @@ impl crate::layout::View for DiffScreenView {
         let _ = r;
         ed.set_state(crate::editor::State::Diff);
         let m = crate::menu::Menu::new(row, col)
-            .action(ed, "diff.next")
             .action(ed, "diff.prev")
+            .action(ed, "diff.next")
             .sep()
             .action(ed, "diff.stage")
             .action(ed, "diff.revert")

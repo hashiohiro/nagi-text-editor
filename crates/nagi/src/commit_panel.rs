@@ -150,18 +150,18 @@ pub static ACTIONS: [crate::ui_action::UiAction; 12] = {
         e.panels.commit.as_ref().is_some_and(|p| !p.items.is_empty())
     }
     [
-        UiAction { id: "commit.diff", label: "差分を見る", scope: Commit, enabled: item, run: |e| e.commit_op(CommitOp::Diff) },
-        UiAction { id: "commit.open", label: "開く", scope: Commit, enabled: item, run: |e| e.commit_op(CommitOp::Open(false)) },
+        UiAction { id: "commit.diff", label: "差分の表示", scope: Commit, enabled: item, run: |e| e.commit_op(CommitOp::Diff) },
+        UiAction { id: "commit.open", label: "ソースに移動", scope: Commit, enabled: item, run: |e| e.commit_op(CommitOp::Open(false)) },
         UiAction { id: "commit.openKeep", label: "開いて欄に残る", scope: Commit, enabled: item, run: |e| e.commit_op(CommitOp::Open(true)) },
         UiAction { id: "commit.toggle", label: "選ぶ・外す", scope: Commit, enabled: item, run: |e| e.commit_op(CommitOp::Toggle) },
         UiAction { id: "commit.toggleAll", label: "すべて選ぶ・外す", scope: Commit, enabled: any, run: |e| e.commit_op(CommitOp::ToggleAll) },
-        UiAction { id: "commit.revert", label: "変更を戻す…", scope: Commit, enabled: item, run: |e| e.commit_op(CommitOp::Revert) },
-        UiAction { id: "commit.deleteUntracked", label: "未追跡のファイルを削除…", scope: Commit, enabled: any, run: |e| e.commit_op(CommitOp::DeleteUntracked) },
+        UiAction { id: "commit.revert", label: "ロールバック…", scope: Commit, enabled: item, run: |e| e.commit_op(CommitOp::Revert) },
+        UiAction { id: "commit.deleteUntracked", label: "未追跡ファイルの削除…", scope: Commit, enabled: any, run: |e| e.commit_op(CommitOp::DeleteUntracked) },
         UiAction { id: "commit.message", label: "メッセージを書く", scope: Commit, enabled: open, run: |e| e.commit_op(CommitOp::EditMessage) },
-        UiAction { id: "commit.amend", label: "直前のコミットを直す（切り替え）", scope: Commit, enabled: open, run: |e| e.commit_op(CommitOp::Amend) },
-        UiAction { id: "commit.commitPush", label: "コミットしてプッシュ", scope: Commit, enabled: open, run: |e| e.commit_op(CommitOp::Commit(true)) },
-        UiAction { id: "commit.refresh", label: "読み直す", scope: Commit, enabled: open, run: |e| e.commit_op(CommitOp::Refresh) },
-        UiAction { id: "commit.close", label: "欄を閉じる", scope: Commit, enabled: open, run: |e| e.commit_op(CommitOp::Close) },
+        UiAction { id: "commit.amend", label: "コミットの修正（切り替え）", scope: Commit, enabled: open, run: |e| e.commit_op(CommitOp::Amend) },
+        UiAction { id: "commit.commitPush", label: "コミットとプッシュ…", scope: Commit, enabled: open, run: |e| e.commit_op(CommitOp::Commit(true)) },
+        UiAction { id: "commit.refresh", label: "リフレッシュ", scope: Commit, enabled: open, run: |e| e.commit_op(CommitOp::Refresh) },
+        UiAction { id: "commit.close", label: "非表示", scope: Commit, enabled: open, run: |e| e.commit_op(CommitOp::Close) },
     ]
 };
 
@@ -680,17 +680,19 @@ impl crate::layout::View for CommitView {
             return false;
         }
         let amend = ed.panels.commit.as_ref().is_some_and(|p| p.amend);
+        // IntelliJ のコミットの欄と同じ並び: ロールバック → 差分の表示 → ソースに移動 → 削除
         let m = crate::menu::Menu::new(row, col)
+            .action(ed, "commit.toggle")
+            .action(ed, "commit.toggleAll")
+            .sep()
+            .action(ed, "commit.revert")
             .action(ed, "commit.diff")
             .action(ed, "commit.open")
             .action(ed, "commit.openKeep")
-            .action(ed, "commit.toggle")
-            .action(ed, "commit.toggleAll")
-            .action(ed, "commit.revert")
             .action(ed, "commit.deleteUntracked")
             .sep()
             .action(ed, "commit.message")
-            .action_as(ed, "commit.amend", if amend { "直前のコミットを直す: やめる" } else { "直前のコミットを直す" })
+            .action_as(ed, "commit.amend", if amend { "コミットの修正: やめる" } else { "コミットの修正" })
             .item_shortcut("コミット", "Ctrl+Enter", |e| e.commit_op(CommitOp::Commit(false)))
             .action(ed, "commit.commitPush")
             .sep()

@@ -326,14 +326,14 @@ pub static ACTIONS: [crate::ui_action::UiAction; 9] = {
     }
     [
         UiAction { id: "table.replace", label: "値を入れ替える", scope: Table, enabled: cell, run: |e| e.db_table_op(TableOp::Replace) },
-        UiAction { id: "table.setNull", label: "NULL にする", scope: Table, enabled: cell, run: |e| e.db_table_op(TableOp::SetNull) },
-        UiAction { id: "table.addRow", label: "行を足す", scope: Table, enabled: cols, run: |e| e.db_table_op(TableOp::AddRow) },
-        UiAction { id: "table.where", label: "絞り込み（WHERE）", scope: Table, enabled: clean, run: |e| e.db_table_op(TableOp::Where) },
-        UiAction { id: "table.order", label: "並べ替え（ORDER BY）", scope: Table, enabled: clean, run: |e| e.db_table_op(TableOp::Order) },
+        UiAction { id: "table.setNull", label: "NULL を設定", scope: Table, enabled: cell, run: |e| e.db_table_op(TableOp::SetNull) },
+        UiAction { id: "table.addRow", label: "行の追加", scope: Table, enabled: cols, run: |e| e.db_table_op(TableOp::AddRow) },
+        UiAction { id: "table.where", label: "フィルター条件の編集", scope: Table, enabled: clean, run: |e| e.db_table_op(TableOp::Where) },
+        UiAction { id: "table.order", label: "ORDER BY 句の編集", scope: Table, enabled: clean, run: |e| e.db_table_op(TableOp::Order) },
         UiAction { id: "table.sortColumn", label: "この列で並べ替え", scope: Table, enabled: clean, run: |e| e.db_table_op(TableOp::SortColumn) },
         UiAction { id: "table.nextPage", label: "次のページ", scope: Table, enabled: more, run: |e| e.db_table_op(TableOp::NextPage) },
         UiAction { id: "table.prevPage", label: "前のページ", scope: Table, enabled: back, run: |e| e.db_table_op(TableOp::PrevPage) },
-        UiAction { id: "table.reload", label: "読み直す", scope: Table, enabled: open, run: |e| e.db_table_op(TableOp::Reload) },
+        UiAction { id: "table.reload", label: "ページの再ロード", scope: Table, enabled: open, run: |e| e.db_table_op(TableOp::Reload) },
     ]
 };
 
@@ -812,21 +812,22 @@ impl crate::layout::View for DbTableView {
         let _ = r;
         ed.set_state(crate::editor::State::DbTable);
         let m = crate::menu::Menu::new(row, col)
-            .item_shortcut("値を直す", "F2", |e| e.db_table_op(TableOp::Edit))
+            .item_shortcut("編集", "F2", |e| e.db_table_op(TableOp::Edit))
             .action(ed, "table.replace")
             .action(ed, "table.setNull")
             .action(ed, "table.addRow")
-            .item_shortcut("行を消す（取り消し）", "Delete", |e| e.db_table_op(TableOp::DeleteRow))
-            .item_shortcut("戻す", "Ctrl+Z", |e| e.db_table_op(TableOp::Undo))
+            .item_shortcut("選択した行の削除", "Delete", |e| e.db_table_op(TableOp::DeleteRow))
+            .item_shortcut("選択項目の復元", "Ctrl+Z", |e| e.db_table_op(TableOp::Undo))
+            .item_shortcut("送信", "Ctrl+Enter", |e| e.db_table_op(TableOp::Send))
             .sep()
             .action(ed, "table.where")
             .action(ed, "table.order")
             .action(ed, "table.sortColumn")
-            .action(ed, "table.nextPage")
+            .sep()
             .action(ed, "table.prevPage")
+            .action(ed, "table.nextPage")
             .action(ed, "table.reload")
             .sep()
-            .item_shortcut("変更を送る", "Ctrl+Enter", |e| e.db_table_op(TableOp::Send))
             .item_shortcut("閉じる", "Esc", |e| e.db_table_op(TableOp::Close));
         ed.open_menu(m);
         true

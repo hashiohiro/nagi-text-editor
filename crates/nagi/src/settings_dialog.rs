@@ -512,14 +512,14 @@ pub static ACTIONS: [crate::ui_action::UiAction; 9] = {
         e.panels.settings_dialog.as_ref().is_some_and(|d| d.is_maps())
     }
     [
-        UiAction { id: "settings.edit", label: "値を直す", scope: Settings, enabled: open, run: |e| e.settings_op(SettingsOp::Edit) },
-        UiAction { id: "settings.reset", label: "既定に戻す", scope: Settings, enabled: items, run: |e| e.settings_op(SettingsOp::Reset) },
+        UiAction { id: "settings.edit", label: "編集", scope: Settings, enabled: open, run: |e| e.settings_op(SettingsOp::Edit) },
+        UiAction { id: "settings.reset", label: "デフォルトにリセット", scope: Settings, enabled: items, run: |e| e.settings_op(SettingsOp::Reset) },
         UiAction { id: "settings.scope", label: "全体 / このプロジェクトだけ", scope: Settings, enabled: open, run: |e| e.settings_op(SettingsOp::Scope) },
-        UiAction { id: "settings.filter", label: "絞り込み", scope: Settings, enabled: open, run: |e| e.settings_op(SettingsOp::Filter) },
+        UiAction { id: "settings.filter", label: "フィルター", scope: Settings, enabled: open, run: |e| e.settings_op(SettingsOp::Filter) },
         UiAction { id: "settings.mapChoose", label: "Action・コマンドを選ぶ", scope: Settings, enabled: maps, run: |e| e.settings_op(SettingsOp::MapChoose) },
-        UiAction { id: "settings.mapDelete", label: "消す", scope: Settings, enabled: maps, run: |e| e.settings_op(SettingsOp::MapDelete) },
-        UiAction { id: "settings.mapRevert", label: "元に戻す（vimrc・既定の値に）", scope: Settings, enabled: maps, run: |e| e.settings_op(SettingsOp::MapRevert) },
-        UiAction { id: "settings.mapAdd", label: "足す", scope: Settings, enabled: maps, run: |e| e.settings_op(SettingsOp::MapAdd) },
+        UiAction { id: "settings.mapDelete", label: "除去", scope: Settings, enabled: maps, run: |e| e.settings_op(SettingsOp::MapDelete) },
+        UiAction { id: "settings.mapRevert", label: "ショートカットのリセット", scope: Settings, enabled: maps, run: |e| e.settings_op(SettingsOp::MapRevert) },
+        UiAction { id: "settings.mapAdd", label: "キーボードショートカットの追加", scope: Settings, enabled: maps, run: |e| e.settings_op(SettingsOp::MapAdd) },
         UiAction { id: "settings.close", label: "閉じる", scope: Settings, enabled: open, run: |e| e.settings_op(SettingsOp::Close) },
     ]
 };
@@ -1123,11 +1123,11 @@ impl crate::layout::View for SettingsView {
         ed.settings_click(row, col, 1);
         if ed.panels.settings_dialog.as_ref().is_some_and(|d| d.is_maps()) {
             let m = crate::menu::Menu::new(row, col)
-                .action_as(ed, "settings.edit", "直す")
+                .action(ed, "settings.edit")
+                .action(ed, "settings.mapAdd")
                 .action(ed, "settings.mapChoose")
                 .action(ed, "settings.mapDelete")
                 .action(ed, "settings.mapRevert")
-                .action(ed, "settings.mapAdd")
                 .sep()
                 .action(ed, "settings.close");
             ed.open_menu(m);
