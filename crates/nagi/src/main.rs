@@ -817,6 +817,7 @@ impl Frame {
     fn handle_keys(&mut self, keys: Vec<VKey>, el: &ActiveEventLoop) {
         let t0 = Instant::now();
         let c0 = stats::thread_cycles();
+        let p0 = stats::process_cycles();
         let keys_label: String = keys.iter().map(|k| k.label()).collect();
         self.stop_scroll();
         for k in keys {
@@ -836,7 +837,7 @@ impl Frame {
         if std::env::var_os("NAGI_DEBUG_STATS").is_some() {
             let (rt, rn) = self.renderer.as_mut().map_or(Default::default(), |r| r.take_raster_stats());
             eprintln!(
-                "stat {:?} total={} edit={} wait={} build={} present={} ime_after={} raster={}us/{rn} mode={:?} cyc_total={} cyc_build={}",
+                "stat {:?} total={} edit={} wait={} build={} present={} ime_after={} raster={}us/{rn} mode={:?} cyc_total={} cyc_build={} cyc_others={}",
                 keys_label,
                 sample.total(),
                 sample.edit,
@@ -847,7 +848,8 @@ impl Frame {
                 rt.as_micros(),
                 self.ed.as_ref().map(|e| e.state()),
                 stats::thread_cycles() - c0,
-                self.build_cycles
+                self.build_cycles,
+                (stats::process_cycles() - p0).saturating_sub(stats::thread_cycles() - c0)
             );
         }
         self.stats.push(sample);

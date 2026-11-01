@@ -2,3 +2,4 @@
 **/target
 *.pdb
 *.nagi-tmp
+__pycache__/

@@ -45,6 +45,18 @@ pub fn thread_cycles() -> u64 {
     c
 }
 
+/// プロセス全体（すべてのスレッド）がこれまでに使った CPU のサイクル数。UI のスレッドの分を引くと、
+/// その間に裏のスレッドが動いた量が分かる（遅いフレームが、裏の仕事とキャッシュ・コアを取り合っていたかを見る）
+pub fn process_cycles() -> u64 {
+    let mut c = 0u64;
+    #[cfg(windows)]
+    unsafe {
+        use windows::Win32::System::{Threading::GetCurrentProcess, WindowsProgramming::QueryProcessCycleTime};
+        let _ = QueryProcessCycleTime(GetCurrentProcess(), &mut c);
+    }
+    c
+}
+
 pub fn us(d: Duration) -> u32 {
     d.as_micros().min(u32::MAX as u128) as u32
 }

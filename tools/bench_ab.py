@@ -11,6 +11,10 @@
   2026-10-31 の A/A（5 回ずつ）: p25 のぶれは 1〜5%（5〜7% の差を見分けられる）、p50 は 8〜10%。
   修正の前と後（プロジェクトの根を覚える）では cyc_build が B/A 0.38 [0.25, 0.67] と出た。
 - 窓は出さない（--headless）。LOCALAPPDATA は回ごとに新しく作る（普段の設定・記録に触れない。前の回の状態を持ち越さない）。
+- --steady: 測っている間、別のコアで空回りする処理を動かして CPU を休ませない（周波数を一定に保つ）。
+  普段は、フレームの間に CPU が休んで周波数が下がり、上がりきる前に組み立てると 3〜4 倍遅くなる（2026-11-01: 組み立ての 99% が
+  1.4〜1.7ms → 空回りさせると 0.4〜0.5ms）。省電力を除いたコードそのものの速さ（跳ね上がりがコードのせいか）を見るのに使う。
+  比べる精度は上がらない（A/A で区間が ±15%。空回りが同じ物理コアの隣に載るとぶつかる）ので、改善の判定は付けずに p25 で行う。
   文法（--grammars）と索引（--index）は回ごとに写す（文法が無いと色分けなしで測る。索引が無いと測っている間に裏で作り直し、
   メモリ・キャッシュを取り合ってサイクル数までぶれる）。1 回 40〜90 秒、5 回ずつで 15 分ほど。
 """
@@ -59,11 +63,16 @@ def run_once(exe: Path, work: Path, i: int, args) -> dict:
     env.update({"NAGI_DEBUG_STATS": "1", "LOCALAPPDATA": str(lad), "NAGI_REPLAY_LOG": str(log), "NAGI_REPLAY_OUT": str(work)})
     env["WSLENV"] = "NAGI_DEBUG_STATS:LOCALAPPDATA/p:NAGI_REPLAY_LOG/p:NAGI_REPLAY_OUT/p"
     target = Path(args.target).resolve()
+    # CPU を休ませない（--steady）: WSL の中で空回りする（Windows の別のコアで動く）
+    spin = subprocess.Popen(["sh", "-c", "while :; do :; done"]) if args.steady else None
     try:
         p = subprocess.run([str(exe), "--headless", "--replay-file", win(keys), win(target)], cwd=str(Path(args.dir).resolve()), env=env, capture_output=True, timeout=args.wait + 120)
         text = p.stderr.decode("utf-8", "replace")
     except subprocess.TimeoutExpired as e:
         text = (e.stderr or b"").decode("utf-8", "replace")
+    finally:
+        if spin:
+            spin.kill()
     # 標準エラーがつながっていないときはログのファイルへ出る
     nlog = lad / "nagi" / "nagi.log"
     if nlog.exists():
@@ -95,6 +104,7 @@ def main():
     ap.add_argument("--dir", default=str(ROOT), help="起動するフォルダ")
     ap.add_argument("--grammars", default=str(ROOT / "target/big/lad/nagi/grammars"), help="文法の DLL のフォルダ（回ごとに写す）")
     ap.add_argument("--index", default=str(ROOT / "target/big/lad/nagi/index"), help="索引のフォルダ（回ごとに写す。空なら写さない）")
+    ap.add_argument("--steady", action="store_true", help="測っている間 CPU を休ませない（周波数を一定に。省電力を除いたコードの速さを見るとき。判定には使わない）")
     ap.add_argument("--work", default=str(ROOT / "target/bench/work"), help="作業のフォルダ（Windows から見える所）")
     args = ap.parse_args()
     work = Path(args.work)
