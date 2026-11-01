@@ -1299,12 +1299,12 @@ pub(crate) mod draw {
             } else {
                 desc
             };
-            p.text(&format!("{desc}{}既定: {def}   r で既定に戻す", if desc.is_empty() { "" } else { "   " }), rx, y(h - 3), STATUS_FG);
+            p.text(&format!("{desc}{}既定: {def}   右クリック「既定に戻す」", if desc.is_empty() { "" } else { "   " }), rx, y(h - 3), STATUS_FG);
         }
         // 下: 案内とボタン
         let help = match d.focus {
-            SFocus::Cats => "j/k 分類  Tab 項目へ  / 絞り込み  Ctrl+Enter 適用して閉じる  Esc 閉じる",
-            SFocus::Items => "j/k 選ぶ  Space・Enter 切り替え・直す  h/l 選択肢  Tab 分類へ  Ctrl+Enter OK",
+            SFocus::Cats => "↑↓ 分類  Tab 項目へ  打つと絞り込み  Ctrl+Enter 適用して閉じる  Esc 閉じる",
+            SFocus::Items => "↑↓ 選ぶ  Space・Enter 切り替え・直す  ←→ 選択肢  右クリック 操作  Ctrl+Enter OK",
             SFocus::Edit => "Enter 決める  Esc ノーマル→やめる",
             SFocus::Filter => "打って絞り込み  Enter・↓ 項目へ",
             SFocus::Combo => "打って絞り込み  ↑↓ 選ぶ  Enter・クリック 決める  Esc やめる",

@@ -72,8 +72,8 @@ pub struct DebugUi {
     src: HashMap<String, Option<PathBuf>>,
     /// 動かしているターミナルの窓（止めるときに閉じる）
     pub terminal: Option<String>,
-    /// 1 行目のボタン（列の始め, 終わり, キー）
-    pub buttons: std::cell::RefCell<Vec<(usize, usize, Key)>>,
+    /// 1 行目のボタン（列の始め, 終わり, 押したときの処理）
+    pub buttons: std::cell::RefCell<Vec<(usize, usize, fn(&mut Editor))>>,
 }
 
 /// JVM に JDWP の口を開ける引数
@@ -618,8 +618,8 @@ impl Editor {
         let Some(d) = &mut self.panels.debug else { return };
         if row == 0 {
             let hit = d.buttons.borrow().iter().find(|(a, b, _)| col >= *a && col < *b).map(|x| x.2);
-            if let Some(k) = hit {
-                self.debug_key(k);
+            if let Some(run) = hit {
+                run(self);
             }
             return;
         }
@@ -714,7 +714,14 @@ pub(crate) mod draw {
         // 1 行目: ボタンと様子
         let mut x = r.x + 1;
         let mut buttons = Vec::new();
-        for (label, key, on) in [("▶ 続ける", Key::Char('c'), d.stopped), ("次へ", Key::Char('n'), d.stopped), ("中へ", Key::Char('s'), d.stopped), ("外へ", Key::Char('o'), d.stopped), ("■ 止める", Key::Char('x'), !d.ended)] {
+        let buttons_of: [(&str, fn(&mut Editor), bool); 5] = [
+            ("▶ 続ける", |e| e.debug_resume(), d.stopped),
+            ("次へ", |e| e.debug_step(Depth::Over), d.stopped),
+            ("中へ", |e| e.debug_step(Depth::Into), d.stopped),
+            ("外へ", |e| e.debug_step(Depth::Out), d.stopped),
+            ("■ 止める", |e| e.debug_stop(), !d.ended),
+        ];
+        for (label, key, on) in buttons_of {
             let w = p.width(label) + 2;
             p.out.push(Instance::fill(x as f32 * cell.w, y(0), w as f32 * cell.w, cell.h, if on { MATCH_BG } else { BG }));
             p.text(&format!(" {label} "), x, y(0), if on { FG } else { LINE_NO });

@@ -1623,7 +1623,7 @@ impl Editor {
         let i = self.db_current_source().or_else(|| self.panels.db.as_ref().filter(|p| !p.sources.is_empty()).map(|_| 0));
         match i {
             Some(i) => self.db_new_query(i, None),
-            None => self.svc.notify.info("接続先がありません。データベースの欄の a で足せます"),
+            None => self.svc.notify.info("接続先がありません。データベースの欄の ＋ で足せます"),
         }
     }
 

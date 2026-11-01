@@ -623,7 +623,7 @@ impl Editor {
             }
         }
         match n {
-            0 => self.svc.notify.warn("消す行には貼れません（dd で取り消し）"),
+            0 => self.svc.notify.warn("消す行には貼れません（もう一度「行を消す」で取り消し）"),
             1 => {}
             n => self.svc.notify.info(format!("{n} 個のセルに貼りました")),
         }
@@ -775,7 +775,7 @@ impl crate::layout::View for DbTableView {
             }
             let Some(te) = &mut ed.panels.db_table else { return crate::layout::Click::Done };
             if te.changes() > 0 {
-                ed.svc.notify.info("未送信の変更があります（Ctrl+Enter で送るか、u で戻す）");
+                ed.svc.notify.info("未送信の変更があります（Ctrl+Enter で送るか、Ctrl+Z で戻す）");
             } else {
                 te.filter_edit = Some((field, VimField::new(if field == Field::Where { &te.where_ } else { &te.order }, false)));
             }

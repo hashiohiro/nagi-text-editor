@@ -696,8 +696,8 @@ pub(crate) mod draw {
         }
         // 下: 案内とボタン
         let help = match d.focus {
-            Focus::List => "j/k 選ぶ  Enter 直す  a 追加  c 複製  d 削除  r 実行  Ctrl+Enter 保存  Esc 閉じる",
-            Focus::Kind => "h/l 種類を切り替え  Tab 次の欄  Esc 一覧へ  Ctrl+Enter 保存",
+            Focus::List => "↑↓ 選ぶ  Enter 直す  ＋ 追加  ⧉ 複製  Delete 削除  右クリック 操作  Ctrl+Enter 保存  Esc 閉じる",
+            Focus::Kind => "←→ 種類を切り替え  Tab 次の欄  Esc 一覧へ  Ctrl+Enter 保存",
             _ => "Tab・Enter 次の欄  ↑↓ 前後  Esc ノーマル→一覧  Ctrl+Enter 保存",
         };
         let by = h - 1;

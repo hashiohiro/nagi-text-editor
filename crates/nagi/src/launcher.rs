@@ -450,7 +450,7 @@ impl Editor {
         let waker = self.waker();
         let Some(l) = &mut self.panels.launcher else { return };
         if dest.exists() {
-            l.message = format!("もうあります: {}（o で開けます）", dest.display());
+            l.message = format!("もうあります: {}（「フォルダを開く…」Ctrl+O で開けます）", dest.display());
             return;
         }
         let u = url.clone();
@@ -733,7 +733,7 @@ pub(crate) mod draw {
         if l.loading.is_some() {
             p.text("最近のプロジェクトを集めています…", cx, y(top), STATUS_FG);
         } else if l.hits.is_empty() {
-            p.text(if l.all.is_empty() { "最近のプロジェクトはありません（o でフォルダを開く）" } else { "当たるものがありません" }, cx, y(top), STATUS_FG);
+            p.text(if l.all.is_empty() { "最近のプロジェクトはありません（「フォルダを開く…」Ctrl+O）" } else { "当たるものがありません" }, cx, y(top), STATUS_FG);
         }
         // 1 件 2 行（IntelliJ の Welcome と同じ）: 名前・どこで開いたか・いつ / 場所・種類・ブランチ
         let cap = (bottom.saturating_sub(top + 3) / 2).max(1);

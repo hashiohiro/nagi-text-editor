@@ -465,7 +465,7 @@ impl Editor {
         }
         let q = match paths.len() {
             0 => {
-                self.svc.notify.warn("消せるのは未追跡のファイルだけです（追跡しているファイルは u で戻す）");
+                self.svc.notify.warn("消せるのは未追跡のファイルだけです（追跡しているファイルは「変更を戻す」で）");
                 return;
             }
             1 => format!("{} を消しますか（元に戻せません）", paths[0]),

@@ -295,8 +295,9 @@ impl Editor {
             let shells = self.panels.terminals.shells.clone();
             let last = shells.len().saturating_sub(1);
             match key {
-                Key::Char('j') | Key::Down | Key::Tab => self.panels.terminals.chooser = Some((sel + 1).min(last)),
-                Key::Char('k') | Key::Up => self.panels.terminals.chooser = Some(sel.saturating_sub(1)),
+                // 標準のキーと、頭の数字（メニューの頭の字と同じ）で選ぶ（ADR 0019）
+                Key::Down | Key::Tab => self.panels.terminals.chooser = Some((sel + 1).min(last)),
+                Key::Up => self.panels.terminals.chooser = Some(sel.saturating_sub(1)),
                 Key::Char(c @ '1'..='9') if (c as usize - '1' as usize) <= last => {
                     let (n, c) = shells[c as usize - '1' as usize].clone();
                     self.new_terminal_chosen(&n, &c);
@@ -305,7 +306,7 @@ impl Editor {
                     let (n, c) = shells[sel.min(last)].clone();
                     self.new_terminal_chosen(&n, &c);
                 }
-                Key::Esc | Key::Char('q') | Key::Ctrl('c') => {
+                Key::Esc | Key::Ctrl('c') => {
                     self.panels.terminals.chooser = None;
                     if self.panels.terminals.list.is_empty() {
                         self.set_state(State::Normal);
@@ -318,7 +319,6 @@ impl Editor {
         if self.panels.terminals.list.is_empty() {
             match key {
                 Key::Enter => self.open_terminal(),
-                Key::Char('c') => self.panels.terminals.open_chooser(),
                 _ => self.set_state(State::Normal),
             }
             return;
@@ -786,7 +786,7 @@ pub(crate) mod draw {
         let r = Rect { x: r.x, y: r.y + 1, w: r.w, h: r.h.saturating_sub(1) };
         // シェルを選んでいる
         if let Some(sel) = ts.chooser {
-            p.text(" 新しい窓のシェル（j/k・数字で選んで Enter、Esc でやめる）", r.x, r.y as f32 * cell.h, STATUS_FG);
+            p.text( " 新しい窓のシェル（↑↓・数字で選んで Enter、Esc でやめる）", r.x, r.y as f32 * cell.h, STATUS_FG);
             for (k, (label, cmd)) in ts.shells.iter().enumerate() {
                 let y = (r.y + 1 + k) as f32 * cell.h;
                 if k == sel {
