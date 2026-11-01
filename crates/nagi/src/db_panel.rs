@@ -1,7 +1,7 @@
 //! 右の欄の「データベース」タブ（DataGrip と同じ使い勝手を、ターミナルの見た目で）。
 //!
 //! - 接続先: Spring の設定（application*.properties）、`~/.config/nagi/databases.txt`（`名前 | jdbc:URL | 利用者`）、
-//!   `a`（＋）で足したもの。パスワードはつなぐときに伏せ字で打ち、メモリにだけ置く。
+//!   ＋ で足したもの（プロパティで直す・複製・除去もできる）。パスワードはつなぐときに伏せ字で打ち、メモリにだけ置く。
 //! - ドライバー: Oracle は Instant Client が要る。無ければ、つなぐ前に「ダウンロードしますか」と聞いて取ってくる
 //!   （nagi_workers::drivers）。SQLite は中に組み込んであるので準備は要らない。
 //! - 木: 接続先 › スキーマ › テーブル・ビュー・シーケンス・ルーチン（数）› 列・キー・インデックス。
@@ -192,19 +192,32 @@ impl DbRow {
     }
 }
 
-/// 接続先の追加のフォーム
+/// データソースの作成・プロパティのフォーム
 pub struct Form {
     pub kind: Kind,
-    /// (見出し, 入力欄)。0 番は種類（← → で切り替え）。入力欄は Vim 風
+    /// (見出し, 入力欄)。作るときは 0 番が種類（← → で切り替え）。入力欄は Vim 風
     pub fields: Vec<(&'static str, VimField)>,
     pub at: usize,
+    /// プロパティ（直す接続先の番号）。名前・URL・利用者・既定のスキーマをそのまま直す（Spring の設定の URL も表せるように）
+    pub edit: Option<usize>,
 }
 
 impl Form {
     fn new(kind: Kind) -> Form {
-        let mut f = Form { kind, fields: Vec::new(), at: 1 };
+        let mut f = Form { kind, fields: Vec::new(), at: 1, edit: None };
         f.set_kind(kind);
         f
+    }
+
+    fn edit(i: usize, ds: &DataSource) -> Form {
+        let p = |s: &str| VimField::new(s, false);
+        let fields = vec![("名前", p(&ds.name)), ("URL", p(&ds.url)), ("利用者", p(&ds.user)), ("既定のスキーマ", p(&ds.schema))];
+        Form { kind: Kind::of(&ds.url).unwrap_or(Kind::Oracle), fields, at: 0, edit: Some(i) }
+    }
+
+    /// 種類を ← → で選ぶ行か（作るときの 0 番）
+    pub fn kind_row(&self, k: usize) -> bool {
+        self.edit.is_none() && k == 0
     }
 
     fn set_kind(&mut self, kind: Kind) {
@@ -229,6 +242,13 @@ impl Form {
         let name = self.get("名前");
         if name.is_empty() {
             return Err("名前を入れてください".into());
+        }
+        if self.edit.is_some() {
+            let url = self.get("URL");
+            if Kind::of(&url).is_none() {
+                return Err("URL は jdbc:oracle:・jdbc:postgresql:・jdbc:sqlite:・salesforce: で始めてください".into());
+            }
+            return Ok(DataSource { name, url, user: self.get("利用者"), origin: config_path().display().to_string(), schema: self.get("既定のスキーマ") });
         }
         let (url, user) = match self.kind {
             Kind::Oracle => {
@@ -276,6 +296,8 @@ pub struct DbPanel {
     /// ダウンロード中（接続先, 進み具合の文）
     pub download: Option<(usize, Download, String)>,
     pub form: Option<Form>,
+    /// 除去した接続先（番号は結果のタブ・コンソールが覚えているので、詰めずに木から外す）
+    pub removed: HashSet<usize>,
     /// コンソールのファイル → 接続先
     pub consoles: HashMap<PathBuf, usize>,
     /// つながったら流す SQL（接続先 → SQL）
@@ -313,20 +335,28 @@ pub fn config_line(ds: &DataSource) -> String {
 /// 設定ファイルの、その接続先（名前・URL・利用者が同じ行）を書き直す。無ければ足す（Spring の設定から見つけた接続先など）。
 /// ほかの行（注釈・空行も）はそのまま
 pub fn save_config_line(path: &std::path::Path, ds: &DataSource) -> std::io::Result<()> {
+    replace_config_line(path, ds, Some(ds))
+}
+
+/// 設定ファイルの `old` の行（名前・URL・利用者が同じ行）を `new` に書き換える（None なら消す）。
+/// 無ければ `new` を足す。ほかの行（注釈・空行も）はそのまま
+pub fn replace_config_line(path: &std::path::Path, old: &DataSource, new: Option<&DataSource>) -> std::io::Result<()> {
     let text = std::fs::read_to_string(path).unwrap_or_default();
     let mut found = false;
     let mut out = String::with_capacity(text.len() + 64);
     for line in text.split_inclusive('\n') {
         let same = !line.trim_start().starts_with('#')
-            && nagi_workers::db::config_sources(line, "").first().is_some_and(|x| x.name == ds.name && x.url == ds.url && x.user == ds.user);
+            && nagi_workers::db::config_sources(line, "").first().is_some_and(|x| x.name == old.name && x.url == old.url && x.user == old.user);
         if same && !found {
-            out.push_str(&config_line(ds));
+            if let Some(ds) = new {
+                out.push_str(&config_line(ds));
+            }
             found = true;
         } else {
             out.push_str(line);
         }
     }
-    if !found {
+    if let (false, Some(ds)) = (found, new) {
         if !out.is_empty() && !out.ends_with('\n') {
             out.push('\n');
         }
@@ -336,6 +366,11 @@ pub fn save_config_line(path: &std::path::Path, ds: &DataSource) -> std::io::Res
         std::fs::create_dir_all(d)?;
     }
     std::fs::write(path, out)
+}
+
+/// 設定ファイル・`:DbAdd` の接続先か（Spring の設定から読んだものでないか）
+pub fn from_config(ds: &DataSource) -> bool {
+    ds.origin == ":DbAdd" || ds.origin == config_path().display().to_string()
 }
 
 pub fn work_dir() -> PathBuf {
@@ -415,6 +450,11 @@ impl nagi_ui::TreeRow for TreeLine {
 }
 
 impl DbPanel {
+    /// 木に出す接続先があるか（除去したものを除く）
+    pub fn has_sources(&self) -> bool {
+        self.sources.len() > self.removed.len()
+    }
+
     pub fn kind(&self, i: usize) -> Option<Kind> {
         Kind::of(&self.sources.get(i)?.url)
     }
@@ -430,6 +470,9 @@ impl DbPanel {
     pub(crate) fn rebuild(&mut self) {
         let mut rows = Vec::new();
         for i in 0..self.conns.len() {
+            if self.removed.contains(&i) {
+                continue;
+            }
             rows.push(DbRow::Source(i));
             if !self.folds.is_open(&format!("s{i}")) {
                 continue;
@@ -621,6 +664,14 @@ pub enum DbAction {
     Connect(usize, String),
     /// フォームで作った接続先を足してつなぐ
     AddSource(DataSource),
+    /// プロパティのフォームで直した接続先（番号, 直した後）
+    EditSource(usize, DataSource),
+    /// 選んだ行の接続先のプロパティ（フォーム）を開く
+    Properties,
+    /// 選んだ行の接続先を複製する
+    Duplicate,
+    /// 選んだ行の接続先を除去する（確かめてから）
+    Remove,
     /// 選んだ行で Enter（開く・つなぐ・開閉）
     Activate,
     /// その行を畳む・開く（読み込みが要れば読み込む）
@@ -640,7 +691,7 @@ pub enum DbAction {
 }
 
 /// データベースの欄のアクション（ui_action.rs。ADR 0019）。メニュー・ボタン・パレット・ショートカット（既定は付けない）はここを引く
-pub static ACTIONS: [crate::ui_action::UiAction; 10] = {
+pub static ACTIONS: [crate::ui_action::UiAction; 13] = {
     use crate::ui_action::{always, Scope::Database, UiAction};
     // 選んでいる行の接続先がつないでいるか
     fn connected(e: &Editor) -> bool {
@@ -658,17 +709,24 @@ pub static ACTIONS: [crate::ui_action::UiAction; 10] = {
     fn open(e: &Editor) -> bool {
         e.panels.db.is_some()
     }
+    // 除去できる接続先か（Spring の設定から読んだものは、その設定を直す）
+    fn removable(e: &Editor) -> bool {
+        e.db_selected().and_then(|r| e.panels.db.as_ref().map(|p| from_config(&p.sources[r.source()]))).unwrap_or(false)
+    }
     [
-        UiAction { id: "db.addSource", label: "接続先を足す…", scope: Database, enabled: always, run: |e| e.db_do(DbAction::AddForm) },
-        UiAction { id: "db.connect", label: "つなぐ", scope: Database, enabled: not_connected, run: |e| e.db_do(DbAction::Activate) },
-        UiAction { id: "db.disconnect", label: "切る", scope: Database, enabled: connected, run: |e| e.db_do(DbAction::Disconnect) },
-        UiAction { id: "db.reload", label: "読み直す", scope: Database, enabled: connected, run: |e| e.db_do(DbAction::Reload) },
-        UiAction { id: "db.newQuery", label: "新しいクエリ", scope: Database, enabled: selected, run: |e| e.db_do(DbAction::Query(false)) },
-        UiAction { id: "db.console", label: "コンソールを開く", scope: Database, enabled: selected, run: |e| e.db_do(DbAction::Query(true)) },
-        UiAction { id: "db.openData", label: "データを開く", scope: Database, enabled: table, run: |e| e.db_do(DbAction::OpenSelected) },
-        UiAction { id: "db.ddl", label: "DDL を開く", scope: Database, enabled: table, run: |e| e.db_do(DbAction::Ddl) },
-        UiAction { id: "db.filter", label: "絞り込み", scope: Database, enabled: open, run: |e| e.db_do(DbAction::Filter) },
-        UiAction { id: "db.close", label: "欄を閉じる", scope: Database, enabled: open, run: |e| e.db_do(DbAction::Close) },
+        UiAction { id: "db.addSource", label: "データソースの作成…", scope: Database, enabled: always, run: |e| e.db_do(DbAction::AddForm) },
+        UiAction { id: "db.connect", label: "接続", scope: Database, enabled: not_connected, run: |e| e.db_do(DbAction::Activate) },
+        UiAction { id: "db.disconnect", label: "非アクティブ化", scope: Database, enabled: connected, run: |e| e.db_do(DbAction::Disconnect) },
+        UiAction { id: "db.reload", label: "リフレッシュ", scope: Database, enabled: connected, run: |e| e.db_do(DbAction::Reload) },
+        UiAction { id: "db.newQuery", label: "新規クエリファイルを開く", scope: Database, enabled: selected, run: |e| e.db_do(DbAction::Query(false)) },
+        UiAction { id: "db.console", label: "クエリファイルを開く", scope: Database, enabled: selected, run: |e| e.db_do(DbAction::Query(true)) },
+        UiAction { id: "db.openData", label: "データの編集", scope: Database, enabled: table, run: |e| e.db_do(DbAction::OpenSelected) },
+        UiAction { id: "db.ddl", label: "DDL に移動", scope: Database, enabled: table, run: |e| e.db_do(DbAction::Ddl) },
+        UiAction { id: "db.properties", label: "プロパティ", scope: Database, enabled: selected, run: |e| e.db_do(DbAction::Properties) },
+        UiAction { id: "db.duplicate", label: "複製", scope: Database, enabled: selected, run: |e| e.db_do(DbAction::Duplicate) },
+        UiAction { id: "db.remove", label: "データソースの除去…", scope: Database, enabled: removable, run: |e| e.db_do(DbAction::Remove) },
+        UiAction { id: "db.filter", label: "フィルター", scope: Database, enabled: open, run: |e| e.db_do(DbAction::Filter) },
+        UiAction { id: "db.close", label: "非表示", scope: Database, enabled: open, run: |e| e.db_do(DbAction::Close) },
     ]
 };
 
@@ -693,7 +751,7 @@ impl DbPanel {
             }
             return DbAction::None;
         }
-        // 接続先を足すフォーム
+        // データソースの作成・プロパティのフォーム
         if let Some(f) = &mut self.form {
             // 欄の行き来と種類はフォームが受け、ほかは今の欄（Vim 風）へ
             let out = match key {
@@ -707,7 +765,7 @@ impl DbPanel {
                     f.fields[f.at].1.reinsert();
                     FieldOut::None
                 }
-                Key::Left | Key::Right | Key::Char(' ') if f.at == 0 => {
+                Key::Left | Key::Right | Key::Char(' ') if f.kind_row(f.at) => {
                     // 名前の順
                     let order = [Kind::Oracle, Kind::Postgres, Kind::Salesforce, Kind::Sqlite];
                     let k = order.iter().position(|k| *k == f.kind).unwrap_or(0);
@@ -715,8 +773,8 @@ impl DbPanel {
                     f.set_kind(order[k]);
                     FieldOut::None
                 }
-                Key::Esc if f.at == 0 => FieldOut::Cancel,
-                Key::Enter if f.at == 0 => FieldOut::Submit,
+                Key::Esc if f.kind_row(f.at) => FieldOut::Cancel,
+                Key::Enter if f.kind_row(f.at) => FieldOut::Submit,
                 k => {
                     let at = f.at;
                     f.fields[at].1.feed(k, svc)
@@ -733,8 +791,12 @@ impl DbPanel {
                 }
                 FieldOut::Submit => match f.source() {
                     Ok(ds) => {
+                        let edit = f.edit;
                         self.form = None;
-                        return DbAction::AddSource(ds);
+                        return match edit {
+                            Some(i) => DbAction::EditSource(i, ds),
+                            None => DbAction::AddSource(ds),
+                        };
                     }
                     Err(e) => svc.notify.error(e),
                 },
@@ -786,12 +848,19 @@ impl DbPanel {
     }
 
     /// 接続先を足すフォームを開く
-    pub fn open_form(&mut self, svc: &mut crate::editor::Services) {
+    pub fn open_form(&mut self) {
         self.form = Some(Form::new(Kind::Oracle));
         if let Some(f) = &mut self.form {
             f.fields[f.at].1.reinsert();
         }
-        svc.notify.info("接続先を足す: Tab で次の欄、種類は ← →、最後の欄で Enter で保存してつなぐ");
+    }
+
+    /// 接続先 `i` のプロパティのフォームを開く
+    pub fn open_properties(&mut self, i: usize) {
+        let Some(ds) = self.sources.get(i) else { return };
+        let mut f = Form::edit(i, ds);
+        f.fields[0].1.reinsert();
+        self.form = Some(f);
     }
 
     /// 絞り込みの欄へ
@@ -811,9 +880,10 @@ impl Editor {
             let cfg = config_path();
             if let Ok(t) = std::fs::read_to_string(&cfg) {
                 for s in nagi_workers::db::config_sources(&t, &cfg.display().to_string()) {
-                    match sources.iter_mut().find(|x| x.url == s.url && x.user == s.user) {
-                        // Spring の設定から見つけた接続先と同じなら、設定ファイルの既定のスキーマだけを引き継ぐ
-                        Some(x) => x.schema = s.schema,
+                    match sources.iter_mut().find(|x| x.name == s.name) {
+                        // Spring の設定から見つけた接続先と同じ名前なら、設定ファイルの行で上書きする（プロパティで直したもの・既定のスキーマ）。
+                        // Spring の設定のファイルは変えない
+                        Some(x) => *x = s,
                         None => sources.push(s),
                     }
                 }
@@ -832,13 +902,14 @@ impl Editor {
                 setup_ask: None,
                 download: None,
                 form: None,
+                removed: HashSet::new(),
                 consoles: HashMap::new(),
                 then: HashMap::new(),
             };
             p.rebuild();
             self.panels.db = Some(p);
         }
-        if self.panels.db.as_ref().is_some_and(|p| p.sources.is_empty()) {
+        if self.panels.db.as_ref().is_some_and(|p| !p.has_sources()) {
             self.svc.notify.info("接続先がありません。欄の上の ＋ で足せます");
         }
         self.focus_right(RightTab::Database);
@@ -851,7 +922,6 @@ impl Editor {
         let Some(p) = &mut self.panels.db else { return };
         let (Some(name), Some(url)) = (f.first(), f.get(1).filter(|u| Kind::of(u).is_some())) else {
             p.form = Some(Form::new(Kind::Oracle));
-            self.svc.notify.info("接続先を足す: Tab で次の欄、種類は ← →、最後の欄で Enter で保存してつなぐ");
             return;
         };
         let ds = DataSource { name: name.to_string(), url: url.to_string(), user: f.get(2).unwrap_or(&"").to_string(), origin: ":DbAdd".into(), schema: String::new() };
@@ -884,6 +954,79 @@ impl Editor {
         p.conns.push(Conn::default());
         p.rebuild();
         p.selected = p.rows.iter().position(|r| *r == DbRow::Source(p.sources.len() - 1)).unwrap_or(0);
+    }
+
+    /// プロパティで直した接続先 `i` を設定ファイルに書く（Spring の設定から読んだものは、同じ名前の行で上書きする）。
+    /// URL・利用者が変わったら、今の接続は切る（次につなぐときに新しい値で）
+    fn db_update_source(&mut self, i: usize, ds: DataSource) {
+        let Some(p) = &mut self.panels.db else { return };
+        let Some(old) = p.sources.get(i).cloned() else { return };
+        if p.sources.iter().enumerate().any(|(k, x)| k != i && !p.removed.contains(&k) && x.name == ds.name) {
+            self.svc.notify.error(format!("{} という名前の接続先がもうあります", ds.name));
+            p.open_properties(i);
+            if let Some(f) = &mut p.form {
+                f.fields = Form::edit(i, &ds).fields;
+            }
+            return;
+        }
+        let cfg = config_path();
+        // Spring の設定の接続先は、設定ファイルに行が無いので足す
+        if let Err(e) = replace_config_line(&cfg, &old, Some(&ds)) {
+            self.svc.notify.error(format!("設定ファイルに書けません: {e}"));
+            return;
+        }
+        let changed = old.url != ds.url || old.user != ds.user;
+        p.sources[i] = ds.clone();
+        p.rebuild();
+        if changed && p.conns[i].client.is_some() {
+            self.db_close(i, false);
+        }
+        self.svc.notify.info(format!("{} を保存しました（{}）", ds.name, cfg.display()));
+    }
+
+    /// 接続先 `i` を複製する（名前に [2] などを付けて設定ファイルに足す。つながない）
+    fn db_duplicate(&mut self, i: usize) {
+        let Some(p) = &self.panels.db else { return };
+        let Some(src) = p.sources.get(i) else { return };
+        let taken = |n: &str| p.sources.iter().enumerate().any(|(k, x)| !p.removed.contains(&k) && x.name == n);
+        let name = (2..).map(|n| format!("{} [{n}]", src.name)).find(|n| !taken(n)).unwrap_or_default();
+        let ds = DataSource { name, origin: config_path().display().to_string(), ..src.clone() };
+        self.db_push_source(ds, true);
+    }
+
+    /// 接続先 `i` を除去してよいか聞く（コミットしていない変更があれば先に）
+    fn db_ask_remove(&mut self, i: usize) {
+        let Some(p) = &self.panels.db else { return };
+        let Some(src) = p.sources.get(i) else { return };
+        if !from_config(src) {
+            self.svc.notify.info(format!("{} は Spring の設定（{}）から読んでいます。除去はその設定で", src.name, src.origin));
+            return;
+        }
+        if p.conns[i].pending > 0 {
+            self.svc.notify.info("まだコミットしていない変更があります。先にコミットかロールバックを");
+            return;
+        }
+        let q = format!("データソース {} を除去しますか", src.name);
+        self.ask_or(q, move |e| e.db_remove(i), |e| e.svc.notify.info("やめました"));
+    }
+
+    fn db_remove(&mut self, i: usize) {
+        let Some(p) = &mut self.panels.db else { return };
+        let ds = p.sources[i].clone();
+        let cfg = config_path();
+        if ds.origin != ":DbAdd" {
+            if let Err(e) = replace_config_line(&cfg, &ds, None) {
+                self.svc.notify.error(format!("設定ファイルに書けません: {e}"));
+                return;
+            }
+        }
+        // 裏のスレッドは送り口が無くなると接続を閉じる
+        p.conns[i] = Conn::default();
+        p.then.remove(&i);
+        p.consoles.retain(|_, k| *k != i);
+        p.removed.insert(i);
+        p.rebuild();
+        self.svc.notify.info(format!("{} を除去しました", ds.name));
     }
 
     /// つなぐ（準備ができていなければダウンロードを聞く。パスワードが要ればそれを聞く）
@@ -1620,7 +1763,7 @@ impl Editor {
         if self.panels.db.is_none() {
             self.open_db_panel();
         }
-        let i = self.db_current_source().or_else(|| self.panels.db.as_ref().filter(|p| !p.sources.is_empty()).map(|_| 0));
+        let i = self.db_current_source().or_else(|| self.panels.db.as_ref().and_then(|p| (0..p.sources.len()).find(|i| !p.removed.contains(i))));
         match i {
             Some(i) => self.db_new_query(i, None),
             None => self.svc.notify.info("接続先がありません。データベースの欄の ＋ で足せます"),
@@ -1702,29 +1845,41 @@ impl Editor {
         let c = &p.conns[i];
         let kind = Kind::of(&src.url);
         let sf = kind == Some(Kind::Salesforce);
-        let mut m = crate::menu::Menu::new(at.0, at.1);
+        // DataGrip と同じ並び: 新規 → クエリファイル → コピー・複製・除去 → リフレッシュ・接続 → プロパティ
+        let mut m = crate::menu::Menu::new(at.0, at.1).action(self, "db.addSource").sep();
         match row {
             DbRow::Source(_) => {
-                if c.client.is_none() {
-                    m = m.action(self, "db.connect");
-                } else {
-                    m = m.item("つなぎ直す", move |e| e.db_reconnect(i)).action(self, "db.disconnect");
-                }
-                m = m.action(self, "db.newQuery").action(self, "db.console");
+                m = m.action(self, "db.newQuery").action(self, "db.console").sep();
+                let url = src.url.clone();
+                m = m.item("URL のコピー", move |e| e.copy_text(url, "URL")).action(self, "db.duplicate").action(self, "db.remove").sep();
                 if c.connected {
                     m = m.action(self, "db.reload");
                 }
-                m = m.sep();
+                if c.client.is_none() {
+                    m = m.action(self, "db.connect");
+                } else {
+                    m = m.item("再接続", move |e| e.db_reconnect(i)).action(self, "db.disconnect");
+                }
                 if !src.schema.is_empty() {
                     m = m.item(format!("既定のスキーマ（{}）を外す", src.schema), move |e| e.db_set_default_schema(i, ""));
                 }
                 if kind != Some(Kind::Sqlite) {
-                    m = m.item(if sf { "保存したログインを消す" } else { "保存したパスワードを消す" }, move |e| e.db_forget_login(i));
+                    m = m.item(if sf { "保存したログインの破棄" } else { "保存したパスワードの破棄" }, move |e| e.db_forget_login(i));
                 }
-                let url = src.url.clone();
-                m = m.item("URL をコピー", move |e| e.copy_text(url, "URL"));
+                m = m.sep().action(self, "db.properties");
             }
             DbRow::Schema(_, s, _) => {
+                let (s2, cur) = (s.clone(), c.schema.clone());
+                m = m.item("新規クエリファイルを開く", move |e| {
+                    // このスキーマで書けるように、先に切り替える
+                    if !s2.eq_ignore_ascii_case(&cur) && !sf {
+                        e.db_switch_schema(i, &s2);
+                    }
+                    e.db_new_query(i, None)
+                });
+                let s2 = s.clone();
+                m = m.sep().item("名前のコピー", move |e| e.copy_text(s2, "名前")).sep();
+                m = m.item("リフレッシュ", move |e| e.db_reload(i));
                 if !s.eq_ignore_ascii_case(&c.schema) && !sf {
                     let s2 = s.clone();
                     m = m.item("このスキーマに切り替える", move |e| e.db_switch_schema(i, &s2));
@@ -1737,58 +1892,47 @@ impl Editor {
                         m.item("既定のスキーマにする（つないだら切り替える）", move |e| e.db_set_default_schema(i, &s2))
                     };
                 }
-                let (s2, cur) = (s.clone(), c.schema.clone());
-                m = m.item("新しいクエリ", move |e| {
-                    // このスキーマで書けるように、先に切り替える
-                    if !s2.eq_ignore_ascii_case(&cur) && !sf {
-                        e.db_switch_schema(i, &s2);
-                    }
-                    e.db_new_query(i, None)
-                });
-                m = m.item("読み直す", move |e| e.db_reload(i)).sep();
-                m = m.item("名前をコピー", move |e| e.copy_text(s, "名前"));
             }
             DbRow::Group(..) | DbRow::Others(_) => {
-                m = m.item("新しいクエリ", move |e| e.db_new_query(i, None)).item("読み直す", move |e| e.db_reload(i));
+                m = m.item("新規クエリファイルを開く", move |e| e.db_new_query(i, None)).sep().item("リフレッシュ", move |e| e.db_reload(i));
             }
             DbRow::Object(_, s, t, g, _) => {
                 let q = qualified(self.db_dialect(i), &s, &t);
                 if matches!(g, Group::Tables | Group::Views) {
-                    // データを開く・新しいクエリ（SELECT を書き入れて）は選んでいる行に対するアクション
-                    m = m.action(self, "db.openData").action(self, "db.newQuery");
+                    // データの編集・新規クエリファイル（SELECT を書き入れて）は選んでいる行に対するアクション
+                    m = m.action(self, "db.openData").action(self, "db.ddl").action(self, "db.newQuery");
                     if !sf {
                         let q2 = q.clone();
-                        m = m.item("件数を数える", move |e| e.db_execute(i, format!("SELECT COUNT(*) FROM {q2}")));
+                        m = m.item("行のカウント", move |e| e.db_execute(i, format!("SELECT COUNT(*) FROM {q2}")));
                         m = m.sep();
                         let what: &[(&str, &str)] = if g == Group::Tables { &[("SELECT", "select"), ("INSERT", "insert"), ("UPDATE", "update"), ("DELETE", "delete")] } else { &[("SELECT", "select")] };
                         for &(label, w) in what {
                             let (s2, t2) = (s.clone(), t.clone());
-                            m = m.item(format!("{label} 文を作る（新しいクエリに）"), move |e| e.db_generate(i, &s2, &t2, w));
+                            m = m.item(format!("SQL ジェネレーター: {label}"), move |e| e.db_generate(i, &s2, &t2, w));
                         }
                     }
-                    m = m.action(self, "db.ddl");
                 }
                 m = m.sep();
-                let t2 = t.clone();
-                m = m.item("名前をコピー", move |e| e.copy_text(t2, "名前"));
                 let q2 = q.clone();
-                m = m.item("スキーマ付きの名前をコピー", move |e| e.copy_text(q2, "名前"));
+                m = m.item("参照をコピー", move |e| e.copy_text(q2, "名前"));
+                let t2 = t.clone();
+                m = m.item("名前のコピー", move |e| e.copy_text(t2, "名前"));
                 if g == Group::Tables && !sf {
                     // 戻せない操作は、実行せずに新しいクエリに書くだけ（流すときにいつもの確認が出る）
                     m = m.sep();
                     let q2 = q.clone();
-                    m = m.item("TRUNCATE 文を作る（新しいクエリに）", move |e| e.db_new_query(i, Some(format!("-- 実行するとデータを全部消します（戻せません）\nTRUNCATE TABLE {q2}"))));
-                    m = m.item("DROP 文を作る（新しいクエリに）", move |e| e.db_new_query(i, Some(format!("-- 実行するとテーブルを消します（戻せません）\nDROP TABLE {q}"))));
+                    m = m.item("すべての行を除去…", move |e| e.db_new_query(i, Some(format!("-- 実行するとデータを全部消します（戻せません）\nTRUNCATE TABLE {q2}"))));
+                    m = m.item("削除…", move |e| e.db_new_query(i, Some(format!("-- 実行するとテーブルを消します（戻せません）\nDROP TABLE {q}"))));
                 }
             }
             DbRow::Column(_, s, t, k, _) => {
                 let Some(name) = c.columns.get(&(s.clone(), t.clone())).and_then(|v| v.get(k)).map(|x| x.name.clone()) else { return false };
                 let q = format!("{}.{}", ident(&t), ident(&name));
-                m = m.item("名前をコピー", move |e| e.copy_text(name, "名前")).item("テーブル名付きの名前をコピー", move |e| e.copy_text(q, "名前"));
+                m = m.item("参照をコピー", move |e| e.copy_text(q, "名前")).item("名前のコピー", move |e| e.copy_text(name, "名前"));
             }
             DbRow::Sub(..) | DbRow::Key(..) | DbRow::Index(..) | DbRow::Info(..) => {}
         }
-        let m = m.sep().action(self, "db.addSource").action(self, "db.filter").action(self, "db.close");
+        let m = m.sep().action(self, "db.filter").action(self, "db.close");
         self.open_menu(m);
         true
     }
@@ -1867,6 +2011,22 @@ impl Editor {
                 let i = self.panels.db.as_ref().map_or(0, |p| p.sources.len().saturating_sub(1));
                 self.db_begin_connect(i);
             }
+            DbAction::EditSource(i, ds) => self.db_update_source(i, ds),
+            DbAction::Properties => {
+                if let (Some(r), Some(p)) = (self.db_selected(), &mut self.panels.db) {
+                    p.open_properties(r.source());
+                }
+            }
+            DbAction::Duplicate => {
+                if let Some(r) = self.db_selected() {
+                    self.db_duplicate(r.source());
+                }
+            }
+            DbAction::Remove => {
+                if let Some(r) = self.db_selected() {
+                    self.db_ask_remove(r.source());
+                }
+            }
             DbAction::Activate => self.db_activate(),
             DbAction::Toggle(r) => self.db_toggle_row(&r),
             DbAction::OpenSelected => self.db_open_selected(),
@@ -1913,7 +2073,7 @@ impl Editor {
                     self.open_db_panel();
                 }
                 if let Some(p) = &mut self.panels.db {
-                    p.open_form(&mut self.svc);
+                    p.open_form();
                 }
                 self.focus_right(RightTab::Database);
             }
@@ -1937,7 +2097,7 @@ impl Editor {
             return;
         }
         // 接続先が無いときの案内（「＋ で足す」）を押したら、足すフォーム
-        if p.sources.is_empty() && row == 2 {
+        if !p.has_sources() && row == 2 {
             self.db_do(DbAction::AddForm);
             return;
         }
@@ -2095,7 +2255,7 @@ pub(crate) mod tests {
         // 行の無い所の右クリック: 接続先を足すだけのメニュー
         assert!(crate::layout::context(&mut e, s, r.y + 10, r.x + 3));
         let labels: Vec<String> = e.menu.as_ref().unwrap().items.iter().map(|i| i.label.clone()).collect();
-        assert_eq!(labels, ["接続先を足す…"]);
+        assert_eq!(labels, ["データソースの作成…"]);
         e.menu_run(0);
         assert!(e.panels.db.as_ref().unwrap().form.is_some(), "メニューからフォーム");
         e.panels.db.as_mut().unwrap().form = None;
@@ -2312,8 +2472,13 @@ pub(crate) mod tests {
         let r = prow(&e, &|r| *r == DbRow::Source(i));
         assert!(e.db_context(r, (r, 150)));
         assert_eq!(e.state(), State::Menu);
-        assert!(labels(&e).contains(&"つなぐ".to_string()) && !labels(&e).iter().any(|l| l.contains("パスワード")), "SQLite にパスワードは無い: {:?}", labels(&e));
-        run(&mut e, "つなぐ");
+        assert!(labels(&e).contains(&"接続".to_string()) && !labels(&e).iter().any(|l| l.contains("パスワード")), "SQLite にパスワードは無い: {:?}", labels(&e));
+        // DataGrip と同じ並び（新規が先頭・プロパティが最後の組）
+        assert_eq!(labels(&e)[..3], ["データソースの作成…", "新規クエリファイルを開く", "クエリファイルを開く"]);
+        for want in ["複製", "データソースの除去…", "プロパティ"] {
+            assert!(labels(&e).iter().any(|l| l == want), "{want}: {:?}", labels(&e));
+        }
+        run(&mut e, "接続");
         wait(&mut e, &|e| e.panels.db.as_ref().unwrap().conns[i].connected);
         e.panels.db.as_mut().unwrap().conns[i].manual = true;
         e.db_execute(i, "create table item(id integer primary key, name text)".into());
@@ -2321,25 +2486,25 @@ pub(crate) mod tests {
         // テーブル: メニューを出すと列を読み始める
         let r = prow(&e, &|r| matches!(r, DbRow::Object(_, _, t, Group::Tables, _) if t == "item"));
         assert!(e.db_context(r, (r, 150)));
-        for want in ["データを開く", "新しいクエリ", "件数を数える", "SELECT 文を作る（新しいクエリに）", "DDL を開く", "名前をコピー", "DROP 文を作る（新しいクエリに）"] {
+        for want in ["データの編集", "新規クエリファイルを開く", "行のカウント", "SQL ジェネレーター: SELECT", "DDL に移動", "参照をコピー", "名前のコピー", "削除…"] {
             assert!(labels(&e).iter().any(|l| l == want), "{want}: {:?}", labels(&e));
         }
         wait(&mut e, &|e| e.panels.db.as_ref().unwrap().conns[i].columns.contains_key(&("main".to_string(), "item".to_string())));
-        run(&mut e, "SELECT 文を作る（新しいクエリに）");
+        run(&mut e, "SQL ジェネレーター: SELECT");
         assert_eq!(e.console_source(), Some(i), "新しいクエリはこの接続先のコンソール");
         assert!(e.core.buf.text().contains("SELECT id,\n       name\nFROM main.item"), "{}", e.core.buf.text());
         // 件数は結果のタブに出る（読むだけなので確かめない）
         e.set_state(State::Normal);
         let r = prow(&e, &|r| matches!(r, DbRow::Object(_, _, t, Group::Tables, _) if t == "item"));
         assert!(e.db_context(r, (r, 150)));
-        run(&mut e, "件数を数える");
+        run(&mut e, "行のカウント");
         wait(&mut e, &|e| e.panels.db_results.active_tab().is_some_and(|t| !t.running));
         assert_eq!(e.panels.db_results.active_tab().unwrap().rows[0][0].as_deref(), Some("0"));
         // スキーマ: SQLite は切り替えない・既定にしない
         let r = prow(&e, &|r| matches!(r, DbRow::Schema(..)));
         assert!(e.db_context(r, (r, 150)));
         assert!(!labels(&e).iter().any(|l| l.contains("既定") || l.contains("切り替える")), "{:?}", labels(&e));
-        run(&mut e, "新しいクエリ");
+        run(&mut e, "新規クエリファイルを開く");
         assert_eq!(e.console_source(), Some(i));
         // 見出しの行（タブ・絞り込み）ではメニューを出さない
         e.set_state(State::Normal);
@@ -2423,6 +2588,42 @@ pub(crate) mod tests {
         assert!(e.run_ui_action("db.filter"));
         keys(&mut e, "<Esc><Esc>");
         assert!(e.panels.db.as_ref().unwrap().rows.iter().any(|r| matches!(r, DbRow::Object(..))));
+        // プロパティ: 今の値が入ったフォームで直し、設定ファイルの行を書き換える（開き直しても残る）
+        let cfg = dir.join(".config/nagi/databases.txt");
+        e.set_state(State::Normal);
+        e.focus_right(RightTab::Database);
+        let select = |e: &mut Editor, i: usize| {
+            let p = e.panels.db.as_mut().unwrap();
+            p.selected = p.rows.iter().position(|r| *r == DbRow::Source(i)).unwrap();
+        };
+        select(&mut e, i);
+        assert!(e.run_ui_action("db.properties"));
+        let f = e.panels.db.as_ref().unwrap().form.as_ref().unwrap();
+        assert_eq!(f.edit, Some(i));
+        assert_eq!(f.fields.iter().map(|f| f.1.text()).collect::<Vec<_>>()[..2], ["shop".to_string(), format!("jdbc:sqlite:{}", file.display())]);
+        e.panels.db.as_mut().unwrap().form.as_mut().unwrap().fields[0].1 = VimField::new("shop2", false);
+        keys(&mut e, "<CR><CR><CR><CR>");
+        assert!(e.panels.db.as_ref().unwrap().form.is_none(), "最後の欄の Enter で保存");
+        assert_eq!(e.panels.db.as_ref().unwrap().sources[i].name, "shop2");
+        let text = std::fs::read_to_string(&cfg).unwrap();
+        assert!(text.contains("shop2 | jdbc:sqlite:") && !text.contains("shop |"), "{text}");
+        // 複製: 名前に [2] を付けて足す。除去: 確かめてから設定ファイルの行も消す
+        select(&mut e, i);
+        assert!(e.run_ui_action("db.duplicate"));
+        let j = e.panels.db.as_ref().unwrap().sources.len() - 1;
+        assert_eq!(e.panels.db.as_ref().unwrap().sources[j].name, "shop2 [2]");
+        assert!(std::fs::read_to_string(&cfg).unwrap().contains("shop2 [2] | jdbc:sqlite:"));
+        select(&mut e, j);
+        assert!(e.run_ui_action("db.remove"));
+        keys(&mut e, "y");
+        let p = e.panels.db.as_ref().unwrap();
+        assert!(!p.rows.contains(&DbRow::Source(j)) && p.rows.contains(&DbRow::Source(i)), "木から外す");
+        let text = std::fs::read_to_string(&cfg).unwrap();
+        assert!(!text.contains("shop2 [2]") && text.contains("shop2 | "), "{text}");
+        // 開き直しても直した名前のまま
+        e.db_do(DbAction::Close);
+        e.open_db_panel();
+        assert!(e.panels.db.as_ref().unwrap().sources.iter().any(|s| s.name == "shop2"));
     }
 }
 

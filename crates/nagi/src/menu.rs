@@ -93,8 +93,11 @@ impl Menu {
         self
     }
 
+    /// 区切りの線。先頭・続けての線は引かない（項目が条件で抜けても線が重ならないように）
     pub fn sep(mut self) -> Menu {
-        self.items.push(MenuItem { label: String::new(), run: None, accel: None, shortcut: None, enabled: true });
+        if self.items.last().is_some_and(|it| it.run.is_some() || !it.label.is_empty()) {
+            self.items.push(MenuItem { label: String::new(), run: None, accel: None, shortcut: None, enabled: true });
+        }
         self
     }
 
@@ -202,6 +205,9 @@ impl Editor {
     pub(crate) fn open_menu(&mut self, mut m: Menu) {
         if !m.items.iter().any(|it| it.run.is_some()) {
             return;
+        }
+        while m.items.last().is_some_and(|it| it.run.is_none() && it.label.is_empty()) {
+            m.items.pop();
         }
         m.back = self.state();
         m.sel = nagi_ui::list::snap(0, 0, m.items.len(), |i| m.selectable(i));

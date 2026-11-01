@@ -151,7 +151,7 @@ impl crate::component::Component for RightComponent {
         match ed.right_visible() {
             Some(RightTab::Maven) => crate::component::Status::new("-- Maven --", "Enter 実行・開閉  ←→ 開く・閉じる  右クリック 操作  Esc 窓へ "),
             Some(RightTab::Preview) => crate::component::Status::new("-- プレビュー --", "↑↓ 送る  Enter リンクを開く  右クリック 操作  Esc 窓へ "),
-            _ => crate::component::Status::new("-- データベース --", "Enter つなぐ・開閉  ＋ 接続先を足す  右クリック 操作  打つと絞り込み  Esc 窓へ "),
+            _ => crate::component::Status::new("-- データベース --", "Enter 接続・開閉  ＋ データソースの作成  右クリック 操作  打つと絞り込み  Esc 窓へ "),
         }
     }
 
@@ -295,7 +295,7 @@ pub(crate) mod draw {
             p.text("＋", c0, y0, if focused { FG_BRIGHT } else { FG });
             p.ui = ui;
             p.cols = saved;
-            p.tab_hits.push((r.y, c0, c0 + 2, "接続先を足す…"));
+            p.tab_hits.push((r.y, c0, c0 + 2, "データソースの作成…"));
         }
         let saved = p.cols;
         p.cols = r.x + r.w;
@@ -423,18 +423,25 @@ pub(crate) mod draw {
                 ];
                 draw_panel_box(p, r, &lines, 0);
             } else if let Some(f) = &d.form {
-                let mut lines = vec![" 接続先を足す".to_string()];
-                // 見出しは表示の幅（12 セル）でそろえる
-                let pad = |p: &Painter, l: &str| format!("{l}{}", " ".repeat(12usize.saturating_sub(p.width(l))));
-                for (k, (label, prompt)) in f.fields.iter().enumerate() {
-                    let v = if k == 0 { format!("‹ {} ›", prompt.text()) } else if k == f.at { String::new() } else { prompt.text() };
-                    lines.push(format!(" {}{}  {v}", pad(p, label), if k == f.at { "▸" } else { " " }));
-                }
-                lines.push(" Tab 次の欄 ・ 最後の欄で Enter 保存してつなぐ ・ Esc やめる".to_string());
+                let mut lines = vec![if f.edit.is_some() { " データソースのプロパティ" } else { " データソースの作成" }.to_string()];
+                // 見出しは部品の文字（幅がそろわない）なので、値と ▸ は見出しの最も広い幅の右に、列を決めて描く
+                lines.extend(f.fields.iter().map(|(label, _)| format!(" {label}")));
+                lines.push(if f.edit.is_some() { " Tab 次の欄・Enter 保存・Esc やめる" } else { " Tab 次の欄・Enter 保存してつなぐ・Esc やめる" }.to_string());
                 let (bx, by) = draw_panel_box(p, r, &lines, f.at + 1);
-                if f.at > 0 {
-                    let label_w = 1 + 12.max(p.width(f.fields[f.at].0)) + p.width("▸  ");
-                    draw_vim_field(p, &f.fields[f.at].1, bx + label_w, by + (f.at + 1) as f32 * cell.h, &ed.preedit);
+                let mark = bx + 2 + f.fields.iter().map(|(label, _)| p.width(&format!(" {label}"))).max().unwrap_or(0);
+                let val = mark + p.width("▸") + 1;
+                for (k, (_, field)) in f.fields.iter().enumerate() {
+                    let y = by + (k + 1) as f32 * cell.h;
+                    if k == f.at {
+                        p.text("▸", mark, y, FG);
+                    }
+                    if f.kind_row(k) {
+                        p.text(&format!("‹ {} ›", field.text()), val, y, FG);
+                    } else if k == f.at {
+                        draw_vim_field(p, field, val, y, &ed.preedit);
+                    } else {
+                        p.text(&field.text(), val, y, FG);
+                    }
                 }
             }
         }
