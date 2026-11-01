@@ -1558,7 +1558,7 @@ pub(crate) mod draw {
         let n = l.visible.iter().filter(|&&i| l.rows[i].commit.is_some()).count();
         let head = format!(
             " {}{}   {} 件{}{}",
-            if l.filter_text.is_empty() { "絞り込み（/）".to_string() } else { format!("/{}", l.filter_text) },
+            if l.filter_text.is_empty() { "打つと絞り込み".to_string() } else { format!("/{}", l.filter_text) },
             l.path.as_ref().map_or(String::new(), |p| format!("   ファイル: {p}")),
             n,
             if l.marked.is_empty() { String::new() } else { format!("   {} 件を選択（右クリックで操作・Esc で外す）", l.marked.len()) },
