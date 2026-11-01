@@ -441,6 +441,8 @@ pub struct Editor {
     /// 開いているファイルに木を合わせる（:TreeSync で切り替え。既定は合わせる）
     pub tree_sync: bool,
     pub bottom_hidden: bool,
+    /// 下の欄のタブを利用者が選んだ（アイコン・Alt+3 など）。選んだ検索・ログのタブは空でも出す（起動したときは出さない）
+    pub bottom_chosen: bool,
     pub bottom_kind: crate::result_grid::BottomKind,
     /// 実行の構成: 選んでいるもの・最後に動かしたもの・一覧に出しているもの（run_configs.rs）
     pub run_selected: Option<String>,
@@ -790,6 +792,7 @@ impl Editor {
             left_tab: Default::default(),
             left_hidden: false,
             bottom_hidden: false,
+            bottom_chosen: false,
             hover_button: None,
             hover_chrome: None,
             search_bar: false,

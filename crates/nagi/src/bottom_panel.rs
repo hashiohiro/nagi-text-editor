@@ -155,6 +155,7 @@ impl Editor {
     /// タブを出して移る
     pub(crate) fn select_bottom_tab(&mut self, kind: BottomKind) {
         self.bottom_hidden = false;
+        self.bottom_chosen = true;
         self.bottom_kind = kind;
         match kind {
             BottomKind::Grep | BottomKind::Output => self.swap_grep_for(kind),
@@ -525,8 +526,8 @@ pub(crate) mod draw {
             BottomKind::Result => draw_db_results(p, ed, c),
             BottomKind::Grep | BottomKind::Output => match &ed.panels.grep {
                 Some(g) => draw_grep_panel(p, g, c, matches!(ed.state(), State::List | State::GrepPrompt)),
-                None if ed.bottom_kind == BottomKind::Grep => empty(p, "検索していません（:Grep 語、Ctrl+Shift+F）"),
-                None => empty(p, "コマンドの出力はありません（:Make、Maven のタブのゴール）"),
+                None if ed.bottom_kind == BottomKind::Grep => empty(p, "検索していません。ここを押すか Ctrl+Shift+F でプロジェクトを検索"),
+                None => empty(p, "コマンドの出力はありません（実行・Maven のゴールの出力がここに出ます）"),
             },
             BottomKind::Problems => draw_problems(p, ed, c, focused),
             BottomKind::Git => match &ed.panels.log {
@@ -586,6 +587,20 @@ mod tests {
     use super::*;
     use crate::diagnostics::Diag;
     use nagi_core::Buffer;
+
+    #[test]
+    fn empty_search_and_log_tabs_show() {
+        // まだ検索もコマンドの出力も無いときも、検索・ログのタブは空のまま出す（出さなかったので押しても何も起きなかった）
+        let mut e = Editor::new(Buffer::from_str(""), None);
+        e.set_screen(120, 40);
+        e.toggle_bottom_tab(BottomKind::Output);
+        assert!(e.bottom_visible() && e.bottom_kind == BottomKind::Output);
+        e.toggle_bottom_tab(BottomKind::Grep);
+        assert!(e.bottom_visible() && e.bottom_kind == BottomKind::Grep);
+        // 空の検索の欄を押すと、検索の入力欄が開く
+        e.panel_click_at(2, 3, 1);
+        assert_eq!(e.state(), State::GrepPrompt);
+    }
 
     #[test]
     fn tabs_problems_and_search_vs_output() {

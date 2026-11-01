@@ -692,6 +692,11 @@ impl Editor {
         if self.bottom_kind == crate::result_grid::BottomKind::Result {
             return;
         }
+        // 空の検索の欄を押したら、検索を始める（案内の文のとおり）
+        if self.panels.grep.is_none() && self.bottom_kind == crate::result_grid::BottomKind::Grep && row > 0 {
+            self.open_grep("");
+            return;
+        }
         let Some(g) = &mut self.panels.grep else { return };
         if row == 0 {
             // 条件の札を押したら切り替える

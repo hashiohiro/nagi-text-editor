@@ -30,11 +30,13 @@ impl Editor {
         self.left_open().unwrap_or(LeftTab::Project)
     }
 
-    /// 下の欄に出すものがあるか（検索・ログ・クエリの結果は中身があるとき、ほかのタブはいつも）
+    /// 下の欄に出すものがあるか（クエリの結果は中身があるとき、ほかのタブはいつも。
+    /// 検索・ログは中身があるときと、タブを選んだとき（空のまま出す。IntelliJ と同じ。前は中身が無いと出さなかったので、
+    /// アイコンや Alt+3・Alt+4 を押しても何も起きなかった）
     pub fn bottom_exists(&self) -> bool {
         use crate::result_grid::BottomKind::*;
         match self.bottom_kind {
-            Grep | Output => self.panels.grep.is_some(),
+            Grep | Output => self.panels.grep.is_some() || self.bottom_chosen,
             Result => !self.panels.db_results.is_empty(),
             Git => self.panels.log.as_ref().is_some_and(|l| l.docked),
             Problems | Terminal | Debug => true,
