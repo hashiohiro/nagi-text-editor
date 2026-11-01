@@ -37,7 +37,7 @@ impl Editor {
             return false;
         }
         // 部品のアクションに移した部品（履歴など）は、打った字を絞り込みに使うので落とさない（ADR 0019。全部移したらこの関数ごと消す）
-        if !matches!(self.focus, Some(Panel::Settings | Panel::RunDialog)) {
+        if !matches!(self.focus, Some(Panel::RunDialog)) {
             return false;
         }
         let typing = self.has_prompt()

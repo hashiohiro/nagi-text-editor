@@ -485,10 +485,49 @@ pub enum SettingsAction {
     Close(bool),
 }
 
+/// 設定のダイアログの操作（キー・アクションから）
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettingsOp {
+    Edit,
+    Reset,
+    Scope,
+    Filter,
+    MapChoose,
+    MapDelete,
+    MapRevert,
+    MapAdd,
+    Close,
+}
+
+/// 設定のダイアログのアクション（ui_action.rs。ADR 0019）
+pub static ACTIONS: [crate::ui_action::UiAction; 9] = {
+    use crate::ui_action::{Scope::Settings, UiAction};
+    fn open(e: &Editor) -> bool {
+        e.panels.settings_dialog.is_some()
+    }
+    fn items(e: &Editor) -> bool {
+        e.panels.settings_dialog.as_ref().is_some_and(|d| !d.is_maps())
+    }
+    fn maps(e: &Editor) -> bool {
+        e.panels.settings_dialog.as_ref().is_some_and(|d| d.is_maps())
+    }
+    [
+        UiAction { id: "settings.edit", label: "値を直す", scope: Settings, enabled: open, run: |e| e.settings_op(SettingsOp::Edit) },
+        UiAction { id: "settings.reset", label: "既定に戻す", scope: Settings, enabled: items, run: |e| e.settings_op(SettingsOp::Reset) },
+        UiAction { id: "settings.scope", label: "全体 / このプロジェクトだけ", scope: Settings, enabled: open, run: |e| e.settings_op(SettingsOp::Scope) },
+        UiAction { id: "settings.filter", label: "絞り込み", scope: Settings, enabled: open, run: |e| e.settings_op(SettingsOp::Filter) },
+        UiAction { id: "settings.mapChoose", label: "Action・コマンドを選ぶ", scope: Settings, enabled: maps, run: |e| e.settings_op(SettingsOp::MapChoose) },
+        UiAction { id: "settings.mapDelete", label: "消す", scope: Settings, enabled: maps, run: |e| e.settings_op(SettingsOp::MapDelete) },
+        UiAction { id: "settings.mapRevert", label: "元に戻す（vimrc・既定の値に）", scope: Settings, enabled: maps, run: |e| e.settings_op(SettingsOp::MapRevert) },
+        UiAction { id: "settings.mapAdd", label: "足す", scope: Settings, enabled: maps, run: |e| e.settings_op(SettingsOp::MapAdd) },
+        UiAction { id: "settings.close", label: "閉じる", scope: Settings, enabled: open, run: |e| e.settings_op(SettingsOp::Close) },
+    ]
+};
+
 impl SettingsDialog {
     /// 設定のダイアログのキー（分類・項目・絞り込み・値の入力・コンボ・キーマップ。入力欄は `svc` で動かす）。
-    /// `maps_base` はキーマップを元に戻すときの既定。外に及ぶことを返す
-    pub fn key(&mut self, key: Key, svc: &mut crate::editor::Services, maps_base: &[crate::vim_maps::MapRow]) -> SettingsAction {
+    /// 外に及ぶことを返す
+    pub fn key(&mut self, key: Key, svc: &mut crate::editor::Services) -> SettingsAction {
         let d = self;
         if key == Key::Ctrl('m') {
             return SettingsAction::Ok;
@@ -552,75 +591,85 @@ impl SettingsDialog {
                     d.focus = SFocus::Items;
                 }
             }
+            // 分類と項目の一覧は標準のキーだけ（ADR 0019）。打った字は絞り込みの欄へ。既定に戻す・範囲などはアクション
+            SFocus::Cats | SFocus::Items if matches!(key, Key::Char(c) if c != ' ') => {
+                d.focus = SFocus::Filter;
+                d.filter.reinsert();
+                d.filter.feed(key, svc);
+                d.selected = 0;
+                d.top = 0;
+            }
             SFocus::Cats => match key {
-                Key::Char('j') | Key::Down => {
+                Key::Down => {
                     d.cat = (d.cat + 1).min(CATEGORIES.len() - 1);
                     d.selected = 0;
                     d.top = 0;
                 }
-                Key::Char('k') | Key::Up => {
+                Key::Up => {
                     d.cat = d.cat.saturating_sub(1);
                     d.selected = 0;
                     d.top = 0;
                 }
-                Key::Char('l') | Key::Enter | Key::Tab | Key::Right => d.focus = SFocus::Items,
-                Key::Char('/') => {
-                    d.focus = SFocus::Filter;
-                    d.filter.reinsert();
-                }
-                Key::Char('p') => d.project_scope = !d.project_scope,
-                Key::Esc | Key::Char('q') => return SettingsAction::Close(confirm),
+                Key::Enter | Key::Tab | Key::Right => d.focus = SFocus::Items,
+                Key::Esc => return SettingsAction::Close(confirm),
                 _ => {}
             },
             SFocus::Items if d.is_maps() => {
                 let n = d.maps.len() + 1;
-                let moved = nagi_ui::list::step(key, d.selected, n, 10);
+                let moved = nagi_ui::list::nav(key, d.selected, n, 10);
                 match key {
                     _ if moved.is_some() => d.selected = moved.unwrap_or(d.selected),
-                    Key::Char('g') => d.selected = 0,
-                    Key::Tab | Key::Char('h') | Key::Left => d.focus = SFocus::Cats,
-                    Key::Char(' ') | Key::Enter | Key::Char('i') => d.map_edit(),
-                    Key::Char('o') => {
-                        d.selected = d.maps.len();
-                        d.map_edit();
-                    }
-                    Key::Char('a') => d.map_choose(),
-                    Key::Char('d') | Key::Char('x') | Key::Delete => d.map_delete(),
-                    Key::Char('r') => d.map_revert(maps_base),
-                    Key::Char('/') => {
-                        d.focus = SFocus::Filter;
-                        d.filter.reinsert();
-                    }
-                    Key::Esc | Key::Char('q') => return SettingsAction::Close(confirm),
+                    Key::Tab | Key::Left => d.focus = SFocus::Cats,
+                    Key::Char(' ') | Key::Enter | Key::F(2) => d.map_edit(),
+                    Key::Delete => d.map_delete(),
+                    Key::Esc => return SettingsAction::Close(confirm),
                     _ => {}
                 }
             }
             SFocus::Items => {
                 let n = d.items().len();
-                let moved = nagi_ui::list::step(key, d.selected, n, 10);
+                let moved = nagi_ui::list::nav(key, d.selected, n, 10);
                 match key {
                     _ if moved.is_some() => d.selected = moved.unwrap_or(d.selected),
-                    Key::Char('g') => d.selected = 0,
                     Key::Tab => d.focus = SFocus::Cats,
-                    Key::Char('h') | Key::Left => {
+                    Key::Left => {
                         if d.current().is_some_and(|i| matches!(i.kind, SKind::Choice(_))) {
                             d.cycle(-1);
                         } else {
                             d.focus = SFocus::Cats;
                         }
                     }
-                    Key::Char('l') | Key::Right => d.cycle(1),
-                    Key::Char(' ') | Key::Enter | Key::Char('i') => d.edit(),
-                    Key::Char('r') => d.reset(),
-                    Key::Char('p') => d.project_scope = !d.project_scope,
-                    Key::Char('/') => {
-                        d.focus = SFocus::Filter;
-                        d.filter.reinsert();
-                    }
-                    Key::Esc | Key::Char('q') => return SettingsAction::Close(confirm),
+                    Key::Right => d.cycle(1),
+                    Key::Char(' ') | Key::Enter | Key::F(2) => d.edit(),
+                    Key::Esc => return SettingsAction::Close(confirm),
                     _ => {}
                 }
             }
+        }
+        SettingsAction::None
+    }
+
+    /// 操作を行う（アクションから）。`maps_base` はキーマップを元に戻すときの既定
+    pub fn op(&mut self, op: SettingsOp, maps_base: &[crate::vim_maps::MapRow]) -> SettingsAction {
+        let d = self;
+        let confirm = std::mem::take(&mut d.confirm_close);
+        match op {
+            SettingsOp::Edit if d.is_maps() => d.map_edit(),
+            SettingsOp::Edit => d.edit(),
+            SettingsOp::Reset => d.reset(),
+            SettingsOp::Scope => d.project_scope = !d.project_scope,
+            SettingsOp::Filter => {
+                d.focus = SFocus::Filter;
+                d.filter.reinsert();
+            }
+            SettingsOp::MapChoose => d.map_choose(),
+            SettingsOp::MapDelete => d.map_delete(),
+            SettingsOp::MapRevert => d.map_revert(maps_base),
+            SettingsOp::MapAdd => {
+                d.selected = d.maps.len();
+                d.map_edit();
+            }
+            SettingsOp::Close => return SettingsAction::Close(confirm),
         }
         SettingsAction::None
     }
@@ -937,7 +986,19 @@ impl Editor {
             return;
         };
         // ダイアログの中で済むことは SettingsDialog::key が行い、外に及ぶことを返す（ADR 0018 の §5）
-        match d.key(key, &mut self.svc, &self.vim_maps_base) {
+        let a = d.key(key, &mut self.svc);
+        self.settings_do(a);
+    }
+
+    /// 設定のダイアログの操作（アクションから）
+    pub(crate) fn settings_op(&mut self, op: SettingsOp) {
+        let Some(d) = &mut self.panels.settings_dialog else { return };
+        let a = d.op(op, &self.vim_maps_base);
+        self.settings_do(a);
+    }
+
+    fn settings_do(&mut self, a: SettingsAction) {
+        match a {
             SettingsAction::None => {}
             SettingsAction::Ok => self.settings_button(SButton::Ok),
             SettingsAction::Download(v) => self.start_download(&v),
@@ -1025,6 +1086,11 @@ impl crate::component::Component for SettingsComponent {
         ed.settings_click(row, col, clicks);
         true
     }
+
+    fn scope(&self, ed: &crate::editor::Editor) -> Option<crate::ui_action::Scope> {
+        let _ = ed;
+        Some(crate::ui_action::Scope::Settings)
+    }
 }
 
 
@@ -1053,28 +1119,27 @@ impl crate::layout::View for SettingsView {
     fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At) -> bool {
         let _ = r;
         let (row, col) = at.screen;
-        use nagi_vim::Key::*;
         // 押した項目を選んでから（1 回のクリックは選ぶだけ）
         ed.settings_click(row, col, 1);
         if ed.panels.settings_dialog.as_ref().is_some_and(|d| d.is_maps()) {
             let m = crate::menu::Menu::new(row, col)
-                .keys("直す", &[Enter])
-                .keys("Action・コマンドを選ぶ", &[Char('a')])
-                .keys("消す", &[Char('d')])
-                .keys("元に戻す（vimrc・既定の値に）", &[Char('r')])
-                .keys("足す", &[Char('o')])
+                .action_as(ed, "settings.edit", "直す")
+                .action(ed, "settings.mapChoose")
+                .action(ed, "settings.mapDelete")
+                .action(ed, "settings.mapRevert")
+                .action(ed, "settings.mapAdd")
                 .sep()
-                .keys("閉じる", &[Esc]);
+                .action(ed, "settings.close");
             ed.open_menu(m);
             return true;
         }
         let m = crate::menu::Menu::new(row, col)
-            .keys("値を直す", &[Enter])
-            .keys("既定に戻す", &[Char('r')])
-            .keys("全体 / このプロジェクトだけ", &[Char('p')])
-            .keys("絞り込み", &[Char('/')])
+            .action(ed, "settings.edit")
+            .action(ed, "settings.reset")
+            .action(ed, "settings.scope")
+            .action(ed, "settings.filter")
             .sep()
-            .keys("閉じる", &[Esc]);
+            .action(ed, "settings.close");
         ed.open_menu(m);
         true
     }
@@ -1379,20 +1444,26 @@ mod tests {
         e.vim_maps = e.vim_maps_base.clone();
         e.open_settings("");
         let cat = CATEGORIES.iter().position(|c| *c == MAPS_CAT).unwrap();
-        keys(&mut e, &format!("{}<Tab>", "j".repeat(cat)));
+        keys(&mut e, &format!("{}<Tab>", "<Down>".repeat(cat)));
         assert!(e.panels.settings_dialog.as_ref().unwrap().is_maps());
-        // 足す: o で「n <leader>」の続きを打つ
-        keys(&mut e, "ox :Files<CR>");
+        // 足す: 「n <leader>」の続きを打つ
+        assert!(e.run_ui_action("settings.mapAdd"));
+        keys(&mut e, "x :Files<CR>");
         let d = e.panels.settings_dialog.as_ref().unwrap();
         assert_eq!(d.maps.len(), 3, "{}", e.svc.notify.text);
         assert_eq!(vim_maps::line_of(&d.maps[2]), "n <leader>x :Files");
         // 1 行目の右辺を Action の一覧から（絞り込んで Enter）
-        keys(&mut e, "gaFindInPath<CR>");
+        keys(&mut e, "<Home>");
+        assert!(e.run_ui_action("settings.mapChoose"));
+        keys(&mut e, "FindInPath<CR>");
         let d = e.panels.settings_dialog.as_ref().unwrap();
         assert_eq!(d.maps[0].rhs, ":<C-u>action FindInPath<CR>");
         assert_eq!(d.maps[0].from, vim_maps::SCREEN_FROM);
         // 2 行目を消し、1 行目を元に戻す
-        keys(&mut e, "jdgr");
+        keys(&mut e, "<Down>");
+        assert!(e.run_ui_action("settings.mapDelete"));
+        keys(&mut e, "<Home>");
+        assert!(e.run_ui_action("settings.mapRevert"));
         let d = e.panels.settings_dialog.as_ref().unwrap();
         assert_eq!(d.maps.iter().map(vim_maps::line_of).collect::<Vec<_>>(), ["n ew :<C-u>w<CR>", "n <leader>x :Files"]);
         keys(&mut e, "<C-m>");
@@ -1414,21 +1485,21 @@ mod tests {
         e.set_screen(140, 40);
         e.open_settings("");
         assert_eq!(e.state(), State::Settings);
-        // エディタの分類 → 行番号（選択肢）を l で相対に
-        keys(&mut e, "j<Tab>");
+        // エディタの分類 → 行番号（選択肢）を → で相対に
+        keys(&mut e, "<Down><Tab>");
         let d = e.panels.settings_dialog.as_ref().unwrap();
         assert_eq!(d.current().unwrap().key, "editor.line_numbers");
-        keys(&mut e, "l");
+        keys(&mut e, "<Right>");
         assert_eq!(e.panels.settings_dialog.as_ref().unwrap().work.get("editor.line_numbers"), "relative");
-        // 絞り込み → 数の項目を直す（範囲の外は断る）
-        keys(&mut e, "/インデントの幅<CR>");
+        // 打った字から絞り込み → 数の項目を直す（範囲の外は断る）
+        keys(&mut e, "インデントの幅<CR>");
         assert_eq!(e.panels.settings_dialog.as_ref().unwrap().current().unwrap().key, "editor.indent_width");
         keys(&mut e, "<CR><Esc>S99<CR>");
         assert!(e.svc.notify.text.contains("1〜16"), "{}", e.svc.notify.text);
         keys(&mut e, "<CR><Esc>S2<CR>");
         assert_eq!(e.panels.settings_dialog.as_ref().unwrap().work.int("editor.indent_width"), 2);
-        // p でこのプロジェクトに。オン・オフは Space
-        keys(&mut e, "p");
+        // 「全体 / このプロジェクトだけ」でこのプロジェクトに。オン・オフは Space
+        assert!(e.run_ui_action("settings.scope"));
         assert!(e.panels.settings_dialog.as_ref().unwrap().project_scope);
         // Ctrl+Enter で適用して閉じる → Editor.settings に入り、プロジェクトのファイルは書かない（全体に入れたので）
         keys(&mut e, "<C-m>");
