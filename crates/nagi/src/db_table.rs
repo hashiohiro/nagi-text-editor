@@ -65,7 +65,6 @@ pub struct TableEditor {
     pub filter_edit: Option<(Field, VimField)>,
     /// 送る前に見せる SQL
     pub preview: Option<Vec<String>>,
-    pending: Option<char>,
     quit_armed: bool,
 }
 
@@ -283,8 +282,68 @@ pub enum TableAction {
     /// その数の変更を送るか確かめる（送る文は preview に入れてある）
     AskSend(usize),
     Close,
-    Command,
 }
+
+/// テーブルの画面の操作（キー・アクションから）
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TableOp {
+    Edit,
+    Replace,
+    SetNull,
+    AddRow,
+    DeleteRow,
+    Undo,
+    Send,
+    Where,
+    Order,
+    SortColumn,
+    NextPage,
+    PrevPage,
+    Reload,
+    Close,
+}
+
+/// テーブルの画面のアクション（ui_action.rs。ADR 0019）
+pub static ACTIONS: [crate::ui_action::UiAction; 14] = {
+    use crate::ui_action::{Scope::Table, UiAction};
+    fn open(e: &Editor) -> bool {
+        e.panels.db_table.is_some()
+    }
+    fn cell(e: &Editor) -> bool {
+        e.panels.db_table.as_ref().is_some_and(|t| !t.cols.is_empty() && t.len() > 0)
+    }
+    fn cols(e: &Editor) -> bool {
+        e.panels.db_table.as_ref().is_some_and(|t| !t.cols.is_empty())
+    }
+    fn clean(e: &Editor) -> bool {
+        e.panels.db_table.as_ref().is_some_and(|t| t.changes() == 0)
+    }
+    fn dirty(e: &Editor) -> bool {
+        e.panels.db_table.as_ref().is_some_and(|t| t.changes() > 0)
+    }
+    fn more(e: &Editor) -> bool {
+        e.panels.db_table.as_ref().is_some_and(|t| t.changes() == 0 && t.more)
+    }
+    fn back(e: &Editor) -> bool {
+        e.panels.db_table.as_ref().is_some_and(|t| t.changes() == 0 && t.offset > 0)
+    }
+    [
+        UiAction { id: "table.edit", label: "値を直す", scope: Table, enabled: cell, run: |e| e.db_table_op(TableOp::Edit) },
+        UiAction { id: "table.replace", label: "値を入れ替える", scope: Table, enabled: cell, run: |e| e.db_table_op(TableOp::Replace) },
+        UiAction { id: "table.setNull", label: "NULL にする", scope: Table, enabled: cell, run: |e| e.db_table_op(TableOp::SetNull) },
+        UiAction { id: "table.addRow", label: "行を足す", scope: Table, enabled: cols, run: |e| e.db_table_op(TableOp::AddRow) },
+        UiAction { id: "table.deleteRow", label: "行を消す（取り消し）", scope: Table, enabled: cell, run: |e| e.db_table_op(TableOp::DeleteRow) },
+        UiAction { id: "table.undo", label: "戻す", scope: Table, enabled: dirty, run: |e| e.db_table_op(TableOp::Undo) },
+        UiAction { id: "table.send", label: "変更を送る", scope: Table, enabled: dirty, run: |e| e.db_table_op(TableOp::Send) },
+        UiAction { id: "table.where", label: "絞り込み（WHERE）", scope: Table, enabled: clean, run: |e| e.db_table_op(TableOp::Where) },
+        UiAction { id: "table.order", label: "並べ替え（ORDER BY）", scope: Table, enabled: clean, run: |e| e.db_table_op(TableOp::Order) },
+        UiAction { id: "table.sortColumn", label: "この列で並べ替え", scope: Table, enabled: clean, run: |e| e.db_table_op(TableOp::SortColumn) },
+        UiAction { id: "table.nextPage", label: "次のページ", scope: Table, enabled: more, run: |e| e.db_table_op(TableOp::NextPage) },
+        UiAction { id: "table.prevPage", label: "前のページ", scope: Table, enabled: back, run: |e| e.db_table_op(TableOp::PrevPage) },
+        UiAction { id: "table.reload", label: "読み直す", scope: Table, enabled: open, run: |e| e.db_table_op(TableOp::Reload) },
+        UiAction { id: "table.close", label: "閉じる", scope: Table, enabled: open, run: |e| e.db_table_op(TableOp::Close) },
+    ]
+};
 
 impl TableEditor {
     /// テーブルの画面のキー（`half` は半画面の行数）。値の入力・絞り込みの欄（`svc` で動かす）・移動・行の追加と削除・戻す・
@@ -320,15 +379,40 @@ impl TableEditor {
             }
             return TableAction::None;
         }
-        let pending = te.pending.take();
+        // 標準のキーだけ（ADR 0019。F2・Enter 値を直す、Delete 行を消す、Ctrl+Z 戻す、Ctrl+Enter 送る、Esc 閉じる。ほかはアクション）
         let last_row = te.len().saturating_sub(1);
         let last_col = te.cols.len().saturating_sub(1);
-        if key != Key::Char('q') {
+        match key {
+            Key::Right | Key::Tab => te.col = (te.col + 1).min(last_col),
+            Key::Left => te.col = te.col.saturating_sub(1),
+            // 表では Home・End は列の端へ
+            Key::Home => te.col = 0,
+            Key::End => te.col = last_col,
+            Key::Enter | Key::F(2) => return te.op(TableOp::Edit, svc),
+            Key::Delete => return te.op(TableOp::DeleteRow, svc),
+            Key::Ctrl('z') => return te.op(TableOp::Undo, svc),
+            Key::Ctrl('m') => return te.op(TableOp::Send, svc),
+            Key::Esc => return te.op(TableOp::Close, svc),
+            k => {
+                if let Some(r) = nagi_ui::list::nav(k, te.row, last_row + 1, half * 2) {
+                    te.row = r;
+                }
+            }
+        }
+        TableAction::None
+    }
+
+    /// 操作を行う（キー・アクションから）。行の追加と削除・戻す・並べ替えの指定・送る文の用意はここで行い、外に及ぶことを返す
+    pub fn op(&mut self, op: TableOp, svc: &mut crate::editor::Services) -> TableAction {
+        let te = self;
+        // 未送信の変更があるときの「閉じる」「読み直す」は、2 回目で捨てる
+        if !matches!(op, TableOp::Close | TableOp::Reload) {
             te.quit_armed = false;
         }
         let dirty = te.changes() > 0;
-        match (pending, key) {
-            (Some('d'), Key::Char('d')) => match te.at(te.row) {
+        let has_cell = !te.cols.is_empty() && te.len() > 0;
+        match op {
+            TableOp::DeleteRow if has_cell => match te.at(te.row) {
                 (RowState::Added, a) => {
                     te.added.remove(a);
                     te.row = te.row.min(te.len().saturating_sub(1));
@@ -340,47 +424,29 @@ impl TableEditor {
                     te.undo.push(Change::Delete(r));
                 }
             },
-            (Some('g'), Key::Char('g')) => te.row = 0,
-            (_, Key::Char(c @ ('d' | 'g'))) => te.pending = Some(c),
-            (_, Key::Char('j') | Key::Down) => te.row = (te.row + 1).min(last_row),
-            (_, Key::Char('k') | Key::Up) => te.row = te.row.saturating_sub(1),
-            (_, Key::Char('l') | Key::Right | Key::Tab) => te.col = (te.col + 1).min(last_col),
-            (_, Key::Char('h') | Key::Left) => te.col = te.col.saturating_sub(1),
-            (_, Key::Char('0') | Key::Home) => te.col = 0,
-            (_, Key::Char('$') | Key::End) => te.col = last_col,
-            (_, Key::Ctrl('d')) => te.row = (te.row + half).min(last_row),
-            (_, Key::Ctrl('u')) => te.row = te.row.saturating_sub(half),
-            (_, Key::Char('G')) => te.row = last_row,
-            (_, Key::Char('i') | Key::Enter | Key::F(2)) if !te.cols.is_empty() && te.len() > 0 => {
+            TableOp::Edit | TableOp::Replace if has_cell => {
                 if te.at(te.row).0 == RowState::Deleted {
-                    svc.notify.warn("消す行は直せません（dd で取り消し）");
+                    svc.notify.warn("消す行は直せません（もう一度「行を消す」で取り消し）");
                 } else {
-                    te.editing = Some(VimField::new(&te.value(te.row, te.col).unwrap_or_default(), false));
+                    let init = if op == TableOp::Edit { te.value(te.row, te.col).unwrap_or_default() } else { String::new() };
+                    te.editing = Some(VimField::new(&init, false));
                 }
             }
-            // c: 空にしてから直す（値を入れ替える）
-            (_, Key::Char('c')) if !te.cols.is_empty() && te.len() > 0 => {
-                if te.at(te.row).0 == RowState::Deleted {
-                    svc.notify.warn("消す行は直せません（dd で取り消し）");
-                } else {
-                    te.editing = Some(VimField::new("", false));
-                }
-            }
-            (_, Key::Char('x')) if !te.cols.is_empty() && te.len() > 0 => {
+            TableOp::SetNull if has_cell => {
                 let (d, c) = (te.row, te.col);
                 te.set_value(d, c, None);
             }
-            (_, Key::Char('o')) if !te.cols.is_empty() => {
+            TableOp::AddRow if !te.cols.is_empty() => {
                 te.added.insert(0, vec![None; te.cols.len()]);
                 te.undo.push(Change::Add);
                 te.row = 0;
             }
-            (_, Key::Char('u') | Key::Ctrl('z')) => {
+            TableOp::Undo => {
                 if !te.undo_one() {
                     svc.notify.info("戻す変更はありません");
                 }
             }
-            (_, Key::Ctrl('m')) => match te.statements() {
+            TableOp::Send => match te.statements() {
                 Ok(s) if s.is_empty() => svc.notify.info("送る変更はありません"),
                 Ok(s) => {
                     let n = s.len();
@@ -389,11 +455,14 @@ impl TableEditor {
                 }
                 Err(e) => svc.notify.error(e),
             },
-            (_, Key::Char('f') | Key::Char('F')) if !dirty => {
-                let field = if key == Key::Char('f') { Field::Where } else { Field::Order };
+            TableOp::Where | TableOp::Order | TableOp::SortColumn | TableOp::NextPage | TableOp::PrevPage if dirty => {
+                svc.notify.info("未送信の変更があります（Ctrl+Enter で送るか、Ctrl+Z で戻す）")
+            }
+            TableOp::Where | TableOp::Order => {
+                let field = if op == TableOp::Where { Field::Where } else { Field::Order };
                 te.filter_edit = Some((field, VimField::new(if field == Field::Where { &te.where_ } else { &te.order }, false)));
             }
-            (_, Key::Char('s')) if !dirty && !te.cols.is_empty() => {
+            TableOp::SortColumn if !te.cols.is_empty() => {
                 let c = te.dialect.ident(&te.cols[te.col]);
                 te.order = if te.order == format!("{c} ASC") {
                     format!("{c} DESC")
@@ -405,34 +474,32 @@ impl TableEditor {
                 te.offset = 0;
                 return TableAction::Reload;
             }
-            (_, Key::Char('>')) if !dirty && te.more => {
+            TableOp::NextPage if te.more => {
                 te.offset += MAX_ROWS;
                 te.row = 0;
                 return TableAction::Reload;
             }
-            (_, Key::Char('<')) if !dirty && te.offset > 0 => {
+            TableOp::PrevPage if te.offset > 0 => {
                 te.offset = te.offset.saturating_sub(MAX_ROWS);
                 te.row = 0;
                 return TableAction::Reload;
             }
-            (_, Key::Char('R')) => {
+            TableOp::Reload => {
                 if dirty && !te.quit_armed {
                     te.quit_armed = true;
-                    svc.notify.info("未送信の変更があります。もう一度 R で捨てて読み直す");
+                    svc.notify.info("未送信の変更があります。もう一度「読み直す」で捨てて読み直す");
                 } else {
                     return TableAction::Reload;
                 }
             }
-            (_, Key::Char('f' | 'F' | 's' | '>' | '<')) => svc.notify.info("未送信の変更があります（Ctrl+Enter で送るか、u で戻す）"),
-            (_, Key::Char('q') | Key::Esc) => {
+            TableOp::Close => {
                 if dirty && !te.quit_armed {
                     te.quit_armed = true;
-                    svc.notify.info(format!("未送信の変更が {} 件あります。もう一度 q で捨てて閉じる", te.changes()));
+                    svc.notify.info(format!("未送信の変更が {} 件あります。もう一度 Esc（閉じる）で捨てて閉じる", te.changes()));
                 } else {
                     return TableAction::Close;
                 }
             }
-            (_, Key::Char(':')) => return TableAction::Command,
             _ => {}
         }
         TableAction::None
@@ -471,7 +538,6 @@ impl Editor {
             editing: None,
             filter_edit: None,
             preview: None,
-            pending: None,
             quit_armed: false,
         };
         let Some(c) = self.panels.db.as_mut().map(|p| &mut p.conns[i]) else { return };
@@ -578,7 +644,19 @@ impl Editor {
             return;
         };
         // テーブルの中で済むことは TableEditor::key が行い、外に及ぶことを返す（ADR 0018 の §5）
-        match te.key(key, half, &mut self.svc) {
+        let a = te.key(key, half, &mut self.svc);
+        self.db_table_do(a);
+    }
+
+    /// テーブルの画面の操作（アクションから）
+    pub(crate) fn db_table_op(&mut self, op: TableOp) {
+        let Some(te) = &mut self.panels.db_table else { return };
+        let a = te.op(op, &mut self.svc);
+        self.db_table_do(a);
+    }
+
+    fn db_table_do(&mut self, a: TableAction) {
+        match a {
             TableAction::None => {}
             TableAction::CommitEdit(next) => {
                 self.db_table_commit_edit();
@@ -597,7 +675,6 @@ impl Editor {
                 });
             }
             TableAction::Close => self.close_db_table(),
-            TableAction::Command => self.enter_command(""),
         }
     }
 }
@@ -609,19 +686,23 @@ impl Editor {
 /// 表の上の見出しの行数（名前・絞り込みの 2 行と、表の見出しの 2 行。描き方・見える範囲で使う）
 pub const HEAD: usize = 4;
 
-const PLAIN_HELP: &str = "矢印 移動  F2・Enter 値を直す  Ctrl+C・V コピー・貼り付け  Ctrl+Z 戻す  右クリック 操作  Ctrl+Enter 送る ";
+const PLAIN_HELP: &str = "矢印 移動  F2・Enter 値を直す  Delete 行を消す  Ctrl+C・V コピー・貼り付け  Ctrl+Z 戻す  右クリック 操作  Ctrl+Enter 送る ";
 
 pub struct DbTableComponent;
 
 impl crate::component::Component for DbTableComponent {
     fn status(&self, ed: &crate::editor::Editor) -> Option<crate::component::Status> {
         let n = ed.panels.db_table.as_ref().map_or(0, |t| t.changes());
-        let help = "i・F2 値  c 入れ替え  x NULL  o 行を足す  dd 消す  u 戻す  f/F 絞り込み  s 並べ替え  < > ページ  Ctrl+Enter 送信  q 閉じる ";
         if n > 0 {
-            Some(crate::component::Status { name: format!("-- 編集 --  変更 {n} 件（未送信）"), warn: true, help: help.into(), plain: Some(PLAIN_HELP.into()) })
+            Some(crate::component::Status { name: format!("-- 編集 --  変更 {n} 件（未送信）"), warn: true, help: PLAIN_HELP.into(), plain: None })
         } else {
-            crate::component::Status::keys("-- テーブル --", help, PLAIN_HELP)
+            crate::component::Status::new("-- テーブル --", PLAIN_HELP)
         }
+    }
+
+    fn scope(&self, ed: &crate::editor::Editor) -> Option<crate::ui_action::Scope> {
+        let _ = ed;
+        Some(crate::ui_action::Scope::Table)
     }
 
     fn key(&self, ed: &mut crate::editor::Editor, key: nagi_vim::Key) -> crate::editor::Effect {
@@ -736,26 +817,25 @@ impl crate::layout::View for DbTableView {
 
     fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At) -> bool {
         let (row, col) = at.screen;
-        use nagi_vim::Key::*;
         let _ = r;
         ed.set_state(crate::editor::State::DbTable);
         let m = crate::menu::Menu::new(row, col)
-            .keys("値を直す（F2）", &[F(2)])
-            .keys("値を入れ替える", &[Char('c')])
-            .keys("NULL にする", &[Char('x')])
-            .keys("行を足す", &[Char('o')])
-            .keys("行を消す", &[Char('d'), Char('d')])
-            .keys("戻す", &[Char('u')])
+            .item_shortcut("値を直す", "F2", |e| e.db_table_op(TableOp::Edit))
+            .action(ed, "table.replace")
+            .action(ed, "table.setNull")
+            .action(ed, "table.addRow")
+            .item_shortcut("行を消す（取り消し）", "Delete", |e| e.db_table_op(TableOp::DeleteRow))
+            .item_shortcut("戻す", "Ctrl+Z", |e| e.db_table_op(TableOp::Undo))
             .sep()
-            .keys("絞り込み（WHERE）", &[Char('f')])
-            .keys("並べ替え（ORDER BY）", &[Char('F')])
-            .keys("この列で並べ替え", &[Char('s')])
-            .keys("次のページ", &[Char('>')])
-            .keys("前のページ", &[Char('<')])
-            .keys("読み直す", &[Char('R')])
+            .action(ed, "table.where")
+            .action(ed, "table.order")
+            .action(ed, "table.sortColumn")
+            .action(ed, "table.nextPage")
+            .action(ed, "table.prevPage")
+            .action(ed, "table.reload")
             .sep()
-            .keys("変更を送る", &[Ctrl('m')])
-            .keys("閉じる", &[Char('q')]);
+            .item_shortcut("変更を送る", "Ctrl+Enter", |e| e.db_table_op(TableOp::Send))
+            .item_shortcut("閉じる", "Esc", |e| e.db_table_op(TableOp::Close));
         ed.open_menu(m);
         true
     }
@@ -912,16 +992,16 @@ mod tests {
         fn set(t: &str) { CLIP.with(|c| *c.borrow_mut() = t.to_string()); }
         fn get() -> Option<String> { CLIP.with(|c| Some(c.borrow().clone())) }
         e.svc.clipboard = Some(crate::editor::Clipboard { set, get });
-        keys(&mut e, "jl");
+        keys(&mut e, "<Down><Right>");
         e.key(Key::Ctrl('c'));
         assert_eq!(get().as_deref(), Some("z"));
-        keys(&mut e, "kh");
+        keys(&mut e, "<Up><Left>");
         set("10\tp\r\n20\tq\r\n");
         e.key(Key::Ctrl('v'));
         let te = e.panels.db_table.as_ref().unwrap();
         assert_eq!((0..2).map(|d| (te.value(d, 0), te.value(d, 1))).collect::<Vec<_>>(), [(Some("10".into()), Some("p".into())), (Some("20".into()), Some("q".into()))]);
-        keys(&mut e, "u");
-        assert_eq!(e.panels.db_table.as_ref().unwrap().value(1, 1).as_deref(), Some("z"), "u は 1 つのセルずつ戻す");
+        keys(&mut e, "<C-z>");
+        assert_eq!(e.panels.db_table.as_ref().unwrap().value(1, 1).as_deref(), Some("z"), "Ctrl+Z は 1 つのセルずつ戻す");
     }
 
     /// マウスで欄を移る: WHERE・ORDER BY の欄やセルを、打っている欄が Insert・Visual のままでもすぐ押せる
@@ -948,7 +1028,8 @@ mod tests {
         let (x, _) = e.windows_x();
         let field = |e: &Editor| e.panels.db_table.as_ref().unwrap().filter_edit.as_ref().map(|f| (f.0, f.1.mode_label(), f.1.text()));
         // WHERE を打っている間（Insert）に ORDER BY を押す: 打った条件は残して ORDER BY へ
-        keys(&mut e, "fid > 0");
+        assert!(e.run_ui_action("table.where"));
+        keys(&mut e, "id > 0");
         crate::layout::press(&mut e, s, ay + 1, x + 50, |_| 1);
         assert_eq!(field(&e), Some((Field::Order, "INSERT", String::new())));
         assert_eq!(e.panels.db_table.as_ref().unwrap().where_, "id > 0");
@@ -995,12 +1076,20 @@ mod tests {
         wait(&mut e, &|e| e.panels.db_table.as_ref().is_some_and(|t| !t.running && !t.colinfo.is_empty() && t.total.is_some()));
         assert_eq!(e.panels.db_table.as_ref().unwrap().range_label(), "1–3 / 3");
         // 1 行目の name を直す、2 行目の note を NULL に、3 行目を消す、行を足す
-        // i は今の値の後ろから Insert。Esc でノーマルにして cc で入れ替える（Vim 風の欄）
-        keys(&mut e, "li");
+        // F2 は今の値の後ろから Insert。Esc でノーマルにして cc で入れ替える（Vim 風の欄）
+        keys(&mut e, "<Right>");
+        e.key(Key::F(2));
         keys(&mut e, "<Esc>ccりんご<CR>");
-        keys(&mut e, "jlx");
-        keys(&mut e, "jdd");
-        keys(&mut e, "o0i9<Tab>inew<CR>");
+        keys(&mut e, "<Down><Right>");
+        assert!(e.run_ui_action("table.setNull"));
+        keys(&mut e, "<Down>");
+        e.key(Key::Delete);
+        assert!(e.run_ui_action("table.addRow"));
+        keys(&mut e, "<Home>");
+        e.key(Key::F(2));
+        keys(&mut e, "9<Tab>");
+        e.key(Key::F(2));
+        keys(&mut e, "new<CR>");
         let te = e.panels.db_table.as_ref().unwrap();
         assert_eq!(te.changes(), 4);
         assert_eq!(
@@ -1012,10 +1101,11 @@ mod tests {
                 "DELETE FROM main.item WHERE id = '3'".into(),
             ]
         );
-        // u で 1 つ戻す（足した行の name）→ もう一度入れる
-        keys(&mut e, "u");
+        // Ctrl+Z で 1 つ戻す（足した行の name）→ もう一度入れる
+        keys(&mut e, "<C-z>");
         assert_eq!(e.panels.db_table.as_ref().unwrap().added[0][1], None);
-        keys(&mut e, "inew<CR>");
+        e.key(Key::F(2));
+        keys(&mut e, "new<CR>");
         // Ctrl+Enter で SQL を見せ、y で送る
         keys(&mut e, "<C-m>");
         assert!(e.panels.db_table.as_ref().unwrap().preview.is_some());
@@ -1025,16 +1115,16 @@ mod tests {
         let names: Vec<Option<String>> = te.rows.iter().map(|r| r[1].clone()).collect();
         assert_eq!(names, vec![Some("りんご".into()), Some("b".into()), Some("new".into())]);
         assert_eq!(te.rows[1][2], None);
-        // 未送信の変更があれば q は 2 回
-        keys(&mut e, "x");
+        // 未送信の変更があれば閉じるのは 2 回
+        assert!(e.run_ui_action("table.setNull"));
         // 本文に向こうとしても（木でファイルを開いたなど）、未送信の変更があれば閉じずに知らせる
         e.set_state(State::Normal);
         assert!(e.panels.db_table.is_some());
         assert_eq!(e.state(), State::DbTable);
         assert!(e.svc.notify.text.contains("送っていない変更が 1 件"), "{}", e.svc.notify.text);
-        keys(&mut e, "q");
+        keys(&mut e, "<Esc>");
         assert!(e.panels.db_table.is_some());
-        keys(&mut e, "q");
+        keys(&mut e, "<Esc>");
         assert!(e.panels.db_table.is_none());
     }
 }
