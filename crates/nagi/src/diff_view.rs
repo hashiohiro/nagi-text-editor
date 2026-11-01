@@ -47,8 +47,6 @@ pub struct DiffView {
     pub work: Option<(PathBuf, String, PathBuf)>,
     hunks: Vec<Hunk>,
     old_text: String,
-    /// 押しかけのキー（`]c`・`[c`・`gg` の 1 文字目）
-    pending: Option<char>,
 }
 
 /// 差分の画面のキーで、部品の外に及ぶこと（Editor が行う。ADR 0018 の §5）
@@ -56,8 +54,6 @@ pub struct DiffView {
 pub enum DiffAction {
     None,
     Close,
-    /// カーソルの変更を戻す（false）・ステージする（true）
-    Apply(bool),
     /// 作業中のファイルのその行を開く（ファイル, 行）
     OpenAt(Option<PathBuf>, Option<usize>),
 }
@@ -65,59 +61,57 @@ pub enum DiffAction {
 /// 行番号の欄の幅（"{:>5} "）
 pub const NUM_W: usize = 6;
 
+/// 差分の画面のアクション（ui_action.rs。ADR 0019）
+pub static ACTIONS: [crate::ui_action::UiAction; 6] = {
+    use crate::ui_action::{Scope::Diff, UiAction};
+    fn open(e: &Editor) -> bool {
+        e.panels.diff.is_some()
+    }
+    fn work(e: &Editor) -> bool {
+        e.panels.diff.as_ref().is_some_and(|d| d.work.is_some())
+    }
+    [
+        UiAction { id: "diff.next", label: "次の変更", scope: Diff, enabled: open, run: |e| e.diff_hunk(true) },
+        UiAction { id: "diff.prev", label: "前の変更", scope: Diff, enabled: open, run: |e| e.diff_hunk(false) },
+        UiAction { id: "diff.stage", label: "この変更をステージ", scope: Diff, enabled: work, run: |e| e.diff_apply(true) },
+        UiAction { id: "diff.revert", label: "この変更を戻す", scope: Diff, enabled: work, run: |e| e.diff_apply(false) },
+        UiAction { id: "diff.open", label: "ファイルを開く", scope: Diff, enabled: open, run: |e| e.diff_key(Key::Enter) },
+        UiAction { id: "diff.close", label: "差分を閉じる", scope: Diff, enabled: open, run: |e| e.close_diff() },
+    ]
+};
+
 impl DiffView {
     /// 差分の画面のキー（`rows` は見える行数、`tw` は本文の幅）。移動・横の移動・変更へ跳ぶはここで行い、外に及ぶことを返す
     pub fn key(&mut self, key: Key, rows: usize, tw: usize) -> DiffAction {
+        // 標準のキーだけ（ADR 0019。次・前の変更、ステージ・戻すはアクション）
         let last = self.rows.len().saturating_sub(1);
-        let pending = self.pending.take();
-        let moved = nagi_ui::list::step(key, self.cursor, last + 1, rows);
-        let act = match (pending, key) {
-            (Some(']'), Key::Char('c')) => {
-                if let Some(&r) = self.hunk_rows.iter().find(|&&r| r > self.cursor) {
-                    self.cursor = r;
-                }
-                DiffAction::None
-            }
-            (Some('['), Key::Char('c')) => {
-                if let Some(&r) = self.hunk_rows.iter().rev().find(|&&r| r < self.cursor) {
-                    self.cursor = r;
-                }
-                DiffAction::None
-            }
-            (Some('g'), Key::Char('g')) => {
-                self.cursor = 0;
-                DiffAction::None
-            }
+        let moved = nagi_ui::list::nav(key, self.cursor, last + 1, rows);
+        let act = match key {
             // 横の移動（読むだけでも、どこを見ているか分かるように列のカーソルを持つ）
-            (_, Key::Char('h') | Key::Left) => {
+            Key::Left => {
                 self.col = self.shown_col().saturating_sub(1);
                 DiffAction::None
             }
-            (_, Key::Char('l') | Key::Right) => {
+            Key::Right => {
                 let t = self.cursor_text();
                 self.col = (self.shown_col() + 1).min(nagi_core::display_col(t, t.len(), false).saturating_sub(1));
                 DiffAction::None
             }
-            (_, Key::Char('0')) => {
+            // Home・End は行の頭・行末（本文と同じ）
+            Key::Home => {
                 self.col = 0;
                 DiffAction::None
             }
-            (_, Key::Char('$')) => {
+            Key::End => {
                 self.col = usize::MAX;
-                DiffAction::None
-            }
-            (_, Key::Char(c @ (']' | '[' | 'g'))) => {
-                self.pending = Some(c);
                 DiffAction::None
             }
             _ if moved.is_some() => {
                 self.cursor = moved.unwrap_or(self.cursor);
                 DiffAction::None
             }
-            (_, Key::Char('q') | Key::Esc) => return DiffAction::Close,
-            (_, Key::Char('u')) => return DiffAction::Apply(false),
-            (_, Key::Char('s')) => return DiffAction::Apply(true),
-            (_, Key::Enter) => {
+            Key::Esc => return DiffAction::Close,
+            Key::Enter => {
                 // その行を作業中のファイルで開く
                 let target = self.rows[self.cursor].right.as_ref().map(|r| r.0).or_else(|| self.rows[..self.cursor].iter().rev().find_map(|r| r.right.as_ref().map(|x| x.0 + 1)));
                 return DiffAction::OpenAt(self.work.as_ref().map(|w| w.2.clone()), target);
@@ -127,6 +121,16 @@ impl DiffView {
         nagi_ui::list::fit(self.cursor, &mut self.top, rows);
         self.follow(tw);
         act
+    }
+
+    /// 次（`fwd`）・前の変更へ
+    pub fn jump_hunk(&mut self, fwd: bool, rows: usize, tw: usize) {
+        let to = if fwd { self.hunk_rows.iter().find(|&&r| r > self.cursor).copied() } else { self.hunk_rows.iter().rev().find(|&&r| r < self.cursor).copied() };
+        if let Some(r) = to {
+            self.cursor = r;
+        }
+        nagi_ui::list::fit(self.cursor, &mut self.top, rows);
+        self.follow(tw);
     }
 
     /// カーソルの行で、カーソルを出す側の本文（右に無ければ左）
@@ -231,7 +235,7 @@ impl Editor {
             self.svc.notify.info("差分はありません");
         }
         let cursor = hunk_rows.first().copied().unwrap_or(0);
-        self.panels.diff = Some(DiffView { left_title, right_title, rows, top: cursor.saturating_sub(5), cursor, col: 0, on_left: false, left: 0, hunk_rows, work, hunks, old_text: old.to_string(), pending: None });
+        self.panels.diff = Some(DiffView { left_title, right_title, rows, top: cursor.saturating_sub(5), cursor, col: 0, on_left: false, left: 0, hunk_rows, work, hunks, old_text: old.to_string() });
         self.diff_return = Some(self.state());
         self.set_state(State::Diff);
     }
@@ -257,7 +261,6 @@ impl Editor {
         match d.key(key, rows, tw) {
             DiffAction::None => {}
             DiffAction::Close => self.close_diff(),
-            DiffAction::Apply(stage) => self.diff_apply(stage),
             DiffAction::OpenAt(path, line) => {
                 self.close_diff();
                 self.set_state(State::Normal);
@@ -268,13 +271,22 @@ impl Editor {
         }
     }
 
+    /// 次（`fwd`）・前の変更へ
+    pub(crate) fn diff_hunk(&mut self, fwd: bool) {
+        let rows = self.screen.1.saturating_sub(2).max(1);
+        let tw = self.diff_text_w();
+        if let Some(d) = &mut self.panels.diff {
+            d.jump_hunk(fwd, rows, tw);
+        }
+    }
+
     /// 差分の本文の見える幅（左右の狭い方。行番号の欄を除く）
     fn diff_text_w(&self) -> usize {
         (self.windows_x().1.saturating_sub(1) / 2).saturating_sub(NUM_W).max(1)
     }
 
     /// カーソルの変更を戻す（`stage` ならステージ）。作業中のファイルとの差分だけ
-    fn diff_apply(&mut self, stage: bool) {
+    pub(crate) fn diff_apply(&mut self, stage: bool) {
         let Some(d) = &self.panels.diff else { return };
         let Some((root, rel, path)) = d.work.clone() else {
             self.svc.notify.warn("この差分では戻せません（作業中のファイルとの差分だけ）");
@@ -336,12 +348,17 @@ impl crate::component::Component for DiffComponent {
         let d = ed.panels.diff.as_ref();
         let n = d.map_or(0, |d| d.hunk_rows.len());
         let i = d.map_or(0, |d| d.hunk_rows.iter().rposition(|&r| r <= d.cursor).map_or(0, |i| i + 1));
-        crate::component::Status::keys(format!("-- 差分 --   変更 {i}/{n}"), "]c 次  [c 前  h/l 横  s ステージ  u 戻す  Enter 開く  q 閉じる ", "右クリック ステージ・戻す・次の変更  Esc 閉じる ")
+        crate::component::Status::new(format!("-- 差分 --   変更 {i}/{n}"), "↑↓←→ 動く  Enter 開く  右クリック ステージ・戻す・次の変更  Esc 閉じる ")
     }
 
     fn key(&self, ed: &mut crate::editor::Editor, key: nagi_vim::Key) -> crate::editor::Effect {
         ed.diff_key(key);
         crate::editor::Effect::None
+    }
+
+    fn scope(&self, ed: &crate::editor::Editor) -> Option<crate::ui_action::Scope> {
+        let _ = ed;
+        Some(crate::ui_action::Scope::Diff)
     }
 }
 
@@ -405,18 +422,17 @@ impl crate::layout::View for DiffScreenView {
 
     fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At) -> bool {
         let (row, col) = at.screen;
-        use nagi_vim::Key::*;
         let _ = r;
         ed.set_state(crate::editor::State::Diff);
         let m = crate::menu::Menu::new(row, col)
-            .keys("次の変更", &[Char(']'), Char('c')])
-            .keys("前の変更", &[Char('['), Char('c')])
+            .action(ed, "diff.next")
+            .action(ed, "diff.prev")
             .sep()
-            .keys("この変更をステージ", &[Char('s')])
-            .keys("この変更を戻す", &[Char('u')])
+            .action(ed, "diff.stage")
+            .action(ed, "diff.revert")
             .sep()
-            .keys("ファイルを開く", &[Enter])
-            .keys("差分を閉じる", &[Char('q')]);
+            .action(ed, "diff.open")
+            .action(ed, "diff.close");
         ed.open_menu(m);
         true
     }
@@ -565,7 +581,7 @@ mod tests {
         assert!(e.chrome_at(row, 0).is_some());
     }
 
-    /// 列のカーソル: h / l で動き、行末で止まり、長い行は左端が付いてくる。押した位置へ置く
+    /// 列のカーソル: ← → で動き（Home・End で行の頭・行末）、行末で止まり、長い行は左端が付いてくる。押した位置へ置く
     #[test]
     fn column_cursor() {
         let mut e = Editor::new(nagi_core::Buffer::from_str(""), None);
@@ -575,19 +591,19 @@ mod tests {
         assert_eq!(e.state(), State::Diff);
         let d = e.panels.diff.as_ref().unwrap();
         assert_eq!((d.cursor, d.col), (1, 0), "最初の変更の行の頭");
-        e.diff_key(Key::Char('$'));
+        e.diff_key(Key::End);
         let tw = e.diff_text_w();
         let d = e.panels.diff.as_ref().unwrap();
         assert_eq!(d.shown_col(), 79);
         assert!(d.left > 0 && 79 < d.left + tw, "行末が見える: left {}", d.left);
-        e.diff_key(Key::Char('l'));
+        e.diff_key(Key::Right);
         assert_eq!(e.panels.diff.as_ref().unwrap().shown_col(), 79, "行末で止まる");
-        e.diff_key(Key::Char('k'));
+        e.diff_key(Key::Up);
         let d = e.panels.diff.as_ref().unwrap();
         assert_eq!((d.cursor, d.shown_col(), d.left), (0, 1, 1), "短い行では行末に出し、左端も付いてくる");
-        e.diff_key(Key::Char('0'));
+        e.diff_key(Key::Home);
         assert_eq!(e.panels.diff.as_ref().unwrap().left, 0);
-        e.diff_key(Key::Char('l'));
+        e.diff_key(Key::Right);
         assert_eq!(e.panels.diff.as_ref().unwrap().shown_col(), 1);
     }
 }
