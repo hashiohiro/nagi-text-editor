@@ -18,6 +18,10 @@ pub struct MenuItem {
     pub run: Option<Run>,
     /// 文字のキーで選ぶ近道（確認の y・n）
     pub accel: Option<char>,
+    /// 右に出すショートカット（部品のアクションに付けたキー）
+    pub shortcut: Option<String>,
+    /// 選べるか（できない操作は薄く出して選べない）
+    pub enabled: bool,
 }
 
 pub struct Menu {
@@ -52,7 +56,7 @@ impl Menu {
     }
 
     pub fn item(mut self, label: impl Into<String>, run: impl FnOnce(&mut Editor) + 'static) -> Menu {
-        self.items.push(MenuItem { label: label.into(), run: Some(Box::new(run)), accel: None });
+        self.items.push(MenuItem { label: label.into(), run: Some(Box::new(run)), accel: None, shortcut: None, enabled: true });
         self
     }
 
@@ -63,14 +67,29 @@ impl Menu {
         self.item(label, move |e| e.panel_keys(&ks))
     }
 
+    /// 部品のアクション（ui_action.rs）の項目: 名前・付けたショートカット・できるかを表から出す
+    pub fn action(mut self, ed: &Editor, id: &'static str) -> Menu {
+        let Some(a) = crate::ui_action::find(id) else { return self };
+        self.items.push(MenuItem {
+            label: a.label.to_string(),
+            run: Some(Box::new(move |e: &mut Editor| {
+                e.run_ui_action(id);
+            })),
+            accel: None,
+            shortcut: ed.ui_shortcut(id),
+            enabled: (a.enabled)(ed),
+        });
+        self
+    }
+
     /// 文字のキーでも選べる項目
     pub fn item_key(mut self, label: impl Into<String>, accel: char, run: impl FnOnce(&mut Editor) + 'static) -> Menu {
-        self.items.push(MenuItem { label: label.into(), run: Some(Box::new(run)), accel: Some(accel) });
+        self.items.push(MenuItem { label: label.into(), run: Some(Box::new(run)), accel: Some(accel), shortcut: None, enabled: true });
         self
     }
 
     pub fn sep(mut self) -> Menu {
-        self.items.push(MenuItem { label: String::new(), run: None, accel: None });
+        self.items.push(MenuItem { label: String::new(), run: None, accel: None, shortcut: None, enabled: true });
         self
     }
 
@@ -80,7 +99,7 @@ impl Menu {
     }
 
     fn selectable(&self, i: usize) -> bool {
-        self.items.get(i).is_some_and(|it| it.run.is_some())
+        self.items.get(i).is_some_and(|it| it.run.is_some() && it.enabled)
     }
 
     /// 確かめるダイアログの問いの行（幅で折り返す）
@@ -125,7 +144,8 @@ impl Menu {
             return Rect { x: cols.saturating_sub(w) / 2, y: (rows / 3).min(rows.saturating_sub(h)), w, h };
         }
         let width = |s: &str| nagi_core::display_col(s, s.len(), false);
-        let w = self.items.iter().map(|it| width(&it.label)).chain(self.title.as_deref().map(width)).max().unwrap_or(0) + 4;
+        // ショートカットは名前の右に 3 列あけて
+        let w = self.items.iter().map(|it| width(&it.label) + it.shortcut.as_deref().map_or(0, |s| width(s) + 3)).chain(self.title.as_deref().map(width)).max().unwrap_or(0) + 4;
         let h = self.items.len() + self.head();
         let x = self.col.min(cols.saturating_sub(w + 1));
         let y = if self.row + 1 + h <= rows { self.row + 1 } else { self.row.saturating_sub(h) };
@@ -202,6 +222,9 @@ impl Editor {
 
     /// `i` 番目の項目を行う（閉じて元の部品へ向き直ってから）
     pub(crate) fn menu_run(&mut self, i: usize) {
+        if !self.menu.as_ref().is_some_and(|m| m.selectable(i)) {
+            return;
+        }
         let Some(mut m) = self.close_menu() else { return };
         if let Some(run) = m.items.get_mut(i).and_then(|it| it.run.take()) {
             run(self);
@@ -367,7 +390,12 @@ pub(crate) mod draw {
             if sel {
                 selection(p, x, y, b.w as f32 * cell.w, cell.h, LIST_SEL_BG);
             }
-            p.text(&format!("  {}", it.label), b.x, y, if sel { FG_BRIGHT } else { FG });
+            let color = if !it.enabled { LINE_NO } else if sel { FG_BRIGHT } else { FG };
+            p.text(&format!("  {}", it.label), b.x, y, color);
+            if let Some(k) = &it.shortcut {
+                let w = p.width(k);
+                p.text(k, (b.x + b.w).saturating_sub(w + 2), y, if it.enabled { STATUS_FG } else { LINE_NO });
+            }
         }
         p.cols = saved;
     }

@@ -147,10 +147,10 @@ mod tests {
         assert_eq!(e.chrome_at(row, 119), Some(crate::chrome::Hit::Tool(t)));
         e.toggle_tool(t);
         assert_eq!(e.right_visible(), Some(crate::right_panel::RightTab::Database));
-        // 右の欄の中で : を押しても、コマンドの候補が出る
+        // 右の欄の中で : を押しても Vim のコマンド行にはならない（打った字は絞り込みへ。ADR 0019）
         e.key(nagi_vim::Key::Char(':'));
-        assert_eq!(e.state(), State::Command);
-        assert!(e.panels.cmd_complete.as_ref().is_some_and(|c| c.items.len() > 20), "パネルの中の : でも候補を出す");
+        assert_ne!(e.state(), State::Command);
+        assert_eq!(e.panels.db.as_ref().unwrap().filter_text, ":");
         let (_, r, c) = e.toggle_buttons().into_iter().find(|b| b.0 == Button::HideRight).unwrap();
         e.key(nagi_vim::Key::Esc);
         e.press_button(Button::HideRight);

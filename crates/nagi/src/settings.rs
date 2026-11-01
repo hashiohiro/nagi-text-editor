@@ -265,6 +265,12 @@ pub fn items() -> &'static [Item] {
             let leak = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
             all.push(Item { key: leak(format!("{CMD_KEY}{name}")), cat: "キーマップ", label: leak(short.to_string()), kind: SKind::Key, default: "", help: leak(format!(":{name}  {}", c.help)), project: false });
         }
+        // 部品のアクション（ui_action.rs。既定は付けない。その部品にフォーカスがあるときだけ効く）
+        for a in crate::ui_action::all() {
+            let leak = |s: String| -> &'static str { Box::leak(s.into_boxed_str()) };
+            let help = leak(format!("{}の欄にいるときだけ効く", a.scope.name()));
+            all.push(Item { key: leak(format!("{}{}", crate::ui_action::KEY, a.id)), cat: "キーマップ", label: leak(format!("{} › {}", a.scope.name(), a.label)), kind: SKind::Key, default: "", help, project: false });
+        }
         all
     })
 }
@@ -277,9 +283,18 @@ pub fn schema(key: &str) -> Option<&'static Item> {
 }
 
 /// `key`（キーの項目）と同じキーの組み合わせを付けたほかの項目
+/// 部品のアクションどうしは、同じ部品のものだけがぶつかる（別の部品なら同じキーでよい）
 pub fn key_conflicts(s: &Settings, key: &str) -> Vec<&'static Item> {
     let Some(c) = crate::keymap::parse_chord(&s.get(key)) else { return Vec::new() };
-    items().iter().filter(|i| i.kind == SKind::Key && i.key != key && crate::keymap::parse_chord(&s.get(i.key)).as_ref() == Some(&c)).collect()
+    let scope = crate::ui_action::scope_of_key(key);
+    items()
+        .iter()
+        .filter(|i| i.kind == SKind::Key && i.key != key && crate::keymap::parse_chord(&s.get(i.key)).as_ref() == Some(&c))
+        .filter(|i| match (scope, crate::ui_action::scope_of_key(i.key)) {
+            (Some(a), Some(b)) => a == b,
+            _ => true,
+        })
+        .collect()
 }
 
 /// 設定の値（キー → 文字。既定値と違うものだけ）

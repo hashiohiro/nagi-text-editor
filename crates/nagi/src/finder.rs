@@ -13,6 +13,9 @@ use nagi_workers::files::FileWalk;
 use crate::editor::{Editor, Effect, State, Prompt};
 use crate::vim_field::FieldOut;
 
+/// パレットの候補で、部品のアクションの名前の前に付ける印（選んだらアクションを行う）
+const ACTION_MARK: &str = "  ›› ";
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Source {
     Files,
@@ -302,6 +305,10 @@ impl Editor {
             // 場所の一覧は呼んだ側が set_locations で入れる
             Source::Definitions | Source::Symbols | Source::Types | Source::Outline | Source::Locations => {}
             Source::Commands => {
+                // 部品のアクション（ui_action.rs）のうち今できるもの。ショートカットを付けていなくても名前で呼べる（IntelliJ の Find Action と同じ）
+                for a in crate::ui_action::all().filter(|a| (a.enabled)(self)) {
+                    f.items.push(format!("{}（{}）{ACTION_MARK}{}", a.label, a.scope.name(), a.id));
+                }
                 // コマンドの表（commands.rs）から
                 for (cmd, help) in crate::commands::listed() {
                     f.items.push(format!("{help}  :{cmd}"));
@@ -522,6 +529,11 @@ impl Editor {
             Source::Buffers => self.switch_doc(f.docs[i]),
             Source::RunConfigs => self.run_list_pick(i),
             Source::Commands => {
+                if let Some((_, id)) = f.items[i].rsplit_once(ACTION_MARK) {
+                    let id = id.to_string();
+                    self.run_ui_action(&id);
+                    return Effect::None;
+                }
                 let cmd = f.items[i].rsplit_once("  :").map_or("", |(_, c)| c).to_string();
                 return self.run_ex(&cmd);
             }

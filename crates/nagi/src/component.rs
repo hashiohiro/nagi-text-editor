@@ -37,6 +37,12 @@ pub trait Component: Sync {
         let _ = ed;
         None
     }
+
+    /// この部品のアクション（ui_action.rs。ショートカットを引く範囲）。None ならアクションを持たない
+    fn scope(&self, ed: &Editor) -> Option<crate::ui_action::Scope> {
+        let _ = ed;
+        None
+    }
 }
 
 /// 部品の状態行

@@ -1167,11 +1167,18 @@ impl Editor {
             self.db_run_at_cursor();
             return Effect::None;
         }
-        // キーマップの組み合わせ（Alt+1・F12 など。再生・マクロ・試験で届くもの）: 付けたコマンドを動かす
-        if let Some(crate::keymap::Action::Cmd(c)) = crate::keymap::chord_of_key(key).and_then(|ch| self.chord_action(&ch).0) {
-            if let Some(eff) = self.shortcut(c) {
-                return eff;
+        // キーマップの組み合わせ（Alt+1・F12 など。再生・マクロ・試験で届くもの）: 付けたコマンド・部品のアクションを動かす
+        match crate::keymap::chord_of_key(key).and_then(|ch| self.chord_action(&ch).0) {
+            Some(crate::keymap::Action::Cmd(c)) => {
+                if let Some(eff) = self.shortcut(c) {
+                    return eff;
+                }
             }
+            Some(crate::keymap::Action::Ui(id)) => {
+                self.run_ui_action(id);
+                return Effect::None;
+            }
+            _ => {}
         }
         // マクロの記録を止める q（Normal と Visual で、ほかのキーの途中でないとき）
         if self.recording.is_some()
@@ -1198,7 +1205,7 @@ impl Editor {
             self.scroll_into_view();
             return Effect::None;
         }
-        // Vim を使わないとき、データベースの木で打った文字は絞り込みの欄へ
+        // データベースの木で打った文字は絞り込みの欄へ（ADR 0019）
         if self.db_type_to_filter(key) {
             return Effect::None;
         }

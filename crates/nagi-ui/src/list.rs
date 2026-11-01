@@ -24,6 +24,14 @@ pub fn step(key: Key, sel: usize, len: usize, page: usize) -> Option<usize> {
     })
 }
 
+/// 標準のキーだけでの移動（↑↓・PageUp・PageDown・Home・End。ADR 0019: 部品の中で Vim のキーは受けない）
+pub fn nav(key: Key, sel: usize, len: usize, page: usize) -> Option<usize> {
+    match key {
+        Key::Down | Key::Up | Key::PageDown | Key::PageUp | Key::Home | Key::End => step(key, sel, len, page),
+        _ => None,
+    }
+}
+
 /// 打って絞り込む一覧（入力欄があり j・k は文字になる）の移動: ↓ Ctrl+n Ctrl+j Tab・↑ Ctrl+p Ctrl+k
 pub fn step_typing(key: Key, sel: usize, len: usize) -> Option<usize> {
     match key {

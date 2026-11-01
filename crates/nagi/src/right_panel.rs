@@ -161,7 +161,7 @@ impl crate::component::Component for RightComponent {
         match ed.right_visible() {
             Some(RightTab::Maven) => crate::component::Status::keys("-- Maven --", "Enter 実行・開閉  l/h 開く・閉じる  r 読み直す  q 閉じる  Ctrl-w h 窓へ ", "Enter 実行・開閉  ←→ 開く・閉じる  右クリック 操作  Esc 窓へ "),
             Some(RightTab::Preview) => crate::component::Status::keys("-- プレビュー --", "j/k 送る  Enter リンクを開く  g/G 先頭・末尾  q 閉じる  Ctrl-w h 窓へ ", "↑↓ 送る  Enter リンクを開く  右クリック 操作  Esc 窓へ "),
-            _ => crate::component::Status::keys("-- データベース --", "Enter つなぐ・開閉  o 中身  n 新しいクエリ  c コンソール  / 絞り込み  a 足す  x 切る  Ctrl-w h 窓へ ", "Enter つなぐ・開閉  右クリック 操作  Esc 窓へ "),
+            _ => crate::component::Status::new("-- データベース --", "Enter つなぐ・開閉  ＋ 接続先を足す  右クリック 操作  打つと絞り込み  Esc 窓へ "),
         }
     }
 
@@ -172,11 +172,20 @@ impl crate::component::Component for RightComponent {
     fn text(&self, ed: &mut crate::editor::Editor, text: &str) {
         ed.db_insert(text);
     }
+
+    fn scope(&self, ed: &crate::editor::Editor) -> Option<crate::ui_action::Scope> {
+        (ed.right_visible() == Some(RightTab::Database)).then_some(crate::ui_action::Scope::Database)
+    }
 }
 
 
 /// 右の欄（データベース・Maven・プレビュー）（layout.rs の View）
 pub struct RightView;
+
+/// データベースの見出しの ＋ の列（画面の列。右端の「隠す」の 1 列手前をあけて）
+pub(crate) fn plus_col(r: crate::panes::Rect) -> usize {
+    (r.x + r.w).saturating_sub(5)
+}
 
 impl crate::layout::View for RightView {
     fn rect(&self, ed: &crate::editor::Editor, s: crate::layout::Screen) -> Option<crate::panes::Rect> {
@@ -190,7 +199,12 @@ impl crate::layout::View for RightView {
     }
 
     fn click(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At, clicks: u32) -> crate::layout::Click {
-        let _ = r;
+        // データベースの見出しの ＋
+        let c0 = plus_col(r) - r.x;
+        if at.row == 0 && ed.right_visible() == Some(RightTab::Database) && (c0..c0 + 2).contains(&at.col) {
+            ed.run_ui_action("db.addSource");
+            return crate::layout::Click::Done;
+        }
         ed.right_click(at.row, at.col, clicks);
         crate::layout::Click::Done
     }
@@ -278,6 +292,17 @@ pub(crate) mod draw {
         // 見出しは出しているタブの名前（タブを替えるのは右のアイコンの列）
         let name = crate::right_panel::RTABS.iter().find(|t| t.1 == tab).map_or("", |t| t.0);
         draw_panel_title(p, r, name, focused, "");
+        // データベース: 見出しの右に ＋（接続先を足す。IntelliJ のデータベースの欄と同じ）
+        if tab == RightTab::Database {
+            let c0 = super::plus_col(r);
+            let saved = p.cols;
+            p.cols = r.x + r.w;
+            let ui = std::mem::replace(&mut p.ui, true);
+            p.text("＋", c0, y0, if focused { FG_BRIGHT } else { FG });
+            p.ui = ui;
+            p.cols = saved;
+            p.tab_hits.push((r.y, c0, c0 + 2, "接続先を足す…"));
+        }
         let saved = p.cols;
         p.cols = r.x + r.w;
         if tab == RightTab::Preview {
@@ -330,7 +355,7 @@ pub(crate) mod draw {
                 p.out.push(Instance::fill(x0, fy + cell.h - 1.0, wpx, 1.0, SEPARATOR));
                 top = 2;
                 if d.sources.is_empty() {
-                    p.text(" 接続先がありません。a（＋）で足す", r.x, y0 + 2.0 * cell.h, STATUS_FG);
+                    p.text(" 接続先がありません。ここか ＋ を押して足す", r.x, y0 + 2.0 * cell.h, STATUS_FG);
                 }
                 for (k, row) in d.rows.iter().enumerate() {
                     use crate::db_panel::DbRow;

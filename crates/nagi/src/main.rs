@@ -80,6 +80,7 @@ mod menu;
 mod buffer_tabs;
 mod plain;
 mod line_cache;
+mod ui_action;
 mod layout;
 mod component;
 mod commands;
@@ -769,6 +770,16 @@ impl Frame {
             Some(keymap::Action::Key(k)) => {
                 self.held = None;
                 self.handle_keys(vec![k], el);
+                return true;
+            }
+            // 部品のアクション（ui_action.rs）
+            Some(keymap::Action::Ui(id)) => {
+                self.held = None;
+                if let Some(ed) = self.ed.as_mut() {
+                    ed.run_ui_action(id);
+                }
+                self.draw();
+                self.sync_ime();
                 return true;
             }
             // コマンドの表の操作（今の状態で動かせないときは、キーとしてそのまま流す）

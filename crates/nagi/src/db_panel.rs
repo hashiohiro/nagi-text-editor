@@ -633,8 +633,44 @@ pub enum DbAction {
     Reload,
     Close,
     ToText,
-    Command,
+    /// 接続先を足すフォームを開く（欄が無ければ出す）
+    AddForm,
+    /// 絞り込みの欄へ
+    Filter,
 }
+
+/// データベースの欄のアクション（ui_action.rs。ADR 0019）。メニュー・ボタン・パレット・ショートカット（既定は付けない）はここを引く
+pub static ACTIONS: [crate::ui_action::UiAction; 10] = {
+    use crate::ui_action::{always, Scope::Database, UiAction};
+    // 選んでいる行の接続先がつないでいるか
+    fn connected(e: &Editor) -> bool {
+        e.db_selected().and_then(|r| e.panels.db.as_ref().map(|p| p.conns[r.source()].client.is_some())).unwrap_or(false)
+    }
+    fn not_connected(e: &Editor) -> bool {
+        e.db_selected().is_some() && !connected(e)
+    }
+    fn selected(e: &Editor) -> bool {
+        e.db_selected().is_some()
+    }
+    fn table(e: &Editor) -> bool {
+        matches!(e.db_selected(), Some(DbRow::Object(_, _, _, Group::Tables | Group::Views, _)))
+    }
+    fn open(e: &Editor) -> bool {
+        e.panels.db.is_some()
+    }
+    [
+        UiAction { id: "db.addSource", label: "接続先を足す…", scope: Database, enabled: always, run: |e| e.db_do(DbAction::AddForm) },
+        UiAction { id: "db.connect", label: "つなぐ", scope: Database, enabled: not_connected, run: |e| e.db_do(DbAction::Activate) },
+        UiAction { id: "db.disconnect", label: "切る", scope: Database, enabled: connected, run: |e| e.db_do(DbAction::Disconnect) },
+        UiAction { id: "db.reload", label: "読み直す", scope: Database, enabled: connected, run: |e| e.db_do(DbAction::Reload) },
+        UiAction { id: "db.newQuery", label: "新しいクエリ", scope: Database, enabled: selected, run: |e| e.db_do(DbAction::Query(false)) },
+        UiAction { id: "db.console", label: "コンソールを開く", scope: Database, enabled: selected, run: |e| e.db_do(DbAction::Query(true)) },
+        UiAction { id: "db.openData", label: "データを開く", scope: Database, enabled: table, run: |e| e.db_do(DbAction::OpenSelected) },
+        UiAction { id: "db.ddl", label: "DDL を開く", scope: Database, enabled: table, run: |e| e.db_do(DbAction::Ddl) },
+        UiAction { id: "db.filter", label: "絞り込み", scope: Database, enabled: open, run: |e| e.db_do(DbAction::Filter) },
+        UiAction { id: "db.close", label: "欄を閉じる", scope: Database, enabled: open, run: |e| e.db_do(DbAction::Close) },
+    ]
+};
 
 impl DbPanel {
     /// データベースの木のキー（`half` は半画面の行数）。パスワード・接続先のフォーム・絞り込み（入力欄は `svc` で動かす）・選び・畳みはここで行い、外に及ぶことを返す
@@ -724,16 +760,12 @@ impl DbPanel {
             }
             return DbAction::None;
         }
-        let moved = nagi_ui::list::step(key, self.selected, self.rows.len(), half * 2);
+        // 木の上は標準のキーだけ（ADR 0019。操作はアクション: メニュー・＋ ボタン・パレット・付けたショートカット）
+        let moved = nagi_ui::list::nav(key, self.selected, self.rows.len(), half * 2);
         match key {
             _ if moved.is_some() => self.selected = moved.unwrap_or(self.selected),
-            Key::Char('g') => self.selected = 0,
-            Key::Char('/') => {
-                self.filter = Some(VimField::new(&self.filter_text, false));
-                svc.notify.info("絞り込み: 名前の一部を打つ（Enter で決める・Esc 2 回で消す）");
-            }
-            Key::Enter | Key::Char('l') | Key::Right => return DbAction::Activate,
-            Key::Char('h') | Key::Left => {
+            Key::Enter | Key::Right => return DbAction::Activate,
+            Key::Left => {
                 // 開いたフォルダなら畳む、それ以外は親へ（木の共通の動き。nagi-ui）
                 let rows: Vec<TreeLine> = (0..self.rows.len()).map(|k| TreeLine(self.depth(k), self.rows[k].key().filter(|_| self.is_open(&self.rows[k])))).collect();
                 // 開いているフォルダにだけ鍵を入れたので、鍵のあるものは開いているとみなす
@@ -747,32 +779,27 @@ impl DbPanel {
                     nagi_ui::Step::None => {}
                 }
             }
-            Key::Char('o') => return DbAction::OpenSelected,
-            Key::Char('a') => {
-                self.form = Some(Form::new(Kind::Oracle));
-                if let Some(f) = &mut self.form {
-                    f.fields[f.at].1.reinsert();
-                }
-                svc.notify.info("接続先を足す: Tab で次の欄、種類は ← →、最後の欄で Enter で保存してつなぐ");
-            }
-            Key::Char('D') => return DbAction::Ddl,
-            // 新しいクエリ・コンソール（テーブルの上なら SELECT を書き入れて）
-            Key::Char('n') => return DbAction::Query(false),
-            Key::Char('c') => return DbAction::Query(true),
-            Key::Char('x') => return DbAction::Disconnect,
-            Key::Char('r') => return DbAction::Reload,
-            Key::Char('q') => {
-                if self.conns.iter().any(|c| c.pending > 0) {
-                    svc.notify.info("まだコミットしていない変更があります。先にコミットかロールバックを");
-                } else {
-                    return DbAction::Close;
-                }
-            }
             Key::Esc => return DbAction::ToText,
-            Key::Char(':') => return DbAction::Command,
             _ => {}
         }
         DbAction::None
+    }
+
+    /// 接続先を足すフォームを開く
+    pub fn open_form(&mut self, svc: &mut crate::editor::Services) {
+        self.form = Some(Form::new(Kind::Oracle));
+        if let Some(f) = &mut self.form {
+            f.fields[f.at].1.reinsert();
+        }
+        svc.notify.info("接続先を足す: Tab で次の欄、種類は ← →、最後の欄で Enter で保存してつなぐ");
+    }
+
+    /// 絞り込みの欄へ
+    pub fn open_filter(&mut self, svc: &mut crate::editor::Services) {
+        if self.filter.is_none() {
+            self.filter = Some(VimField::new(&self.filter_text, false));
+        }
+        svc.notify.info("絞り込み: 名前の一部を打つ（Enter で決める・Esc 2 回で消す）");
     }
 }
 
@@ -812,7 +839,7 @@ impl Editor {
             self.panels.db = Some(p);
         }
         if self.panels.db.as_ref().is_some_and(|p| p.sources.is_empty()) {
-            self.svc.notify.info("接続先がありません。a（＋）で足せます");
+            self.svc.notify.info("接続先がありません。欄の上の ＋ で足せます");
         }
         self.focus_right(RightTab::Database);
     }
@@ -1653,8 +1680,15 @@ impl Editor {
         let Some(p) = &mut self.panels.db else { return false };
         // 右クリックは押した行を選ぶだけ（決めない）
         let len = p.rows.len();
-        if prow < 2 || nagi_ui::list::pick_row(&mut p.selected, p.scroll, prow, 2, len, 1).is_none() {
+        if prow < 2 {
             return false;
+        }
+        // 行の無い所（接続先が無いときを含む）: 接続先を足すだけのメニュー
+        if nagi_ui::list::pick_row(&mut p.selected, p.scroll, prow, 2, len, 1).is_none() {
+            self.focus_right(RightTab::Database);
+            let m = crate::menu::Menu::new(at.0, at.1).action(self, "db.addSource");
+            self.open_menu(m);
+            return true;
         }
         let row = p.rows[p.selected].clone();
         let i = row.source();
@@ -1761,8 +1795,9 @@ impl Editor {
                 let q = format!("{}.{}", ident(&t), ident(&name));
                 m = m.item("名前をコピー", move |e| e.copy_text(name, "名前")).item("テーブル名付きの名前をコピー", move |e| e.copy_text(q, "名前"));
             }
-            DbRow::Sub(..) | DbRow::Key(..) | DbRow::Index(..) | DbRow::Info(..) => return false,
+            DbRow::Sub(..) | DbRow::Key(..) | DbRow::Index(..) | DbRow::Info(..) => {}
         }
+        let m = m.sep().action(self, "db.addSource");
         self.open_menu(m);
         true
     }
@@ -1799,9 +1834,10 @@ impl Editor {
         false
     }
 
-    /// Vim を使わないとき、木で文字を打ったら絞り込みの欄を開いて、その文字から打ち続けられるようにする（打った文字は今の絞り込みの後ろへ）。開いたら true
+    /// 木で文字を打ったら絞り込みの欄を開いて、その文字から打ち続けられるようにする（打った文字は今の絞り込みの後ろへ。
+    /// IntelliJ のスピードサーチと同じ。Vim を使うときも木の上では Vim のキーを受けない: ADR 0019）。開いたら true
     pub(crate) fn db_type_to_filter(&mut self, key: Key) -> bool {
-        if self.vim_on || !matches!(key, Key::Char(c) if c != ' ') || !self.right_focused() || self.right_tab != RightTab::Database {
+        if !matches!(key, Key::Char(c) if c != ' ') || !self.right_focused() || self.right_tab != RightTab::Database {
             return false;
         }
         let Some(p) = &mut self.panels.db else { return false };
@@ -1825,7 +1861,14 @@ impl Editor {
             return Effect::None;
         };
         // 部品の中で済むこと（パスワード・接続先のフォーム・絞り込み・選び・畳み）は DbPanel::key が行い、外に及ぶことを返す（ADR 0018 の §5）
-        match p.key(key, half, &mut self.svc) {
+        let a = p.key(key, half, &mut self.svc);
+        self.db_do(a);
+        Effect::None
+    }
+
+    /// データベースの欄の操作を行う（キー・アクションから）
+    pub(crate) fn db_do(&mut self, a: DbAction) {
+        match a {
             DbAction::None => {}
             DbAction::Connect(i, pass) => self.db_connect(i, pass),
             DbAction::AddSource(ds) => {
@@ -1865,14 +1908,31 @@ impl Editor {
                 }
             }
             DbAction::Close => {
+                if self.panels.db.as_ref().is_some_and(|p| p.conns.iter().any(|c| c.pending > 0)) {
+                    self.svc.notify.info("まだコミットしていない変更があります。先にコミットかロールバックを");
+                    return;
+                }
                 self.panels.db = None;
                 self.set_state(State::Normal);
                 self.rows = self.text_rows(self.active_rect());
             }
             DbAction::ToText => self.set_state(State::Normal),
-            DbAction::Command => self.enter_command(""),
+            DbAction::AddForm => {
+                if self.panels.db.is_none() {
+                    self.open_db_panel();
+                }
+                if let Some(p) = &mut self.panels.db {
+                    p.open_form(&mut self.svc);
+                }
+                self.focus_right(RightTab::Database);
+            }
+            DbAction::Filter => {
+                if let Some(p) = &mut self.panels.db {
+                    p.open_filter(&mut self.svc);
+                }
+                self.focus_right(RightTab::Database);
+            }
         }
-        Effect::None
     }
 
     pub(crate) fn db_click(&mut self, row: usize, clicks: u32) {
@@ -1883,6 +1943,11 @@ impl Editor {
                 p.filter = Some(VimField::new(&p.filter_text, false));
             }
             self.focus_right(RightTab::Database);
+            return;
+        }
+        // 接続先が無いときの案内（「＋ で足す」）を押したら、足すフォーム
+        if p.sources.is_empty() && row == 2 {
+            self.db_do(DbAction::AddForm);
             return;
         }
         let len = p.rows.len();
@@ -2024,13 +2089,67 @@ pub(crate) mod tests {
         }
     }
 
+    /// 接続先を足す入口（ADR 0019）: 見出しの ＋、行の無い所の右クリック、付けたショートカット（その欄にいるときだけ）
+    #[test]
+    fn add_source_entries() {
+        let mut e = Editor::new(nagi_core::Buffer::from_str("abc\n"), None);
+        e.set_screen(160, 50);
+        e.open_db_panel();
+        let r = e.right_rect().unwrap();
+        let s = crate::layout::Screen { rows: 50, cols: 160 };
+        // 見出しの ＋
+        crate::layout::press(&mut e, s, r.y, crate::right_panel::plus_col(r), |_| 1);
+        assert!(e.panels.db.as_ref().unwrap().form.is_some(), "＋ でフォーム");
+        e.panels.db.as_mut().unwrap().form = None;
+        // 行の無い所の右クリック: 接続先を足すだけのメニュー
+        assert!(crate::layout::context(&mut e, s, r.y + 10, r.x + 3));
+        let labels: Vec<String> = e.menu.as_ref().unwrap().items.iter().map(|i| i.label.clone()).collect();
+        assert_eq!(labels, ["接続先を足す…"]);
+        e.menu_run(0);
+        assert!(e.panels.db.as_ref().unwrap().form.is_some(), "メニューからフォーム");
+        e.panels.db.as_mut().unwrap().form = None;
+        // ショートカットは既定で付けない。付けたら、その欄にいるときだけ効く
+        e.focus_right(RightTab::Database);
+        e.key(Key::Alt('i'));
+        assert!(e.panels.db.as_ref().unwrap().form.is_none(), "既定は付けない");
+        e.settings.set("keymap.ui.db.addSource", "Alt+I", false);
+        e.key(Key::Alt('i'));
+        assert!(e.panels.db.as_ref().unwrap().form.is_some(), "付けたキーで");
+        e.panels.db.as_mut().unwrap().form = None;
+        e.set_state(State::Normal);
+        e.key(Key::Alt('i'));
+        assert!(e.panels.db.as_ref().unwrap().form.is_none(), "本文では効かない");
+    }
+
+    /// 木の上で印字できる文字を打っても、絞り込みの欄に入るだけ（1 文字キーの操作は無い。ADR 0019）。Vim を使うときも
+    #[test]
+    fn printable_keys_only_filter() {
+        for vim in [false, true] {
+            let mut e = Editor::new(nagi_core::Buffer::from_str("abc\n"), None);
+            e.set_screen(160, 50);
+            e.set_vim(vim);
+            e.open_db_panel();
+            for c in (0x21u8..0x7f).map(char::from) {
+                let p = e.panels.db.as_mut().unwrap();
+                (p.filter, p.filter_text) = (None, String::new());
+                e.focus_right(RightTab::Database);
+                e.key(Key::Char(c));
+                let p = e.panels.db.as_ref().unwrap();
+                assert!(e.right_focused() && p.form.is_none() && p.password.is_none() && e.menu.is_none(), "{vim} {c}");
+                // 括弧・引用符は入力欄が閉じる側も足す
+                assert!(p.filter_text.starts_with(c), "{vim} {c}: {:?}", p.filter_text);
+            }
+        }
+    }
+
     /// 欄の入力欄を Insert・Visual のまま本文を押しても、すぐ本文へ移る（前は Insert の間は押しても何もしなかった）
     #[test]
     fn click_text_from_field_in_any_mode() {
         let mut e = Editor::new(nagi_core::Buffer::from_str("abc\ndef\n"), None);
         e.set_screen(160, 50);
         e.open_db_panel();
-        for k in ["/or", "/or<Esc>v"] {
+        // 木で打った文字は絞り込みの欄へ（ADR 0019。Vim を使うときも木の上で / は要らない）
+        for k in ["or", "or<Esc>v"] {
             e.panels.db.as_mut().unwrap().filter = None;
             e.panels.db.as_mut().unwrap().filter_text.clear();
             e.focus_right(RightTab::Database);
@@ -2080,10 +2199,10 @@ pub(crate) mod tests {
         let labels: Vec<String> = p.rows.iter().map(|r| p.row_label(r).2).collect();
         assert!(labels.contains(&"オブジェクト".to_string()) && labels.contains(&"カスタムオブジェクト".to_string()), "{labels:?}");
         assert!(e.panels.db_results.log.iter().any(|l| l.text.contains("ブラウザ")), "ログインの知らせが出力に残る");
-        // Account の上で o → SOQL が流れて結果のタブに出る（絞り込みの欄は出さない）
+        // Account の上で「データを開く」→ SOQL が流れて結果のタブに出る（絞り込みの欄は出さない）
         let k = p.rows.iter().position(|r| matches!(r, DbRow::Object(_, _, t, _, _) if t == "Account")).unwrap();
         e.panels.db.as_mut().unwrap().selected = k;
-        keys(&mut e, "o");
+        assert!(e.run_ui_action("db.openData"));
         wait(&mut e, &|e| e.panels.db_results.active_tab().is_some_and(|t| !t.running));
         let t = e.panels.db_results.active_tab().unwrap();
         assert_eq!(t.cols, vec!["Id", "Name", "Owner.Name"]);
@@ -2250,8 +2369,8 @@ pub(crate) mod tests {
         let mut e = Editor::new(nagi_core::Buffer::from_str("x\n"), None);
         e.set_screen(160, 50);
         e.open_db_panel();
-        // a → 種類を SQLite に（名前の順で最後なので、Oracle から ← で回る）→ 名前 → ファイル → Enter で保存してつなぐ
-        keys(&mut e, "a");
+        // 接続先を足す → 種類を SQLite に（名前の順で最後なので、Oracle から ← で回る）→ 名前 → ファイル → Enter で保存してつなぐ
+        assert!(e.run_ui_action("db.addSource"));
         assert!(e.panels.db.as_ref().unwrap().form.is_some());
         keys(&mut e, "<Up><Left><Down>shop<Tab>");
         let file = dir.join("shop.db");
@@ -2263,7 +2382,7 @@ pub(crate) mod tests {
         let i = e.panels.db.as_ref().unwrap().sources.len() - 1;
         wait(&mut e, &|e| e.panels.db.as_ref().unwrap().conns[i].objects.contains_key("main"));
         // コンソール: CREATE は確かめてから
-        keys(&mut e, "c");
+        assert!(e.run_ui_action("db.console"));
         assert_eq!(e.console_source(), Some(i));
         keys(&mut e, "Gocreate table item(id integer primary key, name text)<Esc><C-m>");
         assert!(e.menu.as_ref().and_then(|m| m.title.as_deref()).is_some_and(|t| t.contains("データを変える文")), "確認の窓");
@@ -2296,7 +2415,7 @@ pub(crate) mod tests {
         // 新しいクエリ: 別のファイルを Insert で開き、そのまま書いて Ctrl+Enter で流せる
         e.focus_right(RightTab::Database);
         e.panels.db.as_mut().unwrap().selected = e.panels.db.as_ref().unwrap().rows.iter().position(|r| *r == DbRow::Source(i)).unwrap();
-        keys(&mut e, "n");
+        assert!(e.run_ui_action("db.newQuery"));
         assert_eq!(e.state(), State::Insert);
         assert!(e.core.buf.path.as_ref().unwrap().to_string_lossy().ends_with("shop_query_1.sql"));
         keys(&mut e, "select 42 as answer<C-m>");
@@ -2307,10 +2426,11 @@ pub(crate) mod tests {
         assert!(e.core.buf.path.as_ref().unwrap().to_string_lossy().ends_with("shop_query_2.sql"), "番号を進める");
         // 絞り込み
         e.focus_right(RightTab::Database);
-        keys(&mut e, "/zzz<CR>");
+        keys(&mut e, "zzz<CR>");
         assert!(!e.panels.db.as_ref().unwrap().rows.iter().any(|r| matches!(r, DbRow::Object(..))));
-        // Vim 風: Esc でノーマル、もう一度 Esc で消す
-        keys(&mut e, "/<Esc><Esc>");
+        // 絞り込みの欄（Vim 風）: Esc でノーマル、もう一度 Esc で消す
+        assert!(e.run_ui_action("db.filter"));
+        keys(&mut e, "<Esc><Esc>");
         assert!(e.panels.db.as_ref().unwrap().rows.iter().any(|r| matches!(r, DbRow::Object(..))));
     }
 }

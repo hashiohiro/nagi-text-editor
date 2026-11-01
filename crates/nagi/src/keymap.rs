@@ -68,11 +68,13 @@ pub fn parse_chord(s: &str) -> Option<Chord> {
     Some(c)
 }
 
-/// 組み合わせに付ける操作: コマンドの表（commands.rs）の名前か、そのまま流すキー（入力補完のように、その場に合わせて動くもの）
+/// 組み合わせに付ける操作: コマンドの表（commands.rs）の名前か、そのまま流すキー（入力補完のように、その場に合わせて動くもの）か、
+/// 部品のアクション（ui_action.rs。その部品にフォーカスがあるときだけ）
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
     Cmd(&'static str),
     Key(Key),
+    Ui(&'static str),
 }
 
 /// 操作（設定のキー, 操作）。既定は IntelliJ（Windows）の既定のキーマップと同じ。ただし定義へは F12、
@@ -297,6 +299,10 @@ impl crate::editor::Editor {
 
     /// 押した組み合わせの操作と、既定のキーから移ったか（設定で決めたキー → vimrc → 既定。本文だけの操作は本文で）
     pub fn chord_action(&self, chord: &Chord) -> (Option<Action>, bool) {
+        // 部品のアクションに付けたキーは、その部品にいるとき全体のキーマップより先（ADR 0019）
+        if let Some(a) = self.ui_action_for(chord) {
+            return (Some(Action::Ui(a.id)), false);
+        }
         let (claim, body) = (self.vim_claim(chord), self.in_body());
         (action_in(&self.settings, chord, claim, body), default_moved(&self.settings, chord, claim, body))
     }
