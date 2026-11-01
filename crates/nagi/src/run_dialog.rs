@@ -177,6 +177,47 @@ impl RunDialog {
 }
 
 impl RunDialog {
+    /// 新しい構成を足す（名前の欄へ）
+    pub fn add(&mut self) {
+        self.commit();
+        let name = self.unique("新しい構成");
+        self.configs.push(RunConfig { name, kind: Kind::new("shell"), from: "nagi" });
+        self.selected = self.configs.len() - 1;
+        self.load_fields();
+        // 名前はすぐ打てるように空の欄から（打たなければ「新しい構成」のまま）
+        self.name = VimField::new("", false);
+        self.focus = Focus::Name;
+        self.dirty = true;
+    }
+
+    /// 選んでいる構成を複製する
+    pub fn duplicate(&mut self) {
+        self.commit();
+        if let Some(mut c) = self.current().cloned() {
+            c.name = self.unique(&format!("{} のコピー", c.name));
+            c.from = "nagi";
+            self.configs.insert(self.selected + 1, c);
+            self.selected += 1;
+            self.load_fields();
+            self.dirty = true;
+        }
+    }
+
+    /// 選んでいる構成を消す（nagi の構成だけ）
+    pub fn delete(&mut self, svc: &mut crate::editor::Services) {
+        self.commit();
+        match self.current() {
+            Some(c) if c.from == "nagi" => {
+                self.configs.remove(self.selected);
+                self.selected = self.selected.min(self.configs.len().saturating_sub(1));
+                self.load_fields();
+                self.dirty = true;
+            }
+            Some(_) => svc.notify.warn("IntelliJ の構成は nagi からは消せません（IntelliJ で消してください）"),
+            None => {}
+        }
+    }
+
     /// ダイアログのキー（構成の一覧・種類・入力欄。入力欄は `svc` で動かす）。押したことになるボタンを返す
     pub fn key(&mut self, key: Key, svc: &mut crate::editor::Services) -> Option<DialogButton> {
         let d = self;
@@ -187,49 +228,17 @@ impl RunDialog {
         let confirm = std::mem::take(&mut d.confirm_close);
         match d.focus {
             Focus::List => {
+                // 一覧は標準のキーだけ（ADR 0019。足す・複製・実行は ＋ ⧉ のボタン・右クリック・アクション）
                 let n = d.configs.len();
-                let moved = nagi_ui::list::step(key, d.selected, n, 10);
+                let moved = nagi_ui::list::nav(key, d.selected, n, 10);
                 match key {
                     _ if moved.is_some() => d.select(moved.unwrap_or(d.selected)),
-                    Key::Char('g') => d.select(0),
-                    Key::Enter | Key::Tab | Key::Char('l') | Key::Char('i') => {
+                    Key::Enter | Key::Tab => {
                         d.focus = Focus::Name;
                         d.name.reinsert();
                     }
-                    Key::Char('a' | '+') => {
-                        d.commit();
-                        let name = d.unique("新しい構成");
-                        d.configs.push(RunConfig { name, kind: Kind::new("shell"), from: "nagi" });
-                        d.selected = d.configs.len() - 1;
-                        d.load_fields();
-                        // 名前はすぐ打てるように空の欄から（打たなければ「新しい構成」のまま）
-                        d.name = VimField::new("", false);
-                        d.focus = Focus::Name;
-                        d.dirty = true;
-                    }
-                    Key::Char('c') => {
-                        d.commit();
-                        if let Some(mut c) = d.current().cloned() {
-                            c.name = d.unique(&format!("{} のコピー", c.name));
-                            c.from = "nagi";
-                            d.configs.insert(d.selected + 1, c);
-                            d.selected += 1;
-                            d.load_fields();
-                            d.dirty = true;
-                        }
-                    }
-                    Key::Char('d' | '-' | 'x') | Key::Delete => match d.current() {
-                        Some(c) if c.from == "nagi" => {
-                            d.configs.remove(d.selected);
-                            d.selected = d.selected.min(d.configs.len().saturating_sub(1));
-                            d.load_fields();
-                            d.dirty = true;
-                        }
-                        Some(_) => svc.notify.warn("IntelliJ の構成は nagi からは消せません（IntelliJ で消してください）"),
-                        None => {}
-                    },
-                    Key::Char('r') => return Some(DialogButton::Run),
-                    Key::Esc | Key::Char('q') => {
+                    Key::Delete => d.delete(svc),
+                    Key::Esc => {
                         if d.dirty && !confirm {
                             d.confirm_close = true;
                             svc.notify.info("保存していない変更があります。もう一度 Esc で捨てて閉じる、Ctrl+Enter で保存して閉じる");
@@ -241,10 +250,10 @@ impl RunDialog {
                 }
             }
             Focus::Kind => match key {
-                Key::Char('h') | Key::Left => d.cycle_kind(-1),
-                Key::Char('l') | Key::Right | Key::Char(' ') => d.cycle_kind(1),
-                Key::Tab | Key::Enter | Key::Down | Key::Char('j') => d.move_focus(1),
-                Key::Up | Key::Char('k') => d.move_focus(-1),
+                Key::Left => d.cycle_kind(-1),
+                Key::Right | Key::Char(' ') => d.cycle_kind(1),
+                Key::Tab | Key::Enter | Key::Down => d.move_focus(1),
+                Key::Up => d.move_focus(-1),
                 Key::Esc => {
                     d.commit();
                     d.focus = Focus::List;
@@ -294,6 +303,22 @@ impl RunDialog {
         None
     }
 }
+
+/// 実行の構成の画面のアクション（ui_action.rs。ADR 0019）
+pub static ACTIONS: [crate::ui_action::UiAction; 3] = {
+    use crate::ui_action::{Scope::RunConfig, UiAction};
+    fn open(e: &Editor) -> bool {
+        e.panels.run_dialog.is_some()
+    }
+    fn chosen(e: &Editor) -> bool {
+        e.panels.run_dialog.as_ref().is_some_and(|d| d.current().is_some())
+    }
+    [
+        UiAction { id: "runConfig.run", label: "実行", scope: RunConfig, enabled: chosen, run: |e| e.run_dialog_button(DialogButton::Run) },
+        UiAction { id: "runConfig.add", label: "構成を追加", scope: RunConfig, enabled: open, run: |e| e.run_dialog_button(DialogButton::Add) },
+        UiAction { id: "runConfig.duplicate", label: "この構成を複製", scope: RunConfig, enabled: chosen, run: |e| e.run_dialog_button(DialogButton::Copy) },
+    ]
+};
 
 impl Editor {
     /// 実行の構成の画面を開く（`select` の名前の構成を選んで）
@@ -376,15 +401,14 @@ impl Editor {
                 self.svc.notify.info("実行の構成の画面を閉じました（保存していない変更は捨てました）");
             }
             DialogButton::Add | DialogButton::Copy | DialogButton::Delete => {
-                if let Some(d) = &mut self.panels.run_dialog {
-                    d.commit();
-                    d.focus = Focus::List;
+                let Some(d) = &mut self.panels.run_dialog else { return };
+                d.commit();
+                d.focus = Focus::List;
+                match b {
+                    DialogButton::Add => d.add(),
+                    DialogButton::Copy => d.duplicate(),
+                    _ => d.delete(&mut self.svc),
                 }
-                self.run_dialog_key(Key::Char(match b {
-                    DialogButton::Add => 'a',
-                    DialogButton::Copy => 'c',
-                    _ => 'd',
-                }));
             }
         }
     }
@@ -491,6 +515,11 @@ impl crate::component::Component for RunDialogComponent {
         ed.run_dialog_click(row, col, clicks);
         true
     }
+
+    fn scope(&self, ed: &crate::editor::Editor) -> Option<crate::ui_action::Scope> {
+        let _ = ed;
+        Some(crate::ui_action::Scope::RunConfig)
+    }
 }
 
 
@@ -519,10 +548,15 @@ impl crate::layout::View for RunDialogView {
     fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At) -> bool {
         let _ = r;
         let (row, col) = at.screen;
-        use nagi_vim::Key::*;
         // 押した構成を選んでから（1 回のクリックは選ぶだけ）
         ed.run_dialog_click(row, col, 1);
-        let m = crate::menu::Menu::new(row, col).keys("実行", &[Char('r')]).keys("この構成を複製", &[Char('c')]).sep().keys("閉じる", &[Esc]);
+        let m = crate::menu::Menu::new(row, col)
+            .action(ed, "runConfig.run")
+            .action(ed, "runConfig.add")
+            .action(ed, "runConfig.duplicate")
+            .item_shortcut("消す", "Delete", |e| e.run_dialog_button(DialogButton::Delete))
+            .sep()
+            .item_shortcut("閉じる", "Esc", |e| e.run_dialog_key(nagi_vim::Key::Esc));
         ed.open_menu(m);
         true
     }
@@ -658,7 +692,7 @@ pub(crate) mod draw {
             }
             p.text(&line, cx, y(r), rgb(0xa8a8a8));
         } else {
-            p.text("構成がありません。＋（a）で追加", rx, y(1), STATUS_FG);
+            p.text("構成がありません。＋ で追加", rx, y(1), STATUS_FG);
         }
         // 下: 案内とボタン
         let help = match d.focus {
@@ -702,20 +736,20 @@ mod tests {
         e.open_run_dialog(None);
         assert_eq!(e.state(), State::RunDialog);
         assert_eq!(e.panels.run_dialog.as_ref().unwrap().configs.len(), 1);
-        // a で追加 → 名前を打つ → Tab で種類 → l で Maven → Tab でゴール
-        keys(&mut e, "a");
+        // 追加 → 名前を打つ → Tab で種類 → → で Maven → Tab でゴール
+        assert!(e.run_ui_action("runConfig.add"));
         let d = e.panels.run_dialog.as_ref().unwrap();
         assert_eq!((d.focus, d.configs.len()), (Focus::Name, 2));
-        keys(&mut e, "テスト<Tab>l<Tab>test -q<CR>");
+        keys(&mut e, "テスト<Tab><Right><Tab>test -q<CR>");
         let d = e.panels.run_dialog.as_ref().unwrap();
         assert_eq!(d.configs[1].name, "テスト");
         assert_eq!(d.configs[1].kind.id(), Some("maven"));
         assert!(matches!(&d.configs[1].kind, Kind::Maven { goals, .. } if goals == &["test", "-q"]), "{:?}", d.configs[1].kind);
         assert!(e.run_dialog_preview().contains("test -q"), "{}", e.run_dialog_preview());
         // IntelliJ の構成は消せない。直すと nagi の構成になる
-        keys(&mut e, "<Esc><Esc>gd");
+        keys(&mut e, "<Esc><Esc><Home><Del>");
         assert!(e.svc.notify.text.contains("IntelliJ"), "{}", e.svc.notify.text);
-        keys(&mut e, "i<Tab><Tab><Esc>Secho nagi<Esc><Esc>");
+        keys(&mut e, "<CR><Tab><Tab><Esc>Secho nagi<Esc><Esc>");
         assert_eq!(e.panels.run_dialog.as_ref().unwrap().configs[0].from, "nagi");
         // Ctrl+Enter で保存して閉じる
         keys(&mut e, "<C-m>");
@@ -727,7 +761,8 @@ mod tests {
         assert_eq!(v.iter().find(|c| c.name == "IJ").unwrap().kind, Kind::Shell { command: "echo nagi".into(), workdir: None });
         // 直してから Esc を 1 回だと確かめ、2 回で閉じる
         e.open_run_dialog(Some("テスト"));
-        keys(&mut e, "c<Esc>");
+        assert!(e.run_ui_action("runConfig.duplicate"));
+        keys(&mut e, "<Esc>");
         assert_eq!(e.state(), State::RunDialog);
         keys(&mut e, "<Esc>");
         assert_eq!(e.state(), State::Normal);
