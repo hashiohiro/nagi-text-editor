@@ -186,12 +186,12 @@ impl Op {
     pub fn label(self, current: &str) -> String {
         match self {
             Op::Checkout => "チェックアウト".into(),
-            Op::NewFrom => "ここから新しいブランチ…".into(),
+            Op::NewFrom => "新規ブランチ…".into(),
             Op::Merge => format!("{current} にマージ"),
-            Op::Rebase => format!("{current} をこの上へリベース"),
-            Op::Compare => format!("{current} と比べる"),
-            Op::Pull => "pull（取り込み）".into(),
-            Op::Rename => "名前を変える…".into(),
+            Op::Rebase => format!("選択したブランチで {current} をリベース"),
+            Op::Compare => format!("{current} と比較"),
+            Op::Pull => "プル".into(),
+            Op::Rename => "名前の変更…".into(),
             Op::Delete => "削除…".into(),
         }
     }
@@ -724,7 +724,7 @@ pub(crate) mod draw {
             }
             match e {
                 Entry::NewBranch => {
-                    p.text(" ＋ 新しいブランチ…", x0, yy, FG);
+                    p.text(" ＋ 新規ブランチ…", x0, yy, FG);
                 }
                 Entry::Fetch => {
                     p.text(" ⟳ フェッチ", x0, yy, FG);

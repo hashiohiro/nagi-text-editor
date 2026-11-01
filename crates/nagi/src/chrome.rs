@@ -302,7 +302,7 @@ pub(crate) mod draw {
             let tip = match wd.hit {
                 Hit::Cmd("Run") => Some("実行（Shift+F10）"),
                 Hit::Cmd("Debug") => Some("デバッグ（Shift+F9）"),
-                Hit::Cmd("RunStop") => Some("止める（Ctrl+F2）"),
+                Hit::Cmd("RunStop") => Some("停止（Ctrl+F2）"),
                 Hit::Cmd("SearchEverywhere") => Some("どこでも検索（Shift 2 回）"),
                 Hit::Cmd("Settings") => Some("設定（Ctrl+Alt+S）"),
                 _ => None,

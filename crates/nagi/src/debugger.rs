@@ -686,7 +686,7 @@ impl crate::component::Component for DebugComponent {
         let _ = ed;
         let k = |key: &str| ed.settings.get(key);
         let (go, over, into, out, stop) = (k("keymap.debug_resume"), k("keymap.step_over"), k("keymap.step_into"), k("keymap.step_out"), k("keymap.debug_stop"));
-        crate::component::Status::new("-- デバッグ --", format!("Tab スタック⇔変数  {go} 続ける  {over} 次へ  {into} 中へ  {out} 外へ  {stop} 止める "))
+        crate::component::Status::new("-- デバッグ --", format!("Tab スタック⇔変数  {go} 再開  {over} ステップオーバー  {into} ステップイン  {out} ステップアウト  {stop} 停止 "))
     }
 
     fn key(&self, ed: &mut Editor, key: Key) -> crate::editor::Effect {
@@ -715,11 +715,11 @@ pub(crate) mod draw {
         let mut x = r.x + 1;
         let mut buttons = Vec::new();
         let buttons_of: [(&str, fn(&mut Editor), bool); 5] = [
-            ("▶ 続ける", |e| e.debug_resume(), d.stopped),
-            ("次へ", |e| e.debug_step(Depth::Over), d.stopped),
-            ("中へ", |e| e.debug_step(Depth::Into), d.stopped),
-            ("外へ", |e| e.debug_step(Depth::Out), d.stopped),
-            ("■ 止める", |e| e.debug_stop(), !d.ended),
+            ("▶ 再開", |e| e.debug_resume(), d.stopped),
+            ("ステップオーバー", |e| e.debug_step(Depth::Over), d.stopped),
+            ("ステップイン", |e| e.debug_step(Depth::Into), d.stopped),
+            ("ステップアウト", |e| e.debug_step(Depth::Out), d.stopped),
+            ("■ 停止", |e| e.debug_stop(), !d.ended),
         ];
         for (label, key, on) in buttons_of {
             let w = p.width(label) + 2;

@@ -348,7 +348,7 @@ impl crate::component::Component for DiffComponent {
         let d = ed.panels.diff.as_ref();
         let n = d.map_or(0, |d| d.hunk_rows.len());
         let i = d.map_or(0, |d| d.hunk_rows.iter().rposition(|&r| r <= d.cursor).map_or(0, |i| i + 1));
-        crate::component::Status::new(format!("-- 差分 --   変更 {i}/{n}"), "↑↓←→ 動く  Enter 開く  右クリック ステージ・戻す・次の変更  Esc 閉じる ")
+        crate::component::Status::new(format!("-- 差分 --   変更 {i}/{n}"), "↑↓←→ 動く  Enter ソースに移動  右クリック ステージ・行のロールバック・次の差分  Esc 閉じる ")
     }
 
     fn key(&self, ed: &mut crate::editor::Editor, key: nagi_vim::Key) -> crate::editor::Effect {

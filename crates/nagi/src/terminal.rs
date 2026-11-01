@@ -741,7 +741,7 @@ pub struct TerminalComponent;
 impl crate::component::Component for TerminalComponent {
     fn status(&self, ed: &crate::editor::Editor) -> Option<crate::component::Status> {
         if ed.panels.terminals.current().is_some_and(|t| t.name.starts_with(crate::run_configs::RUN_PREFIX)) {
-            crate::component::Status::new("-- 実行 --", "Esc エディタへ   Ctrl+C 止める   Ctrl+F5 もう一度   Ctrl-\\ x 閉じる   Alt+F12 隠す ")
+            crate::component::Status::new("-- 実行 --", "Esc エディタへ   Ctrl+C 停止   Ctrl+F5 再実行   Ctrl-\\ x 閉じる   Alt+F12 隠す ")
         } else {
             crate::component::Status::new("-- ターミナル --", "クリックで URL を開く   Ctrl-\\ の後: n 本文へ  c 新しい窓（シェルを選ぶ）  1〜9 切り替え  x 閉じる   Alt+F12 隠す ")
         }
