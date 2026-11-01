@@ -62,10 +62,6 @@ impl Status {
         Some(Status { name: name.into(), warn: false, help: help.into(), plain: None })
     }
 
-    /// Vim のときの説明と、使わないときの説明
-    pub fn keys(name: impl Into<String>, help: impl Into<String>, plain: impl Into<String>) -> Option<Status> {
-        Some(Status { name: name.into(), warn: false, help: help.into(), plain: Some(plain.into()) })
-    }
 }
 
 /// 今向いている部品（Vim の編集の状態なら None）。`:` のコマンドラインは Vim の状態だが、候補の窓を持つので部品として扱う

@@ -359,9 +359,8 @@ impl Editor {
         if self.svc.git.popup.is_none() || !self.pending_keys.is_empty() {
             return false;
         }
+        // 戻す・ステージは右クリックのメニュー（ADR 0019。ポップアップの上で 1 文字キーは受けない）
         match key {
-            Key::Char('u') => self.revert_hunk(),
-            Key::Char('s') => self.stage_hunk(),
             Key::Esc => self.svc.git.popup = None,
             // ]c [c は開いたまま次の変更へ
             Key::Char(']') | Key::Char('[') => return false,
@@ -462,11 +461,15 @@ impl crate::layout::View for HunkPopupView {
 
     fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At) -> bool {
         let (row, col) = at.screen;
-        use nagi_vim::Key::*;
         let _ = r;
+        let k = |key: &str| ed.settings.get(key);
         let m = crate::menu::Menu::new(row, col)
-            .keys("前の変更", &[Char('['), Char('c')])
-            .keys("次の変更", &[Char(']'), Char('c')])
+            .item_shortcut("前の変更", &k("keymap.hunk_prev"), |e| {
+                crate::commands::run(e, "HunkPrev");
+            })
+            .item_shortcut("次の変更", &k("keymap.hunk_next"), |e| {
+                crate::commands::run(e, "HunkNext");
+            })
             .sep()
             .item("この変更をステージ", |e| e.stage_hunk())
             .item("この変更を戻す", |e| e.revert_hunk())
@@ -510,7 +513,7 @@ pub(crate) mod draw {
             nagi_core::linediff::HunkKind::Del => format!("{} 行を消した", old.len()),
             nagi_core::linediff::HunkKind::Mod => format!("{} 行を変えた", new.len().max(old.len())),
         };
-        p.text(&format!(" 変更 {total}   {kind}     [c 前  ]c 次  u 戻す  s ステージ  Esc 閉じる"), x0, y0, STATUS_FG);
+        p.text(&format!(" 変更 {total}   {kind}     右クリック ステージ・戻す・前後の変更  Esc 閉じる"), x0, y0, STATUS_FG);
         let mut y = y0 + cell.h;
         // 対になる行は変わった部分を濃く塗る
         for (i, l) in old.iter().take(n_old).enumerate() {
@@ -585,17 +588,19 @@ mod tests {
         assert_eq!(e.core.cursor.line, 4);
         keys(&mut e, "[c");
         assert_eq!(e.core.cursor.line, 1);
-        // ポップアップを開いて、2 行目の変更をステージ
+        // ポップアップを開いて、2 行目の変更をステージ（右クリックのメニューの「この変更をステージ」）
         e.open_hunk_popup();
         let (old, new, _) = e.popup_lines().unwrap();
         assert_eq!((old, new), (vec!["2".to_string()], vec!["TWO".to_string()]));
-        keys(&mut e, "s");
+        e.stage_hunk();
+        e.wait_jobs();
         assert!(e.svc.notify.text.starts_with("変更をステージしました"), "{}", e.svc.notify.text);
         assert!(String::from_utf8_lossy(&g(&["diff", "--cached"])).contains("+TWO"));
         // 足した行を戻す（バッファから消える）
         keys(&mut e, "5G");
         e.open_hunk_popup();
-        keys(&mut e, "u");
+        e.revert_hunk();
+        e.wait_jobs();
         assert_eq!(e.core.buf.text(), "1\nTWO\n3\n4\n5\n");
         keys(&mut e, "u");
         assert_eq!(e.core.buf.text(), "1\nTWO\n3\n4\nnew\n5\n", "u で取り消せる");

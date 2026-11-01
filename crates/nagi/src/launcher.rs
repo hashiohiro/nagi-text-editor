@@ -54,7 +54,6 @@ pub struct Launcher {
     pub ask: Option<(Ask, VimField)>,
     /// git clone の実行中（URL, 結果）
     pub cloning: Option<(String, nagi_core::task::Task<nagi_core::Result<PathBuf>>)>,
-    pending_d: bool,
     pub message: String,
     /// 描いた一覧の (画面の行, hits の添字)。クリックで使う
     pub row_map: std::cell::RefCell<Vec<(usize, usize)>>,
@@ -168,8 +167,6 @@ pub enum LauncherAction {
     Clone(String),
     /// 左の操作（o・w・g・r・n）
     Action(char),
-    Pin,
-    Hide,
     Close,
 }
 
@@ -198,13 +195,12 @@ impl Launcher {
         }
         let normal = !self.field.is_insert() && self.field.ed.pending_keys.is_empty() && self.field.visual().is_none();
         let last = self.hits.len().saturating_sub(1);
-        let pending_d = std::mem::take(&mut self.pending_d);
         let moved = nagi_ui::list::step_typing(key, self.selected, last + 1);
         match key {
             Key::Enter | Key::Ctrl('m') => {
                 if let Some(e) = self.selected_entry() {
                     if e.missing {
-                        self.message = format!("フォルダがありません: {}（dd で一覧から外す）", e.path.display());
+                        self.message = format!("フォルダがありません: {}（右クリックで一覧から外す）", e.path.display());
                     } else {
                         return LauncherAction::Open(e.path.clone());
                     }
@@ -218,12 +214,8 @@ impl Launcher {
             Key::Ctrl('g') => return LauncherAction::Action('g'),
             Key::Ctrl('r') => return LauncherAction::Action('r'),
             Key::Ctrl('e') => return LauncherAction::Action('n'),
+            // 入力欄が Normal の間の j・k は一覧を送る（入力欄の中の動き。ピン留め・一覧から外すは右クリックとアクション: ADR 0019）
             Key::Char('j' | 'k') if normal => self.selected = nagi_ui::list::step(key, self.selected, last + 1, 10).unwrap_or(self.selected),
-            Key::Char(c @ ('g' | 'o' | 'w' | 'r' | 'n')) if normal => return LauncherAction::Action(c),
-            Key::Char('G') if normal => self.selected = nagi_ui::list::step(key, self.selected, last + 1, 10).unwrap_or(self.selected),
-            Key::Char('p') if normal => return LauncherAction::Pin,
-            Key::Char('d') if normal && pending_d => return LauncherAction::Hide,
-            Key::Char('d') if normal => self.pending_d = true,
             Key::Ctrl('c') => return LauncherAction::Close,
             k => match self.field.feed(k, svc) {
                 FieldOut::Changed => self.refilter(),
@@ -234,6 +226,24 @@ impl Launcher {
         LauncherAction::Moved
     }
 }
+
+/// ランチャーのアクション（ui_action.rs。ADR 0019）
+pub static UI_ACTIONS: [crate::ui_action::UiAction; 2] = {
+    use crate::ui_action::{Scope::Launcher, UiAction};
+    fn chosen(e: &Editor) -> bool {
+        e.panels.launcher.as_ref().is_some_and(|l| l.selected_entry().is_some())
+    }
+    [
+        UiAction { id: "launcher.pin", label: "ピン留め・外す", scope: Launcher, enabled: chosen, run: |e| {
+            e.launcher_pin();
+            e.want_preview();
+        } },
+        UiAction { id: "launcher.hide", label: "一覧から外す", scope: Launcher, enabled: chosen, run: |e| {
+            e.launcher_hide();
+            e.want_preview();
+        } },
+    ]
+};
 
 impl Editor {
     /// ランチャーを出す（一覧は裏で集める）
@@ -278,7 +288,6 @@ impl Editor {
             preview_rx: None,
             ask: None,
             cloning: None,
-            pending_d: false,
             message: String::new(),
             row_map: Default::default(),
             act_map: Default::default(),
@@ -429,14 +438,6 @@ impl Editor {
             LauncherAction::Open(p) => self.close_launcher_to(p),
             LauncherAction::Clone(url) => self.start_clone(url),
             LauncherAction::Action(c) => self.launcher_action(c),
-            LauncherAction::Pin => {
-                self.launcher_pin();
-                self.want_preview();
-            }
-            LauncherAction::Hide => {
-                self.launcher_hide();
-                self.want_preview();
-            }
             LauncherAction::Close => self.close_launcher(),
         }
     }
@@ -538,6 +539,11 @@ impl crate::component::Component for LauncherComponent {
         ed.launcher_insert(text);
     }
 
+    fn scope(&self, ed: &crate::editor::Editor) -> Option<crate::ui_action::Scope> {
+        let _ = ed;
+        Some(crate::ui_action::Scope::Launcher)
+    }
+
     fn click(&self, ed: &mut crate::editor::Editor, row: usize, col: usize, clicks: u32) -> bool {
         if !ed.launcher_left_click(row, col) {
             ed.launcher_click_row(row, clicks);
@@ -572,7 +578,6 @@ impl crate::layout::View for LauncherView {
     fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At) -> bool {
         let _ = r;
         let (row, col) = at.screen;
-        use nagi_vim::Key::*;
         // プロジェクトの行: 選んでから、開く・ピン留め・一覧から外す
         let Some(l) = &mut ed.panels.launcher else { return false };
         let n = l.hits.len();
@@ -581,7 +586,10 @@ impl crate::layout::View for LauncherView {
             return false;
         }
         let pinned = l.selected_entry().is_some_and(|e| e.pinned);
-        let m = crate::menu::Menu::new(row, col).keys("開く", &[Enter]).item(if pinned { "ピン留めを外す" } else { "ピン留め" }, |e| e.launcher_pin()).item("一覧から外す", |e| e.launcher_hide());
+        let m = crate::menu::Menu::new(row, col)
+            .item_shortcut("開く", "Enter", |e| e.launcher_key(nagi_vim::Key::Enter))
+            .action_as(ed, "launcher.pin", if pinned { "ピン留めを外す" } else { "ピン留め" })
+            .action(ed, "launcher.hide");
         ed.open_menu(m);
         true
     }
@@ -875,10 +883,8 @@ mod tests {
         let l = e.panels.launcher.as_ref().unwrap();
         assert!(l.picking.is_none() && l.field.is_insert());
         e.launcher_key(Key::Esc);
-        // g で git の URL の入力、Esc Esc でやめる（o はダイアログを出すので試験では押さない）
-        for k in nagi_vim::parse_keys("g", " ") {
-            e.launcher_key(k);
-        }
+        // Ctrl+G で git の URL の入力、Esc Esc でやめる（Ctrl+O はダイアログを出すので試験では押さない）
+        e.launcher_key(Key::Ctrl('g'));
         assert!(e.panels.launcher.as_ref().unwrap().ask.is_some());
         for k in nagi_vim::parse_keys("<Esc><Esc>", " ") {
             e.launcher_key(k);

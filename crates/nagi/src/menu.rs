@@ -60,13 +60,6 @@ impl Menu {
         self
     }
 
-    /// 選ぶと、向いている部品へキーを流す項目（キーの処理とメニューの処理を 1 つにする。
-    /// Vim を使わないときにキーを絞っても、メニューからは呼べる）
-    pub fn keys(self, label: impl Into<String>, keys: &[Key]) -> Menu {
-        let ks = keys.to_vec();
-        self.item(label, move |e| e.panel_keys(&ks))
-    }
-
     /// 部品のアクション（ui_action.rs）の項目: 名前・付けたショートカット・できるかを表から出す
     pub fn action(self, ed: &Editor, id: &'static str) -> Menu {
         let label = crate::ui_action::find(id).map_or("", |a| a.label);
@@ -256,10 +249,11 @@ impl Editor {
             k => k,
         };
         let to = match key {
-            Key::Char('j') | Key::Down | Key::Ctrl('n') | Key::Tab => Some((m.sel + 1).min(n.saturating_sub(1))),
-            Key::Char('k') | Key::Up | Key::Ctrl('p') => Some(m.sel.saturating_sub(1)),
-            Key::Char('g') | Key::Home => Some(0),
-            Key::Char('G') | Key::End => Some(n.saturating_sub(1)),
+            // 標準のキーだけ（ADR 0019）。文字は項目の頭の字（確認の y・n など）
+            Key::Down | Key::Tab => Some((m.sel + 1).min(n.saturating_sub(1))),
+            Key::Up => Some(m.sel.saturating_sub(1)),
+            Key::Home => Some(0),
+            Key::End => Some(n.saturating_sub(1)),
             _ => None,
         };
         if let Some(to) = to {
@@ -294,7 +288,7 @@ impl crate::component::Component for MenuComponent {
 
     fn status(&self, ed: &Editor) -> Option<crate::component::Status> {
         let _ = ed;
-        crate::component::Status::keys("-- メニュー --", "j/k 選ぶ  Enter 行う  Esc 閉じる ", "↑↓ 選ぶ  Enter 行う  Esc 閉じる ")
+        crate::component::Status::new("-- メニュー --", "↑↓ 選ぶ  Enter 行う  Esc 閉じる ")
     }
 }
 
