@@ -52,8 +52,6 @@ pub struct TreePanel {
     reveal: Option<PathBuf>,
     /// 最後に合わせた開いているファイル（変わったら木をそこまで展開して選ぶ）
     synced: Option<PathBuf>,
-    pending_g: bool,
-    pending_w: bool,
 }
 
 /// 木の上の見出しの行数（描き方・押した行・見える範囲で使う）
@@ -179,51 +177,50 @@ pub enum TreeAction {
     ToText,
     /// 木を閉じる
     Close,
-    /// 下の欄へ移る（Ctrl-w j。下の欄が無ければ本文へ）
-    FocusBottom,
     /// ファイルを開く（true なら木に残る）
     Open(PathBuf, bool),
-    /// `:` の行へ
-    Command,
+    /// 選んでいる行を開く・畳む（ファイルなら開いて、true なら木に残る）
+    Activate(bool),
+    /// 読み直す
+    Reload,
 }
+
+/// プロジェクトの木のアクション（ui_action.rs。ADR 0019）
+pub static ACTIONS: [crate::ui_action::UiAction; 4] = {
+    use crate::ui_action::{Scope::ProjectTree, UiAction};
+    fn open(e: &Editor) -> bool {
+        e.panels.tree.is_some()
+    }
+    fn file(e: &Editor) -> bool {
+        e.panels.tree.as_ref().and_then(|t| t.rows.get(t.selected)).is_some_and(|r| !r.dir)
+    }
+    fn selected(e: &Editor) -> bool {
+        e.panels.tree.as_ref().is_some_and(|t| t.selected < t.rows.len())
+    }
+    [
+        UiAction { id: "tree.open", label: "開く・畳む", scope: ProjectTree, enabled: selected, run: |e| e.tree_do(TreeAction::Activate(false)) },
+        UiAction { id: "tree.openKeep", label: "開いて木に残る", scope: ProjectTree, enabled: file, run: |e| e.tree_do(TreeAction::Activate(true)) },
+        UiAction { id: "tree.reload", label: "読み直す", scope: ProjectTree, enabled: open, run: |e| e.tree_do(TreeAction::Reload) },
+        UiAction { id: "tree.close", label: "木を閉じる", scope: ProjectTree, enabled: open, run: |e| e.tree_do(TreeAction::Close) },
+    ]
+};
 
 impl TreePanel {
     /// 木のキー（`half` は半画面の行数）。部品の中で済むこと（移動・開閉・読み直し）はここで行い、外に及ぶことを返す
+    /// 木の上は標準のキーだけ（ADR 0019。読み直す・閉じるなどはアクション: 右クリックのメニュー・パレット・付けたショートカット）
     pub fn key(&mut self, key: Key, half: usize, waker: &nagi_workers::Waker) -> TreeAction {
-        let g_pending = std::mem::take(&mut self.pending_g);
-        if std::mem::take(&mut self.pending_w) {
-            return match key {
-                Key::Char('c' | 'q') | Key::Ctrl('c' | 'q') => TreeAction::Close,
-                Key::Char('h') | Key::Ctrl('h') => TreeAction::None,
-                Key::Char('j') | Key::Ctrl('j') => TreeAction::FocusBottom,
-                _ => TreeAction::ToText,
-            };
-        }
-        let moved = nagi_ui::list::step(key, self.selected, self.rows.len(), half * 2);
+        let moved = nagi_ui::list::nav(key, self.selected, self.rows.len(), half * 2);
         match key {
             _ if moved.is_some() => self.selected = moved.unwrap_or(self.selected),
-            Key::Ctrl('w') => self.pending_w = true,
-            Key::Char('g') if g_pending => self.selected = 0,
-            Key::Char('g') => self.pending_g = true,
-            Key::Enter | Key::Char('l') | Key::Right | Key::Char('o') => {
-                let Some(row) = self.rows.get(self.selected).cloned() else { return TreeAction::None };
-                if row.dir {
-                    if self.folds.is_open(&row.path) {
-                        // l・→ は開いているフォルダでは何もしない（Enter と o は畳む）
-                        if !matches!(key, Key::Char('l') | Key::Right) {
-                            self.folds.set_open(&row.path, false);
-                            self.rebuild();
-                        }
-                    } else {
-                        self.expand(&row.path, waker);
-                    }
-                } else if key != Key::Right {
-                    // → はフォルダを開くだけ（ファイルは Enter・l・o・ダブルクリックで開く）
-                    return TreeAction::Open(row.path, key == Key::Char('o'));
+            Key::Enter => return self.activate(false, waker),
+            Key::Right => {
+                // → はフォルダを開くだけ（開いているフォルダ・ファイルでは何もしない）
+                if let Some(row) = self.rows.get(self.selected).filter(|r| r.dir && !self.folds.is_open(&r.path)).cloned() {
+                    self.expand(&row.path, waker);
                 }
             }
             // 開いたフォルダなら畳む、それ以外は親のフォルダへ（木の共通の動き。nagi-ui）
-            Key::Char('h') | Key::Left => match nagi_ui::tree::left(&self.rows, self.selected, &self.folds) {
+            Key::Left => match nagi_ui::tree::left(&self.rows, self.selected, &self.folds) {
                 nagi_ui::Step::Fold(k, open) => {
                     self.folds.set_open(&k, open);
                     self.rebuild();
@@ -231,21 +228,36 @@ impl TreePanel {
                 nagi_ui::Step::Select(i) => self.selected = i,
                 nagi_ui::Step::None => {}
             },
-            Key::Char('R') => {
-                self.children.clear();
-                let root = self.root.clone();
-                self.load(&root, waker);
-                let open: Vec<PathBuf> = self.folds.flipped().cloned().collect();
-                for d in open {
-                    self.load(&d, waker);
-                }
-            }
-            Key::Char('q') => return TreeAction::Close,
             Key::Esc => return TreeAction::ToText,
-            Key::Char(':') => return TreeAction::Command,
             _ => {}
         }
         TreeAction::None
+    }
+
+    /// 選んでいる行: フォルダなら開く・畳む、ファイルなら開く（`stay` なら木に残る）
+    pub fn activate(&mut self, stay: bool, waker: &nagi_workers::Waker) -> TreeAction {
+        let Some(row) = self.rows.get(self.selected).cloned() else { return TreeAction::None };
+        if !row.dir {
+            return TreeAction::Open(row.path, stay);
+        }
+        if self.folds.is_open(&row.path) {
+            self.folds.set_open(&row.path, false);
+            self.rebuild();
+        } else {
+            self.expand(&row.path, waker);
+        }
+        TreeAction::None
+    }
+
+    /// 読み直す（開いているフォルダも）
+    pub fn reload(&mut self, waker: &nagi_workers::Waker) {
+        self.children.clear();
+        let root = self.root.clone();
+        self.load(&root, waker);
+        let open: Vec<PathBuf> = self.folds.flipped().cloned().collect();
+        for d in open {
+            self.load(&d, waker);
+        }
     }
 }
 
@@ -347,8 +359,6 @@ impl Editor {
                 loading: Default::default(),
                 reveal: None,
                 synced: None,
-                pending_g: false,
-                pending_w: false,
             };
             t.load(&root, &waker);
             self.panels.tree = Some(t);
@@ -444,24 +454,36 @@ impl Editor {
             return Effect::None;
         };
         // 部品の中で済むことは TreePanel::key が行い、外に及ぶことを返す（ADR 0018 の §5）
-        match t.key(key, half, &waker) {
+        let a = t.key(key, half, &waker);
+        self.tree_do(a);
+        Effect::None
+    }
+
+    /// 木の操作を行う（キー・アクションから）
+    pub(crate) fn tree_do(&mut self, a: TreeAction) {
+        let waker = self.waker_or_noop();
+        match a {
             TreeAction::None => {}
             TreeAction::ToText => self.set_state(State::Normal),
             TreeAction::Close => self.close_tree(),
-            TreeAction::FocusBottom => {
-                if self.panels.grep.is_some() {
-                    self.focus_panel();
-                } else {
-                    self.set_state(State::Normal);
-                }
-            }
             TreeAction::Open(path, stay) => {
                 self.edit_file(path);
+                if stay {
+                    self.list_side = crate::editor::Side::Left;
+                }
                 self.set_state(if stay { State::List } else { State::Normal });
             }
-            TreeAction::Command => self.enter_command(""),
+            TreeAction::Activate(stay) => {
+                let Some(t) = &mut self.panels.tree else { return };
+                let a = t.activate(stay, &waker);
+                self.tree_do(a);
+            }
+            TreeAction::Reload => {
+                if let Some(t) = &mut self.panels.tree {
+                    t.reload(&waker);
+                }
+            }
         }
-        Effect::None
     }
 
     /// ツリーの中のクリック。`row` はツリーの中の行（0 は見出し）
@@ -496,7 +518,12 @@ pub struct TreeComponent;
 impl crate::component::Component for TreeComponent {
     fn status(&self, ed: &crate::editor::Editor) -> Option<crate::component::Status> {
         let _ = ed;
-        crate::component::Status::keys("-- プロジェクト --", "", "Enter 開く  ←→ 開閉  右クリック 操作  Esc 窓へ ")
+        crate::component::Status::new("-- プロジェクト --", "Enter 開く  ←→ 開閉  右クリック 操作  Esc 窓へ ")
+    }
+
+    fn scope(&self, ed: &crate::editor::Editor) -> Option<crate::ui_action::Scope> {
+        let _ = ed;
+        Some(crate::ui_action::Scope::ProjectTree)
     }
 
     fn key(&self, ed: &mut crate::editor::Editor, key: nagi_vim::Key) -> crate::editor::Effect {
@@ -546,7 +573,6 @@ impl crate::layout::View for TreeView {
 
     fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At) -> bool {
         let (row, col) = at.screen;
-        use nagi_vim::Key::*;
         let _ = r;
         // 押した行を選ぶだけ（左クリックと違ってフォルダを開け閉めしない）
         let Some(t) = &mut ed.panels.tree else { return false };
@@ -559,10 +585,9 @@ impl crate::layout::View for TreeView {
         let folder = if dir { path } else { path.parent().map(|p| p.to_path_buf()).unwrap_or(path) };
         ed.list_side = crate::editor::Side::Left;
         ed.set_state(crate::editor::State::List);
-        let m = crate::menu::Menu::new(row, col).keys(if dir { "開く・畳む" } else { "開く" }, &[Enter]);
-        let m = if dir { m } else { m.keys("開いて木に残る", &[Char('o')]) };
+        let m = crate::menu::Menu::new(row, col).action(ed, "tree.open").action(ed, "tree.openKeep");
         let m = m.sep().item("このフォルダを検索…（Find in Path）", move |e| e.open_grep_in(folder));
-        let m = m.sep().keys("読み直す", &[Char('R')]).keys("木を閉じる", &[Char('q')]);
+        let m = m.sep().action(ed, "tree.reload").action(ed, "tree.close");
         ed.open_menu(m);
         true
     }
@@ -915,21 +940,23 @@ mod tests {
         // フォルダが先、.gitignore の target は出さない、.git も出さない。今のファイルまで展開して選ぶ
         assert_eq!(names, vec!["src", "  view", "    panes.rs", "  main.rs", ".gitignore", "README.md"]);
         assert_eq!(t.rows[t.selected].name, "panes.rs");
-        // h で親へ移る（畳まない。IntelliJ と同じ）、もう一度 h で畳む
-        keys(&mut e, "h");
+        // ← で親へ移る（畳まない。IntelliJ と同じ）、もう一度 ← で畳む
+        keys(&mut e, "<Left>");
         let t = e.panels.tree.as_ref().unwrap();
         assert_eq!(t.rows[t.selected].name, "view");
         assert!(t.is_expanded(&dir.join("src/view")));
-        keys(&mut e, "h");
+        keys(&mut e, "<Left>");
         assert!(!e.panels.tree.as_ref().unwrap().is_expanded(&dir.join("src/view")));
-        // j で main.rs、Enter で開いて編集画面へ
-        keys(&mut e, "j<CR>");
+        // ↓ で main.rs、Enter で開いて編集画面へ
+        keys(&mut e, "<Down><CR>");
         assert_eq!(e.state(), State::Normal);
         assert_eq!(e.core.buf.line(0), "main");
-        // Ctrl-w h でツリーへ戻り、q で閉じる
+        // 本文（Vim）の Ctrl-w h でツリーへ戻り、「木を閉じる」で閉じる。木の上の q は何もしない
         keys(&mut e, "<C-w>h");
         assert_eq!(e.state(), State::List);
         keys(&mut e, "q");
+        assert!(e.panels.tree.is_some(), "木の上の 1 文字キーは何もしない（ADR 0019）");
+        assert!(e.run_ui_action("tree.close"));
         assert!(e.panels.tree.is_none());
         assert_eq!(e.windows_x(), (a.x, a.w));
     }

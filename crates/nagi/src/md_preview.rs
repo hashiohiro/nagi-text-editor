@@ -30,6 +30,21 @@ pub fn is_markdown(p: &std::path::Path) -> bool {
     p.extension().is_some_and(|e| matches!(e.to_string_lossy().to_ascii_lowercase().as_str(), "md" | "markdown" | "mdx"))
 }
 
+/// Markdown のプレビューのアクション（ui_action.rs。ADR 0019）
+pub static ACTIONS: [crate::ui_action::UiAction; 2] = {
+    use crate::ui_action::{Scope::Preview, UiAction};
+    fn open(e: &Editor) -> bool {
+        e.panels.md_preview.is_some()
+    }
+    fn link(e: &Editor) -> bool {
+        e.panels.md_preview.as_ref().and_then(|pv| pv.lines.get(pv.selected)).is_some_and(|l| !l.links.is_empty())
+    }
+    [
+        UiAction { id: "preview.openLink", label: "リンクを開く", scope: Preview, enabled: link, run: |e| e.md_open_selected_link() },
+        UiAction { id: "preview.close", label: "欄を閉じる", scope: Preview, enabled: open, run: |e| e.close_md_preview() },
+    ]
+};
+
 impl Editor {
     /// `:MarkdownPreview`: 出す・閉じる
     pub(crate) fn toggle_md_preview(&mut self) {
@@ -92,27 +107,32 @@ impl Editor {
             return Effect::None;
         };
         pv.follow = false;
-        let moved = nagi_ui::list::step(key, pv.selected, pv.lines.len(), h);
+        // 標準のキーだけ（ADR 0019。閉じるはアクション）
+        let moved = nagi_ui::list::nav(key, pv.selected, pv.lines.len(), h);
         match key {
             _ if moved.is_some() => pv.selected = moved.unwrap_or(pv.selected),
-            Key::Char('g') => pv.selected = 0,
-            Key::Enter => {
-                let link = pv.lines.get(pv.selected).and_then(|l| l.links.first()).map(|x| x.1.clone());
-                match link {
-                    Some(u) => self.open_md_link(&u),
-                    None => self.svc.notify.info("この行にリンクはありません"),
-                }
-            }
-            Key::Char('q') => {
-                self.panels.md_preview = None;
-                self.set_state(State::Normal);
-                self.rows = self.text_rows(self.active_rect());
-            }
+            Key::Enter => self.md_open_selected_link(),
             Key::Esc => self.set_state(State::Normal),
-            Key::Char(':') => self.enter_command(""),
             _ => {}
         }
         Effect::None
+    }
+
+    /// 選んでいる行のリンクを開く
+    pub(crate) fn md_open_selected_link(&mut self) {
+        let Some(pv) = &self.panels.md_preview else { return };
+        let link = pv.lines.get(pv.selected).and_then(|l| l.links.first()).map(|x| x.1.clone());
+        match link {
+            Some(u) => self.open_md_link(&u),
+            None => self.svc.notify.info("この行にリンクはありません"),
+        }
+    }
+
+    /// プレビューを閉じる
+    pub(crate) fn close_md_preview(&mut self) {
+        self.panels.md_preview = None;
+        self.set_state(State::Normal);
+        self.rows = self.text_rows(self.active_rect());
     }
 
     /// リンクを開く: URL はブラウザ、ほかは Markdown のファイルからの相対パスで Nagi に（#見出し は落とす）

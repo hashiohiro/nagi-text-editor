@@ -105,8 +105,25 @@ pub enum MavenAction {
     Reload,
     Close,
     ToText,
-    Command,
+    /// 選んでいる行（フォルダは開閉、ゴールは動かす）
+    Activate,
 }
+
+/// Maven の欄のアクション（ui_action.rs。ADR 0019）
+pub static ACTIONS: [crate::ui_action::UiAction; 3] = {
+    use crate::ui_action::{Scope::Maven, UiAction};
+    fn open(e: &Editor) -> bool {
+        e.panels.maven.is_some()
+    }
+    fn selected(e: &Editor) -> bool {
+        e.panels.maven.as_ref().is_some_and(|m| m.selected < m.rows.len())
+    }
+    [
+        UiAction { id: "maven.run", label: "実行・開閉", scope: Maven, enabled: selected, run: |e| e.maven_do(MavenAction::Activate) },
+        UiAction { id: "maven.reload", label: "読み直す", scope: Maven, enabled: open, run: |e| e.maven_do(MavenAction::Reload) },
+        UiAction { id: "maven.close", label: "欄を閉じる", scope: Maven, enabled: open, run: |e| e.maven_do(MavenAction::Close) },
+    ]
+};
 
 impl MavenPanel {
     /// 選んでいる行で Enter: フォルダは開閉、ゴールは動かす
@@ -124,15 +141,15 @@ impl MavenPanel {
     }
 
     /// Maven の欄のキー（`half` は半画面の行数）。移動と開閉はここで行い、外に及ぶことを返す
+    /// 標準のキーだけ（ADR 0019。読み直す・閉じるはアクション）
     pub fn key(&mut self, key: Key, half: usize) -> MavenAction {
-        let moved = nagi_ui::list::step(key, self.selected, self.rows.len(), half * 2);
+        let moved = nagi_ui::list::nav(key, self.selected, self.rows.len(), half * 2);
         match key {
             _ if moved.is_some() => self.selected = moved.unwrap_or(self.selected),
-            Key::Char('g') => self.selected = 0,
-            Key::Enter | Key::Char('o') => return self.activate(),
-            // l で開く・h で閉じる（閉じていれば親へ。木の共通の動き。nagi-ui）
-            Key::Char('l') | Key::Right | Key::Char('h') | Key::Left => {
-                let step = if matches!(key, Key::Char('l') | Key::Right) { nagi_ui::tree::right(&self.rows, self.selected, &self.folds) } else { nagi_ui::tree::left(&self.rows, self.selected, &self.folds) };
+            Key::Enter => return self.activate(),
+            // → で開く・← で閉じる（閉じていれば親へ。木の共通の動き。nagi-ui）
+            Key::Right | Key::Left => {
+                let step = if key == Key::Right { nagi_ui::tree::right(&self.rows, self.selected, &self.folds) } else { nagi_ui::tree::left(&self.rows, self.selected, &self.folds) };
                 match step {
                     nagi_ui::Step::Fold(k, open) => {
                         self.folds.set_open(&k, open);
@@ -142,10 +159,7 @@ impl MavenPanel {
                     nagi_ui::Step::None => {}
                 }
             }
-            Key::Char('r') => return MavenAction::Reload,
-            Key::Char('q') => return MavenAction::Close,
             Key::Esc => return MavenAction::ToText,
-            Key::Char(':') => return MavenAction::Command,
             _ => {}
         }
         MavenAction::None
@@ -209,7 +223,7 @@ impl Editor {
     }
 
     /// Maven の欄の Action を行う（部品の外に及ぶこと）
-    fn maven_do(&mut self, act: MavenAction) {
+    pub(crate) fn maven_do(&mut self, act: MavenAction) {
         match act {
             MavenAction::None => {}
             MavenAction::Run(root, dir, goal) => {
@@ -227,7 +241,7 @@ impl Editor {
                 self.rows = self.text_rows(self.active_rect());
             }
             MavenAction::ToText => self.set_state(State::Normal),
-            MavenAction::Command => self.enter_command(""),
+            MavenAction::Activate => self.maven_activate(),
         }
     }
 
@@ -287,13 +301,13 @@ mod tests {
         assert_eq!(e.right_visible(), Some(RightTab::Maven));
         assert!(e.windows_x().1 < 120 - 40, "右の欄の分だけ窓が狭まる");
         // core を開くと、ライフサイクルと依存
-        for k in nagi_vim::parse_keys("G<CR>", " ") {
+        for k in nagi_vim::parse_keys("<End><CR>", " ") {
             e.key(k);
         }
         let l = labels(&e);
         assert_eq!(&l[l.len() - 3..], &["core", "ライフサイクル", "依存"]);
         // 依存を開く
-        for k in nagi_vim::parse_keys("Gl", " ") {
+        for k in nagi_vim::parse_keys("<End><Right>", " ") {
             e.key(k);
         }
         assert_eq!(labels(&e).last().unwrap(), "g:a");

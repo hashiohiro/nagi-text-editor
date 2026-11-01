@@ -486,7 +486,6 @@ pub struct Editor {
     pub grammar_failed: std::collections::HashSet<String>,
     pub right_tab: crate::right_panel::RightTab,
     pub right_hidden: bool,
-    pub(crate) right_pending_w: bool,
     /// 最後に描いた入力欄の縦棒カーソル（列, y の px）。IME の候補の窓の位置に使う
     pub prompt_caret: std::cell::Cell<Option<(usize, f32)>>,
     /// マウスを載せている SQL コンソールの帯のボタン
@@ -834,7 +833,6 @@ impl Editor {
             grammar_failed: Default::default(),
             right_tab: Default::default(),
             right_hidden: false,
-            right_pending_w: false,
             git_job: None,
             diff_return: None,
             diags: Vec::new(),

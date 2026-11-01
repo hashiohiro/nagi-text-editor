@@ -112,16 +112,6 @@ impl Editor {
 
     /// 右の欄にいる間のキー（タブごとに振り分ける。Ctrl-w h / Esc で窓へ戻る）
     pub(crate) fn right_key(&mut self, key: Key) -> Effect {
-        if std::mem::take(&mut self.right_pending_w) {
-            if matches!(key, Key::Char('h') | Key::Ctrl('h') | Key::Char('w') | Key::Ctrl('w') | Key::Char('p')) {
-                self.set_state(State::Normal);
-            }
-            return Effect::None;
-        }
-        if key == Key::Ctrl('w') {
-            self.right_pending_w = true;
-            return Effect::None;
-        }
         match self.right_visible() {
             Some(RightTab::Maven) => self.maven_key(key),
             Some(RightTab::Database) => self.db_key(key),
@@ -159,8 +149,8 @@ pub struct RightComponent;
 impl crate::component::Component for RightComponent {
     fn status(&self, ed: &crate::editor::Editor) -> Option<crate::component::Status> {
         match ed.right_visible() {
-            Some(RightTab::Maven) => crate::component::Status::keys("-- Maven --", "Enter 実行・開閉  l/h 開く・閉じる  r 読み直す  q 閉じる  Ctrl-w h 窓へ ", "Enter 実行・開閉  ←→ 開く・閉じる  右クリック 操作  Esc 窓へ "),
-            Some(RightTab::Preview) => crate::component::Status::keys("-- プレビュー --", "j/k 送る  Enter リンクを開く  g/G 先頭・末尾  q 閉じる  Ctrl-w h 窓へ ", "↑↓ 送る  Enter リンクを開く  右クリック 操作  Esc 窓へ "),
+            Some(RightTab::Maven) => crate::component::Status::new("-- Maven --", "Enter 実行・開閉  ←→ 開く・閉じる  右クリック 操作  Esc 窓へ "),
+            Some(RightTab::Preview) => crate::component::Status::new("-- プレビュー --", "↑↓ 送る  Enter リンクを開く  右クリック 操作  Esc 窓へ "),
             _ => crate::component::Status::new("-- データベース --", "Enter つなぐ・開閉  ＋ 接続先を足す  右クリック 操作  打つと絞り込み  Esc 窓へ "),
         }
     }
@@ -174,7 +164,12 @@ impl crate::component::Component for RightComponent {
     }
 
     fn scope(&self, ed: &crate::editor::Editor) -> Option<crate::ui_action::Scope> {
-        (ed.right_visible() == Some(RightTab::Database)).then_some(crate::ui_action::Scope::Database)
+        use crate::ui_action::Scope;
+        Some(match ed.right_visible()? {
+            RightTab::Database => Scope::Database,
+            RightTab::Maven => Scope::Maven,
+            RightTab::Preview => Scope::Preview,
+        })
     }
 }
 
@@ -239,7 +234,6 @@ impl crate::layout::View for RightView {
 
     fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At) -> bool {
         let _ = r;
-        use nagi_vim::Key::*;
         // 押した行を選ぶだけ（1 回のクリックのように開け閉めしない）
         let row = at.row;
         if row == 0 {
@@ -256,7 +250,7 @@ impl crate::layout::View for RightView {
                     return false;
                 }
                 ed.focus_right(RightTab::Maven);
-                m.keys("実行・開閉", &[Enter]).keys("読み直す", &[Char('r')]).keys("欄を閉じる", &[Char('q')])
+                m.action(ed, "maven.run").action(ed, "maven.reload").action(ed, "maven.close")
             }
             Some(RightTab::Preview) => {
                 let Some(pv) = &mut ed.panels.md_preview else { return false };
@@ -265,7 +259,7 @@ impl crate::layout::View for RightView {
                     return false;
                 }
                 ed.focus_right(RightTab::Preview);
-                m.keys("リンクを開く", &[Enter]).keys("欄を閉じる", &[Char('q')])
+                m.action(ed, "preview.openLink").action(ed, "preview.close")
             }
             None => return false,
         };

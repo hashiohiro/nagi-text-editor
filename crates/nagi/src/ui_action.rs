@@ -14,6 +14,9 @@ use crate::keymap::{parse_chord, Chord};
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Scope {
     Database,
+    ProjectTree,
+    Maven,
+    Preview,
 }
 
 impl Scope {
@@ -21,6 +24,9 @@ impl Scope {
     pub fn name(self) -> &'static str {
         match self {
             Scope::Database => "データベース",
+            Scope::ProjectTree => "プロジェクト",
+            Scope::Maven => "Maven",
+            Scope::Preview => "プレビュー",
         }
     }
 }
@@ -46,7 +52,7 @@ pub const KEY: &str = "keymap.ui.";
 
 /// すべてのアクション（部品の表をつなげたもの）
 pub fn all() -> impl Iterator<Item = &'static UiAction> {
-    crate::db_panel::ACTIONS.iter()
+    [&crate::db_panel::ACTIONS[..], &crate::tree_panel::ACTIONS, &crate::maven_panel::ACTIONS, &crate::md_preview::ACTIONS].into_iter().flatten()
 }
 
 pub fn find(id: &str) -> Option<&'static UiAction> {
