@@ -590,6 +590,19 @@ impl crate::layout::View for LauncherView {
             .item_shortcut("開く", "Enter", |e| e.launcher_key(nagi_vim::Key::Enter))
             .action_as(ed, "launcher.pin", if pinned { "ピン留めを外す" } else { "ピン留め" })
             .action(ed, "launcher.hide");
+        let m = match ed.panels.launcher.as_ref().and_then(|l| l.selected_entry()).map(|en| en.path.clone()) {
+            Some(path) => {
+                let p = path.display().to_string();
+                m.sep()
+                    .item("エクスプローラーで表示", move |_| {
+                        if !cfg!(test) {
+                            let _ = std::process::Command::new("explorer.exe").arg(&path).spawn();
+                        }
+                    })
+                    .item("パスをコピー", move |e| e.copy_text(p, "パス"))
+            }
+            None => m,
+        };
         ed.open_menu(m);
         true
     }

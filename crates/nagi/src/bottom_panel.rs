@@ -540,6 +540,7 @@ impl crate::layout::View for BottomView {
                     e.terminal_copy();
                 })
                 .item("貼り付け", |e| e.terminal_key(nagi_vim::Key::Paste))
+                .item("すべて選択", |e| e.terminal_select_all())
                 .sep()
                 .item("新規タブ…", |e| e.panels.terminals.open_chooser())
                 .item("セッションを閉じる", |e| e.close_terminal())

@@ -248,15 +248,29 @@ impl Editor {
 
     /// 新しい窓を開いて移る（開けたら true）
     pub(crate) fn new_terminal(&mut self, name: &str, cmd: &str) -> bool {
-        let (rows, cols) = self.terminal_rect().map_or((10, 80), |r| (r.h as u16, r.w.saturating_sub(1) as u16));
         // 設定の「始めるフォルダ」
         let cwd = match self.settings.get("terminal.start_dir").as_str() {
             "file" => self.core.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()).and_then(|p| p.parent().map(|d| d.to_path_buf())).unwrap_or_else(|| self.nav_root()),
             "home" => std::env::var_os("USERPROFILE").map(std::path::PathBuf::from).unwrap_or_else(|| self.nav_root()),
             _ => self.nav_root(),
         };
+        self.new_terminal_at(name, cmd, &cwd)
+    }
+
+    /// 木の「ターミナルで開く」: そのフォルダで既定のシェルの新しい窓を開いて移る
+    pub(crate) fn open_terminal_in(&mut self, dir: &std::path::Path) {
+        self.bottom_hidden = false;
+        self.bottom_kind = BottomKind::Terminal;
+        self.set_state(State::Terminal);
+        self.rows = self.text_rows(self.active_rect());
+        let (name, cmd) = default_shell(self.settings.text("terminal.shell"));
+        self.new_terminal_at(&name, &cmd, dir);
+    }
+
+    fn new_terminal_at(&mut self, name: &str, cmd: &str, cwd: &std::path::Path) -> bool {
+        let (rows, cols) = self.terminal_rect().map_or((10, 80), |r| (r.h as u16, r.w.saturating_sub(1) as u16));
         let waker = self.waker();
-        match Term::spawn(cmd, &cwd, rows, cols, waker) {
+        match Term::spawn(cmd, cwd, rows, cols, waker) {
             Ok(term) => {
                 self.panels.terminals.list.push(TermView { term, name: name.to_string(), cmd: cmd.to_string(), exited: false });
                 self.panels.terminals.active = self.panels.terminals.list.len() - 1;
@@ -402,6 +416,13 @@ impl Editor {
         if let Some(b) = key_bytes(key, app) {
             t.term.write(&b);
         }
+    }
+
+    /// 見えている画面を全部選ぶ（右クリックのメニュー）
+    pub(crate) fn terminal_select_all(&mut self) {
+        let Some(r) = self.terminal_rect() else { return };
+        let back = self.panels.terminals.current().map_or(0, |t| t.term.scrollback()) as i64;
+        self.panels.terminals.sel = Some(((-back, 0), (r.h as i64 - 1 - back, r.w as u16)));
     }
 
     /// 選んでいる範囲をクリップボードへ（`copy_text`）。コピーしたら選びを消す

@@ -396,6 +396,8 @@ impl Editor {
             .item("宣言または使用箇所に移動", run("GotoDefinition"))
             .item("実装に移動", run("GotoImplementation"))
             .sep()
+            .item("名前の変更…", run("Rename"))
+            .item("コードの整形", run("Format"))
             .item("行コメントでコメント化", run("CommentLine"))
             .sep()
             .item("Git: 注釈", run("Gblame"))

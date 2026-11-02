@@ -142,6 +142,37 @@ impl Editor {
     }
 
     /// `keep` 以外のタブ（None ならすべて）を閉じる。保存していないものは残して知らせる
+    /// 左側（`left`）・右側のタブを閉じる（保存していないものは残す）
+    pub(crate) fn tab_close_side(&mut self, doc: usize, left: bool) {
+        let order: Vec<usize> = self.buffer_list().into_iter().filter(|(i, p, d, _)| self.tab_worthy(*i, p, *d)).map(|t| t.0).collect();
+        let Some(k) = order.iter().position(|&d| d == doc) else { return };
+        let side: Vec<usize> = if left { order[..k].to_vec() } else { order[k + 1..].to_vec() };
+        self.tab_close_set(doc, &side);
+    }
+
+    /// 未変更のタブを閉じる（今のタブは残す）
+    pub(crate) fn tab_close_unmodified(&mut self) {
+        let cur = self.core.cur_doc;
+        let all: Vec<usize> = self.buffer_list().into_iter().filter(|t| !t.2).map(|t| t.0).collect();
+        self.tab_close_set(cur, &all);
+    }
+
+    fn tab_close_set(&mut self, keep: usize, docs: &[usize]) {
+        self.tab_select(keep);
+        let dirty: Vec<usize> = self.buffer_list().into_iter().filter(|t| t.2).map(|t| t.0).collect();
+        let mut kept = 0;
+        for &d in docs.iter().filter(|&&d| d != keep) {
+            if dirty.contains(&d) {
+                kept += 1;
+            } else {
+                self.delete_buffer(&(d + 1).to_string(), false);
+            }
+        }
+        if kept > 0 {
+            self.svc.notify.info(format!("保存していない {kept} 個のタブは残しました（× で 1 つずつ閉じられます）"));
+        }
+    }
+
     pub(crate) fn tab_close_others(&mut self, keep: Option<usize>) {
         if let Some(k) = keep {
             self.tab_select(k);
@@ -197,10 +228,31 @@ impl crate::layout::View for BufferTabsView {
         let _ = r;
         let tab = ed.buftab_at(row, col).map(|t| t.0);
         let mut m = crate::menu::Menu::new(row, col);
+        // IntelliJ のエディタのタブと同じ並び: 閉じる → 他・すべて・未変更・左側・右側 → 分割 → パス → 閉じたタブを再度開く
         if let Some(doc) = tab {
             m = m.item("タブを閉じる", move |e| e.tab_close(doc)).item("他のタブを閉じる", move |e| e.tab_close_others(Some(doc)));
         }
-        m = m.item("すべてのタブを閉じる", |e| e.tab_close_others(None)).sep().item("タブの一覧…", |e| e.open_finder(crate::finder::Source::Buffers));
+        m = m.item("すべてのタブを閉じる", |e| e.tab_close_others(None)).item("未変更のタブを閉じる", |e| e.tab_close_unmodified());
+        if let Some(doc) = tab {
+            m = m.item("左側のタブを閉じる", move |e| e.tab_close_side(doc, true)).item("右側のタブを閉じる", move |e| e.tab_close_side(doc, false)).sep();
+            m = m
+                .item("右に分割", move |e| {
+                    e.tab_select(doc);
+                    e.shortcut("vs");
+                })
+                .item("下に分割", move |e| {
+                    e.tab_select(doc);
+                    e.shortcut("sp");
+                });
+            if let Some(path) = ed.buffer_list().into_iter().find(|t| t.0 == doc).and_then(|t| t.1) {
+                let p = std::path::absolute(&path).unwrap_or(path).display().to_string();
+                m = m.sep().item("パスをコピー", move |e| e.copy_text(p, "パス"));
+            }
+        }
+        m = m.sep().item("閉じたタブを再度開く", |e| {
+            e.shortcut("ReopenClosed");
+        });
+        m = m.sep().item("タブの一覧…", |e| e.open_finder(crate::finder::Source::Buffers));
         ed.open_menu(m);
         true
     }
@@ -308,6 +360,27 @@ mod tests {
         crate::buffer_tabs::BufferTabsView.click(&mut e, r, crate::layout::At::new(r, y, r.x + b.close_col()), 1);
         assert_eq!(labels(&e), ["a.txt", "c.txt"]);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 左側・右側・未変更のタブを閉じる（保存していないものは残す）
+    #[test]
+    fn close_left_right_unmodified() {
+        let (mut e, _dir) = editor(&["a.txt", "b.txt", "c.txt", "d.txt"]);
+        let doc = |e: &Editor, n: &str| e.buffer_list().into_iter().find(|t| t.1.as_ref().is_some_and(|p| p.ends_with(n))).unwrap().0;
+        let b = doc(&e, "b.txt");
+        e.tab_close_side(b, true);
+        assert_eq!(labels(&e), ["b.txt", "c.txt", "d.txt"]);
+        e.tab_close_side(b, false);
+        assert_eq!(labels(&e), ["b.txt"]);
+        let (mut e, _dir) = editor(&["a.txt", "b.txt", "c.txt"]);
+        let a = doc(&e, "a.txt");
+        e.tab_select(a);
+        e.core.buf.edit(0, 0, "x");
+        e.core.buf.dirty = true;
+        let c = doc(&e, "c.txt");
+        e.tab_select(c);
+        e.tab_close_unmodified();
+        assert_eq!(labels(&e), ["a.txt", "c.txt"], "変えた a と今の c は残す");
     }
 
     #[test]

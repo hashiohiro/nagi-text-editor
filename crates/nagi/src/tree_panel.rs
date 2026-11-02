@@ -186,7 +186,7 @@ pub enum TreeAction {
 }
 
 /// プロジェクトの木のアクション（ui_action.rs。ADR 0019）
-pub static ACTIONS: [crate::ui_action::UiAction; 4] = {
+pub static ACTIONS: [crate::ui_action::UiAction; 15] = {
     use crate::ui_action::{Scope::ProjectTree, UiAction};
     fn open(e: &Editor) -> bool {
         e.panels.tree.is_some()
@@ -200,6 +200,17 @@ pub static ACTIONS: [crate::ui_action::UiAction; 4] = {
     [
         UiAction { id: "tree.open", label: "ソースに移動", scope: ProjectTree, enabled: selected, run: |e| e.tree_do(TreeAction::Activate(false)) },
         UiAction { id: "tree.openKeep", label: "開いて木に残る", scope: ProjectTree, enabled: file, run: |e| e.tree_do(TreeAction::Activate(true)) },
+        UiAction { id: "tree.newFile", label: "新規作成: ファイル…", scope: ProjectTree, enabled: selected, run: |e| e.tree_new(false) },
+        UiAction { id: "tree.newDir", label: "新規作成: ディレクトリ…", scope: ProjectTree, enabled: selected, run: |e| e.tree_new(true) },
+        UiAction { id: "tree.cut", label: "切り取り", scope: ProjectTree, enabled: selected, run: |e| e.tree_clip(true) },
+        UiAction { id: "tree.copy", label: "コピー", scope: ProjectTree, enabled: selected, run: |e| e.tree_clip(false) },
+        UiAction { id: "tree.copyPath", label: "パスをコピー", scope: ProjectTree, enabled: selected, run: |e| e.tree_copy_path(false) },
+        UiAction { id: "tree.copyReference", label: "参照をコピー", scope: ProjectTree, enabled: selected, run: |e| e.tree_copy_path(true) },
+        UiAction { id: "tree.paste", label: "貼り付け", scope: ProjectTree, enabled: |e| selected(e) && e.file_clip.is_some(), run: |e| e.tree_paste() },
+        UiAction { id: "tree.rename", label: "名前の変更…", scope: ProjectTree, enabled: selected, run: |e| e.tree_rename() },
+        UiAction { id: "tree.delete", label: "削除…", scope: ProjectTree, enabled: selected, run: |e| e.tree_delete() },
+        UiAction { id: "tree.reveal", label: "エクスプローラーで表示", scope: ProjectTree, enabled: selected, run: |e| e.tree_reveal() },
+        UiAction { id: "tree.terminal", label: "ターミナルで開く", scope: ProjectTree, enabled: selected, run: |e| e.tree_open_terminal() },
         UiAction { id: "tree.reload", label: "ディスクからの再読み込み", scope: ProjectTree, enabled: open, run: |e| e.tree_do(TreeAction::Reload) },
         UiAction { id: "tree.close", label: "非表示", scope: ProjectTree, enabled: open, run: |e| e.tree_do(TreeAction::Close) },
     ]
@@ -585,9 +596,13 @@ impl crate::layout::View for TreeView {
         let folder = if dir { path } else { path.parent().map(|p| p.to_path_buf()).unwrap_or(path) };
         ed.list_side = crate::editor::Side::Left;
         ed.set_state(crate::editor::State::List);
-        let m = crate::menu::Menu::new(row, col).action(ed, "tree.open").action(ed, "tree.openKeep");
-        let m = m.sep().item("複数ファイル内検索…", move |e| e.open_grep_in(folder));
-        let m = m.sep().action(ed, "tree.reload").action(ed, "tree.close");
+        // IntelliJ のプロジェクトの木と同じ並び: 新規作成 → 切り取り・コピー・パス・貼り付け → 検索 → 名前の変更 → 削除 → 開く → 再読み込み
+        let m = crate::menu::Menu::new(row, col).action(ed, "tree.newFile").action(ed, "tree.newDir").sep();
+        let m = m.action(ed, "tree.cut").action(ed, "tree.copy").action(ed, "tree.copyPath").action(ed, "tree.copyReference").action(ed, "tree.paste").sep();
+        let m = m.item("複数ファイル内検索…", move |e| e.open_grep_in(folder)).sep();
+        let m = m.action(ed, "tree.rename").action(ed, "tree.delete").sep();
+        let m = m.action(ed, "tree.open").action(ed, "tree.openKeep").action(ed, "tree.reveal").action(ed, "tree.terminal").sep();
+        let m = m.action(ed, "tree.reload").action(ed, "tree.close");
         ed.open_menu(m);
         true
     }

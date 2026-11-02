@@ -73,6 +73,7 @@ mod input_dialog;
 mod search_bar;
 mod toggles;
 mod tree_panel;
+mod tree_files;
 mod normal;
 mod stats;
 mod view;

@@ -291,6 +291,8 @@ pub enum TableOp {
     Replace,
     SetNull,
     AddRow,
+    /// 今の行の値で行を足す（DataGrip の 行のクローン）
+    CloneRow,
     DeleteRow,
     Undo,
     Send,
@@ -429,6 +431,12 @@ impl TableEditor {
             TableOp::SetNull if has_cell => {
                 let (d, c) = (te.row, te.col);
                 te.set_value(d, c, None);
+            }
+            TableOp::CloneRow if !te.cols.is_empty() && te.row < te.len() => {
+                let vals: Vec<Option<String>> = (0..te.cols.len()).map(|c| te.value(te.row, c)).collect();
+                te.added.insert(0, vals);
+                te.undo.push(Change::Add);
+                te.row = 0;
             }
             TableOp::AddRow if !te.cols.is_empty() => {
                 te.added.insert(0, vec![None; te.cols.len()]);
@@ -840,6 +848,7 @@ impl crate::layout::View for DbTableView {
             .action(ed, "table.replace")
             .action(ed, "table.setNull")
             .action(ed, "table.addRow")
+            .item("行のクローン", |e| e.db_table_op(TableOp::CloneRow))
             .item_shortcut("選択した行の削除", "Delete", |e| e.db_table_op(TableOp::DeleteRow))
             .item_shortcut("選択項目の復元", "Ctrl+Z", |e| e.db_table_op(TableOp::Undo))
             .item_shortcut("送信", "Ctrl+Enter", |e| e.db_table_op(TableOp::Send))
