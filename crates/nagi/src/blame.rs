@@ -214,6 +214,51 @@ impl Editor {
         Some((label(c, now), level, c.uncommitted()))
     }
 
+    /// 行 `l` のコミット（未コミットの行は None。知らせる）
+    fn blame_commit(&mut self, l: usize) -> Option<CommitInfo> {
+        let c = self.panels.blame.as_ref().and_then(|b| b.lines.get(l).map(|&i| b.commits[i].clone()))?;
+        if c.uncommitted() {
+            self.svc.notify.info("まだコミットしていない行です");
+            return None;
+        }
+        Some(c)
+    }
+
+    /// 注釈の「VCS ログで表示」（注釈の欄を押したときも）: 履歴を開いて、その行のコミットを選ぶ
+    pub(crate) fn blame_select_in_log(&mut self, l: usize) {
+        let Some(c) = self.blame_commit(l) else { return };
+        self.open_log(false);
+        if let Some(log) = &mut self.panels.log {
+            log.want_hash = Some(c.hash);
+        }
+    }
+
+    /// 注釈の「差分の表示」: その行のコミットで、このファイルがどう変わったか（親と比べる）
+    pub(crate) fn blame_show_diff(&mut self, l: usize) {
+        let Some(c) = self.blame_commit(l) else { return };
+        let (Some(root), Some(path)) = (self.svc.git.root.clone(), self.panels.blame.as_ref().map(|b| b.path.clone())) else { return };
+        let Ok(rel) = path.strip_prefix(&root) else { return };
+        let rel = rel.to_string_lossy().replace('\\', "/");
+        let short = c.hash[..7.min(c.hash.len())].to_string();
+        let (h, p) = (c.hash.clone(), rel.clone());
+        let read = move || (nagi_workers::git::blob_at(&root, &format!("{h}^"), &p).unwrap_or_default(), nagi_workers::git::blob_at(&root, &h, &p).unwrap_or_default());
+        self.job("git-blob", read, move |e, (old, new)| {
+            e.show_diff(format!("{short}^  {rel}"), format!("{short}  {rel}"), &old, &new, None);
+        });
+    }
+
+    /// 注釈の欄の右クリック（IntelliJ の注釈のメニュー）
+    pub(crate) fn blame_context(&mut self, l: usize, at: (usize, usize)) {
+        let hash = self.panels.blame.as_ref().and_then(|b| b.lines.get(l).map(|&i| b.commits[i].hash.clone())).unwrap_or_default();
+        let m = crate::menu::Menu::new(at.0, at.1)
+            .item("差分の表示", move |e| e.blame_show_diff(l))
+            .item("VCS ログで表示", move |e| e.blame_select_in_log(l))
+            .item("リビジョン番号のコピー", move |e| e.copy_text(hash, "リビジョン番号"))
+            .sep()
+            .item("注釈を閉じる", |e| e.panels.blame = None);
+        self.open_menu(m);
+    }
+
     /// カーソルの行のコミット（枠に出す）
     pub fn blame_at_cursor(&self) -> Option<&CommitInfo> {
         let b = self.panels.blame.as_ref()?;
@@ -314,6 +359,12 @@ mod tests {
         assert_eq!(e.gutter(), crate::editor::GUTTER + bw + 10);
         e.reset_sep(&sep);
         assert_eq!(e.blame_width(), bw);
+        // 注釈の欄の右クリック: IntelliJ の注釈のメニュー
+        e.gutter_context(0, (r.y, r.x + 2));
+        let labels: Vec<String> = e.menu.as_ref().unwrap().items.iter().filter(|i| i.run.is_some()).map(|i| i.label.clone()).collect();
+        assert_eq!(labels, ["差分の表示", "VCS ログで表示", "リビジョン番号のコピー", "注釈を閉じる"]);
+        e.menu_run(4);
+        assert!(!e.blame_active(), "注釈を閉じる");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

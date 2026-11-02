@@ -324,6 +324,8 @@ pub struct LogView {
     pub detail_left: usize,
     /// 中身に合わせた作者・日時・ハッシュの列の幅（履歴が届いたときに測る）
     pub auto_cols: (usize, usize, usize),
+    /// 読み終えたら選ぶコミット（ハッシュ。注釈の「VCS ログで表示」）
+    pub want_hash: Option<String>,
     /// 右の列の行の覚え（(コミット, 比べる相手, 幅) → 行）。折り返しを毎フレームやり直さない
     detail_cache: std::cell::RefCell<Option<((String, Option<String>, usize), std::rc::Rc<Vec<DetailLine>>)>>,
     /// 読み直すための元（ファイルの履歴のパス・比べる範囲）
@@ -720,6 +722,7 @@ impl Editor {
             detail_top: 0,
             detail_left: 0,
             auto_cols: (10, 10, 7),
+            want_hash: None,
             detail_cache: Default::default(),
             src_path: path.clone(),
             src_range: range.clone(),
@@ -756,6 +759,15 @@ impl Editor {
                     l.auto_cols = auto_cols(&rows);
                     l.rows = rows;
                     l.refilter();
+                    if let Some(h) = l.want_hash.take() {
+                        match l.visible.iter().position(|&i| l.rows[i].commit.as_ref().is_some_and(|c| c.hash.starts_with(&h))) {
+                            Some(k) => {
+                                l.selected = k;
+                                l.top = k.saturating_sub(5);
+                            }
+                            None => self.svc.notify.info(format!("{} は履歴（新しい 1000 件）にありません", &h[..7.min(h.len())])),
+                        }
+                    }
                 }
                 Err(e) => self.svc.notify.error(format!("git log: {}", e.first_line())),
             }
@@ -1782,6 +1794,7 @@ mod tests {
             detail_top: 0,
             detail_left: 0,
             auto_cols: auto_cols(&rows),
+            want_hash: None,
             detail_cache: Default::default(),
             src_path: None,
             src_range: None,
@@ -1915,6 +1928,7 @@ mod tests {
             detail_top: 0,
             detail_left: 0,
             auto_cols: (10, 10, 7),
+            want_hash: None,
             detail_cache: Default::default(),
             src_path: None,
             src_range: None,

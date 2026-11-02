@@ -361,6 +361,11 @@ impl Editor {
     /// 行番号の欄（ガター）の右クリック（窓の中の行と、メニューを出す画面の位置）: IntelliJ のガターと同じ項目
     pub(crate) fn gutter_context(&mut self, row: usize, at: (usize, usize)) {
         let line = self.pos_at(row, 0).line;
+        // Git の注釈の欄: そのコミットの操作
+        if self.blame_active() && at.1.saturating_sub(self.active_rect().x) < self.blame_width() {
+            self.blame_context(line, at);
+            return;
+        }
         let check = |on: bool| if on { "✓ " } else { "   " };
         let numbers = self.settings.get("editor.line_numbers") != "off";
         let wrap = self.settings.bool("editor.wrap");

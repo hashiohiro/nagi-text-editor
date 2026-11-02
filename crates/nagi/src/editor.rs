@@ -2042,6 +2042,12 @@ impl Editor {
         }
         // デバッグできるファイル（Java・Kotlin・TypeScript・JavaScript・Python）の行番号の欄を押したら、その行のブレークポイントを付ける・外す（IntelliJ と同じ）
         // （row・col は作業中の窓の中の位置。窓の左上が 0, 0）
+        // Git の注釈の欄を押したら、その行のコミットを VCS ログで開く（IntelliJ と同じ）
+        if self.blame_active() && row < self.rows && col < self.blame_width() {
+            let line = self.pos_at(row, self.gutter()).line;
+            self.blame_select_in_log(line);
+            return;
+        }
         let java = self.core.buf.path.as_deref().and_then(crate::debugger::lang_of).is_some();
         if java && row < self.rows && col < self.gutter() && col + GUTTER >= self.gutter() {
             let line = self.pos_at(row, self.gutter()).line;
