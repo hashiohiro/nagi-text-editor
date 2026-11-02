@@ -470,6 +470,10 @@ pub enum ResultOp {
     Where,
     Order,
     SortColumn,
+    /// 今の列で並べる（昇順 true・降順 false。None ならソートのクリア。列の見出しの右クリック）
+    Sort(Option<bool>),
+    /// 今の列の名前をコピー
+    CopyColumn,
     NextPage,
     PrevPage,
     Reload,
@@ -602,7 +606,7 @@ impl DbResults {
     pub fn op(&mut self, op: ResultOp, svc: &mut crate::editor::Services) -> ResultAction {
         let dirty = self.active_tab().is_some_and(|t| !t.edits.is_empty());
         // 読み直すと直した値が消えるので、送るか戻すまで止める
-        if dirty && matches!(op, ResultOp::Where | ResultOp::Order | ResultOp::SortColumn | ResultOp::NextPage | ResultOp::PrevPage | ResultOp::Reload) {
+        if dirty && matches!(op, ResultOp::Where | ResultOp::Order | ResultOp::SortColumn | ResultOp::Sort(_) | ResultOp::NextPage | ResultOp::PrevPage | ResultOp::Reload) {
             svc.notify.info("未送信の変更があります（Ctrl+Enter で送るか、Ctrl+Z で戻す）");
             return ResultAction::None;
         }
@@ -643,6 +647,18 @@ impl DbResults {
                         let field = if op == ResultOp::Where { Field::Where } else { Field::Order };
                         let f = VimField::new(if field == Field::Where { &t.where_ } else { &t.order }, false);
                         self.editing = Some((field, f));
+                    }
+                    ResultOp::CopyColumn => {
+                        if let Some(c) = t.cols.get(t.col) {
+                            return ResultAction::Copy(c.clone(), "列名");
+                        }
+                    }
+                    ResultOp::Sort(dir) if t.filterable && !t.cols.is_empty() => {
+                        let c = t.dialect.ident(&t.cols[t.col]);
+                        t.order = dir.map_or(String::new(), |asc| format!("{c} {}", if asc { "ASC" } else { "DESC" }));
+                        t.offset = 0;
+                        t.running = true;
+                        return ResultAction::Requery(t.id);
                     }
                     ResultOp::SortColumn if t.filterable && !t.cols.is_empty() => {
                         let c = t.dialect.ident(&t.cols[t.col]);

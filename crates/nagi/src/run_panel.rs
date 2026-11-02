@@ -240,9 +240,11 @@ impl crate::layout::View for RunPanelView {
     fn context(&self, ed: &mut Editor, r: crate::panes::Rect, at: crate::layout::At) -> bool {
         let (row, col) = at.screen;
         let _ = r;
-        // 押した行を選ぶ（ボタンの行・タブの行ならメニューを出さない）
+        // ボタンの行は欄全体の操作だけ（タブの行は LeftTabsView）
         if at.row < HEAD {
-            return false;
+            let m = crate::menu::Menu::new(row, col).action(ed, "run.add").action(ed, "run.reload").sep().action(ed, "run.close");
+            ed.open_menu(m);
+            return true;
         }
         ed.run_panel_click(at.row, at.col, 1);
         let Some(c) = ed.panels.run_panel.as_ref().and_then(|p| p.current().cloned()) else {

@@ -297,6 +297,8 @@ pub enum TableOp {
     Where,
     Order,
     SortColumn,
+    /// 今の列で並べる（昇順 true・降順 false。None ならソートのクリア。列の見出しの右クリック）
+    Sort(Option<bool>),
     NextPage,
     PrevPage,
     Reload,
@@ -447,12 +449,18 @@ impl TableEditor {
                 }
                 Err(e) => svc.notify.error(e),
             },
-            TableOp::Where | TableOp::Order | TableOp::SortColumn | TableOp::NextPage | TableOp::PrevPage if dirty => {
+            TableOp::Where | TableOp::Order | TableOp::SortColumn | TableOp::Sort(_) | TableOp::NextPage | TableOp::PrevPage if dirty => {
                 svc.notify.info("未送信の変更があります（Ctrl+Enter で送るか、Ctrl+Z で戻す）")
             }
             TableOp::Where | TableOp::Order => {
                 let field = if op == TableOp::Where { Field::Where } else { Field::Order };
                 te.filter_edit = Some((field, VimField::new(if field == Field::Where { &te.where_ } else { &te.order }, false)));
+            }
+            TableOp::Sort(dir) if !te.cols.is_empty() => {
+                let c = te.dialect.ident(&te.cols[te.col]);
+                te.order = dir.map_or(String::new(), |asc| format!("{c} {}", if asc { "ASC" } else { "DESC" }));
+                te.offset = 0;
+                return TableAction::Reload;
             }
             TableOp::SortColumn if !te.cols.is_empty() => {
                 let c = te.dialect.ident(&te.cols[te.col]);
@@ -811,6 +819,22 @@ impl crate::layout::View for DbTableView {
         let (row, col) = at.screen;
         let _ = r;
         ed.set_state(crate::editor::State::DbTable);
+        // 列の見出し（名前・型の 2 行）: DataGrip の「結果ヘッダー」
+        let header = ed.panels.db_table.as_ref().and_then(|te| (2..4).contains(&at.row).then(|| crate::result_grid::grid_col_at(te.hscroll, &te.widths, at.col)).flatten());
+        if let Some(c) = header {
+            if let Some(te) = &mut ed.panels.db_table {
+                te.col = c;
+            }
+            let name = ed.panels.db_table.as_ref().and_then(|te| te.cols.get(c).cloned()).unwrap_or_default();
+            let m = crate::menu::Menu::new(row, col)
+                .item("昇順", |e| e.db_table_op(TableOp::Sort(Some(true))))
+                .item("降順", |e| e.db_table_op(TableOp::Sort(Some(false))))
+                .item("ソートのクリア", |e| e.db_table_op(TableOp::Sort(None)))
+                .sep()
+                .item("列名のコピー", move |e| e.copy_text(name, "列名"));
+            ed.open_menu(m);
+            return true;
+        }
         let m = crate::menu::Menu::new(row, col)
             .item_shortcut("編集", "F2", |e| e.db_table_op(TableOp::Edit))
             .action(ed, "table.replace")

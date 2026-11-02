@@ -1740,6 +1740,10 @@ impl Frame {
                 ed.run_menu(row, col);
             } else if ed.on_encoding_label(row, col) {
                 ed.encoding_menu(row, col);
+            } else if ed.field_menu(row, col) {
+            } else if let Some(chrome::Hit::Tool(t)) = ed.chrome_at(row, col) {
+                // 左右の端のツールウィンドウのアイコン
+                ed.tool_menu(t, row, col);
             } else if layout::context(ed, layout::Screen { rows: ed.screen.1, cols: ed.screen.0 }, row, col) {
             } else if ed.window_at(row, col).is_some_and(|(_, r)| row < r.y + ed.text_rows(r)) && !ed.text_click_blocked() {
                 // 本文: 切り取り・コピー・貼り付け・定義へ など
@@ -1749,7 +1753,11 @@ impl Frame {
                 // 窓の中の位置（mouse_cell と同じ基準）
                 let rect = ed.active_rect();
                 let lrow = (self.mouse.1 as f32 / cell.h - rect.y as f32 + ed.core.frac).floor().max(0.0) as usize;
-                ed.text_context(lrow, col.saturating_sub(rect.x), (row, col));
+                if col.saturating_sub(rect.x) < ed.gutter() {
+                    ed.gutter_context(lrow, (row, col));
+                } else {
+                    ed.text_context(lrow, col.saturating_sub(rect.x), (row, col));
+                }
             } else if ed.bottom_kind == result_grid::BottomKind::Terminal && ed.terminal_rect().is_some_and(|r| r.contains(row, col)) {
                 ed.terminal_right_click();
             } else if matches!(ed.bottom_kind, result_grid::BottomKind::Grep | result_grid::BottomKind::Output) && ed.bottom_content_rect().is_some_and(|r| r.contains(row, col)) {

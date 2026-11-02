@@ -24,6 +24,10 @@ pub enum Key {
     F(u8),
     /// Shift+Insert（貼り付け）
     Paste,
+    /// 入力欄の右クリックのメニューから: すべて選択・コピー・切り取り（キーボードのキーには当てない）
+    SelectAll,
+    Copy,
+    Cut,
     /// Shift・Ctrl・Alt を付けた移動・削除のキー（Shift+→ で選ぶ、Ctrl+← で単語へ など。Vim を使わないときの編集）。
     /// 修飾の無いものは Up などのまま
     Mod(Nav, Mods),
@@ -148,6 +152,9 @@ impl Key {
             Key::PageDown => "<PageDown>".into(),
             Key::F(n) => format!("<F{n}>"),
             Key::Paste => "<S-Insert>".into(),
+            Key::SelectAll => "<SelectAll>".into(),
+            Key::Copy => "<Copy>".into(),
+            Key::Cut => "<Cut>".into(),
             Key::Mod(n, m) => format!("<{}{}{}{}>", if m.ctrl { "C-" } else { "" }, if m.alt { "A-" } else { "" }, if m.shift { "S-" } else { "" }, n.name()),
         }
     }

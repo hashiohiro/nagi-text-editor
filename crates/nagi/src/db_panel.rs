@@ -2293,6 +2293,35 @@ pub(crate) mod tests {
         }
     }
 
+    /// 入力欄の右クリック: 描いた入力欄の上なら 切り取り・コピー・貼り付け・すべて選択。メニューのキーは今の欄に届く
+    #[test]
+    fn field_context_menu() {
+        thread_local! { static CLIP: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) }; }
+        fn set(t: &str) { CLIP.with(|c| *c.borrow_mut() = t.to_string()); }
+        fn get() -> Option<String> { CLIP.with(|c| Some(c.borrow().clone())) }
+        let mut e = Editor::new(nagi_core::Buffer::from_str("abc\n"), None);
+        e.set_screen(160, 50);
+        e.svc.clipboard = Some(crate::editor::Clipboard { set, get });
+        e.open_db_panel();
+        e.focus_right(RightTab::Database);
+        keys(&mut e, "orders");
+        assert_eq!(e.panels.db.as_ref().unwrap().filter_text, "orders");
+        // 描いたときに覚える位置（ここでは手で置く）
+        *e.field_hits.borrow_mut() = vec![(3, 120, 160, true)];
+        assert!(!e.field_menu(4, 130), "欄の外では出さない");
+        assert!(e.field_menu(3, 130));
+        let labels: Vec<String> = e.menu.as_ref().unwrap().items.iter().filter(|i| i.run.is_some()).map(|i| i.label.clone()).collect();
+        assert_eq!(labels, ["切り取り", "コピー", "貼り付け", "すべて選択"]);
+        e.menu_run(1);
+        assert_eq!(get().as_deref(), Some("orders"), "コピー");
+        assert!(e.field_menu(3, 130));
+        e.menu_run(0);
+        assert_eq!(e.panels.db.as_ref().unwrap().filter_text, "", "切り取り");
+        assert!(e.field_menu(3, 130));
+        e.menu_run(2);
+        assert_eq!(e.panels.db.as_ref().unwrap().filter_text, "orders", "貼り付け");
+    }
+
     /// 欄の入力欄を Insert・Visual のまま本文を押しても、すぐ本文へ移る（前は Insert の間は押しても何もしなかった）
     #[test]
     fn click_text_from_field_in_any_mode() {

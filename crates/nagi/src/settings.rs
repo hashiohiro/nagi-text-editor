@@ -674,6 +674,16 @@ impl crate::editor::Editor {
         Ok(())
     }
 
+    /// 設定を 1 つ変えて保存し、すぐ効かせる（メニューの切り替えから）
+    pub(crate) fn set_setting(&mut self, key: &str, value: &str) {
+        let old = self.settings.clone();
+        self.settings.set(key, value, false);
+        if let Err(e) = self.save_settings(&old) {
+            self.svc.notify.error(format!("設定を保存できません: {e}"));
+        }
+        self.apply_settings(Some(&old));
+    }
+
     /// ドラッグで変えた欄の大きさを覚える（設定の「欄の大きさを覚える」）
     pub(crate) fn remember_panel_sizes(&mut self) {
         if !self.settings.bool("appearance.remember_panels") {

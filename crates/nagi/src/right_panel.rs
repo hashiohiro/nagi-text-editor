@@ -237,7 +237,9 @@ impl crate::layout::View for RightView {
         // 押した行を選ぶだけ（1 回のクリックのように開け閉めしない）
         let row = at.row;
         if row == 0 {
-            return false;
+            let Some(t) = ed.right_visible() else { return false };
+            ed.tool_menu(crate::chrome::Tool::Right(t), at.screen.0, at.screen.1);
+            return true;
         }
         let m = crate::menu::Menu::new(at.screen.0, at.screen.1);
         let m = match ed.right_visible() {
@@ -246,20 +248,19 @@ impl crate::layout::View for RightView {
             Some(RightTab::Maven) => {
                 let Some(mv) = &mut ed.panels.maven else { return false };
                 let len = mv.rows.len();
-                if nagi_ui::list::pick_row(&mut mv.selected, mv.scroll, row, 1, len, 1).is_none() {
-                    return false;
-                }
+                let on_row = nagi_ui::list::pick_row(&mut mv.selected, mv.scroll, row, 1, len, 1).is_some();
                 ed.focus_right(RightTab::Maven);
-                m.action(ed, "maven.run").action(ed, "maven.reload").action(ed, "maven.close")
+                // 行の無い所は欄全体の操作だけ
+                let m = if on_row { m.action(ed, "maven.run").sep() } else { m };
+                m.action(ed, "maven.reload").sep().action(ed, "maven.close")
             }
             Some(RightTab::Preview) => {
                 let Some(pv) = &mut ed.panels.md_preview else { return false };
                 let len = pv.lines.len();
-                if nagi_ui::list::pick_row(&mut pv.selected, pv.scroll, row, 1, len, 1).is_none() {
-                    return false;
-                }
+                let on_row = nagi_ui::list::pick_row(&mut pv.selected, pv.scroll, row, 1, len, 1).is_some();
                 ed.focus_right(RightTab::Preview);
-                m.action(ed, "preview.openLink").action(ed, "preview.close")
+                let m = if on_row { m.action(ed, "preview.openLink").sep() } else { m };
+                m.action(ed, "preview.close")
             }
             None => return false,
         };

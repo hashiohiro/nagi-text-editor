@@ -240,6 +240,8 @@ pub(crate) struct Painter<'a> {
     pub(crate) caret_at: Option<(usize, f32)>,
     /// 描いたタブのアイコン（行, 列の始め, 終わり, 名前）。マウスを載せたら名前を出す
     pub(crate) tab_hits: Vec<(usize, usize, usize, &'static str)>,
+    /// 描いた入力欄（行, 列の始め, 終わり, Vim 風の欄か）。右クリックで切り取り・コピー・貼り付けを出す
+    pub(crate) field_hits: Vec<(usize, usize, usize, bool)>,
     /// 折り返し（設定）: 折り返す幅（0 なら折り返さない）と、使ってよい画面の行数。draw が使う
     pub(crate) wrap_w: usize,
     pub(crate) wrap_rows: usize,
@@ -1025,7 +1027,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     ed.sync_terminal();
     let bar = (cell.w / 6.0).round().max(2.0);
     let underline = (cell.h / 16.0).round().max(1.0);
-    let mut p = Painter { out: Vec::with_capacity(cols * rows + 64), fonts, r, cols, bar, underline, caret_at: None, tab_hits: Vec::new(), wrap_w: 0, wrap_rows: 1, end_y: 0.0, texts: ed.record_texts.then(Vec::new), ui: false, prof: std::env::var_os("NAGI_DEBUG_BUILD").map(|_| Default::default()) };
+    let mut p = Painter { out: Vec::with_capacity(cols * rows + 64), fonts, r, cols, bar, underline, caret_at: None, tab_hits: Vec::new(), field_hits: Vec::new(), wrap_w: 0, wrap_rows: 1, end_y: 0.0, texts: ed.record_texts.then(Vec::new), ui: false, prof: std::env::var_os("NAGI_DEBUG_BUILD").map(|_| Default::default()) };
     if let (Some(r), Some(t)) = (ed.tree_rect(), &mut ed.panels.tree) {
         nagi_ui::list::fit(t.selected, &mut t.scroll, r.h.saturating_sub(crate::tree_panel::HEAD));
     }
@@ -1332,6 +1334,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         p.cols = saved;
     }
     *ed.tab_hits.borrow_mut() = std::mem::take(&mut p.tab_hits);
+    *ed.field_hits.borrow_mut() = std::mem::take(&mut p.field_hits);
     if let Some(t) = p.texts.take() {
         *ed.drawn_texts.borrow_mut() = t;
     }
@@ -1682,6 +1685,9 @@ pub(crate) fn draw_vim_line(p: &mut Painter, f: &crate::vim_field::VimField, l: 
 /// Vim 風の入力欄の 1 行（Insert は縦棒と IME の変換中の文字、ノーマルは四角のカーソル、Visual は選んだ所の地）
 pub(crate) fn draw_vim_line_mono(p: &mut Painter, f: &crate::vim_field::VimField, l: usize, col: usize, y: f32, preedit: &str, active: bool) -> usize {
     let cell = p.fonts.cell();
+    if active {
+        p.field_hits.push(((y / cell.h).round() as usize, col, p.cols.max(col + 1), true));
+    }
     let text = f.ed.core.buf.line(l);
     let (cl, cb) = f.cursor();
     let cb = cb.min(text.len());
@@ -1737,6 +1743,9 @@ pub(crate) fn prompt_line(p: &mut Painter, lead: &str, text: &str, cursor: usize
 
 pub(crate) fn prompt_line_mono(p: &mut Painter, lead: &str, text: &str, cursor: usize, preedit: &str, y: f32, active: bool) {
     let c = p.text(lead, 0, y, if active { FG } else { STATUS_FG });
+    if active {
+        p.field_hits.push(((y / p.fonts.cell().h).round() as usize, 0, p.cols.max(1), false));
+    }
     let mut items = p.items(&text[..cursor], FG);
     let caret = c + items.iter().map(|i| i.width).sum::<usize>();
     let mut pre = Vec::new();

@@ -611,6 +611,13 @@ impl crate::layout::View for LeftTabsView {
         }
         crate::layout::Click::Done
     }
+
+    fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At) -> bool {
+        let _ = r;
+        let Some(tab) = ed.left_visible() else { return false };
+        ed.tool_menu(crate::chrome::Tool::Left(tab), at.screen.0, at.screen.1);
+        true
+    }
 }
 
 /// 描き方（view.rs の Painter で描く）

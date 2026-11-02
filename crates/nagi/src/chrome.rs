@@ -143,6 +143,27 @@ impl Editor {
         }
     }
 
+    /// ツールウィンドウのアイコン・見出しの右クリック: 出ていれば 非表示、出ていなければ 開く（IntelliJ のツールウィンドウと同じ）。
+    /// 下の欄の結果・ターミナルは、見出しにある今のタブを閉じる項目も
+    pub(crate) fn tool_menu(&mut self, t: Tool, row: usize, col: usize) {
+        let mut m = crate::menu::Menu::new(row, col);
+        if !self.tool_open(t) {
+            m = m.item("開く", move |e| e.toggle_tool(t));
+        } else {
+            match t {
+                Tool::Bottom(BottomKind::Result) if self.panels.db_results.active_tab().is_some() => m = m.action(self, "results.close").sep(),
+                Tool::Bottom(BottomKind::Terminal) if !self.panels.terminals.list.is_empty() => m = m.item("セッションを閉じる", |e| e.close_terminal()).sep(),
+                _ => {}
+            }
+            m = m.item("非表示", move |e| match t {
+                Tool::Left(_) => e.hide_left(),
+                Tool::Bottom(_) => e.hide_bottom(),
+                Tool::Right(_) => e.hide_right(),
+            });
+        }
+        self.open_menu(m);
+    }
+
     /// 上の帯の部品（左から順。右寄せのものは右から詰める）
     fn toolbar_widgets(&self) -> Vec<Widget> {
         let root = self.nav_root();

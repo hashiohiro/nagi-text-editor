@@ -358,6 +358,23 @@ impl Editor {
         self.set_state(State::Visual { line: false, block: false });
     }
 
+    /// 行番号の欄（ガター）の右クリック（窓の中の行と、メニューを出す画面の位置）: IntelliJ のガターと同じ項目
+    pub(crate) fn gutter_context(&mut self, row: usize, at: (usize, usize)) {
+        let line = self.pos_at(row, 0).line;
+        let check = |on: bool| if on { "✓ " } else { "   " };
+        let numbers = self.settings.get("editor.line_numbers") != "off";
+        let wrap = self.settings.bool("editor.wrap");
+        let m = crate::menu::Menu::new(at.0, at.1)
+            .item("注釈", |e| {
+                e.shortcut("Gblame");
+            })
+            .item("行ブレークポイントの切り替え", move |e| e.toggle_breakpoint(Some(line)))
+            .sep()
+            .item(format!("{}行番号の表示", check(numbers)), move |e| e.set_setting("editor.line_numbers", if numbers { "off" } else { "absolute" }))
+            .item(format!("{}行の折り返し", check(wrap)), move |e| e.set_setting("editor.wrap", if wrap { "false" } else { "true" }));
+        self.open_menu(m);
+    }
+
     /// 本文の右クリック（窓の中の行・列と、メニューを出す画面の位置）。選んでいる所の外なら、そこへカーソルを移してから
     pub(crate) fn text_context(&mut self, row: usize, col: usize, at: (usize, usize)) {
         let pos = self.pos_at(row, col);
@@ -649,6 +666,40 @@ mod tests {
         e.key(shift(Nav::Home));
         assert_eq!((e.core.cursor.line, e.core.cursor.byte), (0, 0));
         assert_eq!(e.plain_selected_text().as_deref(), Some("abc"));
+    }
+
+    /// ツールウィンドウの見出し・アイコンの右クリック（出ていれば 非表示、出ていなければ 開く）と、ガターの右クリック
+    #[test]
+    fn tool_and_gutter_menus() {
+        let dir = std::env::temp_dir().join(format!("nagi-plain-tool-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::write(dir.join("a.txt"), "one\ntwo\n").unwrap();
+        let mut buf = Buffer::open(&dir.join("a.txt")).unwrap();
+        buf.path = Some(dir.join("a.txt"));
+        let mut e = Editor::new(buf, None);
+        e.set_screen(120, 40);
+        e.open_tree();
+        let labels = |e: &Editor| e.menu.as_ref().unwrap().items.iter().filter(|i| i.run.is_some()).map(|i| i.label.clone()).collect::<Vec<_>>();
+        // 左の欄の見出し
+        let r = e.left_rect().unwrap();
+        let s = crate::layout::Screen { rows: 40, cols: 120 };
+        assert!(crate::layout::context(&mut e, s, r.y, r.x + 2));
+        assert_eq!(labels(&e), ["非表示"]);
+        e.menu_run(0);
+        assert!(e.left_visible().is_none(), "非表示で隠す");
+        // 出ていない欄のアイコン
+        e.tool_menu(crate::chrome::Tool::Left(crate::tree_panel::LeftTab::Project), 5, 1);
+        assert_eq!(labels(&e), ["開く"]);
+        e.menu_run(0);
+        assert!(e.left_visible().is_some());
+        // ガター: 注釈・行ブレークポイントの切り替え・行番号の表示・行の折り返し
+        e.set_state(State::Normal);
+        e.gutter_context(1, (3, 1));
+        assert_eq!(labels(&e), ["注釈", "行ブレークポイントの切り替え", "✓ 行番号の表示", "   行の折り返し"]);
+        e.menu_run(1);
+        assert!(e.breakpoints.values().any(|b| b.contains(&1)), "押した行（2 行目）に付ける: {:?}", e.breakpoints);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// パネルでは文字のキーを受けず、右クリックのメニューからは同じ操作ができる。確認は窓で答える

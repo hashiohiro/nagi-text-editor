@@ -120,6 +120,31 @@ impl VimField {
                 self.ed.plain_select_all();
                 return FieldOut::None;
             }
+            Key::SelectAll => {
+                self.select_all();
+                return FieldOut::None;
+            }
+            Key::Copy | Key::Cut => {
+                // 選んでいなければ全部
+                if self.visual().is_none() && self.selected_text().is_none() {
+                    self.select_all();
+                }
+                let text = self.selection();
+                match &clip {
+                    Some(cb) => (cb.set)(&text),
+                    None => crate::clipboard::set(&text),
+                }
+                if key == Key::Copy || text.is_empty() {
+                    return FieldOut::None;
+                }
+                if self.ed.vim_on {
+                    self.ed.key(Key::Char('d'));
+                    self.reinsert();
+                } else {
+                    self.ed.plain_delete_selection();
+                }
+                return FieldOut::Changed;
+            }
             Key::Paste | Key::Ctrl('v') if insert => {
                 let text = match &clip {
                     Some(cb) => (cb.get)(),
@@ -138,6 +163,28 @@ impl VimField {
             self.ed.set_state(State::Normal);
         }
         if self.text() != before { FieldOut::Changed } else { FieldOut::None }
+    }
+
+    /// 全部を選ぶ（Vim を使う欄は Visual で）
+    pub fn select_all(&mut self) {
+        if !self.ed.vim_on {
+            self.ed.plain_select_all();
+            return;
+        }
+        self.ed.set_state(State::Normal);
+        self.ed.pending_keys.clear();
+        for k in ['g', 'g', '0', 'v', 'G', '$'] {
+            self.ed.key(Key::Char(k));
+        }
+    }
+
+    /// 選んでいる文字（Vim は Visual の範囲。選んでいなければ空）
+    pub fn selection(&self) -> String {
+        if let Some((a, b)) = self.visual() {
+            let t = self.ed.core.buf.text();
+            return t.get(a..b.min(t.len())).unwrap_or_default().to_string();
+        }
+        self.selected_text().unwrap_or_default()
     }
 
     /// 描く用: カーソルの (行, 行の中の byte)、Visual の範囲（絶対 byte）
@@ -213,6 +260,7 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::editor::Clipboard;
 
     fn keys(f: &mut VimField, regs: &mut Registers, k: &str) -> FieldOut {
         let mut last = FieldOut::None;
@@ -236,6 +284,30 @@ mod tests {
         f.key(Key::Ctrl('a'), &mut regs, None);
         f.insert_text("yz");
         assert_eq!(f.text(), "yz");
+        set_vim(true);
+    }
+
+    /// 右クリックのメニューの すべて選択・コピー・切り取り（Vim を使う欄・使わない欄）。選んでいなければ全部
+    #[test]
+    fn menu_select_copy_cut() {
+        thread_local! { static CLIP: std::cell::RefCell<String> = const { std::cell::RefCell::new(String::new()) }; }
+        fn set(t: &str) { CLIP.with(|c| *c.borrow_mut() = t.to_string()); }
+        fn get() -> Option<String> { CLIP.with(|c| Some(c.borrow().clone())) }
+        let clip = Some(Clipboard { set, get });
+        for vim in [true, false] {
+            set_vim(vim);
+            let mut regs = Registers::new();
+            let mut f = VimField::new("alpha beta", false);
+            f.key(Key::Copy, &mut regs, clip);
+            assert_eq!(get().as_deref(), Some("alpha beta"), "{vim}: 選んでいなければ全部");
+            f.key(Key::SelectAll, &mut regs, clip);
+            assert_eq!(f.selection(), "alpha beta", "{vim}");
+            assert_eq!(f.key(Key::Cut, &mut regs, clip), FieldOut::Changed);
+            assert_eq!((f.text().as_str(), get().as_deref()), ("", Some("alpha beta")), "{vim}");
+            assert!(f.is_insert(), "{vim}: 切り取ったら続けて打てる");
+            f.key(Key::Paste, &mut regs, clip);
+            assert_eq!(f.text(), "alpha beta", "{vim}");
+        }
         set_vim(true);
     }
 

@@ -202,6 +202,24 @@ impl Editor {
     }
 
     /// メニューを開く（閉じたら今の状態へ戻る）
+    /// 入力欄の右クリック（描いた入力欄の上なら）: 切り取り・コピー・貼り付け・すべて選択（IntelliJ の入力欄と同じ）。出したら true
+    pub(crate) fn field_menu(&mut self, row: usize, col: usize) -> bool {
+        let Some(&(_, _, _, vim)) = self.field_hits.borrow().iter().find(|(r, c0, c1, _)| *r == row && col >= *c0 && col < *c1) else { return false };
+        let m = if vim {
+            Menu::new(row, col)
+                .item("切り取り", |e| { e.key(Key::Cut); })
+                .item("コピー", |e| { e.key(Key::Copy); })
+                .item("貼り付け", |e| e.paste_clipboard())
+                .sep()
+                .item("すべて選択", |e| { e.key(Key::SelectAll); })
+        } else {
+            // コマンドライン・検索の帯（選ぶ範囲を持たない欄）
+            Menu::new(row, col).item("貼り付け", |e| e.paste_clipboard())
+        };
+        self.open_menu(m);
+        true
+    }
+
     pub(crate) fn open_menu(&mut self, mut m: Menu) {
         if !m.items.iter().any(|it| it.run.is_some()) {
             return;

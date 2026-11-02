@@ -513,6 +513,8 @@ pub struct Editor {
     /// 状態の行の文字コード・改行の列（押すとメニュー）
     pub enc_hit: std::cell::Cell<Option<(usize, usize)>>,
     pub tab_hits: std::cell::RefCell<Vec<(usize, usize, usize, &'static str)>>,
+    /// 描いた入力欄（行, 列の始め, 終わり, Vim 風の欄か。view.rs の Painter::field_hits）
+    pub field_hits: std::cell::RefCell<Vec<(usize, usize, usize, bool)>>,
     /// `--replay` の試験: 描いた文字を控える（行, 列, 文字）。replay.rs が押す所・待つ文字を探す
     pub record_texts: bool,
     pub drawn_texts: std::cell::RefCell<Vec<(usize, usize, String)>>,
@@ -801,6 +803,7 @@ impl Editor {
             click_mods: Default::default(),
             hover_tab: None,
             tab_hits: Default::default(),
+            field_hits: Default::default(),
             record_texts: false,
             drawn_texts: Default::default(),
             run_hit: Default::default(),

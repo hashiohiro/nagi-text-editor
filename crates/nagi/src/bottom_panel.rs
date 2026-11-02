@@ -402,9 +402,10 @@ impl crate::layout::View for BottomView {
     fn context(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At) -> bool {
         let _ = r;
         let (row, col) = at.screen;
-        // 1 行目はタブなので、2 行目から中身
+        // 1 行目は見出し（ツールウィンドウのメニュー）、2 行目から中身
         if at.row == 0 {
-            return false;
+            ed.tool_menu(crate::chrome::Tool::Bottom(ed.bottom_kind), row, col);
+            return true;
         }
         let (prow, pcol) = (at.row - 1, at.col);
         let m = crate::menu::Menu::new(row, col);
@@ -444,10 +445,49 @@ impl crate::layout::View for BottomView {
             }
             BottomKind::Problems => {
                 ed.problems_click(prow, 1);
-                m.action(ed, "problems.open").action(ed, "problems.openKeep").sep().action(ed, "problems.hide")
+                let rows = ed.problem_rows();
+                let msg = match ed.panels.problems.jump(&rows, false) {
+                    ProblemAction::Jump(i, _) => ed.diags.get(i).map(|d| d.msg.clone()),
+                    _ => None,
+                };
+                let m = m.action(ed, "problems.open").action(ed, "problems.openKeep");
+                let m = match msg {
+                    Some(t) => m.sep().item("問題の説明をコピー", move |e| e.copy_text(t, "説明")),
+                    None => m,
+                };
+                m.sep().action(ed, "problems.hide")
             }
             BottomKind::Result => {
                 ed.result_click(prow, pcol.saturating_sub(1), 1);
+                use crate::result_grid::ResultOp;
+                // 結果のタブの行: そのタブを選んでから閉じる
+                if prow == 0 {
+                    if ed.panels.db_results.active == 0 {
+                        return false;
+                    }
+                    ed.open_menu(m.action(ed, "results.close").sep().action(ed, "results.prevTab").action(ed, "results.nextTab"));
+                    return true;
+                }
+                // 列の見出し（名前・型の 2 行）: DataGrip の「結果ヘッダー」
+                let header = ed.panels.db_results.active_tab().and_then(|t| {
+                    let head = if t.filterable { 4 } else { 3 };
+                    (prow + 2 >= head && prow < head).then(|| crate::result_grid::grid_col_at(t.hscroll, &t.widths, pcol.saturating_sub(1))).flatten().map(|c| (c, t.filterable))
+                });
+                if let Some((c, filterable)) = header {
+                    if let Some(t) = ed.panels.db_results.active_tab_mut() {
+                        t.col = c;
+                    }
+                    let m = if filterable {
+                        m.item("昇順", |e| e.result_op(ResultOp::Sort(Some(true))))
+                            .item("降順", |e| e.result_op(ResultOp::Sort(Some(false))))
+                            .item("ソートのクリア", |e| e.result_op(ResultOp::Sort(None)))
+                            .sep()
+                    } else {
+                        m
+                    };
+                    ed.open_menu(m.item("列名のコピー", |e| e.result_op(ResultOp::CopyColumn)));
+                    return true;
+                }
                 let filterable = ed.panels.db_results.active_tab().is_some_and(|t| t.filterable);
                 let editable = ed.panels.db_results.active_tab().is_some_and(|t| t.target.is_some());
                 // DataGrip の結果の表と同じ並び: 編集 → コピー → フィルター・並べ替え → ページ → エクスポート
