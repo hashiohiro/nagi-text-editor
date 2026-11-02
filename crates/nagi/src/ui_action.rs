@@ -28,6 +28,7 @@ pub enum Scope {
     Settings,
     RunConfig,
     Launcher,
+    RunWindow,
 }
 
 impl Scope {
@@ -49,6 +50,7 @@ impl Scope {
             Scope::Settings => "設定",
             Scope::RunConfig => "実行の構成",
             Scope::Launcher => "ランチャー",
+            Scope::RunWindow => "実行のツールウィンドウ",
         }
     }
 }
@@ -74,7 +76,7 @@ pub const KEY: &str = "keymap.ui.";
 
 /// すべてのアクション（部品の表をつなげたもの）
 pub fn all() -> impl Iterator<Item = &'static UiAction> {
-    [&crate::db_panel::ACTIONS[..], &crate::tree_panel::ACTIONS, &crate::maven_panel::ACTIONS, &crate::md_preview::ACTIONS, &crate::commit_panel::ACTIONS, &crate::log_view::ACTIONS, &crate::diff_view::ACTIONS, &crate::grep_panel::ACTIONS, &crate::bottom_panel::ACTIONS, &crate::run_panel::ACTIONS, &crate::result_grid::ACTIONS, &crate::db_table::ACTIONS, &crate::settings_dialog::ACTIONS, &crate::run_dialog::ACTIONS, &crate::launcher::UI_ACTIONS].into_iter().flatten()
+    [&crate::db_panel::ACTIONS[..], &crate::tree_panel::ACTIONS, &crate::maven_panel::ACTIONS, &crate::md_preview::ACTIONS, &crate::commit_panel::ACTIONS, &crate::log_view::ACTIONS, &crate::diff_view::ACTIONS, &crate::grep_panel::ACTIONS, &crate::bottom_panel::ACTIONS, &crate::run_panel::ACTIONS, &crate::terminal::ACTIONS, &crate::result_grid::ACTIONS, &crate::db_table::ACTIONS, &crate::settings_dialog::ACTIONS, &crate::run_dialog::ACTIONS, &crate::launcher::UI_ACTIONS].into_iter().flatten()
 }
 
 pub fn find(id: &str) -> Option<&'static UiAction> {

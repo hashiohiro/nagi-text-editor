@@ -30,6 +30,8 @@ pub enum BottomKind {
     Problems,
     /// 実行したコマンドの出力
     Output,
+    /// 実行の構成の出力（IntelliJ の Run ツールウィンドウ）
+    Run,
     /// シェル
     Terminal,
     /// デバッグ（スタックと変数）

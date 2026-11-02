@@ -82,7 +82,7 @@ pub static ACTIONS: [crate::ui_action::UiAction; 6] = {
 impl Editor {
     /// 構成の名前が動いているか
     pub fn run_is_running(&self, name: &str) -> bool {
-        self.panels.terminals.list.iter().any(|t| t.name.strip_prefix(RUN_PREFIX) == Some(name) && !t.exited)
+        self.panels.runs.list.iter().any(|t| t.name.strip_prefix(RUN_PREFIX) == Some(name) && !t.exited)
     }
 
     /// 実行の欄を開いて移る（構成を読み直し、選んでいる構成の行を選ぶ）
@@ -137,7 +137,7 @@ impl Editor {
 
     /// 名前の構成を止める（出力は残す）
     pub(crate) fn run_stop_named(&mut self, name: &str) {
-        match self.panels.terminals.list.iter_mut().find(|t| t.name.strip_prefix(RUN_PREFIX) == Some(name) && !t.exited) {
+        match self.panels.runs.list.iter_mut().find(|t| t.name.strip_prefix(RUN_PREFIX) == Some(name) && !t.exited) {
             Some(t) => {
                 t.term.kill();
                 self.svc.notify.info(format!("止めました: {name}"));
@@ -362,8 +362,8 @@ mod tests {
         assert_eq!(e.panels.run_panel.as_ref().unwrap().selected, 1);
         // Enter で動かす
         e.key(Key::Enter);
-        assert_eq!(e.panels.terminals.list.len(), 1);
-        assert_eq!(e.panels.terminals.list[0].name, "▶ 二");
+        assert_eq!(e.panels.runs.list.len(), 1);
+        assert_eq!(e.panels.runs.list[0].name, "▶ 二");
         // もう一度押すと隠す
         e.list_side = Side::Run;
         e.set_state(State::List);

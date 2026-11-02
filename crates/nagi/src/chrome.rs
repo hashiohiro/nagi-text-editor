@@ -82,11 +82,12 @@ fn icon_of(t: Tool) -> &'static str {
     match t {
         Tool::Left(LeftTab::Project) => "tw_project",
         Tool::Left(LeftTab::Commit) => "tw_commit",
-        Tool::Left(LeftTab::Run) => "tw_run",
+        Tool::Left(LeftTab::Run) => "tw_services",
         Tool::Bottom(BottomKind::Git) => "tw_vcs",
         Tool::Bottom(BottomKind::Grep) => "tw_find",
         Tool::Bottom(BottomKind::Problems) => "tw_problems",
         Tool::Bottom(BottomKind::Output) => "tw_messages",
+        Tool::Bottom(BottomKind::Run) => "tw_run",
         Tool::Bottom(BottomKind::Terminal) => "tw_terminal",
         Tool::Bottom(BottomKind::Debug) => "tw_debug",
         Tool::Bottom(BottomKind::Result) => "n_dataSchema",
@@ -153,6 +154,7 @@ impl Editor {
             match t {
                 Tool::Bottom(BottomKind::Result) if self.panels.db_results.active_tab().is_some() => m = m.action(self, "results.close").sep(),
                 Tool::Bottom(BottomKind::Terminal) if !self.panels.terminals.list.is_empty() => m = m.item("セッションを閉じる", |e| e.close_terminal()).sep(),
+                Tool::Bottom(BottomKind::Run) if !self.panels.runs.list.is_empty() => m = m.action(self, "runwin.close").sep(),
                 _ => {}
             }
             m = m.item("非表示", move |e| match t {

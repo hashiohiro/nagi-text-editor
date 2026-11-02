@@ -160,11 +160,18 @@ impl Editor {
                 };
                 let name = format!("{RUN_PREFIX}{}", cfg.name);
                 // 同じ構成が動いていれば止めて、同じ場所で動かし直す
-                self.close_terminal_named(&name);
+                let at = self.close_terminal_named(&name);
                 self.bottom_hidden = false;
-                self.bottom_kind = BottomKind::Terminal;
+                self.bottom_kind = BottomKind::Run;
                 self.rows = self.text_rows(self.active_rect());
-                if self.new_terminal(&name, &shell) {
+                if self.new_terminal_at(&name, &shell, &cwd) {
+                    let runs = &mut self.panels.runs;
+                    if let Some(mut t) = runs.list.pop() {
+                        t.config = Some(cfg.clone());
+                        let i = at.unwrap_or(runs.list.len()).min(runs.list.len());
+                        runs.list.insert(i, t);
+                        runs.active = i;
+                    }
                     self.svc.notify.info(format!("実行: {}   {cmd}", cfg.name));
                 }
             }
@@ -252,7 +259,7 @@ impl Editor {
         if let Some(n) = &name {
             m = m.item(format!("▶ {n} を実行（Shift+F10）"), |e| e.run_command(""));
         }
-        let running = self.panels.terminals.list.iter().any(|t| t.name.starts_with(RUN_PREFIX) && !t.exited);
+        let running = self.panels.runs.list.iter().any(|t| t.name.starts_with(RUN_PREFIX) && !t.exited);
         m = m.item("実行…（Alt+Shift+F10）", |e| e.open_run_chooser());
         if self.run_last.is_some() {
             m = m.item("再実行（Ctrl+F5）", |e| e.run_again());
@@ -269,10 +276,10 @@ impl Editor {
         if self.panels.debug.as_ref().is_some_and(|d| !d.ended) {
             self.debug_stop();
         }
-        let active = self.panels.terminals.list.get(self.panels.terminals.active).filter(|t| t.name.starts_with(RUN_PREFIX) && !t.exited).map(|t| t.name.clone());
+        let active = self.panels.runs.list.get(self.panels.runs.active).filter(|t| t.name.starts_with(RUN_PREFIX) && !t.exited).map(|t| t.name.clone());
         let last = self.run_last.as_ref().map(|n| format!("{RUN_PREFIX}{n}"));
-        let target = active.or(last.filter(|n| self.panels.terminals.list.iter().any(|t| &t.name == n && !t.exited)));
-        let stopped = target.and_then(|n| self.panels.terminals.list.iter_mut().find(|t| t.name == n)).map(|t| {
+        let target = active.or(last.filter(|n| self.panels.runs.list.iter().any(|t| &t.name == n && !t.exited)));
+        let stopped = target.and_then(|n| self.panels.runs.list.iter_mut().find(|t| t.name == n)).map(|t| {
             t.term.kill();
             t.name.trim_start_matches(RUN_PREFIX).to_string()
         });
@@ -295,15 +302,15 @@ impl Editor {
         self.set_state(State::Normal);
     }
 
-    /// 名前の窓を閉じる（動いていれば止める）
-    pub(crate) fn close_terminal_named(&mut self, name: &str) {
-        if let Some(i) = self.panels.terminals.list.iter().position(|t| t.name == name) {
-            let mut t = self.panels.terminals.list.remove(i);
-            t.term.kill();
-            if self.panels.terminals.active > i || self.panels.terminals.active >= self.panels.terminals.list.len() {
-                self.panels.terminals.active = self.panels.terminals.active.saturating_sub(1);
-            }
+    /// 名前の実行の窓を閉じる（動いていれば止める）。閉じたらその位置
+    pub(crate) fn close_terminal_named(&mut self, name: &str) -> Option<usize> {
+        let i = self.panels.runs.list.iter().position(|t| t.name == name)?;
+        let mut t = self.panels.runs.list.remove(i);
+        t.term.kill();
+        if self.panels.runs.active > i || self.panels.runs.active >= self.panels.runs.list.len() {
+            self.panels.runs.active = self.panels.runs.active.saturating_sub(1);
         }
+        Some(i)
     }
 }
 
@@ -322,7 +329,7 @@ mod tests {
     use super::*;
     use nagi_core::Buffer;
 
-    /// 構成を選んで動かすと、ターミナルの欄に「▶ 名前」の窓ができ、もう一度動かすと同じ窓を作り直す
+    /// 構成を選んで動かすと、実行のツールウィンドウに「▶ 名前」の窓ができ、もう一度動かすと同じ窓を作り直す
     #[test]
     fn runs_in_terminal() {
         let dir = std::env::temp_dir().join(format!("nagi-run-{}", std::process::id()));
@@ -336,13 +343,14 @@ mod tests {
         e.set_screen(120, 40);
         e.run_command("");
         assert_eq!(e.run_selected.as_deref(), Some("あいさつ"));
-        assert_eq!(e.bottom_kind, BottomKind::Terminal);
-        assert_eq!(e.panels.terminals.list.len(), 1);
-        assert_eq!(e.panels.terminals.list[0].name, "▶ あいさつ");
+        assert_eq!(e.bottom_kind, BottomKind::Run, "実行のツールウィンドウに出す");
+        assert!(e.panels.terminals.list.is_empty(), "ターミナルには出さない");
+        assert_eq!(e.panels.runs.list.len(), 1);
+        assert_eq!(e.panels.runs.list[0].name, "▶ あいさつ");
         let mut ok = false;
         for _ in 0..300 {
             e.sync_terminal();
-            if e.panels.terminals.list[0].term.with_screen(|s| s.contents()).contains("nagi-run-ok") {
+            if e.panels.runs.list[0].term.with_screen(|s| s.contents()).contains("nagi-run-ok") {
                 ok = true;
                 break;
             }
@@ -351,7 +359,7 @@ mod tests {
         assert!(ok, "出力が出ない");
         // もう一度（Ctrl+F5）: 窓は増えない
         e.shortcut("RunAgain");
-        assert_eq!(e.panels.terminals.list.len(), 1);
+        assert_eq!(e.panels.runs.list.len(), 1);
         // 一覧（Alt+Shift+F10）
         e.shortcut("RunConfigs");
         assert_eq!(e.state(), State::Finder);
@@ -370,6 +378,71 @@ mod tests {
         assert_eq!(e.run_selected.as_deref(), Some("テスト"));
         assert!(std::fs::read_to_string(dir.join(".nagi/run.conf")).unwrap().ends_with("あいさつ = echo nagi-run-ok\nテスト = echo t\n"));
         assert!(e.load_run_configs().iter().any(|c| c.name == "テスト"));
+    }
+
+    /// 実行のツールウィンドウ: 動かすと下の欄に「実行」のタブが出る。縦のツールバーの「停止」を押すと、包みの cmd.exe の下で
+    /// 動く本体も止まる。「再実行」は同じタブで動かし直す。タブの × で閉じ、最後のタブを閉じると「実行」のタブも消える
+    #[test]
+    fn run_tool_window() {
+        let dir = std::env::temp_dir().join(format!("nagi-runwin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::create_dir_all(dir.join(".nagi")).unwrap();
+        std::fs::write(dir.join(".nagi/run.conf"), "長い = powershell -NoProfile -Command \"Write-Output ('PID=' + $PID); Start-Sleep 120\"\n短い = echo short\n").unwrap();
+        std::fs::write(dir.join("a.txt"), "x\n").unwrap();
+        let mut e = Editor::new(Buffer::open(&dir.join("a.txt")).unwrap(), None);
+        e.core.buf.path = Some(dir.join("a.txt"));
+        e.set_screen(120, 40);
+        assert!(!e.bottom_tabs().iter().any(|t| t.1 == BottomKind::Run), "動かす前は出さない");
+        e.run_command("短い");
+        e.run_command("長い");
+        assert!(e.bottom_tabs().iter().any(|t| t.1 == BottomKind::Run));
+        assert_eq!(e.panels.runs.list.len(), 2);
+        assert_eq!(e.panels.runs.active, 1);
+        let pid = (0..500)
+            .find_map(|_| {
+                e.sync_terminal();
+                let text = e.panels.runs.list[1].term.with_screen(|s| s.contents());
+                let p = text.split("PID=").nth(1).and_then(|r| r.split_whitespace().next()).and_then(|n| n.parse::<u32>().ok());
+                if p.is_none() {
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                }
+                p
+            })
+            .expect("本体の PID が出ない");
+        let alive = |p: u32| {
+            let out = std::process::Command::new("tasklist.exe").args(["/FI", &format!("PID eq {p}"), "/NH", "/FO", "CSV"]).output().unwrap();
+            String::from_utf8_lossy(&out.stdout).contains(&format!("\"{p}\""))
+        };
+        assert!(alive(pid));
+        // 縦のツールバーの 2 つ目（停止）を押す
+        let r = e.terminal_rect().unwrap();
+        let s = crate::layout::Screen { rows: e.screen.1, cols: e.screen.0 };
+        assert_eq!(e.run_tool_at(r.y + 1, r.x), Some("runwin.stop"));
+        crate::layout::press(&mut e, s, r.y + 1, r.x, |_| 1);
+        assert!((0..100).any(|_| {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            !alive(pid)
+        }), "停止の後も本体 {pid} が動いている");
+        e.sync_terminal();
+        assert!(e.panels.runs.list[1].exited);
+        assert!(!crate::ui_action::find("runwin.stop").is_some_and(|a| (a.enabled)(&e)), "止めた後は停止を押せない");
+        // 再実行（1 つ目のボタン）は同じタブの位置で
+        e.panels.runs.active = 0;
+        crate::layout::press(&mut e, s, r.y, r.x, |_| 1);
+        assert_eq!(e.panels.runs.list.len(), 2);
+        assert_eq!(e.panels.runs.active, 0);
+        assert_eq!(e.panels.runs.list[0].name, "▶ 短い");
+        // タブの × で閉じる（1 行目。最初のタブの右端）
+        let label = &crate::terminal::strip_items(&e.panels.runs, true)[0].0;
+        let w = nagi_core::display_col(label, label.len(), false);
+        crate::layout::press(&mut e, s, r.y - 1, r.x + w - 2, |_| 1);
+        assert_eq!(e.panels.runs.list.len(), 1);
+        assert_eq!(e.panels.runs.list[0].name, "▶ 長い");
+        e.run_window_close();
+        assert!(!e.bottom_tabs().iter().any(|t| t.1 == BottomKind::Run), "最後のタブを閉じたら消える");
+        assert!(!e.bottom_visible());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 構成が無くても、開いている Python などのファイルは一覧に出て動かせる

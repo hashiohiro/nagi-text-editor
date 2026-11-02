@@ -38,6 +38,7 @@ impl Editor {
         match self.bottom_kind {
             Grep | Output => self.panels.grep.is_some() || self.bottom_chosen,
             Result => !self.panels.db_results.is_empty(),
+            Run => !self.panels.runs.list.is_empty(),
             Git => self.panels.log.as_ref().is_some_and(|l| l.docked),
             Problems | Terminal | Debug => true,
         }

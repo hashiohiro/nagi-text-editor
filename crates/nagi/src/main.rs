@@ -1374,7 +1374,7 @@ impl Frame {
         let wl = ed.settings.int("editor.wheel_lines") as f32;
         // ターミナルの上ならシェル・アプリへ（さかのぼる・アプリに送る）
         let (row, col) = ((self.mouse.1 as f32 / f.cell().h) as usize, (self.mouse.0.max(0.0) as f32 / f.cell().w) as usize);
-        if ed.bottom_kind == result_grid::BottomKind::Terminal && ed.bottom_content_rect().is_some_and(|r| r.contains(row, col)) {
+        if matches!(ed.bottom_kind, result_grid::BottomKind::Terminal | result_grid::BottomKind::Run) && ed.bottom_content_rect().is_some_and(|r| r.contains(row, col)) {
             let lines = match delta {
                 winit::event::MouseScrollDelta::LineDelta(_, y) => (y * wl).round() as isize,
                 winit::event::MouseScrollDelta::PixelDelta(p) => (p.y / f.cell().h as f64).round() as isize,
@@ -1799,7 +1799,7 @@ impl Frame {
                 } else {
                     ed.text_context(lrow, col.saturating_sub(rect.x), (row, col));
                 }
-            } else if ed.bottom_kind == result_grid::BottomKind::Terminal && ed.terminal_rect().is_some_and(|r| r.contains(row, col)) {
+            } else if matches!(ed.bottom_kind, result_grid::BottomKind::Terminal | result_grid::BottomKind::Run) && ed.terminal_rect().is_some_and(|r| r.contains(row, col)) {
                 ed.terminal_right_click();
             } else if matches!(ed.bottom_kind, result_grid::BottomKind::Grep | result_grid::BottomKind::Output) && ed.bottom_content_rect().is_some_and(|r| r.contains(row, col)) {
                 // 検索・ログ: 選んでいる行（無ければ今の行）をコピー

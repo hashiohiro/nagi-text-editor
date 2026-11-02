@@ -334,6 +334,8 @@ pub struct Panels {
     pub problems: crate::bottom_panel::ProblemsView,
     /// 下の欄の「ターミナル」の窓たち
     pub terminals: crate::terminal::Terminals,
+    /// 下の欄の「実行」の窓たち（実行の構成ごと。IntelliJ の Run ツールウィンドウ）
+    pub runs: crate::terminal::Terminals,
     pub run_dialog: Option<crate::run_dialog::RunDialog>,
     pub settings_dialog: Option<crate::settings_dialog::SettingsDialog>,
     /// 入力のダイアログ（input_dialog.rs）
@@ -750,6 +752,7 @@ impl Editor {
                 db_table: None,
                 problems: Default::default(),
                 terminals: Default::default(),
+                runs: Default::default(),
                 run_dialog: None,
                 settings_dialog: None,
                 input: None,

@@ -22,6 +22,8 @@ pub struct TermView {
     pub exited: bool,
     /// 起動したフォルダ（出力のファイルの位置をここから探す）
     pub cwd: std::path::PathBuf,
+    /// 実行の窓なら、動かした構成（再実行する）
+    pub config: Option<nagi_workers::runconfig::RunConfig>,
 }
 
 /// ターミナルの窓たち
@@ -189,18 +191,136 @@ pub fn key_bytes(key: Key, app_cursor: bool) -> Option<Vec<u8>> {
     }
 }
 
-/// 窓の並びの項目（表示, 押したら: Some(窓の番号) か None（＋））
-pub fn strip_items(t: &Terminals) -> Vec<(String, Option<usize>)> {
+/// 窓の並びの項目（表示, 押したら: Some(窓の番号) か None（＋））。実行の窓（`run`）は構成の名前と閉じる ×（＋は無い）
+pub fn strip_items(t: &Terminals, run: bool) -> Vec<(String, Option<usize>)> {
+    if run {
+        return t.list.iter().enumerate().map(|(i, s)| (format!(" {}{} × ", s.name.trim_start_matches(crate::run_configs::RUN_PREFIX), if s.exited { "（終了）" } else { "" }), Some(i))).collect();
+    }
     let mut v: Vec<(String, Option<usize>)> = t.list.iter().enumerate().map(|(i, s)| (format!(" {} {}{} ", i + 1, s.name, if s.exited { "（終了）" } else { "" }), Some(i))).collect();
     v.push((" ＋ ".into(), None));
     v
 }
 
+/// 実行の窓の左の縦のツールバーの幅（アイコン 2 列と区切り）
+pub const RUN_BAR: usize = 3;
+
+/// 実行の窓の縦のツールバー（上から。アイコン, アクション）
+pub const RUN_TOOLS: [(&str, &str); 4] = [("r_rerun", "runwin.rerun"), ("r_stop", "runwin.stop"), ("g_scrollDown", "runwin.scrollEnd"), ("g_close", "runwin.close")];
+
+/// 実行の窓のアクション（ui_action.rs。ADR 0019。IntelliJ の Run ツールウィンドウのツールバーと同じ名前）
+pub static ACTIONS: [crate::ui_action::UiAction; 4] = {
+    use crate::ui_action::{Scope::RunWindow, UiAction};
+    fn any(e: &Editor) -> bool {
+        e.panels.runs.current().is_some()
+    }
+    fn running(e: &Editor) -> bool {
+        e.panels.runs.current().is_some_and(|t| !t.exited)
+    }
+    fn scrolled(e: &Editor) -> bool {
+        e.panels.runs.current().is_some_and(|t| t.term.scrollback() > 0)
+    }
+    [
+        UiAction { id: "runwin.rerun", label: "再実行", scope: RunWindow, enabled: any, run: |e| e.run_window_rerun() },
+        UiAction { id: "runwin.stop", label: "停止", scope: RunWindow, enabled: running, run: |e| e.run_window_stop() },
+        UiAction { id: "runwin.scrollEnd", label: "末尾までスクロール", scope: RunWindow, enabled: scrolled, run: |e| e.run_window_scroll_end() },
+        UiAction { id: "runwin.close", label: "タブを閉じる", scope: RunWindow, enabled: any, run: |e| e.run_window_close() },
+    ]
+};
+
 impl Editor {
+    /// 出している方の窓たち（下の欄が「実行」なら実行の窓、でなければターミナル）
+    pub(crate) fn terms(&self) -> &Terminals {
+        if self.bottom_kind == BottomKind::Run {
+            &self.panels.runs
+        } else {
+            &self.panels.terminals
+        }
+    }
+
+    pub(crate) fn terms_mut(&mut self) -> &mut Terminals {
+        if self.bottom_kind == BottomKind::Run {
+            &mut self.panels.runs
+        } else {
+            &mut self.panels.terminals
+        }
+    }
+
+    /// 実行の窓を出しているか
+    pub(crate) fn run_window(&self) -> bool {
+        self.bottom_kind == BottomKind::Run
+    }
+
+    /// シェルの画面の左端の列（中身の左端から。実行の窓は縦のツールバーの右）
+    pub(crate) fn term_left(&self) -> usize {
+        if self.run_window() {
+            RUN_BAR
+        } else {
+            1
+        }
+    }
+
     /// シェルの画面の矩形（下の欄の中身の 2 行目から。1 行目は窓の並び）
     pub fn terminal_rect(&self) -> Option<Rect> {
         let r = self.bottom_content_rect()?;
         Some(Rect { x: r.x, y: r.y + 1, w: r.w, h: r.h.saturating_sub(1) })
+    }
+
+    /// 実行の窓の「再実行」: 今のタブの構成をもう一度
+    pub(crate) fn run_window_rerun(&mut self) {
+        let Some(t) = self.panels.runs.current() else { return };
+        match t.config.clone() {
+            Some(c) => self.run_config(c),
+            None => {
+                let name = t.name.trim_start_matches(crate::run_configs::RUN_PREFIX).to_string();
+                self.run_command(&name);
+            }
+        }
+    }
+
+    /// 「停止」: 今のタブの構成を止める（出力は残す）
+    pub(crate) fn run_window_stop(&mut self) {
+        if self.panels.debug.as_ref().is_some_and(|d| !d.ended && d.terminal.as_deref() == self.panels.runs.current().map(|t| t.name.as_str())) {
+            self.debug_stop();
+            return;
+        }
+        if let Some(t) = self.panels.runs.list.get_mut(self.panels.runs.active).filter(|t| !t.exited) {
+            t.term.kill();
+            let name = t.name.trim_start_matches(crate::run_configs::RUN_PREFIX).to_string();
+            self.svc.notify.info(format!("止めました: {name}"));
+        }
+    }
+
+    /// 「末尾までスクロール」
+    pub(crate) fn run_window_scroll_end(&mut self) {
+        if let Some(t) = self.panels.runs.list.get_mut(self.panels.runs.active) {
+            t.term.set_scrollback(0);
+        }
+    }
+
+    /// 「タブを閉じる」（動いていれば止める）。最後のタブなら欄を隠す
+    pub(crate) fn run_window_close(&mut self) {
+        let i = self.panels.runs.active;
+        if i < self.panels.runs.list.len() {
+            let mut t = self.panels.runs.list.remove(i);
+            t.term.kill();
+        }
+        self.panels.runs.active = self.panels.runs.active.min(self.panels.runs.list.len().saturating_sub(1));
+        self.panels.runs.sel = None;
+        if self.panels.runs.list.is_empty() && self.bottom_kind == BottomKind::Run {
+            if self.state() == State::Terminal {
+                self.set_state(State::Normal);
+            }
+            self.hide_bottom();
+        }
+    }
+
+    /// 実行の窓の縦のツールバーの上か（画面の行・列）。当たればそのアクション
+    pub(crate) fn run_tool_at(&self, row: usize, col: usize) -> Option<&'static str> {
+        let r = self.terminal_rect().filter(|_| self.run_window())?;
+        if col < r.x || col >= r.x + RUN_BAR - 1 || row < r.y {
+            return None;
+        }
+        RUN_TOOLS.get(row - r.y).map(|t| t.1)
     }
 
     /// ターミナルのタブを出して移る（窓が無ければ既定のシェルで開く）
@@ -210,7 +330,7 @@ impl Editor {
         self.set_state(State::Terminal);
         self.pending_keys.clear();
         self.rows = self.text_rows(self.active_rect());
-        if self.panels.terminals.list.is_empty() {
+        if self.terms_mut().list.is_empty() {
             // WSL のプロジェクトなら、そのディストリビューションのシェルをプロジェクトのフォルダから
             let (name, cmd) = match nagi_workers::exec::Exec::in_dir(&self.nav_root()).login_shell() {
                 Some(s) if std::env::var_os("NAGI_SHELL").is_none() => s,
@@ -269,14 +389,15 @@ impl Editor {
         self.new_terminal_at(&name, &cmd, dir);
     }
 
-    fn new_terminal_at(&mut self, name: &str, cmd: &str, cwd: &std::path::Path) -> bool {
-        let (rows, cols) = self.terminal_rect().map_or((10, 80), |r| (r.h as u16, r.w.saturating_sub(1) as u16));
+    pub(crate) fn new_terminal_at(&mut self, name: &str, cmd: &str, cwd: &std::path::Path) -> bool {
+        let left = self.term_left();
+        let (rows, cols) = self.terminal_rect().map_or((10, 80), |r| (r.h as u16, r.w.saturating_sub(left) as u16));
         let waker = self.waker();
         match Term::spawn(cmd, cwd, rows, cols, waker) {
             Ok(term) => {
-                self.panels.terminals.list.push(TermView { term, name: name.to_string(), cmd: cmd.to_string(), exited: false, cwd: cwd.to_path_buf() });
-                self.panels.terminals.active = self.panels.terminals.list.len() - 1;
-                self.panels.terminals.chooser = None;
+                self.terms_mut().list.push(TermView { term, name: name.to_string(), cmd: cmd.to_string(), exited: false, cwd: cwd.to_path_buf(), config: None });
+                self.terms_mut().active = self.terms_mut().list.len() - 1;
+                self.terms_mut().chooser = None;
                 true
             }
             Err(e) => {
@@ -288,32 +409,36 @@ impl Editor {
 
     /// 欄の大きさに合わせ、シェルが終わったかを見る（描く前に呼ぶ）
     pub(crate) fn sync_terminal(&mut self) {
-        let r = (self.bottom_kind == BottomKind::Terminal).then(|| self.terminal_rect()).flatten();
-        for t in &mut self.panels.terminals.list {
-            if let Some(r) = r {
-                t.term.resize(r.h as u16, r.w.saturating_sub(1) as u16);
-            }
-            if !t.exited && t.term.exited() {
-                t.exited = true;
+        let r = matches!(self.bottom_kind, BottomKind::Terminal | BottomKind::Run).then(|| self.terminal_rect()).flatten();
+        let left = self.term_left();
+        let run = self.run_window();
+        for (set, is_run) in [(&mut self.panels.terminals, false), (&mut self.panels.runs, true)] {
+            for t in &mut set.list {
+                if let Some(r) = r.filter(|_| run == is_run) {
+                    t.term.resize(r.h as u16, r.w.saturating_sub(left) as u16);
+                }
+                if !t.exited && t.term.exited() {
+                    t.exited = true;
+                }
             }
         }
     }
 
     pub(crate) fn terminal_key(&mut self, key: Key) {
         // 実行の構成の窓（▶）は、IntelliJ の実行の窓と同じく Esc でエディタへ戻る（シェルの窓では Esc はシェルへ）
-        if key == Key::Esc && self.panels.terminals.chooser.is_none() && self.panels.terminals.current().is_some_and(|t| t.name.starts_with(crate::run_configs::RUN_PREFIX)) {
-            self.panels.terminals.sel = None;
+        if key == Key::Esc && self.run_window() {
+            self.terms_mut().sel = None;
             self.set_state(State::Normal);
             return;
         }
         // シェルを選んでいる
-        if let Some(sel) = self.panels.terminals.chooser {
-            let shells = self.panels.terminals.shells.clone();
+        if let Some(sel) = self.terms_mut().chooser {
+            let shells = self.terms_mut().shells.clone();
             let last = shells.len().saturating_sub(1);
             match key {
                 // 標準のキーと、頭の数字（メニューの頭の字と同じ）で選ぶ（ADR 0019）
-                Key::Down | Key::Tab => self.panels.terminals.chooser = Some((sel + 1).min(last)),
-                Key::Up => self.panels.terminals.chooser = Some(sel.saturating_sub(1)),
+                Key::Down | Key::Tab => self.terms_mut().chooser = Some((sel + 1).min(last)),
+                Key::Up => self.terms_mut().chooser = Some(sel.saturating_sub(1)),
                 Key::Char(c @ '1'..='9') if (c as usize - '1' as usize) <= last => {
                     let (n, c) = shells[c as usize - '1' as usize].clone();
                     self.new_terminal_chosen(&n, &c);
@@ -323,8 +448,8 @@ impl Editor {
                     self.new_terminal_chosen(&n, &c);
                 }
                 Key::Esc | Key::Ctrl('c') => {
-                    self.panels.terminals.chooser = None;
-                    if self.panels.terminals.list.is_empty() {
+                    self.terms_mut().chooser = None;
+                    if self.terms_mut().list.is_empty() {
                         self.set_state(State::Normal);
                     }
                 }
@@ -332,28 +457,30 @@ impl Editor {
             }
             return;
         }
-        if self.panels.terminals.list.is_empty() {
+        if self.terms_mut().list.is_empty() {
             match key {
-                Key::Enter => self.open_terminal(),
+                Key::Enter if !self.run_window() => self.open_terminal(),
                 _ => self.set_state(State::Normal),
             }
             return;
         }
         // Ctrl-\ の後: n 本文へ、c 新しい窓、1〜9 切り替え、x 閉じる、Ctrl-\ そのもの
-        if std::mem::take(&mut self.panels.terminals.pending) {
+        if std::mem::take(&mut self.terms_mut().pending) {
             match key {
                 Key::Char('n') | Key::Ctrl('n') | Key::Char('k') | Key::Ctrl('k') => {
                     self.set_state(State::Normal);
                     return;
                 }
                 Key::Char('c') => {
-                    self.panels.terminals.open_chooser();
+                    if !self.run_window() {
+                        self.terms_mut().open_chooser();
+                    }
                     return;
                 }
                 Key::Char(c @ '1'..='9') => {
                     let i = c as usize - '1' as usize;
-                    if i < self.panels.terminals.list.len() {
-                        self.panels.terminals.active = i;
+                    if i < self.terms_mut().list.len() {
+                        self.terms_mut().active = i;
                     }
                     return;
                 }
@@ -362,7 +489,7 @@ impl Editor {
                     return;
                 }
                 Key::Ctrl('\\') => {
-                    if let Some(t) = self.panels.terminals.current_mut() {
+                    if let Some(t) = self.terms_mut().current_mut() {
                         t.term.write(&[0x1c]);
                     }
                     return;
@@ -370,32 +497,33 @@ impl Editor {
                 _ => {}
             }
         } else if key == Key::Ctrl('\\') {
-            self.panels.terminals.pending = true;
+            self.terms_mut().pending = true;
             return;
         }
         // Ctrl+C: 選んでいればコピー（シェルには送らない）、選んでいなければシェルへ（止める）。Windows Terminal と同じ
-        if key == Key::Ctrl('c') && self.panels.terminals.sel.is_some() {
+        if key == Key::Ctrl('c') && self.terms_mut().sel.is_some() {
             self.terminal_copy();
             return;
         }
         // Ctrl+V・Shift+Insert: 貼り付け
         let key = if key == Key::Ctrl('v') { Key::Paste } else { key };
         if key != Key::Paste {
-            self.panels.terminals.sel = None;
+            self.terms_mut().sel = None;
         }
         let clip = self.svc.clipboard;
-        let Some(t) = self.panels.terminals.current_mut() else { return };
+        let Some(t) = self.terms_mut().current_mut() else { return };
         if t.exited {
             if key == Key::Enter {
-                let (name, cmd) = (t.name.clone(), t.cmd.clone());
-                let i = self.panels.terminals.active;
-                self.panels.terminals.list.remove(i);
-                self.new_terminal(&name, &cmd);
+                let (name, cmd, cwd, config) = (t.name.clone(), t.cmd.clone(), t.cwd.clone(), t.config.clone());
+                let i = self.terms_mut().active;
+                self.terms_mut().list.remove(i);
+                self.new_terminal_at(&name, &cmd, &cwd);
                 // 同じ場所に置き直す
-                let new = self.panels.terminals.list.pop();
-                if let Some(n) = new {
-                    self.panels.terminals.list.insert(i, n);
-                    self.panels.terminals.active = i;
+                let new = self.terms_mut().list.pop();
+                if let Some(mut n) = new {
+                    n.config = config;
+                    self.terms_mut().list.insert(i, n);
+                    self.terms_mut().active = i;
                 }
             }
             return;
@@ -423,20 +551,20 @@ impl Editor {
     /// 見えている画面を全部選ぶ（右クリックのメニュー）
     pub(crate) fn terminal_select_all(&mut self) {
         let Some(r) = self.terminal_rect() else { return };
-        let back = self.panels.terminals.current().map_or(0, |t| t.term.scrollback()) as i64;
-        self.panels.terminals.sel = Some(((-back, 0), (r.h as i64 - 1 - back, r.w as u16)));
+        let back = self.terms_mut().current().map_or(0, |t| t.term.scrollback()) as i64;
+        self.terms_mut().sel = Some(((-back, 0), (r.h as i64 - 1 - back, r.w as u16)));
     }
 
     /// 選んでいる範囲をクリップボードへ（`copy_text`）。コピーしたら選びを消す
     pub(crate) fn terminal_copy(&mut self) -> bool {
-        let Some((a, b)) = self.panels.terminals.sel_ordered() else { return false };
-        let Some(t) = self.panels.terminals.current() else { return false };
+        let Some((a, b)) = self.terms_mut().sel_ordered() else { return false };
+        let Some(t) = self.terms_mut().current() else { return false };
         let text = t.term.with_screen_mut(|s| copy_lines(s, a, b));
         match &self.svc.clipboard {
             Some(cb) => (cb.set)(&text),
             None => crate::clipboard::set(&text),
         }
-        self.panels.terminals.sel = None;
+        self.terms_mut().sel = None;
         self.svc.notify.info(format!("コピーしました（{} 文字）", text.chars().count()));
         true
     }
@@ -447,21 +575,21 @@ impl Editor {
         if row < r.y || row >= r.y + r.h {
             return None;
         }
-        Some(((row - r.y) as u16, col.saturating_sub(r.x + 1) as u16))
+        Some(((row - r.y) as u16, col.saturating_sub(r.x + self.term_left()) as u16))
     }
 
     /// シェルの画面のセル → 中身の (行, 列)（さかのぼっている分を引く）
     fn terminal_line(&self, (row, col): (u16, u16)) -> (i64, u16) {
-        let back = self.panels.terminals.current().map_or(0, |t| t.term.scrollback());
+        let back = self.terms().current().map_or(0, |t| t.term.scrollback());
         (row as i64 - back as i64, col)
     }
 
     /// マウスを押した（シェルの画面の上なら選び始める）。当たれば true
     pub(crate) fn terminal_press(&mut self, row: usize, col: usize) -> bool {
         let Some(cell) = self.terminal_cell(row, col) else { return false };
-        self.panels.terminals.sel = None;
-        self.panels.terminals.anchor = Some(self.terminal_line(cell));
-        self.panels.terminals.drag_at = Some(cell);
+        self.terms_mut().sel = None;
+        self.terms_mut().anchor = Some(self.terminal_line(cell));
+        self.terms_mut().drag_at = Some(cell);
         self.set_state(State::Terminal);
         true
     }
@@ -471,26 +599,26 @@ impl Editor {
         let Some(r) = self.terminal_rect() else { return };
         let row = row.clamp(r.y, r.y + r.h.saturating_sub(1));
         if let Some(cell) = self.terminal_cell(row, col) {
-            self.panels.terminals.drag_at = Some(cell);
+            self.terms_mut().drag_at = Some(cell);
             self.terminal_extend();
         }
     }
 
     /// 選んでいる範囲の終点をマウスの位置に合わせる（ドラッグ中）
     fn terminal_extend(&mut self) {
-        let (Some(a), Some(at)) = (self.panels.terminals.anchor, self.panels.terminals.drag_at) else { return };
+        let (Some(a), Some(at)) = (self.terms_mut().anchor, self.terms_mut().drag_at) else { return };
         let end = self.terminal_line(at);
-        if end != a || self.panels.terminals.sel.is_some() {
-            self.panels.terminals.sel = Some((a, end));
+        if end != a || self.terms_mut().sel.is_some() {
+            self.terms_mut().sel = Some((a, end));
         }
     }
 
     /// 離した。ドラッグせずに（範囲を選ばずに）離したところが URL なら開く（IntelliJ のターミナルと同じ）。
     /// ファイルの位置（`Foo.java:12`・スタックトレース）なら、そのファイルのその行を開く（IntelliJ の実行の出力と同じ）
     pub(crate) fn terminal_release(&mut self) {
-        let (anchor, at) = (self.panels.terminals.anchor.take(), self.panels.terminals.drag_at.take());
-        let at = at.filter(|_| anchor.is_some() && self.panels.terminals.sel.is_none());
-        let link = at.and_then(|cell| self.panels.terminals.current().and_then(|t| t.term.with_screen(|s| link_at(s, cell)).map(|l| (l, t.cwd.clone()))));
+        let (anchor, at) = (self.terms_mut().anchor.take(), self.terms_mut().drag_at.take());
+        let at = at.filter(|_| anchor.is_some() && self.terms_mut().sel.is_none());
+        let link = at.and_then(|cell| self.terms_mut().current().and_then(|t| t.term.with_screen(|s| link_at(s, cell)).map(|l| (l, t.cwd.clone()))));
         match link {
             Some((url, _)) if url.contains("://") => {
                 crate::run_configs::open_url(&url);
@@ -513,20 +641,24 @@ impl Editor {
 
     /// 今の窓を閉じる（シェルを止める）
     pub(crate) fn close_terminal(&mut self) {
-        let i = self.panels.terminals.active;
-        if i < self.panels.terminals.list.len() {
-            let mut t = self.panels.terminals.list.remove(i);
+        if self.run_window() {
+            self.run_window_close();
+            return;
+        }
+        let i = self.terms_mut().active;
+        if i < self.terms_mut().list.len() {
+            let mut t = self.terms_mut().list.remove(i);
             t.term.kill();
         }
-        self.panels.terminals.active = self.panels.terminals.active.min(self.panels.terminals.list.len().saturating_sub(1));
-        if self.panels.terminals.list.is_empty() {
+        self.terms_mut().active = self.terms_mut().active.min(self.terms_mut().list.len().saturating_sub(1));
+        if self.terms_mut().list.is_empty() {
             self.set_state(State::Normal);
         }
     }
 
     /// IME の確定・貼り付け（貼り付けは括弧付きの形に対応）
     pub(crate) fn terminal_input(&mut self, text: &str) {
-        let Some(t) = self.panels.terminals.current_mut() else { return };
+        let Some(t) = self.terms_mut().current_mut() else { return };
         if t.exited {
             return;
         }
@@ -543,12 +675,20 @@ impl Editor {
         self.set_state(State::Terminal);
         if row == 0 {
             let mut x = 0;
-            for (label, target) in strip_items(&self.panels.terminals) {
+            let run = self.run_window();
+            for (label, target) in strip_items(self.terms(), run) {
                 let w = nagi_core::display_col(&label, label.len(), false) + 1;
                 if col >= x && col < x + w {
                     match target {
-                        Some(i) => self.panels.terminals.active = i,
-                        None => self.panels.terminals.open_chooser(),
+                        Some(i) => {
+                            self.terms_mut().active = i;
+                            self.terms_mut().sel = None;
+                            // 実行のタブの × で閉じる
+                            if run && col + 4 >= x + w {
+                                self.run_window_close();
+                            }
+                        }
+                        None => self.terms_mut().open_chooser(),
                     }
                     return;
                 }
@@ -556,20 +696,20 @@ impl Editor {
             }
             return;
         }
-        if let Some(sel) = self.panels.terminals.chooser {
+        if let Some(sel) = self.terms_mut().chooser {
             // 選択肢の行（画面の 2 行目から）
-            let n = self.panels.terminals.shells.len();
+            let n = self.terms_mut().shells.len();
             let i = row.saturating_sub(2);
             if row >= 2 && i < n {
                 if i == sel {
                     self.terminal_key(Key::Enter);
                 } else {
-                    self.panels.terminals.chooser = Some(i);
+                    self.terms_mut().chooser = Some(i);
                 }
             }
             return;
         }
-        if self.panels.terminals.list.is_empty() {
+        if self.terms_mut().list.is_empty() {
             self.open_terminal();
         }
     }
@@ -578,7 +718,7 @@ impl Editor {
     /// （Claude Code・vim など）、全画面（代替画面）のアプリには ↑↓ を送り、それ以外はさかのぼる
     pub(crate) fn terminal_wheel(&mut self, lines: isize, row: usize, col: usize) {
         let cell = self.terminal_cell(row, col).unwrap_or((0, 0));
-        let Some(t) = self.panels.terminals.current_mut() else { return };
+        let Some(t) = self.terms_mut().current_mut() else { return };
         if t.exited || lines == 0 {
             return;
         }
@@ -777,11 +917,15 @@ pub struct TerminalComponent;
 
 impl crate::component::Component for TerminalComponent {
     fn status(&self, ed: &crate::editor::Editor) -> Option<crate::component::Status> {
-        if ed.panels.terminals.current().is_some_and(|t| t.name.starts_with(crate::run_configs::RUN_PREFIX)) {
-            crate::component::Status::new("-- 実行 --", "Esc エディタへ   Ctrl+C 停止   Ctrl+F5 再実行   Ctrl-\\ x 閉じる   Alt+F12 隠す ")
+        if ed.run_window() {
+            crate::component::Status::new("-- 実行 --", "Esc エディタへ   Ctrl+C 停止   Ctrl+F5 再実行   Ctrl-\\ x 閉じる   右クリック 操作 ")
         } else {
             crate::component::Status::new("-- ターミナル --", "クリックで URL を開く   Ctrl-\\ の後: n 本文へ  c 新しい窓（シェルを選ぶ）  1〜9 切り替え  x 閉じる   Alt+F12 隠す ")
         }
+    }
+
+    fn scope(&self, ed: &crate::editor::Editor) -> Option<crate::ui_action::Scope> {
+        ed.run_window().then_some(crate::ui_action::Scope::RunWindow)
     }
 
     fn key(&self, ed: &mut crate::editor::Editor, key: nagi_vim::Key) -> crate::editor::Effect {
@@ -803,15 +947,18 @@ pub(crate) mod draw {
     /// ターミナル（下の欄）。1 行目に窓の並び、2 行目からシェルの画面。移っていればカーソル（四角）と IME の位置
     pub(crate) fn draw_terminal(p: &mut Painter, ed: &Editor, r: Rect, focused: bool) {
         let cell = p.fonts.cell();
-        let ts = &ed.panels.terminals;
+        let ts = &ed.terms();
         let saved = p.cols;
         p.cols = r.x + r.w;
         // 窓の並び（今の窓は明るく下線、＋で新しい窓）
         let y0 = r.y as f32 * cell.h;
         let mut x = r.x;
-        for (label, target) in crate::terminal::strip_items(ts) {
+        let run = ed.run_window();
+        for (label, target) in crate::terminal::strip_items(ts, run) {
             let on = target == Some(ts.active) && !ts.list.is_empty();
-            let end = p.text(&label, x, y0, if on { FG } else { STATUS_FG });
+            // 実行のタブは、動いている間は名前を明るく
+            let live = run && target.and_then(|i| ts.list.get(i)).is_some_and(|t| !t.exited);
+            let end = p.text(&label, x, y0, if on || live { FG } else { STATUS_FG });
             if on {
                 p.out.push(Instance::fill(x as f32 * cell.w, y0 + cell.h - crate::metrics::accent_line(), (end - x) as f32 * cell.w, crate::metrics::accent_line(), if focused { GIT_MOD } else { STATUS_FG }));
             }
@@ -837,11 +984,27 @@ pub(crate) mod draw {
             return;
         }
         let Some(t) = ts.current() else {
-            p.text(" 窓がありません（Enter で開く、c でシェルを選ぶ）", r.x, r.y as f32 * cell.h, STATUS_FG);
+            let msg = if run { " 実行している構成はありません（Shift+F10 で実行）" } else { " 窓がありません（Enter で開く、c でシェルを選ぶ）" };
+            p.text(msg, r.x, r.y as f32 * cell.h, STATUS_FG);
             p.cols = saved;
             return;
         };
-        let x0 = r.x + 1;
+        // 実行の窓は左に縦のツールバー（再実行・停止・末尾までスクロール・タブを閉じる）
+        if run {
+            let px = crate::metrics::icon(crate::metrics::Icon::Small);
+            for (k, (icon, id)) in crate::terminal::RUN_TOOLS.iter().enumerate() {
+                if k >= r.h {
+                    break;
+                }
+                let y = (r.y + k) as f32 * cell.h;
+                let on = crate::ui_action::find(id).is_some_and(|a| (a.enabled)(ed));
+                let cx = r.x as f32 * cell.w + ((crate::terminal::RUN_BAR - 1) as f32 * cell.w - px) / 2.0;
+                crate::icons::draw(p, icon, cx, crate::metrics::centered(y, px), px, (!on).then_some(LINE_NO));
+            }
+            let lx = (r.x + crate::terminal::RUN_BAR - 1) as f32 * cell.w + cell.w * 0.5;
+            p.out.push(Instance::fill(lx, r.y as f32 * cell.h, 1.0, r.h as f32 * cell.h, SEPARATOR));
+        }
+        let x0 = r.x + ed.term_left();
         t.term.with_screen(|s| {
             let (rows, cols) = s.size();
             // URL は下線（押すと開く）

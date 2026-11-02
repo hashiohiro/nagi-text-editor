@@ -6,6 +6,7 @@
 //! - 検索: 全文検索の結果（Alt+3）
 //! - 問題: :Make などで集めたエラー・警告をファイルごとに（Alt+6）
 //! - ログ: 実行したコマンド（:Make・Maven）の出力（Alt+4）
+//! - 実行: 実行の構成の出力（構成ごとのタブ。左に 再実行・停止 などの縦のツールバー。動かしてから出る）
 //! - ターミナル: シェル（Alt+F12）
 //!
 //! 検索とログは同じ入れ物（GrepPanel）の 2 つで、出している方を `grep`、もう一方を `grep_other` に置いて入れ替える。
@@ -19,11 +20,12 @@ use crate::panes::Rect;
 use crate::result_grid::BottomKind;
 
 /// タブ（名前, 種類）。左右の欄と同じくアイコンで並べ、出しているタブの名前を横に出す。クエリの結果は結果があるときだけ
-pub const BTABS: [(&str, BottomKind); 7] = [
+pub const BTABS: [(&str, BottomKind); 8] = [
     ("Git", BottomKind::Git),
     ("検索", BottomKind::Grep),
     ("問題", BottomKind::Problems),
     ("ログ", BottomKind::Output),
+    ("実行", BottomKind::Run),
     ("ターミナル", BottomKind::Terminal),
     ("デバッグ", BottomKind::Debug),
     ("クエリの結果", BottomKind::Result),
@@ -118,7 +120,16 @@ impl ProblemsView {
 impl Editor {
     /// 出すタブ（クエリの結果は結果があるときだけ）
     pub fn bottom_tabs(&self) -> Vec<(&'static str, BottomKind)> {
-        BTABS.iter().copied().filter(|(_, k)| *k != BottomKind::Result || !self.panels.db_results.is_empty()).collect()
+        BTABS
+            .iter()
+            .copied()
+            .filter(|(_, k)| match k {
+                BottomKind::Result => !self.panels.db_results.is_empty(),
+                // 実行のツールウィンドウは、構成を動かしてから（IntelliJ と同じ）
+                BottomKind::Run => !self.panels.runs.list.is_empty(),
+                _ => true,
+            })
+            .collect()
     }
 
     /// 下の欄の中身の矩形（1 行目のタブを除く）
@@ -183,6 +194,12 @@ impl Editor {
                 self.open_terminal();
                 return;
             }
+            BottomKind::Run => {
+                self.set_state(State::Terminal);
+                self.pending_keys.clear();
+                self.rows = self.text_rows(self.active_rect());
+                return;
+            }
             BottomKind::Problems | BottomKind::Result | BottomKind::Debug => {}
         }
         self.list_side = Side::Bottom;
@@ -205,7 +222,7 @@ impl Editor {
     pub fn bottom_focused(&self) -> bool {
         match self.bottom_kind {
             BottomKind::Git => self.state() == State::Log,
-            BottomKind::Terminal => self.state() == State::Terminal,
+            BottomKind::Terminal | BottomKind::Run => self.state() == State::Terminal,
             _ => (self.state() == State::List && self.list_side == Side::Bottom) || self.state() == State::GrepPrompt,
         }
     }
@@ -327,7 +344,7 @@ impl Editor {
                 let w = self.bottom_content_rect().map_or(0, |r| r.w);
                 self.log_click(row, col, w, clicks);
             }
-            BottomKind::Terminal => self.terminal_click(row, col),
+            BottomKind::Terminal | BottomKind::Run => self.terminal_click(row, col),
             BottomKind::Debug => {
                 let w = self.bottom_content_rect().map_or(0, |r| r.w);
                 self.debug_click(row + 1, col, w, clicks);
@@ -381,7 +398,13 @@ impl crate::layout::View for BottomView {
         let (row, col) = at.screen;
         let _ = r;
         // ターミナルの画面: 押して選び始める（ドラッグで範囲）
-        if ed.bottom_kind == BottomKind::Terminal && ed.panels.terminals.chooser.is_none() && ed.terminal_rect().is_some_and(|t| t.contains(row, col)) && ed.terminal_press(row, col) {
+        // 実行の窓の縦のツールバー
+        if let Some(id) = ed.run_tool_at(row, col) {
+            ed.set_state(State::Terminal);
+            ed.run_ui_action(id);
+            return crate::layout::Click::Done;
+        }
+        if matches!(ed.bottom_kind, BottomKind::Terminal | BottomKind::Run) && ed.terms().chooser.is_none() && ed.terminal_rect().is_some_and(|t| t.contains(row, col)) && ed.terminal_press(row, col) {
             return crate::layout::Click::SelectTerminal;
         }
         // 1 行目はタブ、2 行目から中身
@@ -435,7 +458,7 @@ impl crate::layout::View for BottomView {
                 let p = &mut ed.panels.problems;
                 p.scroll = (p.scroll as isize + dy).clamp(0, n.saturating_sub(h.saturating_sub(1 + PROBLEM_HEAD)) as isize) as usize;
             }
-            BottomKind::Terminal => {}
+            BottomKind::Terminal | BottomKind::Run => {}
             BottomKind::Debug => {
                 if let Some(d) = &mut ed.panels.debug {
                     d.var_scroll = (d.var_scroll as isize + dy).clamp(0, d.vars.len().saturating_sub(1) as isize) as usize;
@@ -591,6 +614,23 @@ impl crate::layout::View for BottomView {
                 .sep()
                 .item("非表示", |e| e.hide_bottom())
             }
+            BottomKind::Run => {
+                if ed.panels.runs.list.is_empty() {
+                    return false;
+                }
+                ed.set_state(State::Terminal);
+                m.item("コピー", |e| {
+                    e.terminal_copy();
+                })
+                .item("すべて選択", |e| e.terminal_select_all())
+                .sep()
+                .action(ed, "runwin.rerun")
+                .action(ed, "runwin.stop")
+                .action(ed, "runwin.scrollEnd")
+                .action(ed, "runwin.close")
+                .sep()
+                .item("エディターに移動", |e| e.set_state(State::Normal))
+            }
             BottomKind::Terminal => {
                 if ed.panels.terminals.list.is_empty() {
                     return false;
@@ -650,7 +690,7 @@ pub(crate) mod draw {
                 Some(l) if l.docked => draw_log_view(p, l, c, ed.log_cols_for(c.w), ed.log_right_cols(), &ed.preedit, ed.svc.git.status.as_ref().map(|s| (s.branch.as_str(), s.ahead as usize, s.behind as usize))),
                 _ => empty(p, "git のリポジトリではありません"),
             },
-            BottomKind::Terminal => draw_terminal(p, ed, c, focused),
+            BottomKind::Terminal | BottomKind::Run => draw_terminal(p, ed, c, focused),
             BottomKind::Debug => crate::debugger::draw::draw_debug(p, ed, c, focused),
         }
         p.ui = ui;
