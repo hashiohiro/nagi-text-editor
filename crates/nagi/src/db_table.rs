@@ -211,6 +211,7 @@ impl TableEditor {
             edits: HashMap::new(),
             undo: Vec::new(),
             sent: HashMap::new(),
+            pinned: false,
         }
     }
 

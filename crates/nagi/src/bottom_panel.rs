@@ -512,13 +512,17 @@ impl crate::layout::View for BottomView {
                 m.sep().action(ed, "problems.hide")
             }
             BottomKind::Result => {
+                // ツールバーの上では、ボタンを押さない（メニューも出さない）
+                let w = ed.bottom_content_rect().map_or(0, |c| c.w);
+                if prow == 0 && ed.panels.db_results.active_tab().is_some() && crate::result_grid::toolbar_cols(w).first().is_some_and(|&c| pcol >= c) {
+                    return false;
+                }
                 ed.result_click(prow, pcol.saturating_sub(1), 1);
                 use crate::result_grid::ResultOp;
-                // 結果のタブの行: そのタブを選んでから閉じる
+                // 結果のタブの行: そのタブを選んでから ピン留め・閉じる
                 if prow == 0 {
-                    if ed.panels.db_results.active == 0 {
-                        return false;
-                    }
+                    let Some(pinned) = ed.panels.db_results.active_tab().map(|t| t.pinned) else { return false };
+                    let m = m.item(format!("{}アクティブタブのピン留め", if pinned { "✓ " } else { "   " }), |e| e.panels.db_results.toggle_pin()).sep();
                     ed.open_menu(m.action(ed, "results.close").sep().action(ed, "results.prevTab").action(ed, "results.nextTab"));
                     return true;
                 }

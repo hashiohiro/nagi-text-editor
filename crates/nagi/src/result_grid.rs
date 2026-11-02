@@ -86,6 +86,8 @@ pub struct ResultTab {
     pub(crate) undo: Vec<(usize, usize, Option<Option<String>>)>,
     /// 送った値の、送る前の値（手動の Tx でロールバックしたら戻す）
     pub(crate) sent: HashMap<(usize, usize), Option<String>>,
+    /// ピン留め（次に流した結果で上書きしない。DataGrip と同じ）
+    pub pinned: bool,
 }
 
 impl ResultTab {
@@ -312,13 +314,17 @@ impl DbResults {
         self.tabs.is_empty() && self.log.is_empty()
     }
 
+    /// 結果のタブを用意する。同じ接続先の、ピン留めしていない・未送信の変更の無いタブがあればそれを使い直す（DataGrip と同じ）
     pub fn new_tab(&mut self, src: usize, title: &str, sql: &str, filterable: bool) -> u64 {
         self.next_id += 1;
         let id = self.next_id;
-        if self.tabs.len() >= 8 {
-            self.tabs.remove(0);
+        let reuse = self.tabs.iter().rposition(|t| t.src == src && !t.pinned && t.edits.is_empty());
+        if reuse.is_none() && self.tabs.len() >= 8 {
+            // 古い順に、ピン留めしていないものから外す
+            let k = self.tabs.iter().position(|t| !t.pinned).unwrap_or(0);
+            self.tabs.remove(k);
         }
-        self.tabs.push(ResultTab {
+        let tab = ResultTab {
             id,
             src,
             dialect: &nagi_lang::sql::GENERIC,
@@ -345,9 +351,26 @@ impl DbResults {
             edits: HashMap::new(),
             undo: Vec::new(),
             sent: HashMap::new(),
-        });
-        self.active = self.tabs.len();
+            pinned: false,
+        };
+        match reuse {
+            Some(k) => {
+                self.tabs[k] = tab;
+                self.active = k + 1;
+            }
+            None => {
+                self.tabs.push(tab);
+                self.active = self.tabs.len();
+            }
+        }
         id
+    }
+
+    /// 今のタブのピン留めを切り替える
+    pub fn toggle_pin(&mut self) {
+        if let Some(t) = self.active_tab_mut() {
+            t.pinned = !t.pinned;
+        }
     }
 
     pub fn tab(&self, id: u64) -> Option<&ResultTab> {
@@ -1140,7 +1163,7 @@ pub fn toolbar_enabled(t: &ResultTab, op: &ResultOp) -> bool {
 
 pub fn tab_label(k: usize, t: &ResultTab) -> String {
     let short: String = t.title.split(" · ").nth(1).unwrap_or(&t.title).chars().take(18).collect();
-    format!("結果 {} · {short}", k + 1)
+    format!("{}結果 {} · {short}", if t.pinned { "◆ " } else { "" }, k + 1)
 }
 
 
@@ -1470,11 +1493,29 @@ mod tests {
         e.result_click(0, send, 1);
         wait(&mut e, &|e| e.panels.db_results.active_tab().is_some_and(|t| t.edits.is_empty() && t.info.contains("直しました")));
         assert_eq!(e.panels.db_results.active_tab().unwrap().rows[1][1].as_deref(), Some("x'y"));
+        // 次に流すと、同じ接続先の結果のタブを使い直す。残したいタブはタブの行の右クリックでピン留めする（DataGrip と同じ）
+        let id = e.panels.db_results.active_tab().unwrap().id;
+        let n = e.panels.db_results.tabs.len();
+        let r = e.bottom_content_rect().unwrap();
+        let s = crate::layout::Screen { rows: e.screen.1, cols: e.screen.0 };
+        // 今のタブの位置（result_click と同じ数え方。0 番目は「出力」）
+        let res = &e.panels.db_results;
+        let labels: Vec<String> = std::iter::once("出力".to_string()).chain(res.tabs.iter().enumerate().map(|(k, t)| tab_label(k, t))).collect();
+        let x = 1 + labels[..res.active].iter().map(|l| nagi_core::display_col(l, l.len(), false) + 3).sum::<usize>();
+        assert!(crate::layout::context(&mut e, s, r.y, r.x + 1 + x + 1));
+        let k = e.menu.as_ref().unwrap().items.iter().position(|it| it.label.ends_with("アクティブタブのピン留め")).unwrap();
+        e.menu_run(k);
+        assert!(e.panels.db_results.tab(id).unwrap().pinned);
+        assert!(tab_label(0, e.panels.db_results.tab(id).unwrap()).starts_with("◆ "));
         e.db_execute(i, "select name from item where id = 2".into());
         wait(&mut e, &|e| e.panels.db_results.active_tab().is_some_and(|t| t.rows.len() == 1));
         assert_eq!(e.panels.db_results.active_tab().unwrap().rows[0][0].as_deref(), Some("x'y"));
+        assert_eq!(e.panels.db_results.tabs.len(), n + 1, "ピン留めしたタブは上書きしない");
+        // ピン留めしていなければ使い直す
+        e.db_execute(i, "select name from item where id = 1".into());
+        wait(&mut e, &|e| e.panels.db_results.active_tab().is_some_and(|t| !t.running));
+        assert_eq!(e.panels.db_results.tabs.len(), n + 1, "使い直す");
         // 手動の Tx をロールバックすると、直して送った結果の表も前の値に戻る
-        let id = e.panels.db_results.tabs[e.panels.db_results.tabs.len() - 2].id;
         e.db_commit(i, false);
         wait(&mut e, &|e| e.panels.db_results.tab(id).unwrap().rows[1][1].as_deref() == Some("b"));
         wait(&mut e, &|e| e.panels.db_results.tab(id).is_some_and(|t| !t.running));
