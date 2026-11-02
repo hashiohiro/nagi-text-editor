@@ -74,6 +74,7 @@ mod search_bar;
 mod scrollbar;
 mod hover;
 mod gutter;
+mod push_dialog;
 mod toggles;
 mod tree_panel;
 mod tree_files;

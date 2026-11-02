@@ -31,14 +31,17 @@ pub struct CommitPanel {
     /// コミットのメッセージ（複数行の Vim 風の入力欄。Ctrl+Enter でコミット）
     pub msg: crate::vim_field::VimField,
     pub amend: bool,
-    /// 送るコミットの確認（ブランチの行き先, コミットの一覧）
-    pub confirm_push: Option<(String, Vec<String>)>,
     /// 戻す前の確認（項目の番号）
     running: Option<(Job, nagi_core::task::Task<nagi_core::Result<String>>)>,
     pub busy_label: Option<String>,
 }
 
 impl CommitPanel {
+    /// git を動かしている途中か（コミット・プッシュ・戻す）
+    pub(crate) fn busy(&self) -> bool {
+        self.running.is_some()
+    }
+
     pub fn tracked(&self) -> usize {
         self.items.iter().filter(|i| i.change.state != FileState::Untracked).count()
     }
@@ -256,7 +259,6 @@ impl Editor {
                 scroll: 0,
                 msg: crate::vim_field::VimField::new("", true),
                 amend: false,
-                confirm_push: None,
                 running: None,
                 busy_label: None,
             });
@@ -395,39 +397,26 @@ impl Editor {
                 let log = nagi_workers::git::git(&root, &["log", "--format=%h %s", "-n", "50", &range]).map(|b| String::from_utf8_lossy(&b).lines().map(String::from).collect::<Vec<_>>()).unwrap_or_default();
                 (up, log)
             },
-            |e, (up, log)| e.ask_push(up, log),
+            // 送るコミットはプッシュのダイアログで見せる（push_dialog.rs）
+            |e, (up, log)| e.open_push_dialog(up, log),
         );
     }
 
-    /// 送るコミット（`log`）と上流（`up`。無ければ origin に作る）を見せて、送るか確かめる
-    fn ask_push(&mut self, up: Option<String>, log: Vec<String>) {
-        let branch = self.svc.git.status.as_ref().map(|s| s.branch.clone()).unwrap_or_default();
-        let dest = match &up {
-            Some(u) => format!("{branch} → {u}"),
-            None => format!("{branch} → origin/{branch}（新しく作る）"),
-        };
-        let q = format!("{} 件のコミットを送りますか（{dest}）", log.len());
-        if let Some(p) = &mut self.panels.commit {
-            p.confirm_push = Some((dest, log));
-        }
-        // 送るコミットは一覧の場所に出し、確認の窓で答える
-        self.ask_or(q, |e| e.push(), |e| {
-            if let Some(p) = &mut e.panels.commit {
-                p.confirm_push = None;
-            }
-            e.svc.notify.info("プッシュをやめました");
-        });
-    }
-
-    fn push(&mut self) {
+    /// 送る（`new_upstream` なら origin に同じ名前で作る、`force` なら --force-with-lease）
+    pub(crate) fn push(&mut self, new_upstream: bool, force: bool) {
         let Some(root) = self.svc.git.root.clone() else { return };
         let Some(p) = &mut self.panels.commit else { return };
-        let new_upstream = p.confirm_push.as_ref().is_some_and(|(d, _)| d.contains("新しく作る"));
-        p.confirm_push = None;
         let branch = self.svc.git.status.as_ref().map(|s| s.branch.clone()).unwrap_or_default();
-        p.busy_label = Some("プッシュしています…".into());
+        p.busy_label = Some(if force { "強制プッシュしています…" } else { "プッシュしています…" }.into());
         let rx = run_git(self.waker.clone(), move || {
-            let out = if new_upstream { nagi_workers::git::git(&root, &["push", "-u", "origin", &branch]) } else { nagi_workers::git::git(&root, &["push"]) }?;
+            let mut args = vec!["push"];
+            if force {
+                args.push("--force-with-lease");
+            }
+            if new_upstream {
+                args.extend(["-u", "origin", &branch]);
+            }
+            let out = nagi_workers::git::git(&root, &args)?;
             Ok(String::from_utf8_lossy(&out).into_owned())
         });
         p.running = Some((Job::Push, rx));
@@ -770,14 +759,7 @@ pub(crate) mod draw {
             c.busy_label.as_ref().map_or(String::new(), |b| format!("   {b}"))
         );
         p.text(&info, r.x, row_y(l.info), STATUS_FG);
-        if let Some((dest, list)) = &c.confirm_push {
-            // 送る前の確認（一覧の場所に出す）
-            p.text(&format!(" プッシュ: {dest}"), r.x, row_y(l.list), FG);
-            p.text(&format!(" 送るコミット {} 件", list.len()), r.x, row_y(l.list + 1), STATUS_FG);
-            for (k, s) in list.iter().take(l.list_h.saturating_sub(3)).enumerate() {
-                p.text(&format!("   {s}"), r.x, row_y(l.list + 2 + k), FG);
-            }
-        } else {
+        {
             // 一覧（見出しの行を含めて並べる）
             let tracked = c.tracked();
             let mut lines: Vec<Option<usize>> = vec![None];

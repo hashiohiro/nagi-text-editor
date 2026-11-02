@@ -93,5 +93,6 @@ pub fn focused(ed: &Editor) -> Option<&'static dyn Component> {
         Panel::DbTable => &crate::db_table::DbTableComponent,
         Panel::Menu => &crate::menu::MenuComponent,
         Panel::Input => &crate::input_dialog::InputComponent,
+        Panel::Push => &crate::push_dialog::PushComponent,
     })
 }

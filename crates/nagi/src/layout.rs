@@ -114,7 +114,7 @@ pub static PANELS: &[&dyn View] = &[
     &crate::menu::MenuView,
 ];
 
-pub static OVERLAYS: &[&dyn View] = &[&crate::run_dialog::RunDialogView, &crate::settings_dialog::SettingsView, &crate::launcher::LauncherView, &crate::input_dialog::InputView];
+pub static OVERLAYS: &[&dyn View] = &[&crate::run_dialog::RunDialogView, &crate::settings_dialog::SettingsView, &crate::launcher::LauncherView, &crate::input_dialog::InputView, &crate::push_dialog::PushView];
 
 pub fn layer(l: Layer) -> &'static [&'static dyn View] {
     match l {
@@ -201,6 +201,7 @@ mod tests {
             ("CmdCompleteView", "クリックは CommandLineComponent::click が受け取る"),
             ("LauncherView", "クリックは LauncherComponent::click が受け取る"),
             ("InputView", "クリックは InputComponent::click が受け取る"),
+            ("PushView", "クリックは PushComponent::click が受け取る"),
             ("RunDialogView", "クリックは RunDialogComponent::click が受け取る"),
             ("SettingsView", "クリックは SettingsComponent::click が受け取る"),
         ];
