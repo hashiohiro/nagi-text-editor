@@ -78,6 +78,7 @@ impl Editor {
         }
         // 自動で保存（設定。別のファイルへ移ったとき）
         self.autosave(crate::session::AutoSave::Switch);
+        self.tab_shift = 0;
         // 別のファイルへ移るのはジャンプ（Ctrl-o で戻れる）
         self.push_jump();
         self.finish_load();

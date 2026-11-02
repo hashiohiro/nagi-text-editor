@@ -1679,6 +1679,7 @@ impl Frame {
                 ElementState::Released => self.on_left(false, el),
             },
             WindowEvent::MouseInput { state: ElementState::Pressed, button: winit::event::MouseButton::Right, .. } => self.on_right_press(),
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: winit::event::MouseButton::Middle, .. } => self.on_middle_press(),
             WindowEvent::MouseWheel { delta, .. } => self.on_wheel(delta),
             WindowEvent::RedrawRequested => {
                 self.draw();
@@ -1725,6 +1726,18 @@ impl Frame {
         self.right_press();
         // 押したら、いつも描き直す（ADR 0018 の §3）
         self.sync_ime();
+        self.draw();
+    }
+
+    /// 中ボタン: タブの上なら閉じる（IntelliJ と同じ）
+    fn on_middle_press(&mut self) {
+        if let (Some(f), Some(ed)) = (&self.fonts, &mut self.ed) {
+            let cell = f.cell();
+            let (row, col) = ((self.mouse.1 as f32 / cell.h) as usize, (self.mouse.0.max(0.0) as f32 / cell.w) as usize);
+            if let Some((doc, _)) = ed.buftab_at(row, col) {
+                ed.tab_close(doc);
+            }
+        }
         self.draw();
     }
 

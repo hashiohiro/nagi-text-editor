@@ -515,6 +515,8 @@ pub struct Editor {
     pub tab_hits: std::cell::RefCell<Vec<(usize, usize, usize, &'static str)>>,
     /// 木で切り取り・コピーしたファイル（パス, 切り取りか）。貼り付けで使う（tree_files.rs）
     pub(crate) file_clip: Option<(PathBuf, bool)>,
+    /// タブの列をホイールで送った数（右へ +。別のバッファへ移ったら 0 に戻す）
+    pub(crate) tab_shift: isize,
     /// 描いた入力欄（行, 列の始め, 終わり, Vim 風の欄か。view.rs の Painter::field_hits）
     pub field_hits: std::cell::RefCell<Vec<(usize, usize, usize, bool)>>,
     /// `--replay` の試験: 描いた文字を控える（行, 列, 文字）。replay.rs が押す所・待つ文字を探す
@@ -807,6 +809,7 @@ impl Editor {
             tab_hits: Default::default(),
             field_hits: Default::default(),
             file_clip: None,
+            tab_shift: 0,
             record_texts: false,
             drawn_texts: Default::default(),
             run_hit: Default::default(),

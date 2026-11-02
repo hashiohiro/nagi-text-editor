@@ -911,7 +911,7 @@ impl Editor {
         }
     }
 
-    /// 直した値を UPDATE にして、確認の窓で「はい」なら 1 つのトランザクションで送る
+    /// 直した値を UPDATE にして、1 つのトランザクションで送る
     pub(crate) fn result_send(&mut self) {
         let (name, pk, names) = match self.result_plan() {
             Ok(x) => x,
@@ -926,21 +926,14 @@ impl Editor {
             self.svc.notify.info("送る変更はありません");
             return;
         }
+        // DataGrip と同じく、確かめずにすぐ送る
         let (id, src) = (t.id, t.src);
-        let first: String = stmts[0].chars().take(160).collect();
-        let q = if stmts.len() == 1 { format!("送りますか: {first}") } else { format!("{} 件の変更を送りますか: {first} …", stmts.len()) };
-        self.ask_or(
-            q,
-            move |e| {
-                if let Some(c) = e.panels.db.as_mut().and_then(|p| p.conns.get_mut(src)).filter(|c| c.connected) {
-                    c.send_batch(crate::db_panel::Target::Result(id), stmts);
-                    e.svc.notify.info("送信しています…");
-                } else {
-                    e.svc.notify.info("まだつないでいません");
-                }
-            },
-            |e| e.svc.notify.info("送信をやめました（変更は残っています）"),
-        );
+        if let Some(c) = self.panels.db.as_mut().and_then(|p| p.conns.get_mut(src)).filter(|c| c.connected) {
+            c.send_batch(crate::db_panel::Target::Result(id), stmts);
+            self.svc.notify.info("送信しています…");
+        } else {
+            self.svc.notify.info("まだつないでいません");
+        }
     }
 
     /// 結果のパネルにいる間のキー
@@ -994,7 +987,7 @@ impl Editor {
     pub(crate) fn result_click(&mut self, row: usize, col: usize, clicks: u32) {
         self.list_side = Side::Bottom;
         self.set_state(State::List);
-        // 値を打っている間: 別のセルを押したら、打った値を決めてからそのセルへ移って直し始める。同じセルなら何もしない
+        // 値を打っている間: 別のセルを押したら、打った値を決めてからそのセルを選ぶ。同じセルなら何もしない
         if self.panels.db_results.value_edit.is_some() {
             let other = self.panels.db_results.active_tab().is_some_and(|t| {
                 let head = if t.filterable { 4 } else { 3 };
@@ -1060,7 +1053,7 @@ impl Editor {
         if row < head {
             return;
         }
-        // 行と列。直せる結果（テーブルの主キーが分かるもの）なら、セルを押したら 1 回で直し始める（Insert）
+        // 行と列。1 回のクリックは選ぶだけ、ダブルクリックで直し始める（DataGrip と同じ。直せないときはわけを知らせる）
         let len = t.rows.len();
         let pick = nagi_ui::list::pick_row(&mut t.row, t.scroll, row, head, len, clicks);
         let cell = grid_col_at(t.hscroll, &t.widths, col);
@@ -1068,9 +1061,7 @@ impl Editor {
             t.col = c;
         }
         match pick {
-            // ダブルクリックは直せないときにわけを知らせる
             Some(nagi_ui::list::Pick::Accept(_)) => self.result_begin_edit(false),
-            Some(_) if cell.is_some() && self.result_plan().is_ok() => self.result_begin_edit(false),
             _ => {}
         }
     }

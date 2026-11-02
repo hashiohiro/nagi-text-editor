@@ -73,6 +73,8 @@ impl Editor {
             while start < a && !fits(&tabs[start..=a]) {
                 start += 1;
             }
+            // ホイールで送った分（少なくとも 1 つは残す）
+            let start = (start as isize + self.tab_shift).clamp(0, tabs.len() as isize - 1) as usize;
             tabs.drain(..start);
         }
         let mut x = 0;
@@ -269,10 +271,10 @@ impl crate::layout::View for BufferTabsView {
 
     fn wheel(&self, ed: &mut Editor, r: Rect, at: crate::layout::At, dy: isize, dx: isize) -> bool {
         let _ = (at, r);
+        // タブの列を横に送る（IntelliJ と同じ。バッファは切り替えない）
         let d = if dy != 0 { dy } else { dx };
-        if d != 0 {
-            ed.cycle_buffer(d > 0, 1);
-        }
+        let n = ed.buffer_list().len() as isize;
+        ed.tab_shift = (ed.tab_shift + d.signum()).clamp(-n, n);
         true
     }
 }

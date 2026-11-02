@@ -9,7 +9,7 @@
 //!   `/` で名前を絞り込む。
 //! - コンソール: 接続先ごとの .sql ファイル。上の帯に ▶ 実行・Tx 自動／手動・未コミットの数・コミット／
 //!   ロールバック・接続先 › スキーマ。Ctrl+Enter でカーソルのある文を流し、結果は下のパネルのタブに出す。
-//!   自動のときはデータを変える文を y で確かめてから。手動のときはそのまま流し、未コミットの数を数える。
+//!   DataGrip と同じく確かめずに流す（WHERE の無い UPDATE・DELETE だけ確かめる）。手動のときは未コミットの数を数える。
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;
@@ -397,6 +397,16 @@ pub fn is_read_only(sql: &str) -> bool {
         .unwrap_or("")
         .to_ascii_uppercase();
     matches!(first.as_str(), "SELECT" | "WITH" | "SHOW" | "DESC" | "DESCRIBE" | "EXPLAIN" | "VALUES" | "PRAGMA")
+}
+
+/// WHERE の無い UPDATE・DELETE があれば、その文の頭（DataGrip の「安全でないクエリ」の警告と同じ）
+pub fn unsafe_statement(sql: &str) -> Option<String> {
+    let text: String = sql.lines().map(|l| l.split("--").next().unwrap_or("")).collect::<Vec<_>>().join("\n");
+    text.split(';').find_map(|s| {
+        let words: Vec<String> = s.split_whitespace().map(|w| w.to_ascii_uppercase()).collect();
+        let kind = words.first().map(String::as_str);
+        (matches!(kind, Some("UPDATE" | "DELETE")) && !words.iter().any(|w| w == "WHERE")).then(|| s.split_whitespace().take(4).collect::<Vec<_>>().join(" "))
+    })
 }
 
 /// カーソルの行を含む文の行の範囲（空行で区切ったまとまり。start..end）
@@ -1394,7 +1404,7 @@ impl Editor {
         self.svc.notify.info(format!("{} に書きました", path.display()));
     }
 
-    /// SQL を流す（つないでいなければつないでから。自動のときは、データを変える文を確かめてから）
+    /// SQL を流す（つないでいなければつないでから。WHERE の無い UPDATE・DELETE だけ確かめてから）
     pub(crate) fn db_execute(&mut self, i: usize, sql: String) {
         if sql.trim().is_empty() {
             self.svc.notify.info("流す文がありません（カーソルを文の上に置いてください）");
@@ -1409,10 +1419,9 @@ impl Editor {
             }
             return;
         }
-        let changes = !is_read_only(&sql);
-        if changes && !p.conns[i].manual {
-            let head: String = sql.split_whitespace().take(4).collect::<Vec<_>>().join(" ");
-            let q = format!("データを変える文です（{head} …）。{} で実行しますか（Tx を手動にすると確かめません）", p.sources[i].name);
+        // DataGrip と同じく確かめずに流す。WHERE の無い UPDATE・DELETE（全部の行に及ぶ）だけ確かめる
+        if let Some(head) = unsafe_statement(&sql) {
+            let q = format!("WHERE の無い文です（{head} …）。{} の全部の行に及びます。実行しますか", p.sources[i].name);
             self.ask_or(q, move |e| e.db_run(i, sql), |e| e.svc.notify.info("実行をやめました"));
             return;
         }
@@ -2225,6 +2234,11 @@ pub(crate) mod tests {
         assert_eq!(statement_at(text, 1), "");
         assert!(is_read_only("-- x\n  select * from t"));
         assert!(!is_read_only("update t set a=1"));
+        // WHERE の無い UPDATE・DELETE だけ確かめる
+        assert_eq!(unsafe_statement("update t set a=1").as_deref(), Some("update t set a=1"));
+        assert_eq!(unsafe_statement("delete from t -- where x\n"), Some("delete from t".into()));
+        assert!(unsafe_statement("delete from t where id = 1").is_none());
+        assert!(unsafe_statement("insert into t values (1); create table x(a int)").is_none());
         assert_eq!(ident("ORDERS"), "ORDERS");
         assert_eq!(ident("order items"), "\"order items\"");
         assert_eq!(ident("Mixed"), "\"Mixed\"");
@@ -2566,12 +2580,11 @@ pub(crate) mod tests {
         assert!(std::fs::read_to_string(dir.join(".config/nagi/databases.txt")).unwrap().contains("shop | jdbc:sqlite:"));
         let i = e.panels.db.as_ref().unwrap().sources.len() - 1;
         wait(&mut e, &|e| e.panels.db.as_ref().unwrap().conns[i].objects.contains_key("main"));
-        // コンソール: CREATE は確かめてから
+        // コンソール: CREATE は確かめずに流す（DataGrip と同じ）
         assert!(e.run_ui_action("db.console"));
         assert_eq!(e.console_source(), Some(i));
         keys(&mut e, "Gocreate table item(id integer primary key, name text)<Esc><C-m>");
-        assert!(e.menu.as_ref().and_then(|m| m.title.as_deref()).is_some_and(|t| t.contains("データを変える文")), "確認の窓");
-        keys(&mut e, "y");
+        assert!(e.menu.is_none(), "確かめない");
         wait(&mut e, &|e| e.panels.db.as_ref().unwrap().conns[i].objects.get("main").is_some_and(|o| !o.tables.is_empty()));
         // 手動 Tx では確かめずに流し、未コミットを数える。ロールバックで消える
         e.db_toggle_tx(i);

@@ -673,15 +673,8 @@ impl Editor {
                 }
             }
             TableAction::Reload => self.db_table_reload(),
-            TableAction::AskSend(n) => {
-                let q = format!("{n} 件の変更を送りますか（送る文は上に出ています）");
-                self.ask_or(q, |e| e.db_table_send(), |e| {
-                    if let Some(te) = &mut e.panels.db_table {
-                        te.preview = None;
-                    }
-                    e.svc.notify.info("送信をやめました（変更は残っています）");
-                });
-            }
+            // DataGrip と同じく、確かめずにすぐ送る
+            TableAction::AskSend(_) => self.db_table_send(),
             TableAction::Close => self.close_db_table(),
         }
     }
@@ -790,7 +783,7 @@ impl crate::layout::View for DbTableView {
             return crate::layout::Click::Done;
         }
         let len = te.len();
-        // 値を打っている間: 別のセルを押したら、打った値を決めてからそのセルへ移って直し始める。同じセルなら何もしない
+        // 値を打っている間: 別のセルを押したら、打った値を決めてからそのセルを選ぶ。同じセルなら何もしない
         if te.editing.is_some() {
             let hit = nagi_ui::list::row_at(te.scroll, at.row, 4, len).zip(crate::result_grid::grid_col_at(te.hscroll, &te.widths, at.col));
             if !hit.is_some_and(|h| h != (te.row, te.col)) {
@@ -806,8 +799,8 @@ impl crate::layout::View for DbTableView {
                 te.col = c;
             }
         }
-        // セル（値の列）を押したら 1 回で直し始める（行番号の欄を押したときは選ぶだけ）
-        if pick.is_some() && cell.is_some() {
+        // 1 回のクリックは選ぶだけ。セルのダブルクリックで直し始める（DataGrip と同じ。F2・Enter でも）
+        if matches!(pick, Some(nagi_ui::list::Pick::Accept(_))) && cell.is_some() {
             ed.db_table_key(nagi_vim::Key::Enter);
         }
         crate::layout::Click::Done
@@ -1000,14 +993,19 @@ mod tests {
         crate::layout::press(&mut e, s, ay + 5, name_x, |_| 1);
         let te = e.panels.db_table.as_ref().unwrap();
         assert_eq!((te.row, te.col), (1, 1));
-        assert_eq!(te.editing.as_ref().map(|f| f.mode_label()), Some("INSERT"), "1 回で直し始める（Insert）");
-        // 打っている間に別の行・列を押す: 打った値を決めて、押したセルを直し始める
+        assert!(te.editing.is_none(), "1 回のクリックは選ぶだけ（DataGrip と同じ）");
+        crate::layout::press(&mut e, s, ay + 5, name_x, |_| 2);
+        let te = e.panels.db_table.as_ref().unwrap();
+        assert_eq!(te.editing.as_ref().map(|f| f.mode_label()), Some("INSERT"), "ダブルクリックで直し始める（Insert）");
+        // 打っている間に別の行・列を押す: 打った値を決めて、押したセルを選ぶ
         keys(&mut e, "<Esc>ccz");
         crate::layout::press(&mut e, s, ay + 4, x + 8, |_| 1);
         let te = e.panels.db_table.as_ref().unwrap();
         assert_eq!(te.value(1, 1).as_deref(), Some("z"));
         assert_eq!((te.row, te.col), (0, 0));
-        assert_eq!(te.editing.as_ref().map(|f| f.text()).as_deref(), Some("1"));
+        assert!(te.editing.is_none());
+        crate::layout::press(&mut e, s, ay + 4, x + 8, |_| 2);
+        assert_eq!(e.panels.db_table.as_ref().unwrap().editing.as_ref().map(|f| f.text()).as_deref(), Some("1"));
         // 同じセルを押しても、打っている欄は閉じない
         crate::layout::press(&mut e, s, ay + 4, x + 8, |_| 1);
         assert!(e.panels.db_table.as_ref().unwrap().editing.is_some());
@@ -1132,10 +1130,9 @@ mod tests {
         assert_eq!(e.panels.db_table.as_ref().unwrap().added[0][1], None);
         e.key(Key::F(2));
         keys(&mut e, "new<CR>");
-        // Ctrl+Enter で SQL を見せ、y で送る
+        // Ctrl+Enter ですぐ送る（DataGrip と同じく確かめない）
         keys(&mut e, "<C-m>");
-        assert!(e.panels.db_table.as_ref().unwrap().preview.is_some());
-        keys(&mut e, "y");
+        assert!(e.menu.is_none(), "確かめない");
         wait(&mut e, &|e| e.panels.db_table.as_ref().is_some_and(|t| !t.busy && !t.running && t.changes() == 0 && t.rows.len() == 3));
         let te = e.panels.db_table.as_ref().unwrap();
         let names: Vec<Option<String>> = te.rows.iter().map(|r| r[1].clone()).collect();

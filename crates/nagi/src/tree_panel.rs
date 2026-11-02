@@ -48,6 +48,8 @@ pub struct TreePanel {
     rx: Receiver<DirList>,
     /// 読んでいる途中のフォルダ
     loading: std::collections::HashSet<PathBuf>,
+    /// 読んでいる途中に読み直しを頼まれたフォルダ（届いた中身は古いので捨てて、もう一度読む）
+    stale: std::collections::HashSet<PathBuf>,
     /// 開いたときに選びたいファイル（そこまでのフォルダが届くたびに展開を進める）
     reveal: Option<PathBuf>,
     /// 最後に合わせた開いているファイル（変わったら木をそこまで展開して選ぶ）
@@ -263,6 +265,8 @@ impl TreePanel {
     /// 読み直す（開いているフォルダも）
     pub fn reload(&mut self, waker: &nagi_workers::Waker) {
         self.children.clear();
+        // 読んでいる途中のものは、届いたらもう一度読む（名前を変えた直後の読み直しで、古い中身が残らないように）
+        self.stale.extend(self.loading.iter().cloned());
         let root = self.root.clone();
         self.load(&root, waker);
         let open: Vec<PathBuf> = self.folds.flipped().cloned().collect();
@@ -368,6 +372,7 @@ impl Editor {
                 tx,
                 rx,
                 loading: Default::default(),
+                stale: Default::default(),
                 reveal: None,
                 synced: None,
             };
@@ -429,6 +434,10 @@ impl Editor {
         let mut loaded = Vec::new();
         while let Ok((dir, list)) = t.rx.try_recv() {
             t.loading.remove(&dir);
+            if t.stale.remove(&dir) {
+                t.load(&dir, &waker);
+                continue;
+            }
             t.children.insert(dir.clone(), list);
             loaded.push(dir);
             changed = true;
