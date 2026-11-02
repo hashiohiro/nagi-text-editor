@@ -80,6 +80,79 @@ pub struct Term {
     code: Option<u32>,
     exited: Arc<AtomicBool>,
     size: (u16, u16),
+    /// 子と、その子が起こしたプロセス（Maven の java・npm の node など）をまとめたもの。止めるときに丸ごと終わらせる
+    tree: ProcTree,
+}
+
+/// プロセスの木（Windows のジョブオブジェクト。閉じると中のプロセスも終わる）。
+/// `cmd.exe /C` の包みだけを止めると、その下で動く本体が残って止まらなかった
+struct ProcTree {
+    pid: Option<u32>,
+    /// ジョブのハンドル（0 は無し）。生のポインタは Send でないので数で持つ
+    #[cfg_attr(not(windows), allow(dead_code))]
+    job: usize,
+}
+
+impl ProcTree {
+    #[cfg(windows)]
+    fn new(pid: Option<u32>) -> ProcTree {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::System::JobObjects::*;
+        use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_SET_QUOTA, PROCESS_TERMINATE};
+        let Some(id) = pid else { return ProcTree { pid, job: 0 } };
+        // SAFETY: 作ったハンドルはこの中か Drop で閉じる。構造体はゼロで埋めてから旗だけ立てる
+        unsafe {
+            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if job.is_null() {
+                return ProcTree { pid, job: 0 };
+            }
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            SetInformationJobObject(job, JobObjectExtendedLimitInformation, &info as *const _ as *const _, std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32);
+            let h = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, id);
+            if !h.is_null() {
+                AssignProcessToJobObject(job, h);
+                CloseHandle(h);
+            }
+            ProcTree { pid, job: job as usize }
+        }
+    }
+
+    #[cfg(not(windows))]
+    fn new(pid: Option<u32>) -> ProcTree {
+        ProcTree { pid, job: 0 }
+    }
+
+    /// 木の全部を終わらせる。ジョブに入る前に起きた孫も、親子の並びで taskkill /T が拾う
+    fn kill(&mut self) {
+        #[cfg(windows)]
+        {
+            if let Some(id) = self.pid {
+                let mut c = std::process::Command::new(crate::sys::system_tool("taskkill.exe"));
+                c.args(["/T", "/F", "/PID", &id.to_string()]).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+                crate::sys::no_window(&mut c);
+                let _ = c.status();
+            }
+            if self.job != 0 {
+                // SAFETY: new で作ったジョブのハンドル
+                unsafe {
+                    windows_sys::Win32::System::JobObjects::TerminateJobObject(self.job as _, 1);
+                }
+            }
+        }
+    }
+}
+
+impl Drop for ProcTree {
+    fn drop(&mut self) {
+        #[cfg(windows)]
+        if self.job != 0 {
+            // SAFETY: new で作ったジョブのハンドル。閉じると中のプロセスも終わる（KILL_ON_JOB_CLOSE）
+            unsafe {
+                windows_sys::Win32::Foundation::CloseHandle(self.job as _);
+            }
+        }
+    }
 }
 
 /// 使うシェル（PowerShell 7 があればそれ、無ければ Windows PowerShell）
@@ -117,6 +190,7 @@ impl Term {
             cmd.env(k, v);
         }
         let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
+        let tree = ProcTree::new(child.process_id());
         drop(pair.slave);
         let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
         let writer = Arc::new(Mutex::new(pair.master.take_writer().map_err(|e| e.to_string())?));
@@ -149,7 +223,7 @@ impl Term {
             e2.store(true, Ordering::Relaxed);
             waker();
         });
-        Ok(Term { parser, writer, master: pair.master, child, exited, size: (rows, cols), code: None })
+        Ok(Term { parser, writer, master: pair.master, child, exited, size: (rows, cols), code: None, tree })
     }
 
     pub fn write(&mut self, bytes: &[u8]) {
@@ -209,8 +283,15 @@ impl Term {
         self.code
     }
 
+    /// 止める（子が起こしたプロセスも全部）
     pub fn kill(&mut self) {
+        self.tree.kill();
         let _ = self.child.kill();
+    }
+
+    /// 子のプロセスの番号（試験用）
+    pub fn pid(&self) -> Option<u32> {
+        self.tree.pid
     }
 }
 
@@ -232,6 +313,39 @@ mod tests {
         p.screen_mut().set_size(5, 9); // 9 列に縮める（resize と同じ）→ あ の後半が切れる
         p.process(b"\x1b[1;9Hx");
         assert_eq!(p.screen().contents_between(0, 0, 0, 9), "abcdefghx");
+    }
+
+    /// 止めると、包みの cmd.exe の下で動く本体（孫のプロセス）も終わる（前は cmd.exe だけが終わり、本体が動き続けた）
+    #[test]
+    #[cfg(windows)]
+    fn kill_stops_grandchildren() {
+        let dir = std::env::temp_dir();
+        let mut t = Term::spawn("cmd.exe /C powershell.exe -NoProfile -Command \"Write-Output ('PID=' + $PID); Start-Sleep 120\"", &dir, 10, 80, Arc::new(|| {})).expect("起動");
+        let mut pid = None;
+        for _ in 0..500 {
+            let text = t.with_screen(|s| s.contents());
+            if let Some(p) = text.split("PID=").nth(1).and_then(|r| r.split_whitespace().next()).and_then(|n| n.parse::<u32>().ok()) {
+                pid = Some(p);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let pid = pid.expect("孫の PID が出ない");
+        let alive = |p: u32| {
+            let out = std::process::Command::new("tasklist.exe").args(["/FI", &format!("PID eq {p}"), "/NH", "/FO", "CSV"]).output().unwrap();
+            String::from_utf8_lossy(&out.stdout).contains(&format!("\"{p}\""))
+        };
+        assert!(alive(pid), "動いているはず");
+        t.kill();
+        let mut gone = false;
+        for _ in 0..100 {
+            if !alive(pid) {
+                gone = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        assert!(gone, "止めた後も孫のプロセス {pid} が動いている");
     }
 
     /// cmd を動かして echo の出力が画面に出る。大きさを変えられる。終われば exited
