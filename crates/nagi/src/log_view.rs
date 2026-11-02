@@ -147,6 +147,8 @@ pub fn wrap(s: &str, w: usize) -> Vec<String> {
 pub enum LogHit {
     /// 0 行目の絞り込み
     Filter,
+    /// 0 行目のブランチ・ユーザー・日付の絞り込み（IntelliJ の VCS ログの上の帯と同じ）
+    Chip(LogChip),
     /// 左の列の 1 行（区分・フォルダ・ブランチ）
     Branch(BranchRow),
     BranchArea,
@@ -288,6 +290,59 @@ fn log_op(root: &std::path::Path, c: &Confirm) -> nagi_core::Result<String> {
     }
 }
 
+/// 0 行目の絞り込みの札
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogChip {
+    Branch,
+    User,
+    Date,
+}
+
+/// 日付で絞り込む期間（IntelliJ の VCS ログと同じ選び方）
+pub const LOG_PERIODS: [(&str, &str); 4] = [("過去 24 時間", "1.day.ago"), ("過去 7 日間", "7.days.ago"), ("過去 30 日間", "30.days.ago"), ("過去 1 年間", "1.year.ago")];
+
+/// 一度に読むコミットの数（見えている所が終わりに近づいたら倍にして読み直す）
+pub const LOG_PAGE: usize = 1000;
+/// 読み直して増やす上限（注釈から開いたコミットを探すときも、ここまで）
+const LOG_MAX: usize = 64_000;
+
+/// ブランチ・ユーザー・日付の絞り込み（git log に渡す）
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LogQuery {
+    pub branch: Option<String>,
+    pub user: Option<String>,
+    /// LOG_PERIODS の番号
+    pub period: Option<usize>,
+}
+
+/// git log の引数（`path` はファイルの履歴、`range` は比べる範囲かブランチ）
+pub fn log_args(path: Option<&str>, range: Option<&str>, q: &LogQuery, limit: usize) -> Vec<String> {
+    let mut a: Vec<String> = vec!["log".into()];
+    if path.is_some() {
+        // ファイルの履歴は名前の変更をたどる（--follow はグラフと一緒に使えない）
+        a.push("--follow".into());
+    } else {
+        a.extend(["--graph".into(), "--date-order".into()]);
+    }
+    a.extend(["-n".into(), limit.to_string(), "--format=\x1f%h\x1f%D\x1f%s\x1f%an\x1f%at\x1f%H".into()]);
+    if let Some(u) = &q.user {
+        a.push(format!("--author={}", regex::escape(u)));
+    }
+    if let Some(&(_, since)) = q.period.and_then(|i| LOG_PERIODS.get(i)) {
+        a.push(format!("--since={since}"));
+    }
+    match (q.branch.as_deref().or(range), path) {
+        (Some(r), _) => a.push(r.into()),
+        (None, None) => a.push("--all".into()),
+        (None, Some(_)) => {}
+    }
+    a.push("--".into());
+    if let Some(p) = path {
+        a.push(p.into());
+    }
+    a
+}
+
 pub struct LogView {
     /// 下の欄の「Git」タブに収めている（全画面でない）
     pub docked: bool,
@@ -326,6 +381,11 @@ pub struct LogView {
     pub auto_cols: (usize, usize, usize),
     /// 読み終えたら選ぶコミット（ハッシュ。注釈の「VCS ログで表示」）
     pub want_hash: Option<String>,
+    /// 読み直したあとも見ている所を変えない（続きを読んだとき）
+    keep_view: bool,
+    /// ブランチ・ユーザー・日付の絞り込みと、読むコミットの数
+    pub query: LogQuery,
+    pub limit: usize,
     /// 右の列の行の覚え（(コミット, 比べる相手, 幅) → 行）。折り返しを毎フレームやり直さない
     detail_cache: std::cell::RefCell<Option<((String, Option<String>, usize), std::rc::Rc<Vec<DetailLine>>)>>,
     /// 読み直すための元（ファイルの履歴のパス・比べる範囲）
@@ -335,6 +395,9 @@ pub struct LogView {
     rx_branches: Rx<Vec<(String, String, bool)>>,
     rx_detail: Rx<Detail>,
 }
+
+/// 0 行目の絞り込みの字の欄の幅（その右に札を並べる）
+pub const LOG_FILTER_W: usize = 22;
 
 /// UNIX 時刻なら「3 日前」の形に（そうでなければそのまま）
 fn when(s: &str) -> String {
@@ -406,6 +469,26 @@ impl LogView {
         }
     }
 
+    /// 0 行目の絞り込みの札（見出し, 列, 幅, 種類）。絞り込みの字の欄の右に並べる
+    pub fn chips(&self) -> Vec<(String, usize, usize, LogChip)> {
+        let all = "すべて";
+        let items = [
+            (format!("ブランチ: {} ▾", self.query.branch.as_deref().unwrap_or(all)), LogChip::Branch),
+            (format!("ユーザー: {} ▾", self.query.user.as_deref().unwrap_or(all)), LogChip::User),
+            (format!("日付: {} ▾", self.query.period.and_then(|i| LOG_PERIODS.get(i)).map_or(all, |p| p.0)), LogChip::Date),
+        ];
+        let mut x = LOG_FILTER_W;
+        items
+            .into_iter()
+            .map(|(label, c)| {
+                let w = nagi_core::display_col(&label, label.len(), false);
+                let at = x;
+                x += w + 2;
+                (label, at, w, c)
+            })
+            .collect()
+    }
+
     /// ブランチの列の行。区分（ローカル・リモート・タグ）の下に、名前を / で分けたフォルダの木（IntelliJ と同じ）。
     /// 畳んだ区分・フォルダの中は出さない。フォルダはその段のブランチより先に並べる
     pub fn branch_rows(&self) -> Vec<BranchRow> {
@@ -432,6 +515,9 @@ impl LogView {
         use nagi_ui::Rect;
         let mut ui = nagi_ui::Ui::default();
         let body = h.saturating_sub(1);
+        for (_, x, cw, c) in self.chips() {
+            ui.put(Rect::row(0, x, cw), LogHit::Chip(c));
+        }
         ui.put(Rect::row(0, 0, w), LogHit::Filter);
         for (k, b) in self.branch_rows().into_iter().skip(self.branch_top).take(body).enumerate() {
             ui.put(Rect::row(1 + k, 0, bw), LogHit::Branch(b));
@@ -669,9 +755,112 @@ impl Editor {
     pub(crate) fn reload_log(&mut self) {
         let (Some(root), Some(l)) = (self.svc.git.root.clone(), &self.panels.log) else { return };
         let (path, range) = (l.src_path.clone(), l.src_range.clone());
+        let (query, limit) = (l.query.clone(), l.limit);
         let state = self.state();
         self.load_log(root, path, range);
+        if let Some(l) = &mut self.panels.log {
+            if query != LogQuery::default() || limit != LOG_PAGE {
+                l.query = query;
+                l.limit = limit;
+                self.log_requery(None, false);
+            }
+        }
         self.set_state(state);
+    }
+
+    /// 同じ履歴を、今の絞り込み・数で読み直す（選んでいるコミットはそのまま。`keep` なら見ている所も変えない）
+    pub(crate) fn log_requery(&mut self, want: Option<String>, keep: bool) {
+        let (Some(root), Some(l)) = (self.svc.git.root.clone(), &mut self.panels.log) else { return };
+        l.want_hash = want.or_else(|| l.want_hash.clone()).or_else(|| l.current().map(|c| c.hash.clone()));
+        l.keep_view = keep;
+        l.loading = true;
+        let args = log_args(l.src_path.as_deref(), l.src_range.as_deref(), &l.query, l.limit);
+        l.rx_log = spawn(self.waker.clone(), move || {
+            let a: Vec<&str> = args.iter().map(String::as_str).collect();
+            let out = nagi_workers::git::git(&root, &a)?;
+            Ok(parse_log(&String::from_utf8_lossy(&out)))
+        });
+    }
+
+    /// 札を押した: 選ぶメニュー（ブランチ・ユーザー・日付）
+    pub(crate) fn log_chip_menu(&mut self, c: LogChip, at: (usize, usize)) {
+        let Some(l) = &self.panels.log else { return };
+        let mark = |on: bool| if on { "✓ " } else { "   " };
+        let mut m = crate::menu::Menu::new(at.0, at.1);
+        let set = |f: fn(&mut LogQuery)| move |e: &mut Editor| {
+            if let Some(l) = &mut e.panels.log {
+                f(&mut l.query);
+                l.limit = LOG_PAGE;
+            }
+            e.log_requery(None, false);
+        };
+        match c {
+            LogChip::Branch => {
+                m = m.item(format!("{}すべて", mark(l.query.branch.is_none())), set(|q| q.branch = None)).sep();
+                for (sec, name, _) in l.branches.iter().filter(|b| b.0 != "タグ").take(40) {
+                    let n = name.clone();
+                    let _ = sec;
+                    m = m.item(format!("{}{name}", mark(l.query.branch.as_deref() == Some(name))), move |e| {
+                        if let Some(l) = &mut e.panels.log {
+                            l.query.branch = Some(n.clone());
+                            l.limit = LOG_PAGE;
+                        }
+                        e.log_requery(None, false);
+                    });
+                }
+            }
+            LogChip::User => {
+                // 読んだコミットの作者（多い順）
+                let mut count: Vec<(String, usize)> = Vec::new();
+                for c in l.rows.iter().filter_map(|r| r.commit.as_ref()) {
+                    match count.iter_mut().find(|x| x.0 == c.author) {
+                        Some(x) => x.1 += 1,
+                        None => count.push((c.author.clone(), 1)),
+                    }
+                }
+                count.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+                if let Some(u) = l.query.user.clone().filter(|u| !count.iter().any(|x| &x.0 == u)) {
+                    count.insert(0, (u, 0));
+                }
+                m = m.item(format!("{}すべて", mark(l.query.user.is_none())), set(|q| q.user = None)).sep();
+                for (name, _) in count.into_iter().take(30) {
+                    let on = l.query.user.as_deref() == Some(name.as_str());
+                    m = m.item(format!("{}{name}", mark(on)), move |e| {
+                        if let Some(l) = &mut e.panels.log {
+                            l.query.user = Some(name.clone());
+                            l.limit = LOG_PAGE;
+                        }
+                        e.log_requery(None, false);
+                    });
+                }
+            }
+            LogChip::Date => {
+                m = m.item(format!("{}すべて", mark(l.query.period.is_none())), set(|q| q.period = None)).sep();
+                for (i, (label, _)) in LOG_PERIODS.iter().enumerate() {
+                    m = m.item(format!("{}{label}", mark(l.query.period == Some(i))), move |e| {
+                        if let Some(l) = &mut e.panels.log {
+                            l.query.period = Some(i);
+                            l.limit = LOG_PAGE;
+                        }
+                        e.log_requery(None, false);
+                    });
+                }
+            }
+        }
+        self.open_menu(m);
+    }
+
+    /// 見えている所が読んだ分の終わりに近づいたら、続きを読む（数を倍にして読み直す）
+    pub(crate) fn log_more_if_needed(&mut self, body: usize) {
+        let Some(l) = &self.panels.log else { return };
+        let commits = l.rows.iter().filter(|r| r.commit.is_some()).count();
+        if l.loading || commits < l.limit || l.limit >= LOG_MAX || l.top + body * 2 < l.visible.len() {
+            return;
+        }
+        if let Some(l) = &mut self.panels.log {
+            l.limit = (l.limit * 2).min(LOG_MAX);
+        }
+        self.log_requery(None, true);
     }
 
     /// 履歴を（読み直すときも）裏で取る
@@ -681,15 +870,9 @@ impl Editor {
         let p2 = path.clone();
         let range2 = range.clone();
         let rx_log = spawn(self.waker.clone(), move || {
-            let fmt = "--format=\x1f%h\x1f%D\x1f%s\x1f%an\x1f%at\x1f%H";
-            let out = match &p2 {
-                // ファイルの履歴は名前の変更をたどる（--follow はグラフと一緒に使えない）
-                Some(p) => nagi_workers::git::git(&r2, &["log", "--follow", "-n", "1000", fmt, "--", p]),
-                None => match &range2 {
-                    Some(r) => nagi_workers::git::git(&r2, &["log", "--graph", "--date-order", "-n", "1000", fmt, r, "--"]),
-                    None => nagi_workers::git::git(&r2, &["log", "--graph", "--all", "--date-order", "-n", "1000", fmt]),
-                },
-            }?;
+            let args = log_args(p2.as_deref(), range2.as_deref(), &LogQuery::default(), LOG_PAGE);
+            let a: Vec<&str> = args.iter().map(String::as_str).collect();
+            let out = nagi_workers::git::git(&r2, &a)?;
             Ok(parse_log(&String::from_utf8_lossy(&out)))
         });
         let r3 = root.clone();
@@ -723,6 +906,9 @@ impl Editor {
             detail_left: 0,
             auto_cols: (10, 10, 7),
             want_hash: None,
+            keep_view: false,
+            query: LogQuery::default(),
+            limit: LOG_PAGE,
             detail_cache: Default::default(),
             src_path: path.clone(),
             src_range: range.clone(),
@@ -757,15 +943,26 @@ impl Editor {
             match r {
                 Ok(rows) => {
                     l.auto_cols = auto_cols(&rows);
+                    let commits = rows.iter().filter(|r| r.commit.is_some()).count();
                     l.rows = rows;
                     l.refilter();
+                    let keep = std::mem::take(&mut l.keep_view);
                     if let Some(h) = l.want_hash.take() {
                         match l.visible.iter().position(|&i| l.rows[i].commit.as_ref().is_some_and(|c| c.hash.starts_with(&h))) {
                             Some(k) => {
                                 l.selected = k;
-                                l.top = k.saturating_sub(5);
+                                if !keep {
+                                    l.top = k.saturating_sub(5);
+                                }
                             }
-                            None => self.svc.notify.info(format!("{} は履歴（新しい 1000 件）にありません", &h[..7.min(h.len())])),
+                            // 読んだ分に無ければ、数を増やして探す（注釈の「VCS ログで表示」で古いコミットを開いたとき）
+                            None if commits >= l.limit && l.limit < LOG_MAX => {
+                                l.limit = (l.limit * 4).min(LOG_MAX);
+                                self.log_requery(Some(h), false);
+                                return true;
+                            }
+                            None if keep => {}
+                            None => self.svc.notify.info(format!("{} は履歴（新しい {commits} 件）にありません", &h[..7.min(h.len())])),
                         }
                     }
                 }
@@ -817,6 +1014,12 @@ impl Editor {
 
     /// 履歴の画面のキー
     pub(crate) fn log_key(&mut self, key: Key) {
+        self.log_key_inner(key);
+        let rows = self.log_rows();
+        self.log_more_if_needed(rows);
+    }
+
+    fn log_key_inner(&mut self, key: Key) {
         let rows = self.log_rows();
         let Some(l) = &mut self.panels.log else {
             self.set_state(State::Normal);
@@ -868,6 +1071,12 @@ impl Editor {
         let mods = self.click_mods;
         // 描き方（draw_log_view）と同じ割り付けで当てる
         let hit = self.log_hit(row, col, w);
+        if let Some(LogHit::Chip(c)) = hit {
+            let r = self.log_rect().unwrap_or_default();
+            let x = self.panels.log.as_ref().and_then(|l| l.chips().into_iter().find(|x| x.3 == c)).map_or(col, |x| x.1);
+            self.log_chip_menu(c, (r.y + row + 1, r.x + x));
+            return;
+        }
         let Some(l) = &mut self.panels.log else { return };
         if hit == Some(LogHit::Filter) {
             // 0 行目（「/ で絞り込み」の見出し）を押したら絞り込みの欄を開く
@@ -930,7 +1139,7 @@ impl Editor {
             }
             Some(LogHit::BranchArea) => l.focus_files = false,
             // グラフだけの行・中身の見出しなど・空いた所は選ばない
-            Some(LogHit::Graph(_) | LogHit::CommitArea | LogHit::Detail(_) | LogHit::DetailArea | LogHit::Filter) => {}
+            Some(LogHit::Graph(_) | LogHit::CommitArea | LogHit::Detail(_) | LogHit::DetailArea | LogHit::Filter | LogHit::Chip(_)) => {}
             // 列の間の区切り
             None => l.focus_files = false,
         }
@@ -1035,6 +1244,12 @@ impl Editor {
     /// ホイール: 表示だけを送る（選んでいるコミットは動かさない。キーで動かすと見える範囲へ戻る）。
     /// 横は真ん中の列（グラフ・ref・題名）を送る。`w` は履歴の幅、`col` は履歴の中のマウスの列（左のブランチの列・右の中身の列ならそこを送る）
     pub(crate) fn log_wheel(&mut self, dy: isize, dx: isize, w: usize, col: usize) {
+        self.log_wheel_inner(dy, dx, w, col);
+        let rows = self.log_rows();
+        self.log_more_if_needed(rows);
+    }
+
+    fn log_wheel_inner(&mut self, dy: isize, dx: isize, w: usize, col: usize) {
         let rows = self.log_rows();
         let cols = self.log_cols_for(w);
         let right = self.log_right_cols();
@@ -1569,21 +1784,38 @@ pub(crate) mod draw {
         let dx = cx + cw + 1;
         // 上の行: 絞り込みと件数
         let n = l.visible.iter().filter(|&&i| l.rows[i].commit.is_some()).count();
-        let head = format!(
-            " {}{}   {} 件{}{}",
-            if l.filter_text.is_empty() { "打つと絞り込み".to_string() } else { format!("/{}", l.filter_text) },
-            l.path.as_ref().map_or(String::new(), |p| format!("   ファイル: {p}")),
+        let tail = format!(
+            "{} 件{}{}{}",
             n,
+            l.path.as_ref().map_or(String::new(), |p| format!("   ファイル: {p}")),
             if l.marked.is_empty() { String::new() } else { format!("   {} 件を選択（右クリックで操作・Esc で外す）", l.marked.len()) },
             if l.loading { " …" } else { "" }
         );
+        // 左: 絞り込みの字（欄の幅まで）、その右にブランチ・ユーザー・日付の札、件数
+        let saved_cols = p.cols;
+        p.cols = r.x + crate::log_view::LOG_FILTER_W - 1;
         if let Some(f) = &l.filter {
             let c = p.text(" /", r.x, y0, FG);
-            let end = draw_vim_field(p, f, c, y0, preedit);
-            p.text(&format!("   {n} 件"), end, y0, STATUS_FG);
+            draw_vim_field(p, f, c, y0, preedit);
         } else {
-            p.text(&head, r.x, y0, STATUS_FG);
+            p.text(&format!(" {}", if l.filter_text.is_empty() { "打つと絞り込み".to_string() } else { format!("/{}", l.filter_text) }), r.x, y0, STATUS_FG);
         }
+        p.cols = saved_cols;
+        let mut end = r.x + crate::log_view::LOG_FILTER_W;
+        for (label, x, w, c) in l.chips() {
+            let on = match c {
+                crate::log_view::LogChip::Branch => l.query.branch.is_some(),
+                crate::log_view::LogChip::User => l.query.user.is_some(),
+                crate::log_view::LogChip::Date => l.query.period.is_some(),
+            };
+            p.text(&label, r.x + x, y0, if on { FG_BRIGHT } else { STATUS_FG });
+            end = r.x + x + w + 2;
+        }
+        // 右上のブランチの数と重ねない
+        let abw = ab.map_or(0, |(name, ahead, behind)| p.width(&format!("{name}  ↑{ahead} 送る  ↓{behind} 受け取る ")) + 1);
+        p.cols = (r.x + r.w).saturating_sub(abw);
+        p.text(&format!(" {tail}"), end, y0, STATUS_FG);
+        p.cols = saved_cols;
         // 右上: 今のブランチと、送る（↑）・受け取る（↓）コミットの数（受け取る数は最後にフェッチした時点）
         if let Some((name, ahead, behind)) = ab {
             let s = format!("{name}  ↑{ahead} 送る  ↓{behind} 受け取る ");
@@ -1798,6 +2030,9 @@ mod tests {
             detail_cache: Default::default(),
             src_path: None,
             src_range: None,
+            keep_view: false,
+            query: LogQuery::default(),
+            limit: LOG_PAGE,
             docked: true,
             visible: (0..rows.len()).collect(),
             rows,
@@ -1932,6 +2167,9 @@ mod tests {
             detail_cache: Default::default(),
             src_path: None,
             src_range: None,
+            keep_view: false,
+            query: LogQuery::default(),
+            limit: LOG_PAGE,
             docked: true,
             visible: (0..rows.len()).collect(),
             rows,
@@ -1973,6 +2211,81 @@ mod tests {
 
     /// 本物のリポジトリで: コミットを選ぶと右の中身がそのコミットになる（裏の仕事が無くても、描く前に取りに行く）・
     /// ブランチの列はホイールで送れる・列の間の線をドラッグで動かせる
+    /// git log の引数: 絞り込み（ブランチは --all の代わり・ユーザー・期間）とファイルの履歴
+    #[test]
+    fn log_query_args() {
+        let a = |path: Option<&str>, q: &LogQuery| log_args(path, None, q, 1000).join(" ");
+        let d = LogQuery::default();
+        assert!(a(None, &d).starts_with("log --graph --date-order -n 1000 "));
+        assert!(a(None, &d).ends_with(" --all --"));
+        let q = LogQuery { branch: Some("dev".into()), user: Some("a.b (x)".into()), period: Some(1) };
+        let s = a(None, &q);
+        assert!(s.contains(" --author=a\\.b \\(x\\)") && s.contains(" --since=7.days.ago") && s.ends_with(" dev --") && !s.contains("--all"), "{s}");
+        assert!(a(Some("src/a.rs"), &d).starts_with("log --follow -n 1000 ") && a(Some("src/a.rs"), &d).ends_with(" -- src/a.rs"));
+    }
+
+    /// 札: ユーザーを選ぶとその人のコミットだけを読み直す。「すべて」で戻す
+    #[test]
+    fn chips_filter_by_user() {
+        let dir = std::env::temp_dir().join(format!("nagi-logchips-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = |args: &[&str]| String::from_utf8_lossy(&nagi_workers::git::git(&dir, args).unwrap()).trim().to_string();
+        g(&["init", "-q", "-b", "main"]);
+        g(&["config", "user.email", "test@example.com"]);
+        for (f, who) in [("a", "alice"), ("b", "bob"), ("c", "alice")] {
+            std::fs::write(dir.join(f), format!("{f}\n")).unwrap();
+            g(&["add", "."]);
+            g(&["-c", &format!("user.name={who}"), "commit", "-q", "-m", &format!("add {f}")]);
+        }
+        let mut buf = nagi_core::Buffer::open(&dir.join("a")).unwrap();
+        buf.path = Some(dir.join("a"));
+        let mut e = Editor::new(buf, None);
+        e.set_screen(160, 40);
+        e.start_git();
+        e.open_log(false);
+        let wait = |e: &mut Editor, what: &dyn Fn(&Editor) -> bool| {
+            for _ in 0..500 {
+                e.poll_background();
+                if what(e) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            panic!("届かない");
+        };
+        let authors = |e: &Editor| e.panels.log.as_ref().unwrap().rows.iter().filter_map(|r| r.commit.as_ref()).map(|c| c.author.clone()).collect::<Vec<_>>();
+        wait(&mut e, &|e| e.panels.log.as_ref().is_some_and(|l| !l.loading));
+        assert_eq!(authors(&e).len(), 3);
+        // 0 行目の「ユーザー」の札を押す → メニュー（すべて・多い順）
+        let r = e.log_rect().unwrap();
+        let chip = e.panels.log.as_ref().unwrap().chips().into_iter().find(|c| c.3 == LogChip::User).unwrap();
+        e.log_click(0, chip.1 + 1, r.w, 1);
+        let labels: Vec<String> = e.menu.as_ref().unwrap().items.iter().map(|i| i.label.trim().to_string()).collect();
+        assert_eq!(labels.iter().filter(|l| !l.is_empty()).cloned().collect::<Vec<_>>(), ["✓ すべて", "alice", "bob"]);
+        let k = e.menu.as_ref().unwrap().items.iter().position(|i| i.label.ends_with("bob")).unwrap();
+        e.menu_run(k);
+        wait(&mut e, &|e| e.panels.log.as_ref().is_some_and(|l| !l.loading));
+        assert_eq!(authors(&e), ["bob"]);
+        assert!(e.panels.log.as_ref().unwrap().chips()[1].0.contains("bob"));
+        // 操作の後に読み直しても絞り込みは残る
+        e.reload_log();
+        wait(&mut e, &|e| e.panels.log.as_ref().is_some_and(|l| !l.loading));
+        assert_eq!(authors(&e), ["bob"]);
+        // 読んだ分の終わりに近づいたら続きを読む（数を倍に）
+        let l = e.panels.log.as_mut().unwrap();
+        l.query = LogQuery::default();
+        l.limit = 2;
+        e.log_requery(None, false);
+        wait(&mut e, &|e| e.panels.log.as_ref().is_some_and(|l| !l.loading));
+        assert_eq!(authors(&e).len(), 2);
+        e.log_more_if_needed(30);
+        assert_eq!(e.panels.log.as_ref().unwrap().limit, 4);
+        wait(&mut e, &|e| e.panels.log.as_ref().is_some_and(|l| !l.loading));
+        assert_eq!(authors(&e).len(), 3);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn detail_follows_and_columns() {
         let dir = std::env::temp_dir().join(format!("nagi-logcols-{}", std::process::id()));
