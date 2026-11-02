@@ -453,6 +453,11 @@ impl Editor {
     }
 
     /// 状態の行の文字コード・改行の上か
+    /// 状態の行の 行:列 の上か
+    pub fn on_position_label(&self, row: usize, col: usize) -> bool {
+        self.menu.is_none() && row == self.screen.1 && self.pos_hit.get().is_some_and(|(a, b)| col >= a && col < b)
+    }
+
     pub fn on_encoding_label(&self, row: usize, col: usize) -> bool {
         self.menu.is_none() && row == self.screen.1 && self.enc_hit.get().is_some_and(|(a, b)| col >= a && col < b)
     }

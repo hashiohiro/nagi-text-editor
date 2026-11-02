@@ -229,8 +229,12 @@ const INCSEARCH_REACH: usize = 1 << 20;
 #[derive(Default)]
 pub struct Search {
     pub forward: bool,
-    /// 正規表現として扱うか（Alt+R で切り替え）
+    /// 正規表現として扱うか（Alt+R・Alt+X で切り替え）
     pub regex: bool,
+    /// 大文字小文字を区別する（Alt+C。オフなら設定の ignorecase・smartcase のまま）
+    pub case: bool,
+    /// 単語として（Alt+O）
+    pub words: bool,
     /// 入力を始めたときのカーソルと表示位置（Esc で戻す）
     origin: Option<(Cursor, usize)>,
     /// すべての一致（絶対 byte の範囲）。`computed` のバッファと検索語に対して数えたもの。
@@ -512,6 +516,8 @@ pub struct Editor {
     pub run_hit: std::cell::Cell<Option<(usize, usize)>>,
     /// 状態の行の文字コード・改行の列（押すとメニュー）
     pub enc_hit: std::cell::Cell<Option<(usize, usize)>>,
+    /// 状態の行の 行:列 の列（押すと行へ移動）
+    pub pos_hit: std::cell::Cell<Option<(usize, usize)>>,
     pub tab_hits: std::cell::RefCell<Vec<(usize, usize, usize, &'static str)>>,
     /// 木で切り取り・コピーしたファイル（パス, 切り取りか）。貼り付けで使う（tree_files.rs）
     pub(crate) file_clip: Option<(PathBuf, bool)>,
@@ -814,6 +820,7 @@ impl Editor {
             drawn_texts: Default::default(),
             run_hit: Default::default(),
             enc_hit: Default::default(),
+            pos_hit: Default::default(),
             hover_bar: None,
             hover_buftab: None,
             prompt_caret: Default::default(),
@@ -1377,7 +1384,9 @@ impl Editor {
     /// 設定の ignorecase・smartcase で大文字小文字を区別するときは、正規表現の (?-i) を付ける
     /// （検索の土台は区別しない作りなので、区別するときだけ正規表現にして印を付ける）
     pub(crate) fn case_pattern(&self, p: String, regex: bool) -> (String, bool) {
-        let ignore = self.settings.bool("vim.ignorecase") && !(self.settings.bool("vim.smartcase") && p.chars().any(char::is_uppercase));
+        let ignore = !self.search.case && self.settings.bool("vim.ignorecase") && !(self.settings.bool("vim.smartcase") && p.chars().any(char::is_uppercase));
+        // 単語として: 前後を \b で囲む（正規表現にする）
+        let (p, regex) = if self.search.words { (format!("\\b(?:{})\\b", if regex { p } else { regex::escape(&p) }), true) } else { (p, regex) };
         if ignore {
             (p, regex)
         } else {
@@ -1554,8 +1563,17 @@ impl Editor {
             Key::Esc | Key::Ctrl('c') => self.cancel_search(),
             Key::Backspace if self.query.text.is_empty() => self.cancel_search(),
             Key::Enter => self.confirm_search(),
-            Key::Alt('r') => {
+            Key::Alt('r') | Key::Alt('x') => {
                 self.search.regex = !self.search.regex;
+                self.update_incsearch();
+            }
+            // IntelliJ と同じ: Alt+C 大文字小文字を区別、Alt+O 単語として
+            Key::Alt('c') => {
+                self.search.case = !self.search.case;
+                self.update_incsearch();
+            }
+            Key::Alt('o') => {
+                self.search.words = !self.search.words;
                 self.update_incsearch();
             }
             k => {
@@ -1693,8 +1711,17 @@ impl Editor {
                 self.clamp_normal();
             }
             Key::Tab | Key::Down | Key::Up => self.replace_field = 1 - self.replace_field,
-            Key::Alt('r') => {
+            Key::Alt('r') | Key::Alt('x') => {
                 self.search.regex = !self.search.regex;
+                self.update_incsearch();
+            }
+            // IntelliJ と同じ: Alt+C 大文字小文字を区別、Alt+O 単語として
+            Key::Alt('c') => {
+                self.search.case = !self.search.case;
+                self.update_incsearch();
+            }
+            Key::Alt('o') => {
+                self.search.words = !self.search.words;
                 self.update_incsearch();
             }
             // 今の 1 件を置き換えて次へ

@@ -507,7 +507,8 @@ impl Editor {
     }
 
     /// ツリーの中のクリック。`row` はツリーの中の行（0 は見出し）
-    pub fn tree_click(&mut self, row: usize, clicks: u32) {
+    /// 木の中の行を押した（`col` は木の中の列。▸ ▾ の上なら 1 回で開け閉めする）
+    pub fn tree_click(&mut self, row: usize, col: Option<usize>, clicks: u32) {
         self.list_side = crate::editor::Side::Left;
         self.set_state(State::List);
         let waker = self.waker_or_noop();
@@ -515,8 +516,10 @@ impl Editor {
         let len = t.rows.len();
         let Some(pick) = nagi_ui::list::pick_row(&mut t.selected, t.scroll, row, HEAD, len, clicks) else { return };
         let r = t.rows[t.selected].clone();
-        if r.dir {
-            // フォルダは 1 回のクリックで開閉する
+        // IntelliJ と同じく、フォルダは ▸ ▾ を押すかダブルクリックで開け閉めする（1 回のクリックは選ぶだけ）
+        let ind = indent_cols();
+        let on_arrow = col.is_some_and(|c| (r.depth * ind..(r.depth + 1) * ind).contains(&(c + t.left)));
+        if r.dir && (on_arrow || matches!(pick, nagi_ui::list::Pick::Accept(_))) {
             if t.folds.is_open(&r.path) {
                 t.folds.set_open(&r.path, false);
                 t.rebuild();
@@ -573,7 +576,7 @@ impl crate::layout::View for TreeView {
     fn click(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At, clicks: u32) -> crate::layout::Click {
         let _ = r;
         // at.row は木の中の行（0 は見出し）
-        ed.tree_click(at.row, clicks);
+        ed.tree_click(at.row, Some(at.col), clicks);
         crate::layout::Click::Done
     }
 
@@ -842,7 +845,7 @@ mod tests {
         let mut e = Editor::new(buf, None);
         e.set_screen(120, 40);
         e.open_tree();
-        e.tree_click(1, 1);
+        e.tree_click(1, None, 1);
         assert_eq!(e.state(), State::List);
         // 本文の 2 行目をクリック
         let r = e.active_rect();

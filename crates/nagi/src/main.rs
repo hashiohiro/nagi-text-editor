@@ -1220,6 +1220,11 @@ impl Frame {
                 ed.encoding_menu(row, col);
                 return;
             }
+            // 行:列: 行へ移動のダイアログ
+            if ed.on_position_label(row, col) {
+                ed.goto_line_dialog();
+                return;
+            }
         }
         // 欄・小窓の上なら、その部品へ（layout.rs。上の部品から当てる。連続して押した回数は部品ごとに数える）
         if let (Some(f), Some(ed)) = (&self.fonts, &mut self.ed) {

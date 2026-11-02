@@ -76,6 +76,8 @@ pub struct Term {
     writer: Arc<Mutex<Box<dyn Write + Send>>>,
     master: Box<dyn MasterPty + Send>,
     child: Box<dyn portable_pty::Child + Send + Sync>,
+    /// 終わったときの終了コード（分かったら）
+    code: Option<u32>,
     exited: Arc<AtomicBool>,
     size: (u16, u16),
 }
@@ -147,7 +149,7 @@ impl Term {
             e2.store(true, Ordering::Relaxed);
             waker();
         });
-        Ok(Term { parser, writer, master: pair.master, child, exited, size: (rows, cols) })
+        Ok(Term { parser, writer, master: pair.master, child, exited, size: (rows, cols), code: None })
     }
 
     pub fn write(&mut self, bytes: &[u8]) {
@@ -195,7 +197,16 @@ impl Term {
 
     /// シェルが終わったか（ConPTY は子が終わっても読み取りが EOF にならないので、子の終了も確かめる）
     pub fn exited(&mut self) -> bool {
-        self.exited.load(Ordering::Relaxed) || self.child.try_wait().ok().flatten().is_some()
+        if let Some(st) = self.child.try_wait().ok().flatten() {
+            self.code = Some(st.exit_code());
+            return true;
+        }
+        self.exited.load(Ordering::Relaxed)
+    }
+
+    /// 終了コード（終わっていて、分かれば）
+    pub fn exit_code(&self) -> Option<u32> {
+        self.code
     }
 
     pub fn kill(&mut self) {

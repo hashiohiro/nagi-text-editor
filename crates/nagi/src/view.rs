@@ -1003,7 +1003,35 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
         let pane_draw = p.prof.zip(draw0).map(|(p, d)| p.1 - d);
         eprintln!("build matches={:?} highlight={:?} lines={:?} n_matches={} line_items={:?} line_draw={:?} heads={:?}", t_matches, t_hl - t_matches, t_lines - t_hl, all_matches.len(), t_items, pane_draw, t_heads - t_matches);
     }
+    // 開いているファイルが無い（名前の無い空のバッファだけ）ときは、IntelliJ と同じくショートカットの案内を真ん中に出す
+    if pane.active && pane.buf.path.is_none() && pane.buf.len_bytes() == 0 && !ed.is_split() && ed.buffer_list().len() <= 1 {
+        draw_empty_hints(p, ed, rect);
+    }
     p.cols = saved_cols;
+}
+
+/// 空のエディタの案内（今のキーの割り当てで）
+fn draw_empty_hints(p: &mut Painter, ed: &Editor, rect: Rect) {
+    let cell = p.fonts.cell();
+    let k = |key: &str| ed.settings.get(key);
+    let lines = [
+        ("どこでも検索", "Shift 2 回".to_string()),
+        ("ファイルを開く", k("keymap.goto_file")),
+        ("最近使用したファイル", k("keymap.recent")),
+        ("アクションの検索", k("keymap.palette")),
+        ("プロジェクト", k("keymap.project")),
+    ];
+    let ui = std::mem::replace(&mut p.ui, true);
+    let lw = lines.iter().map(|l| p.width(l.0)).max().unwrap_or(0);
+    let kw = lines.iter().map(|l| p.width(&l.1)).max().unwrap_or(0);
+    let x = rect.x + rect.w.saturating_sub(lw + 3 + kw) / 2;
+    let top = rect.y + rect.h.saturating_sub(lines.len() * 2) / 2;
+    for (i, (label, key)) in lines.iter().enumerate() {
+        let y = (top + i * 2) as f32 * cell.h;
+        p.text(label, x, y, STATUS_FG);
+        p.text(key, x + lw + 3, y, ACCENT_FG);
+    }
+    p.ui = ui;
 }
 
 pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instance> {
@@ -1177,6 +1205,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     };
     ed.run_hit.set(None);
     ed.enc_hit.set(None);
+    ed.pos_hit.set(None);
     // git のブランチ（main ↑1）
     let keys = match ed.git_branch_label() {
         Some(b) if st.bool("appearance.status_branch") => format!("{keys}   {b}"),
@@ -1300,6 +1329,12 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
                     let run = ed.run_selected.as_ref().filter(|_| st.bool("appearance.status_run")).map_or("▶".to_string(), |r| format!("▶ {r}"));
                     let c0 = pc + p.width(&ruler[..i]);
                     ed.run_hit.set(Some((c0, c0 + p.width(&run))));
+                }
+                // 行:列 の列（押すと行へ移動。IntelliJ と同じ）
+                let pos = format!("{}:{}", ed.core.cursor.line + 1, ruler_col(ed));
+                if let Some(i) = ruler.rfind(&pos).filter(|_| !split) {
+                    let c0 = pc + p.width(&ruler[..i]);
+                    ed.pos_hit.set(Some((c0, c0 + p.width(&pos))));
                 }
                 // 文字コード・改行の列（押す所）
                 let enc = ed.encoding_label();

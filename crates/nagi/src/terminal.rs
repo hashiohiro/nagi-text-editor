@@ -890,8 +890,14 @@ pub(crate) mod draw {
         if t.exited {
             let y = (r.y + r.h.saturating_sub(1)) as f32 * cell.h;
             p.out.push(Instance::fill(r.x as f32 * cell.w, y, r.w as f32 * cell.w, cell.h, MATCH_BG));
-            let back = if t.name.starts_with(crate::run_configs::RUN_PREFIX) { "Esc でエディタへ、" } else { "" };
-            p.text(&format!(" {} が終わりました。Enter で起動し直す（{back}Ctrl-\\ x で閉じる） ", t.name), r.x, y, FG);
+            let run = t.name.starts_with(crate::run_configs::RUN_PREFIX);
+            let back = if run { "Esc でエディタへ、" } else { "" };
+            // 実行の構成は IntelliJ と同じく終了コードを出す
+            let done = match t.term.exit_code() {
+                Some(c) if run => format!("プロセスは終了コード {c} で終了しました"),
+                _ => format!("{} が終わりました", t.name),
+            };
+            p.text(&format!(" {done}。Enter で起動し直す（{back}Ctrl-\\ x で閉じる） "), r.x, y, FG);
         }
         p.cols = saved;
     }
