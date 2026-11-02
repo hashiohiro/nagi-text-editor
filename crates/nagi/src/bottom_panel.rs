@@ -544,6 +544,8 @@ impl crate::layout::View for BottomView {
                 }
                 let filterable = ed.panels.db_results.active_tab().is_some_and(|t| t.filterable);
                 let editable = ed.panels.db_results.active_tab().is_some_and(|t| t.target.is_some());
+                let running = ed.panels.db_results.active_tab().is_some_and(|t| t.running);
+                let m = if running { m.item("実行中ステートメントのキャンセル", |e| e.result_op(crate::result_grid::ResultOp::Cancel)).sep() } else { m };
                 // DataGrip の結果の表と同じ並び: 編集 → コピー → フィルター・並べ替え → ページ → エクスポート
                 let m = if editable {
                     m.item_shortcut("編集", "F2", |e| e.result_op(crate::result_grid::ResultOp::Edit))

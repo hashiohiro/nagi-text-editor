@@ -389,7 +389,9 @@ impl DbResults {
                 t.error = false;
             }
             Reply::Error(e) => {
-                t.info = format!("誤り: {}", e.lines().next().unwrap_or(""));
+                // 止めた（SQLite の interrupted・PostgreSQL の 57014・Oracle の ORA-01013）
+                let cancelled = ["interrupted", "57014", "ORA-01013", "canceling statement"].iter().any(|k| e.contains(k));
+                t.info = if cancelled { "実行中ステートメントをキャンセルしました".into() } else { format!("誤り: {}", e.lines().next().unwrap_or("")) };
                 t.error = true;
             }
             _ => {}
@@ -457,6 +459,8 @@ pub enum ResultAction {
     Copy(String, &'static str),
     /// 書き出しのコマンドを打たせる
     Export,
+    /// 接続先（番号）で流している文を止める
+    Cancel(usize),
     HideBottom,
     ToText,
 }
@@ -477,6 +481,8 @@ pub enum ResultOp {
     NextPage,
     PrevPage,
     Reload,
+    /// 流している文を止める
+    Cancel,
     Edit,
     SetNull,
     Undo,
@@ -616,6 +622,11 @@ impl DbResults {
             ResultOp::Undo if self.active > 0 => return ResultAction::Undo,
             ResultOp::Send if self.active > 0 => return ResultAction::Send,
             ResultOp::Export => return ResultAction::Export,
+            ResultOp::Cancel => {
+                if let Some(t) = self.active_tab().filter(|t| t.running) {
+                    return ResultAction::Cancel(t.src);
+                }
+            }
             ResultOp::NextTab => self.active = (self.active + 1) % (self.tabs.len() + 1),
             ResultOp::PrevTab => self.active = (self.active + self.tabs.len()) % (self.tabs.len() + 1),
             ResultOp::CloseTab => {
@@ -965,6 +976,7 @@ impl Editor {
             ResultAction::SetNull => self.result_set_null(),
             ResultAction::Undo => self.result_undo(),
             ResultAction::Send => self.result_send(),
+            ResultAction::Cancel(src) => self.db_cancel(src),
             ResultAction::AskDiscard(id, n) => {
                 self.ask_or(format!("未送信の変更が {n} 件あります。捨てて閉じますか"), move |e| {
                     let r = &mut e.panels.db_results;
@@ -1098,7 +1110,8 @@ pub fn grid_col_at(hscroll: usize, widths: &[usize], col: usize) -> Option<usize
 
 /// タブの見出し
 /// 結果の上のツールバーのボタン（DataGrip と同じ。印, 名前, 操作）。タブの行の右に並べる
-pub const TOOLBAR: [(&str, &str, ResultOp); 6] = [
+pub const TOOLBAR: [(&str, &str, ResultOp); 7] = [
+    ("■", "実行中ステートメントのキャンセル", ResultOp::Cancel),
     ("‹", "前のページ", ResultOp::PrevPage),
     ("›", "次のページ", ResultOp::NextPage),
     ("⟳", "ページの再ロード", ResultOp::Reload),
@@ -1120,6 +1133,7 @@ pub fn toolbar_enabled(t: &ResultTab, op: &ResultOp) -> bool {
         ResultOp::NextPage => t.filterable && t.more,
         ResultOp::Reload => t.filterable,
         ResultOp::Send | ResultOp::Undo => !t.edits.is_empty(),
+        ResultOp::Cancel => t.running,
         _ => true,
     }
 }
@@ -1419,6 +1433,20 @@ mod tests {
         e.db_execute(i, "select * from item order by id".into());
         wait(&mut e, &|e| e.panels.db_results.active_tab().is_some_and(|t| t.rows.len() == 2 && t.target.is_some()));
         wait(&mut e, &|e| e.panels.db.as_ref().unwrap().conns[i].columns.contains_key(&("main".into(), "item".into())));
+        e.list_side = Side::Bottom;
+        e.set_state(State::List);
+        // 流している文はツールバーの ■ で止める（SQLite は interrupt）
+        e.db_execute(i, "WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c) SELECT count(*) FROM c".into());
+        assert!(e.panels.db_results.active_tab().unwrap().running);
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let w = e.bottom_content_rect().unwrap().w;
+        let stop = toolbar_cols(w)[TOOLBAR.iter().position(|b| b.2 == ResultOp::Cancel).unwrap()];
+        e.result_click(0, stop, 1);
+        assert!(e.svc.notify.text.contains("キャンセルを頼みました"), "{}", e.svc.notify.text);
+        wait(&mut e, &|e| e.panels.db_results.active_tab().is_some_and(|t| !t.running));
+        assert_eq!(e.panels.db_results.active_tab().unwrap().info, "実行中ステートメントをキャンセルしました");
+        e.db_execute(i, "select * from item order by id".into());
+        wait(&mut e, &|e| e.panels.db_results.active_tab().is_some_and(|t| t.rows.len() == 2 && t.target.is_some()));
         e.list_side = Side::Bottom;
         e.set_state(State::List);
         // 直していなければツールバーの送信・復元は押せない

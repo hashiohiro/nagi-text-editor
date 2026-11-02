@@ -1688,6 +1688,16 @@ impl Editor {
         self.db_execute(i, sql);
     }
 
+    /// 接続先 `i` で流している文を止める（実行中ステートメントのキャンセル。DataGrip と同じ）
+    pub(crate) fn db_cancel(&mut self, i: usize) {
+        let ok = self.panels.db.as_ref().and_then(|p| p.conns.get(i)).and_then(|c| c.client.as_ref()).is_some_and(|c| c.cancel());
+        if ok {
+            self.svc.notify.info("実行中ステートメントのキャンセルを頼みました");
+        } else {
+            self.svc.notify.info("この接続では実行中の文を止められません");
+        }
+    }
+
     /// Tx の自動・手動を切り替える
     pub(crate) fn db_toggle_tx(&mut self, i: usize) {
         if self.panels.db.as_ref().and_then(|p| p.kind(i)) == Some(Kind::Salesforce) {

@@ -145,8 +145,15 @@ const PING_TIMEOUT: Duration = Duration::from_secs(10);
 /// これより長く使っていなければ、頼みごとを流す前に接続が生きているか確かめる
 const IDLE: Duration = Duration::from_secs(60);
 
+/// 流している文を止める（別のスレッドから呼ぶ。SQLite は interrupt、PostgreSQL は取り消しの要求、Oracle は break）
+pub type Canceller = std::sync::Arc<dyn Fn() -> R<()> + Send + Sync>;
+
 /// ドライバーごとの中身
 pub(crate) trait Backend {
+    /// 流している文を止める仕組み（止められないドライバーは None）
+    fn canceller(&self) -> Option<Canceller> {
+        None
+    }
     fn info(&mut self) -> R<(String, String)>;
     fn schemas(&mut self) -> R<Vec<String>>;
     fn set_schema(&mut self, s: &str) -> R<()>;
@@ -199,7 +206,10 @@ pub fn oracle_connect_string(url: &str) -> String {
 }
 
 struct OracleDb {
-    conn: oracle::Connection,
+    /// 止める仕組み（break）が別のスレッドから同じ接続を使うので Arc で持つ（Connection は Sync）
+    conn: std::sync::Arc<oracle::Connection>,
+    /// 自動コミット（ドライバーの autocommit は &mut を要るので使わず、データを変える文の後に commit する）
+    auto: bool,
 }
 
 fn oe(e: oracle::Error) -> nagi_core::Error {
@@ -209,11 +219,10 @@ fn oe(e: oracle::Error) -> nagi_core::Error {
 impl OracleDb {
     fn connect(url: &str, user: &str, pass: &str) -> R<Self> {
         crate::drivers::init_oracle()?;
-        let mut conn = oracle::Connection::connect(user, pass, oracle_connect_string(url)).map_err(oe)?;
-        conn.set_autocommit(true);
+        let conn = oracle::Connection::connect(user, pass, oracle_connect_string(url)).map_err(oe)?;
         // 表示と書き戻しで同じ形にする
         conn.execute("ALTER SESSION SET NLS_DATE_FORMAT = 'YYYY-MM-DD HH24:MI:SS' NLS_TIMESTAMP_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF' NLS_TIMESTAMP_TZ_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF TZH:TZM'", &[]).map_err(oe)?;
-        Ok(OracleDb { conn })
+        Ok(OracleDb { conn: std::sync::Arc::new(conn), auto: true })
     }
 
     fn strings(&self, sql: &str, params: &[&dyn oracle::sql_type::ToSql]) -> R<Vec<Vec<Option<String>>>> {
@@ -233,6 +242,11 @@ fn col(r: &[Option<String>], i: usize) -> String {
 }
 
 impl Backend for OracleDb {
+    fn canceller(&self) -> Option<Canceller> {
+        let conn = self.conn.clone();
+        Some(std::sync::Arc::new(move || conn.break_execution().map_err(oe)))
+    }
+
     fn info(&mut self) -> R<(String, String)> {
         let (v, banner) = self.conn.server_version().map_err(oe)?;
         let product = banner.lines().next().map_or_else(|| format!("Oracle {v}"), |b| b.split(" Release").next().unwrap_or(b).to_string());
@@ -329,7 +343,11 @@ impl Backend for OracleDb {
         let mut stmt = self.conn.statement(&sql).build().map_err(oe)?;
         if !stmt.is_query() {
             stmt.execute(&[]).map_err(oe)?;
-            return Ok(Err(stmt.row_count().map_err(oe)? as i64));
+            let n = stmt.row_count().map_err(oe)? as i64;
+            if self.auto {
+                self.conn.commit().map_err(oe)?;
+            }
+            return Ok(Err(n));
         }
         let rs = stmt.query(&[]).map_err(oe)?;
         let info = rs.column_info();
@@ -357,10 +375,8 @@ impl Backend for OracleDb {
     }
 
     fn batch(&mut self, stmts: &[String]) -> R<i64> {
-        let auto = self.conn.autocommit();
-        if auto {
-            self.conn.set_autocommit(false);
-        } else {
+        let auto = self.auto;
+        if !auto {
             self.conn.execute("SAVEPOINT nagi_batch", &[]).map_err(oe)?;
         }
         let run = |c: &oracle::Connection| -> R<i64> {
@@ -384,14 +400,11 @@ impl Backend for OracleDb {
             }
             _ => {}
         }
-        if auto {
-            self.conn.set_autocommit(true);
-        }
         r
     }
 
     fn set_autocommit(&mut self, on: bool) -> R<()> {
-        self.conn.set_autocommit(on);
+        self.auto = on;
         Ok(())
     }
 
@@ -463,6 +476,14 @@ impl SqliteDb {
 }
 
 impl Backend for SqliteDb {
+    fn canceller(&self) -> Option<Canceller> {
+        let h = self.conn.get_interrupt_handle();
+        Some(std::sync::Arc::new(move || {
+            h.interrupt();
+            Ok(())
+        }))
+    }
+
     fn info(&mut self) -> R<(String, String)> {
         Ok((format!("SQLite {}", rusqlite::version()), "main".into()))
     }
@@ -640,6 +661,8 @@ pub fn pg_url(url: &str) -> R<PgUrl> {
 struct PgDb {
     client: postgres::Client,
     auto: bool,
+    /// sslmode（取り消しの要求も同じ方法でつなぐ）
+    ssl: String,
 }
 
 fn pe(e: postgres::Error) -> nagi_core::Error {
@@ -689,7 +712,7 @@ impl PgDb {
                 cfg.ssl_mode(ssl).connect(postgres_native_tls::MakeTlsConnector::new(tls)).map_err(pe)?
             }
         };
-        let mut db = PgDb { client, auto: true };
+        let mut db = PgDb { client, auto: true, ssl: u.ssl.clone() };
         // 表示と書き戻しで同じ形にする
         db.client.batch_execute("SET DateStyle = ISO, YMD").map_err(pe)?;
         if !u.schema.is_empty() {
@@ -761,6 +784,18 @@ impl PgDb {
 const PG_REL: &str = "(SELECT c.oid FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = $1 AND c.relname = $2)";
 
 impl Backend for PgDb {
+    fn canceller(&self) -> Option<Canceller> {
+        let token = self.client.cancel_token();
+        let ssl = self.ssl.clone();
+        Some(std::sync::Arc::new(move || {
+            if ssl == "disable" {
+                return token.cancel_query(postgres::NoTls).map_err(pe);
+            }
+            let tls = native_tls::TlsConnector::builder().danger_accept_invalid_certs(true).danger_accept_invalid_hostnames(true).build().map_err(nagi_core::Error::of)?;
+            token.cancel_query(postgres_native_tls::MakeTlsConnector::new(tls)).map_err(pe)
+        }))
+    }
+
     fn info(&mut self) -> R<(String, String)> {
         let r = self.strings("SELECT current_setting('server_version'), COALESCE(current_schema(), 'public')::text", &[])?;
         let v = r.first().map(|r| col(r, 0)).unwrap_or_default();
@@ -1042,6 +1077,8 @@ fn retryable(req: &Req) -> bool {
 pub struct Client {
     tx: Sender<Req>,
     pub rx: Receiver<Reply>,
+    /// 今の接続で流している文を止める仕組み（つないだ・つなぎ直したときに裏のスレッドが入れる）
+    cancel: std::sync::Arc<std::sync::Mutex<Option<Canceller>>>,
 }
 
 impl Client {
@@ -1051,6 +1088,13 @@ impl Client {
         let (tx, req_rx) = channel::<Req>();
         let (reply_tx, rx) = channel::<Reply>();
         let (url, user, pass) = (url.to_string(), user.to_string(), pass.to_string());
+        let cancel: std::sync::Arc<std::sync::Mutex<Option<Canceller>>> = Default::default();
+        let set_cancel = cancel.clone();
+        let keep = move |d: &dyn Backend| {
+            if let Ok(mut c) = set_cancel.lock() {
+                *c = d.canceller();
+            }
+        };
         std::thread::Builder::new()
             .name("db".into())
             .spawn(move || {
@@ -1072,6 +1116,7 @@ impl Client {
                 };
                 let mut db = match open().and_then(|mut d| d.info().map(|i| (d, i))) {
                     Ok((d, (product, schema))) => {
+                        keep(&*d);
                         if !send(Reply::Connected { product, schema }) {
                             return;
                         }
@@ -1103,6 +1148,7 @@ impl Client {
                         match reopen(&schema, auto) {
                             Ok(d) => {
                                 db = d;
+                                keep(&*db);
                                 lost = true;
                                 if !send(Reply::Reconnected { tx_lost: !auto }) {
                                     return;
@@ -1128,6 +1174,7 @@ impl Client {
                             r = match reopen(&schema, auto) {
                                 Ok(d) => {
                                     db = d;
+                                    keep(&*db);
                                     if !send(Reply::Reconnected { tx_lost: !auto }) {
                                         return;
                                     }
@@ -1155,7 +1202,16 @@ impl Client {
                 }
             })
             .map_err(|e| e.to_string())?;
-        Ok(Client { tx, rx })
+        Ok(Client { tx, rx, cancel })
+    }
+
+    /// 流している文を止める（止める頼みは別のスレッドで出す。PostgreSQL は新しくつなぐので UI を止めない）。止められない接続なら false
+    pub fn cancel(&self) -> bool {
+        let Some(c) = self.cancel.lock().ok().and_then(|c| c.clone()) else { return false };
+        std::thread::spawn(move || {
+            let _ = c();
+        });
+        true
     }
 
     pub fn send(&self, r: Req) {
