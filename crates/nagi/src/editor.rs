@@ -512,6 +512,10 @@ pub struct Editor {
     pub click_mods: nagi_vim::Mods,
     /// スクロールバーのつまみをつかんでいる（つかんだ行とつまみの頭の差。scrollbar.rs）
     pub stripe_grab: Option<isize>,
+    /// マウスを載せている本文のセルと、説明を出す時刻・出している説明（hover.rs）
+    pub hover_cell: Option<(usize, usize)>,
+    pub hover_due: Option<std::time::Instant>,
+    pub hover_tip: Option<crate::hover::HoverTip>,
     /// マウスを載せているタブのアイコン（行, 列, 名前）と、描いたアイコンの位置
     pub hover_tab: Option<(usize, usize, &'static str)>,
     /// 状態行の「▶ 構成の名前」の列（始め, 終わり）。押すと実行のメニュー
@@ -814,6 +818,9 @@ impl Editor {
             grep_preview: Default::default(),
             click_mods: Default::default(),
             stripe_grab: None,
+            hover_cell: None,
+            hover_due: None,
+            hover_tip: None,
             hover_tab: None,
             tab_hits: Default::default(),
             field_hits: Default::default(),
@@ -1153,6 +1160,7 @@ impl Editor {
 
     pub fn key(&mut self, key: Key) -> Effect {
         self.sync_tab();
+        self.hover_clear();
         if self.easy.is_some() {
             self.easy_key(key);
             return Effect::None;
@@ -2153,6 +2161,7 @@ impl Editor {
 
     /// 表示位置を行単位の小数で決める（スムーズスクロール）。カーソルは見えている行に留める
     pub fn scroll_to(&mut self, pos: f64) {
+        self.hover_clear();
         let rows = self.rows.max(1);
         let max = self.core.buf.line_count().saturating_sub(1) as f64;
         let pos = pos.clamp(0.0, max);

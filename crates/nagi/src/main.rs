@@ -72,6 +72,7 @@ mod metrics;
 mod input_dialog;
 mod search_bar;
 mod scrollbar;
+mod hover;
 mod toggles;
 mod tree_panel;
 mod tree_files;
@@ -1066,6 +1067,12 @@ impl Frame {
         let (Some(f), Some(ed)) = (&self.fonts, &mut self.ed) else { return };
         let cell = f.cell();
         let (col, row) = (self.mouse.0 / cell.w as f64, (self.mouse.1 / cell.h as f64) as usize);
+        // 波線の説明: 動いたら消し、止めて少したったら出す（hover.rs）
+        if ed.hover_move(row, col.max(0.0) as usize, Instant::now()) {
+            if let Some(w) = &self.window {
+                w.request_redraw();
+            }
+        }
         // 区切りの上ではカーソルを ↔ / ↕ に（メニューが出ている間はつかめないので、そのまま）
         let icon = match ed.sep_at(row, col as usize).filter(|_| ed.menu.is_none()) {
             Some(s) if s.horizontal_drag() => winit::window::CursorIcon::ColResize,
@@ -1545,6 +1552,9 @@ impl Frame {
             if self.ed.as_mut().is_some_and(|e| e.fire_auto_complete(now)) {
                 self.draw();
             }
+            if self.ed.as_mut().is_some_and(|e| e.fire_hover(now)) {
+                self.draw();
+            }
             if self.replay_deadline.is_some_and(|d| now >= d) {
                 self.replay_deadline = None;
                 if let Some(step) = self.replay.pop_front() {
@@ -1576,7 +1586,8 @@ impl Frame {
         let flash = self.ed.as_ref().and_then(|e| e.yank_flash.map(|f| f.2));
         let save_at = self.ed.as_ref().and_then(|e| e.autosave_deadline());
         let balloon = self.ed.as_ref().and_then(|e| e.svc.notify.balloon_deadline());
-        let deadline = [self.map_deadline, self.snap_deadline, self.autoscroll_deadline, self.replay_deadline, self.held.as_ref().map(|h| h.3), auto, flash, save_at, balloon].into_iter().flatten().min();
+        let hover = self.ed.as_ref().and_then(|e| e.hover_deadline());
+        let deadline = [self.map_deadline, self.snap_deadline, self.autoscroll_deadline, self.replay_deadline, self.held.as_ref().map(|h| h.3), auto, flash, save_at, balloon, hover].into_iter().flatten().min();
         let _ = el;
         self.flow = if self.scroll_anim.is_some() {
             ControlFlow::Poll
