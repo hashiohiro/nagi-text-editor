@@ -193,7 +193,6 @@ mod tests {
         const NO_CLICK: &[(&str, &str)] = &[
             ("BlamePopupView", "blame の枠: カーソルの行のコミットを見せるだけ"),
             ("ChromeView", "押した位置は main.rs が Editor::chrome_at で受け取る（コマンドの Effect を動かすため）"),
-            ("HunkPopupView", "変更の差分の小窓: 見せるだけ（戻す・ステージは u / s）"),
             // 向いている部品（Component::click）が先に受け取り、その中で list::pick を通す
             ("CmdCompleteView", "クリックは CommandLineComponent::click が受け取る"),
             ("LauncherView", "クリックは LauncherComponent::click が受け取る"),

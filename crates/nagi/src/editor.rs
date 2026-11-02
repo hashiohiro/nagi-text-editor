@@ -2078,6 +2078,10 @@ impl Editor {
             self.blame_select_in_log(line);
             return;
         }
+        // 変更の印（行番号の欄の左端）を押したら、その変更の差分の小窓（IntelliJ と同じ）
+        if row < self.rows && col + GUTTER == self.gutter() && self.hunk_marker_click(self.pos_at(row, self.gutter()).line) {
+            return;
+        }
         let java = self.core.buf.path.as_deref().and_then(crate::debugger::lang_of).is_some();
         if java && row < self.rows && col < self.gutter() && col + GUTTER >= self.gutter() {
             let line = self.pos_at(row, self.gutter()).line;

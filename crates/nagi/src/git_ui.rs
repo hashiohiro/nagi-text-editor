@@ -445,13 +445,102 @@ impl Editor {
 
 
 
+/// 差分の小窓に出す行の数の上限（古い行・新しい行のそれぞれ）
+const POPUP_MAX_LINES: usize = 12;
+
+/// 差分の小窓の見出しのボタン（IntelliJ の変更の印の小窓と同じ）
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PopupButton {
+    Prev,
+    Next,
+    Rollback,
+    Diff,
+}
+
+impl Editor {
+    /// 差分の小窓の場所（画面の行・列。描き方と押した位置で共通）
+    pub fn hunk_popup_rect(&self, rows: usize, cols: usize) -> Option<crate::panes::Rect> {
+        let (old, new, h) = self.popup_lines()?;
+        let rect = self.active_rect();
+        let last = if new.is_empty() { h.new.start.saturating_sub(1) } else { h.new.end - 1 };
+        if last < self.core.top {
+            return None;
+        }
+        let below = rect.y + (last - self.core.top) + 1;
+        let x0 = rect.x + self.gutter() - 1;
+        let w = rect.w.saturating_sub(self.gutter()).min(110).max(40).min(cols.saturating_sub(x0));
+        let h_rows = 1 + old.len().min(POPUP_MAX_LINES) + new.len().min(POPUP_MAX_LINES);
+        // 下に入らなければ、まとまりの上に出す
+        let top = if below + h_rows <= rows { below } else { (rect.y + h.new.start.saturating_sub(self.core.top)).saturating_sub(h_rows) };
+        Some(crate::panes::Rect { x: x0, y: top, w, h: h_rows })
+    }
+
+    /// 見出しの右のボタン（見出し, 小窓の中の列, 幅）
+    pub fn hunk_popup_buttons(w: usize) -> Vec<(&'static str, usize, usize, PopupButton)> {
+        let items = [("▲", PopupButton::Prev), ("▼", PopupButton::Next), ("行のロールバック", PopupButton::Rollback), ("差分の表示", PopupButton::Diff)];
+        let width = |s: &str| nagi_core::display_col(s, s.len(), false);
+        let total: usize = items.iter().map(|(l, _)| width(l) + 2).sum();
+        let mut x = w.saturating_sub(total);
+        items
+            .into_iter()
+            .map(|(l, b)| {
+                let at = x;
+                x += width(l) + 2;
+                (l, at, width(l), b)
+            })
+            .collect()
+    }
+
+    pub(crate) fn hunk_popup_press(&mut self, b: PopupButton) {
+        match b {
+            PopupButton::Prev => {
+                crate::commands::run(self, "HunkPrev");
+            }
+            PopupButton::Next => {
+                crate::commands::run(self, "HunkNext");
+            }
+            PopupButton::Rollback => self.revert_hunk(),
+            PopupButton::Diff => {
+                self.svc.git.popup = None;
+                crate::commands::run(self, "Gdiff");
+            }
+        }
+    }
+
+    /// ガターの変更の印を押した（`line` はバッファの行）: その変更の差分の小窓を開く。印の無い行なら false
+    pub(crate) fn hunk_marker_click(&mut self, line: usize) -> bool {
+        let hunks = self.current_hunks();
+        let hit = hunks.iter().position(|h| h.new.contains(&line) || (h.kind == HunkKind::Del && (h.new.start == line || h.new.start == line + 1)));
+        match hit {
+            Some(i) => {
+                self.leave_panel();
+                self.svc.git.popup = Some(i);
+                true
+            }
+            None => false,
+        }
+    }
+}
+
 /// カーソルの変更の差分の小窓（layout.rs の View）
 pub struct HunkPopupView;
 
 impl crate::layout::View for HunkPopupView {
     fn rect(&self, ed: &crate::editor::Editor, s: crate::layout::Screen) -> Option<crate::panes::Rect> {
-        let _ = s;
-        (ed.svc.git.popup.is_some() && ed.idle()).then_some(crate::panes::Rect { x: 0, y: 0, w: s.cols, h: s.rows })
+        if ed.svc.git.popup.is_none() || !ed.idle() {
+            return None;
+        }
+        ed.hunk_popup_rect(s.rows, s.cols)
+    }
+
+    fn click(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At, clicks: u32) -> crate::layout::Click {
+        let _ = clicks;
+        if at.row == 0 {
+            if let Some(b) = Editor::hunk_popup_buttons(r.w).into_iter().find(|b| at.col >= b.1 && at.col < b.1 + b.2.max(1) + 1).map(|b| b.3) {
+                ed.hunk_popup_press(b);
+            }
+        }
+        crate::layout::Click::Done
     }
 
     fn draw(&self, ed: &crate::editor::Editor, p: &mut crate::view::Painter, r: crate::panes::Rect, s: crate::layout::Screen) {
@@ -473,6 +562,7 @@ impl crate::layout::View for HunkPopupView {
             .sep()
             .item("この変更をステージ", |e| e.stage_hunk())
             .item("行のロールバック", |e| e.revert_hunk())
+            .item("差分の表示", |e| e.hunk_popup_press(PopupButton::Diff))
             .item("閉じる", |e| e.svc.git.popup = None);
         ed.open_menu(m);
         true
@@ -487,23 +577,12 @@ pub(crate) mod draw {
 
     /// 行頭のマーカーから出る差分のポップアップ（変更のまとまりの下。古い行は赤、新しい行は緑の地、変わった部分を濃く）
     pub(crate) fn draw_hunk_popup(p: &mut Painter, ed: &Editor, rows: usize, cols: usize) {
-        const MAX_LINES: usize = 12;
-        let Some((old, new, h)) = ed.popup_lines() else { return };
+        let (Some((old, new, h)), Some(b)) = (ed.popup_lines(), ed.hunk_popup_rect(rows, cols)) else { return };
         let cell = p.fonts.cell();
-        let rect = ed.active_rect();
-        let last = if new.is_empty() { h.new.start.saturating_sub(1) } else { h.new.end - 1 };
-        if last < ed.core.top {
-            return;
-        }
-        let below = rect.y + (last - ed.core.top) + 1;
-        let x0 = rect.x + ed.gutter() - 1;
-        let w = rect.w.saturating_sub(ed.gutter()).min(110).max(40).min(cols.saturating_sub(x0));
-        let n_old = old.len().min(MAX_LINES);
-        let n_new = new.len().min(MAX_LINES);
-        let h_rows = 1 + n_old + n_new;
-        // 下に入らなければ、まとまりの上に出す
-        let top = if below + h_rows <= rows { below } else { (rect.y + h.new.start.saturating_sub(ed.core.top)).saturating_sub(h_rows) };
-        let (x, y0) = (x0 as f32 * cell.w, top as f32 * cell.h);
+        let (x0, w, h_rows) = (b.x, b.w, b.h);
+        let n_old = old.len().min(super::POPUP_MAX_LINES);
+        let n_new = new.len().min(super::POPUP_MAX_LINES);
+        let (x, y0) = (x0 as f32 * cell.w, b.y as f32 * cell.h);
         popup_frame(p, x, y0, w as f32 * cell.w, h_rows as f32 * cell.h);
         let saved = p.cols;
         p.cols = x0 + w;
@@ -513,7 +592,11 @@ pub(crate) mod draw {
             nagi_core::linediff::HunkKind::Del => format!("{} 行を消した", old.len()),
             nagi_core::linediff::HunkKind::Mod => format!("{} 行を変えた", new.len().max(old.len())),
         };
-        p.text(&format!(" 変更 {total}   {kind}     右クリック ステージ・戻す・前後の変更  Esc 閉じる"), x0, y0, STATUS_FG);
+        p.text(&format!(" 変更 {total}   {kind}"), x0, y0, STATUS_FG);
+        // 見出しの右のボタン（前の変更・次の変更・行のロールバック・差分の表示）
+        for (label, bx, _, _) in Editor::hunk_popup_buttons(w) {
+            p.text(label, x0 + bx, y0, FG);
+        }
         let mut y = y0 + cell.h;
         // 対になる行は変わった部分を濃く塗る
         for (i, l) in old.iter().take(n_old).enumerate() {
@@ -604,6 +687,24 @@ mod tests {
         assert_eq!(e.core.buf.text(), "1\nTWO\n3\n4\n5\n");
         keys(&mut e, "u");
         assert_eq!(e.core.buf.text(), "1\nTWO\n3\n4\nnew\n5\n", "u で取り消せる");
+        // 変更の印（行番号の欄の左端）を押すと、その変更の小窓（カーソルは動かさない）。見出しのボタンで次の変更・ロールバック
+        settle(&mut e);
+        keys(&mut e, "gg");
+        e.set_screen(100, 30);
+        let marker = e.gutter() - crate::editor::GUTTER;
+        e.click(4, marker);
+        assert_eq!(e.core.cursor.line, 0, "カーソルは動かさない");
+        assert_eq!(e.popup_lines().map(|p| p.1), Some(vec!["new".to_string()]));
+        let r = e.hunk_popup_rect(30, 100).unwrap();
+        let bs = Editor::hunk_popup_buttons(r.w);
+        assert_eq!(bs.iter().map(|b| b.0).collect::<Vec<_>>(), ["▲", "▼", "行のロールバック", "差分の表示"]);
+        let s = crate::layout::Screen { rows: 30, cols: 100 };
+        let rb = bs.iter().find(|b| b.3 == PopupButton::Rollback).unwrap();
+        crate::layout::press(&mut e, s, r.y, r.x + rb.1 + 1, |_| 1);
+        assert_eq!(e.core.buf.text(), "1\nTWO\n3\n4\n5\n", "見出しの「行のロールバック」");
+        // 印の無い行の左端は、ふつうのクリック
+        e.click(2, marker);
+        assert!(e.svc.git.popup.is_none());
     }
 
     /// 木の色分け: ファイルの状態と、管理されている変更を含むフォルダ（管理対象外だけのフォルダは含めない）
