@@ -45,7 +45,17 @@ pub enum ProblemRow {
 pub struct ProblemsView {
     pub selected: usize,
     pub scroll: usize,
+    /// 「ファイル」のタブ（今のファイルの問題だけ）。でなければ「プロジェクトエラー」
+    pub file_only: bool,
 }
+
+/// 診断のパスが同じファイルか（描くたびに呼ぶので、ファイルシステムには問い合わせない）
+fn same_diag_path(a: &std::path::Path, b: &std::path::Path) -> bool {
+    a.to_string_lossy().replace('/', "\\").eq_ignore_ascii_case(&b.to_string_lossy().replace('/', "\\"))
+}
+
+/// 問題の欄の 1 行目のタブ（IntelliJ の問題のツールウィンドウと同じ名前）
+pub const PROBLEM_HEAD: usize = 1;
 
 /// 問題の一覧のキーで、部品の外に及ぶこと（Editor が行う。ADR 0018 の §5）
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -208,7 +218,11 @@ impl Editor {
     /// 問題の一覧の行（ファイルごとにまとめ、エラーのあるファイルを先に）
     pub fn problem_rows(&self) -> Vec<ProblemRow> {
         let mut files: Vec<(PathBuf, Vec<usize>)> = Vec::new();
+        let cur = self.panels.problems.file_only.then(|| self.core.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok())).map(|p| p.unwrap_or_default());
         for (i, d) in self.diags.iter().enumerate() {
+            if cur.as_ref().is_some_and(|c| !same_diag_path(c, &d.path)) {
+                continue;
+            }
             match files.iter_mut().find(|(p, _)| *p == d.path) {
                 Some(f) => f.1.push(i),
                 None => files.push((d.path.clone(), vec![i])),
@@ -225,9 +239,36 @@ impl Editor {
         out
     }
 
+    /// 問題の欄のタブ（見出し, 欄の中の列, 幅, ファイルのタブか）
+    pub fn problem_tabs(&self) -> Vec<(String, usize, usize, bool)> {
+        let cur = self.core.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok());
+        let mine = cur.as_ref().map_or(0, |c| self.diags.iter().filter(|d| same_diag_path(c, &d.path)).count());
+        let name = cur.as_ref().and_then(|c| c.file_name()).map(|n| n.to_string_lossy().into_owned());
+        let file = match name {
+            Some(n) => format!("ファイル: {n} {mine}"),
+            None => "ファイル".to_string(),
+        };
+        let mut x = 1;
+        let mut v = Vec::new();
+        for (label, f) in [(file, true), (format!("プロジェクトエラー {}", self.diags.len()), false)] {
+            let w = nagi_core::display_col(&label, label.len(), false);
+            v.push((label, x, w, f));
+            x += w + 3;
+        }
+        v
+    }
+
+    /// 問題の欄のタブを替える
+    pub(crate) fn problems_tab(&mut self, file_only: bool) {
+        let p = &mut self.panels.problems;
+        p.file_only = file_only;
+        p.selected = 0;
+        p.scroll = 0;
+    }
+
     pub(crate) fn problems_key(&mut self, key: Key) -> Effect {
         let rows = self.problem_rows();
-        let h = self.bottom_content_rect().map_or(10, |r| r.h).max(1);
+        let h = self.bottom_content_rect().map_or(10, |r| r.h).saturating_sub(PROBLEM_HEAD).max(1);
         // 部品の中で済むことは ProblemsView::key が行い、外に及ぶことを返す（ADR 0018 の §5）
         let a = self.panels.problems.key(key, &rows, h);
         self.problems_do(a);
@@ -255,12 +296,18 @@ impl Editor {
     }
 
     /// 問題の一覧のクリック（中身の行。2 回で開く）
-    pub(crate) fn problems_click(&mut self, row: usize, clicks: u32) {
+    pub(crate) fn problems_click(&mut self, row: usize, col: usize, clicks: u32) {
         self.list_side = Side::Bottom;
         self.set_state(State::List);
+        if row < PROBLEM_HEAD {
+            if let Some(t) = self.problem_tabs().into_iter().find(|t| col >= t.1 && col < t.1 + t.2) {
+                self.problems_tab(t.3);
+            }
+            return;
+        }
         let n = self.problem_rows().len();
         let p = &mut self.panels.problems;
-        if nagi_ui::list::pick_row(&mut p.selected, p.scroll, row, 0, n, clicks) == Some(nagi_ui::list::Pick::Accept(p.selected)) {
+        if nagi_ui::list::pick_row(&mut p.selected, p.scroll, row, PROBLEM_HEAD, n, clicks) == Some(nagi_ui::list::Pick::Accept(p.selected)) {
             self.problems_key(Key::Enter);
         }
     }
@@ -275,7 +322,7 @@ impl Editor {
         let row = row - 1;
         match self.bottom_kind {
             BottomKind::Result => self.result_click(row, col.saturating_sub(1), clicks),
-            BottomKind::Problems => self.problems_click(row, clicks),
+            BottomKind::Problems => self.problems_click(row, col, clicks),
             BottomKind::Git => {
                 let w = self.bottom_content_rect().map_or(0, |r| r.w);
                 self.log_click(row, col, w, clicks);
@@ -386,7 +433,7 @@ impl crate::layout::View for BottomView {
             BottomKind::Problems => {
                 let n = ed.problem_rows().len();
                 let p = &mut ed.panels.problems;
-                p.scroll = (p.scroll as isize + dy).clamp(0, n.saturating_sub(h.saturating_sub(1)) as isize) as usize;
+                p.scroll = (p.scroll as isize + dy).clamp(0, n.saturating_sub(h.saturating_sub(1 + PROBLEM_HEAD)) as isize) as usize;
             }
             BottomKind::Terminal => {}
             BottomKind::Debug => {
@@ -444,7 +491,14 @@ impl crate::layout::View for BottomView {
                 m.sep().action(ed, "grep.close")
             }
             BottomKind::Problems => {
-                ed.problems_click(prow, 1);
+                if prow < PROBLEM_HEAD {
+                    let file = ed.panels.problems.file_only;
+                    let m = m.item(format!("{}ファイル", if file { "✓ " } else { "   " }), |e| e.problems_tab(true));
+                    let m = m.item(format!("{}プロジェクトエラー", if file { "   " } else { "✓ " }), |e| e.problems_tab(false));
+                    ed.open_menu(m.sep().action(ed, "problems.hide"));
+                    return true;
+                }
+                ed.problems_click(prow, pcol, 1);
                 let rows = ed.problem_rows();
                 let msg = match ed.panels.problems.jump(&rows, false) {
                     ProblemAction::Jump(i, _) => ed.diags.get(i).map(|d| d.msg.clone()),
@@ -600,9 +654,23 @@ pub(crate) mod draw {
     pub(crate) fn draw_problems(p: &mut Painter, ed: &Editor, r: Rect, focused: bool) {
         use crate::bottom_panel::ProblemRow;
         let cell = p.fonts.cell();
+        // 1 行目: ファイル・プロジェクトエラーのタブ（選んでいるタブに下線）
+        let y0 = r.y as f32 * cell.h;
+        // 押す位置（problem_tabs）とそろえるため、タブはセルの幅で描く
+        let ui = std::mem::replace(&mut p.ui, false);
+        for (label, x, w, file) in ed.problem_tabs() {
+            let on = file == ed.panels.problems.file_only;
+            p.text(&label, r.x + x, y0, if on { FG_BRIGHT } else { STATUS_FG });
+            if on {
+                p.out.push(Instance::fill((r.x + x) as f32 * cell.w, y0 + cell.h - 2.0, w as f32 * cell.w, 2.0, ACCENT_FG));
+            }
+        }
+        p.ui = ui;
         let rows = ed.problem_rows();
+        let r = Rect { y: r.y + crate::bottom_panel::PROBLEM_HEAD, h: r.h.saturating_sub(crate::bottom_panel::PROBLEM_HEAD), ..r };
         if rows.is_empty() {
-            p.text(" 問題はありません（:Make で集める）", r.x, r.y as f32 * cell.h, STATUS_FG);
+            let msg = if ed.panels.problems.file_only { " このファイルに問題はありません" } else { " 問題はありません（:Make で集める）" };
+            p.text(msg, r.x, r.y as f32 * cell.h, STATUS_FG);
             return;
         }
         let root = ed.nav_root();
@@ -674,6 +742,24 @@ mod tests {
         assert_eq!(rows[0], ProblemRow::File(PathBuf::from("a.ts"), 1, 1));
         assert_eq!(rows[1], ProblemRow::Item(1), "エラーを先に");
         assert_eq!(rows[3], ProblemRow::File(PathBuf::from("b.ts"), 0, 2));
+        // 「ファイル」のタブ: 今のファイル（b.ts）の問題だけ。1 行目のタブを押して替える
+        let cwd = std::env::current_dir().unwrap();
+        e.core.buf.path = Some(cwd.join("b.ts"));
+        e.diags.iter_mut().for_each(|d| d.path = cwd.join(&d.path));
+        let tabs = e.problem_tabs();
+        assert_eq!(tabs.iter().map(|t| t.0.as_str()).collect::<Vec<_>>(), ["ファイル: b.ts 2", "プロジェクトエラー 4"]);
+        e.problems_click(0, tabs[0].1 + 1, 1);
+        assert!(e.panels.problems.file_only);
+        let rows = e.problem_rows();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0], ProblemRow::File(cwd.join("b.ts"), 0, 2));
+        // 一覧の行は 1 行目のタブの下から（2 回目のクリックで開く）
+        e.problems_click(2, 4, 2);
+        assert_eq!(e.state(), State::Normal, "b.ts の問題へ跳んだ");
+        assert!(e.core.buf.path.as_ref().unwrap().ends_with("b.ts"));
+        e.toggle_bottom_tab(BottomKind::Problems);
+        e.problems_click(0, tabs[1].1 + 1, 1);
+        assert!(!e.panels.problems.file_only);
         // もう一度で隠す
         e.toggle_bottom_tab(BottomKind::Problems);
         assert!(!e.bottom_visible());

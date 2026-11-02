@@ -20,6 +20,8 @@ pub struct TermView {
     /// 起動したコマンド（起動し直す用）
     pub cmd: String,
     pub exited: bool,
+    /// 起動したフォルダ（出力のファイルの位置をここから探す）
+    pub cwd: std::path::PathBuf,
 }
 
 /// ターミナルの窓たち
@@ -272,7 +274,7 @@ impl Editor {
         let waker = self.waker();
         match Term::spawn(cmd, cwd, rows, cols, waker) {
             Ok(term) => {
-                self.panels.terminals.list.push(TermView { term, name: name.to_string(), cmd: cmd.to_string(), exited: false });
+                self.panels.terminals.list.push(TermView { term, name: name.to_string(), cmd: cmd.to_string(), exited: false, cwd: cwd.to_path_buf() });
                 self.panels.terminals.active = self.panels.terminals.list.len() - 1;
                 self.panels.terminals.chooser = None;
                 true
@@ -483,14 +485,21 @@ impl Editor {
         }
     }
 
-    /// 離した。ドラッグせずに（範囲を選ばずに）離したところが URL なら開く（IntelliJ のターミナルと同じ）
+    /// 離した。ドラッグせずに（範囲を選ばずに）離したところが URL なら開く（IntelliJ のターミナルと同じ）。
+    /// ファイルの位置（`Foo.java:12`・スタックトレース）なら、そのファイルのその行を開く（IntelliJ の実行の出力と同じ）
     pub(crate) fn terminal_release(&mut self) {
         let (anchor, at) = (self.panels.terminals.anchor.take(), self.panels.terminals.drag_at.take());
         let at = at.filter(|_| anchor.is_some() && self.panels.terminals.sel.is_none());
-        let url = at.and_then(|cell| self.panels.terminals.current().and_then(|t| t.term.with_screen(|s| link_at(s, cell))));
-        if let Some(url) = url {
-            crate::run_configs::open_url(&url);
-            self.svc.notify.info(format!("開きました: {url}"));
+        let link = at.and_then(|cell| self.panels.terminals.current().and_then(|t| t.term.with_screen(|s| link_at(s, cell)).map(|l| (l, t.cwd.clone()))));
+        match link {
+            Some((url, _)) if url.contains("://") => {
+                crate::run_configs::open_url(&url);
+                self.svc.notify.info(format!("開きました: {url}"));
+            }
+            Some((loc, cwd)) => {
+                self.open_location(&loc, Some(&cwd));
+            }
+            None => {}
         }
     }
 
@@ -670,7 +679,7 @@ fn join_rows(rows: &[Row], c0: u16, c1: u16) -> String {
     out
 }
 
-/// 画面に見えている URL（URL, 載っているセルの (行, 列)）。折り返した行はつないで探す（長い URL が 2 行にまたがっても 1 つ）
+/// 画面に見えている URL とファイルの位置（URL か位置の文字, 載っているセルの (行, 列)）。折り返した行はつないで探す（長い URL が 2 行にまたがっても 1 つ）
 pub fn links(s: &vt100::Screen) -> Vec<(String, Vec<(u16, u16)>)> {
     let (rows, cols) = s.size();
     let mut out = Vec::new();
@@ -693,9 +702,16 @@ pub fn links(s: &vt100::Screen) -> Vec<(String, Vec<(u16, u16)>)> {
                 break;
             }
         }
-        for (start, end) in url_spans(&text) {
-            let cells = at.iter().filter(|(b, _)| *b >= start && *b < end).map(|(_, c)| *c).collect();
-            out.push((text[start..end].to_string(), cells));
+        let urls = url_spans(&text);
+        let cells = |start: usize, end: usize| at.iter().filter(|(b, _)| *b >= start && *b < end).map(|(_, c)| *c).collect();
+        for &(start, end) in &urls {
+            out.push((text[start..end].to_string(), cells(start, end)));
+        }
+        // ファイルの位置（URL の中のものは除く）
+        for (start, end, target) in crate::diagnostics::location_spans(&text) {
+            if !urls.iter().any(|&(a, b)| start < b && a < end) {
+                out.push((target, cells(start, end)));
+            }
         }
     }
     out
@@ -964,6 +980,10 @@ mod tests {
         assert_eq!(l[0].0, "https://example.com/x");
         assert_eq!(link_at(p.screen(), (1, 2)).as_deref(), Some("https://example.com/x"), "2 行目のセルでも");
         assert_eq!(link_at(p.screen(), (0, 0)), None);
+        // ファイルの位置もリンク（スタックトレースはパッケージのフォルダを付けた位置）
+        let mut p = vt100::Parser::new(2, 40, 0);
+        p.process(b"  at a.b.Main.run(Main.java:7)");
+        assert_eq!(link_at(p.screen(), (0, 20)).as_deref(), Some("a/b/Main.java:7"));
     }
 
     /// ドラッグせずにクリックして離すと、そこの URL を開く。ドラッグして範囲を選んだときは開かない

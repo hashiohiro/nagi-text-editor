@@ -1177,7 +1177,7 @@ impl Editor {
             return Effect::None;
         }
         // SQL コンソールの Ctrl+Enter（Ctrl-m として届く）: カーソルのある文を流す
-        if key == Key::Ctrl('m') && matches!(self.state(), State::Normal | State::Insert | State::Visual { .. }) && self.console_source().is_some() {
+        if key == Key::Ctrl('m') && matches!(self.state(), State::Normal | State::Insert | State::Visual { .. }) && (self.console_source().is_some() || self.is_sql_file()) {
             self.db_run_at_cursor();
             return Effect::None;
         }

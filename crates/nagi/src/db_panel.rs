@@ -373,6 +373,33 @@ pub fn from_config(ds: &DataSource) -> bool {
     ds.origin == ":DbAdd" || ds.origin == config_path().display().to_string()
 }
 
+/// データソースを付けた .sql（「パス<TAB>接続先の名前」の行）。試験では NAGI_DB_DIR を置いたときだけ
+fn attached_path() -> Option<PathBuf> {
+    if cfg!(test) && std::env::var_os("NAGI_DB_DIR").is_none() {
+        return None;
+    }
+    Some(work_dir().join("consoles").join("attached.txt"))
+}
+
+/// データソースを付けた .sql（パス, 接続先の名前）
+pub fn load_attached() -> Vec<(PathBuf, String)> {
+    let Some(text) = attached_path().and_then(|p| std::fs::read_to_string(p).ok()) else { return Vec::new() };
+    text.lines().filter_map(|l| l.split_once('\t')).map(|(p, n)| (PathBuf::from(p), n.to_string())).collect()
+}
+
+impl DbPanel {
+    /// 付けた .sql を書く（除去した接続先のものは除く）
+    pub fn save_attached(&self) {
+        let Some(path) = attached_path() else { return };
+        let mut lines: Vec<String> = self.consoles.iter().filter(|(_, i)| !self.removed.contains(i)).filter_map(|(p, &i)| Some(format!("{}\t{}\n", p.display(), self.sources.get(i)?.name))).collect();
+        lines.sort();
+        if let Some(d) = path.parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        let _ = std::fs::write(path, lines.concat());
+    }
+}
+
 pub fn work_dir() -> PathBuf {
     if let Some(d) = std::env::var_os("NAGI_DB_DIR") {
         return PathBuf::from(d);
@@ -951,6 +978,15 @@ impl DbPanel {
 impl Editor {
     /// `:Db`（ActivateDatabaseToolWindow）: データベースのタブを出して移る
     pub(crate) fn open_db_panel(&mut self) {
+        self.ensure_db_panel();
+        if self.panels.db.as_ref().is_some_and(|p| !p.has_sources()) {
+            self.svc.notify.info("接続先がありません。欄の上の ＋ で足せます");
+        }
+        self.focus_right(RightTab::Database);
+    }
+
+    /// データベースの欄の中身を作る（出さない）。.sql に付けたデータソースも読み戻す
+    pub(crate) fn ensure_db_panel(&mut self) {
         if self.panels.db.is_none() {
             let mut sources = nagi_workers::db::detect_sources(&self.nav_root());
             let cfg = config_path();
@@ -982,13 +1018,63 @@ impl Editor {
                 consoles: HashMap::new(),
                 then: HashMap::new(),
             };
+            for (path, name) in load_attached() {
+                if let Some(i) = p.sources.iter().position(|s| s.name == name) {
+                    p.consoles.insert(path, i);
+                }
+            }
             p.rebuild();
             self.panels.db = Some(p);
         }
-        if self.panels.db.as_ref().is_some_and(|p| !p.has_sources()) {
-            self.svc.notify.info("接続先がありません。欄の上の ＋ で足せます");
+    }
+
+    /// .sql を開いた: 前にデータソースを付けたファイルなら、欄の中身を作って付け直す（再起動しても外れない）
+    pub(crate) fn db_restore_attach(&mut self) {
+        if self.panels.db.is_some() || !self.is_sql_file() {
+            return;
         }
-        self.focus_right(RightTab::Database);
+        let Some(path) = self.core.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()) else { return };
+        if load_attached().iter().any(|(p, _)| *p == path) {
+            self.ensure_db_panel();
+        }
+    }
+
+    /// 拡張子が .sql のファイル（データソースを付けられる）
+    pub fn is_sql_file(&self) -> bool {
+        self.core.buf.path.as_deref().and_then(|p| p.extension()).is_some_and(|x| x.eq_ignore_ascii_case("sql"))
+    }
+
+    /// データソースのアタッチ（DataGrip と同じ）: 接続先を選ぶメニューを出す。`run` なら選んだあとカーソルのある文を流す
+    pub(crate) fn db_attach_menu(&mut self, row: usize, col: usize, run: bool) {
+        self.ensure_db_panel();
+        let Some(p) = &self.panels.db else { return };
+        let list: Vec<(usize, String)> = p.sources.iter().enumerate().filter(|(k, _)| !p.removed.contains(k)).map(|(k, s)| (k, s.name.clone())).collect();
+        if list.is_empty() {
+            self.svc.notify.info("接続先がありません。データベースの欄の ＋ で足せます");
+            return;
+        }
+        let cur = self.console_source();
+        let mut m = crate::menu::Menu::new(row, col);
+        for (i, name) in list {
+            let label = format!("{} {name}", if cur == Some(i) { "✓" } else { "  " });
+            m = m.item(&label, move |e| {
+                e.db_attach(i);
+                if run {
+                    e.db_run_at_cursor();
+                }
+            });
+        }
+        self.open_menu(m);
+    }
+
+    /// 今のファイルに接続先 `i` を付ける（覚えておく）
+    pub(crate) fn db_attach(&mut self, i: usize) {
+        let Some(path) = self.core.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()) else { return };
+        let Some(p) = &mut self.panels.db else { return };
+        p.consoles.insert(path, i);
+        p.save_attached();
+        let name = p.sources[i].name.clone();
+        self.svc.notify.info(format!("{name} をアタッチしました。Ctrl+Enter で実行"));
     }
 
     /// `:DbAdd`（引数なしならフォーム、`名前 jdbc:URL [利用者]` ならそのまま足す）
@@ -1053,6 +1139,8 @@ impl Editor {
         }
         let changed = old.url != ds.url || old.user != ds.user;
         p.sources[i] = ds.clone();
+        // 付けた .sql は名前で覚えているので、名前を変えたら書き直す
+        p.save_attached();
         p.rebuild();
         if changed && p.conns[i].client.is_some() {
             self.db_close(i, false);
@@ -1101,6 +1189,7 @@ impl Editor {
         p.then.remove(&i);
         p.consoles.retain(|_, k| *k != i);
         p.removed.insert(i);
+        p.save_attached();
         p.rebuild();
         self.svc.notify.info(format!("{} を除去しました", ds.name));
     }
@@ -1574,7 +1663,14 @@ impl Editor {
 
     /// Ctrl+Enter（コンソールで）: カーソルのある文、Visual なら選んだ範囲を流す
     pub(crate) fn db_run_at_cursor(&mut self) {
-        let Some(i) = self.console_source() else { return };
+        let Some(i) = self.console_source() else {
+            // 付けていない .sql: どの接続先で流すかを選んでから（DataGrip と同じ）
+            if self.is_sql_file() {
+                let (row, col) = self.console_bar_menu_at();
+                self.db_attach_menu(row, col, true);
+            }
+            return;
+        };
         let sql = if let State::Visual { .. } = self.state() {
             let (a, b, _) = self.visual_range();
             let s = self.core.buf.slice_string(a, b);
@@ -1809,6 +1905,7 @@ impl Editor {
         }
         let abs = std::path::absolute(&path).unwrap_or(path.clone());
         p.consoles.insert(abs, i);
+        p.save_attached();
         self.edit_file(path);
         self.set_state(State::Normal);
         if let Some(sql) = initial {
@@ -1840,6 +1937,7 @@ impl Editor {
         }
         let abs = std::path::absolute(&path).unwrap_or(path.clone());
         p.consoles.insert(abs, i);
+        p.save_attached();
         self.edit_file(path);
         self.set_state(State::Normal);
         // 最後の行の終わりから Insert で書き始める
@@ -2211,10 +2309,22 @@ impl Editor {
 
     /// コンソールの上の帯のボタン（見出し, 横の位置, 幅, 何をするか）。帯の左端から数える
     pub fn console_bar(&self, w: usize) -> Vec<(String, usize, usize, BarItem)> {
-        let Some(i) = self.console_source() else { return Vec::new() };
+        let width = |s: &str| nagi_core::display_col(s, s.len(), false);
+        let Some(i) = self.console_source() else {
+            if !self.is_sql_file() {
+                return Vec::new();
+            }
+            // 付けていない .sql: 実行と、右にデータソースのアタッチ
+            let attach = "データソースのアタッチ ▾";
+            let mut v = vec![("▶ 実行".to_string(), 2, width("▶ 実行"), BarItem::Run)];
+            let n = width(attach);
+            if 2 + width("▶ 実行") + 2 + n < w {
+                v.push((attach.to_string(), w - n - 1, n, BarItem::Attach));
+            }
+            return v;
+        };
         let Some(p) = &self.panels.db else { return Vec::new() };
         let c = &p.conns[i];
-        let width = |s: &str| nagi_core::display_col(s, s.len(), false);
         let right = format!("{} › {} ▾", p.sources[i].name, if c.schema.is_empty() { "…" } else { &c.schema });
         // 狭ければ、説明の字・件数を外し、ボタンを記号だけにし、それでも入らなければ接続先の名前を詰める（重ねない）
         for level in 0..3 {
@@ -2272,6 +2382,15 @@ impl Editor {
 
     /// 帯のボタンを押す
     pub(crate) fn console_bar_press(&mut self, item: BarItem) {
+        if item == BarItem::Attach {
+            let (row, col) = self.console_bar_menu_at();
+            self.db_attach_menu(row, col, false);
+            return;
+        }
+        if item == BarItem::Run {
+            self.db_run_at_cursor();
+            return;
+        }
         let Some(i) = self.console_source() else { return };
         match item {
             BarItem::Run => self.db_run_at_cursor(),
@@ -2284,8 +2403,16 @@ impl Editor {
                 self.cmdline.set("DbSchema ");
                 self.update_cmd_complete();
             }
-            BarItem::Label | BarItem::Pending => {}
+            BarItem::Label | BarItem::Pending | BarItem::Attach => {}
         }
+    }
+
+    /// 帯の右（接続先・データソースのアタッチ）の下の画面の位置（メニューを出す所）
+    fn console_bar_menu_at(&self) -> (usize, usize) {
+        let (x, w) = self.windows_x();
+        let row = self.area().y + self.tabs_row() + 1;
+        let col = self.console_bar(w).into_iter().find(|b| matches!(b.3, BarItem::Attach | BarItem::Schema)).map_or(x + w / 2, |b| x + b.1);
+        (row, col)
     }
 }
 
@@ -2299,11 +2426,16 @@ pub enum BarItem {
     Commit,
     Rollback,
     Schema,
+    /// 付けていない .sql の「データソースのアタッチ」
+    Attach,
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// NAGI_DB_DIR を書き換える試験は 1 つずつ（並んで走ると置き場所が入れ替わる）
+    static DB_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn statements() {
@@ -2461,6 +2593,7 @@ pub(crate) mod tests {
     /// 偽の Salesforce で: 足す → つなぐ（ブラウザの代わりに curl）→ 木 → o で SOQL → 結果のタブ
     #[test]
     fn salesforce_flow() {
+        let _env = DB_ENV.lock().unwrap_or_else(|e| e.into_inner());
         let m = nagi_workers::salesforce::mock::start();
         let dir = std::env::temp_dir().join(format!("nagi-sfui-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -2647,6 +2780,7 @@ pub(crate) mod tests {
     /// SQLite で: フォームで足す → つなぐ → コンソールで表を作る（確認あり）→ 手動 Tx → 木 → 絞り込み
     #[test]
     fn sqlite_flow() {
+        let _env = DB_ENV.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("nagi-dbui-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -2756,6 +2890,27 @@ pub(crate) mod tests {
         e.db_do(DbAction::Close);
         e.open_db_panel();
         assert!(e.panels.db.as_ref().unwrap().sources.iter().any(|s| s.name == "shop2"));
+        // 付けた .sql は名前を変えても覚えている
+        let attached = std::fs::read_to_string(dir.join("consoles/attached.txt")).unwrap();
+        assert!(attached.contains("shop_query_1.sql\tshop2") && !attached.contains("\tshop\n"), "{attached}");
+        // どの .sql でも: 付けていなければ帯は「データソースのアタッチ」。Ctrl+Enter は接続先を選んでから流す
+        let any = dir.join("any.sql");
+        std::fs::write(&any, "select 7 as seven;\n").unwrap();
+        e.edit_file(any.clone());
+        e.set_state(State::Normal);
+        assert_eq!(e.console_source(), None);
+        assert!(e.console_bar(120).iter().any(|b| b.3 == BarItem::Attach));
+        keys(&mut e, "<C-m>");
+        let m = e.menu.as_ref().expect("接続先を選ぶメニュー");
+        let k = m.items.iter().position(|it| it.label.ends_with(" shop2")).unwrap();
+        e.menu_run(k);
+        assert_eq!(e.console_source(), Some(i));
+        wait(&mut e, &|e| e.panels.db_results.active_tab().is_some_and(|t| !t.running && t.rows.first().is_some_and(|r| r[0].as_deref() == Some("7"))));
+        // 開き直しても（新しい nagi で）付いたまま
+        let mut e2 = Editor::new(nagi_core::Buffer::from_str("x\n"), None);
+        e2.set_screen(160, 50);
+        e2.edit_file(any.clone());
+        assert_eq!(e2.console_source().map(|k| e2.panels.db.as_ref().unwrap().sources[k].name.clone()).as_deref(), Some("shop2"));
     }
 }
 
@@ -2811,7 +2966,7 @@ pub(crate) mod draw {
                 BarItem::Pending => DIAG_WARN,
                 BarItem::Label => LINE_NO,
                 BarItem::Tx if label.contains("手動") => DIAG_WARN,
-                BarItem::Schema => FG,
+                BarItem::Schema | BarItem::Attach => FG,
                 BarItem::Tx => STATUS_FG,
             };
             if hover == Some(item) && item != BarItem::Label && item != BarItem::Pending {

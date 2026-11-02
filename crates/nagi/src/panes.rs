@@ -211,9 +211,9 @@ impl Editor {
         usize::from(self.editor_shown() && self.settings.bool("editor.tabs"))
     }
 
-    /// SQL コンソールの帯の行（タブの下）
+    /// SQL コンソールの帯の行（タブの下。.sql なら付けていなくても、データソースのアタッチのために出す）
     pub fn console_row(&self) -> usize {
-        usize::from(self.console_source().is_some() && self.editor_shown())
+        usize::from((self.console_source().is_some() || self.is_sql_file()) && self.editor_shown())
     }
 
     pub fn active_rect(&self) -> Rect {

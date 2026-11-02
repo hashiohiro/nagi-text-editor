@@ -396,7 +396,14 @@ impl Editor {
             .item("コピー", run("Copy"))
             .item("貼り付け", run("Paste"))
             .item("すべて選択", run("SelectAll"))
-            .sep()
+            .sep();
+        // .sql: 実行・データソースのアタッチ（DataGrip と同じ）
+        let m = if self.is_sql_file() {
+            m.item("実行", |e| e.db_run_at_cursor()).item("データソースのアタッチ…", move |e| e.db_attach_menu(at.0, at.1, false)).sep()
+        } else {
+            m
+        };
+        let m = m
             .item("使用箇所の検索", run("Refs"))
             .item("宣言または使用箇所に移動", run("GotoDefinition"))
             .item("実装に移動", run("GotoImplementation"))

@@ -13,6 +13,111 @@ use regex::Regex;
 
 use crate::editor::{Editor, State};
 
+/// 出力の中のファイルの位置（`Foo.java:12`・`src/a.rs:3:4`・`C:\\x\\A.java:[12,5]`・`at a.b.Bar.m(Bar.java:12)`）。
+/// (start, end, 開く位置の文字)。Java のスタックトレースは、パッケージから `a/b/Bar.java:12` にして返す（実行の出力・ターミナルで共通）
+pub fn location_spans(text: &str) -> Vec<(usize, usize, String)> {
+    let b = text.as_bytes();
+    let path_ch = |c: u8| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-' | b'.' | b'/' | b'\\' | b'$');
+    let mut out = Vec::new();
+    let mut i = 0;
+    while let Some(k) = text[i..].find(':') {
+        let colon = i + k;
+        i = colon + 1;
+        // 前: パス（拡張子つき）。C: のドライブも
+        let mut start = colon;
+        while start > 0 && path_ch(b[start - 1]) {
+            start -= 1;
+        }
+        if start >= 2 && b[start - 1] == b':' && b[start - 2].is_ascii_alphabetic() && (start == 2 || !path_ch(b[start - 3])) {
+            start -= 2;
+        }
+        let path = &text[start..colon];
+        let ext = path.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
+        if path.is_empty() || ext.is_empty() || ext.len() > 10 || !ext.bytes().all(|c| c.is_ascii_alphanumeric()) || path.ends_with('.') {
+            continue;
+        }
+        // 後ろ: 行（:12・:12:5・:[12,5]）
+        let rest = &text[colon + 1..];
+        let digits = |s: &str| s.bytes().take_while(u8::is_ascii_digit).count();
+        let (len, line, col) = if let Some(r) = rest.strip_prefix('[') {
+            let n = digits(r);
+            let m = r[n..].strip_prefix(',').map_or(0, digits);
+            if n == 0 || !r[n..].starts_with(',') || !r[n + 1 + m..].starts_with(']') {
+                continue;
+            }
+            (n + m + 3, &r[..n], &r[n + 1..n + 1 + m])
+        } else {
+            let n = digits(rest);
+            if n == 0 {
+                continue;
+            }
+            let m = rest[n..].strip_prefix(':').map_or(0, digits);
+            (if m > 0 { n + 1 + m } else { n }, &rest[..n], if m > 0 { &rest[n + 1..n + 1 + m] } else { "" })
+        };
+        let end = colon + 1 + len;
+        // Java のスタックトレース: `at a.b.Bar.m(Bar.java:12)` はパッケージのフォルダを付ける
+        let mut target = path.to_string();
+        if start > 0 && b[start - 1] == b'(' && !path.contains(['/', '\\']) {
+            let head = &text[..start - 1];
+            let fq = head.rsplit(|c: char| c.is_whitespace()).next().unwrap_or("");
+            let mut parts: Vec<&str> = fq.split('.').collect();
+            parts.pop();
+            parts.pop();
+            if !parts.is_empty() && parts.iter().all(|p| !p.is_empty() && p.chars().all(|c| c.is_alphanumeric() || c == '_')) {
+                target = format!("{}/{path}", parts.join("/"));
+            }
+        }
+        out.push((start, end, if col.is_empty() { format!("{target}:{line}") } else { format!("{target}:{line}:{col}") }));
+        i = end;
+    }
+    out
+}
+
+/// 位置の文字（location_spans の 3 つ目）を (パス, 行, 列)（0 始まり）に
+pub fn parse_location(s: &str) -> Option<(String, usize, usize)> {
+    let mut it = s.rsplitn(3, ':');
+    let (a, b) = (it.next()?, it.next()?);
+    match (it.next(), b.parse::<usize>()) {
+        (Some(path), Ok(line)) if !path.is_empty() && !path.ends_with(':') && a.parse::<usize>().is_ok() => Some((path.to_string(), line.saturating_sub(1), a.parse::<usize>().ok()?.saturating_sub(1))),
+        _ => {
+            let line: usize = a.parse().ok()?;
+            let path = s[..s.len() - a.len() - 1].to_string();
+            (!path.is_empty()).then_some((path, line.saturating_sub(1), 0))
+        }
+    }
+}
+
+impl Editor {
+    /// 出力のファイルの位置を開く（`cwd` は出した所。絶対パス → `cwd`・プロジェクトから → 索引・プロジェクトの中で後ろが同じファイル）
+    pub(crate) fn open_location(&mut self, loc: &str, cwd: Option<&Path>) -> bool {
+        let Some((path, line, col)) = parse_location(loc) else { return false };
+        let root = self.nav_root();
+        let p = PathBuf::from(&path);
+        let mut found = [cwd.map(|c| c.join(&p)), Some(root.join(&p)), Some(p.clone())].into_iter().flatten().find(|c| c.is_absolute() && c.is_file());
+        if found.is_none() {
+            // 後ろが同じ（a/b/Bar.java）ファイル。索引があれば索引から、無ければプロジェクトを歩いて
+            let tail = path.replace('\\', "/");
+            let tail = tail.trim_start_matches("./");
+            let hit = |rel: &str| rel.replace('\\', "/").ends_with(&format!("/{tail}")) || rel == tail;
+            found = match &self.nav.index {
+                Some(ix) => ix.files().find(|r| hit(r)).map(|r| root.join(r)),
+                None => nagi_workers::files::walker(&root).build().flatten().take(200_000).map(|e| e.into_path()).find(|f| f.strip_prefix(&root).is_ok_and(|r| hit(&r.to_string_lossy()))),
+            };
+        }
+        match found {
+            Some(f) => {
+                self.jump_to(&f, line, col);
+                self.set_state(State::Normal);
+                true
+            }
+            None => {
+                self.svc.notify.info(format!("{path} が見つかりません"));
+                false
+            }
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Diag {
     pub path: PathBuf,
@@ -481,6 +586,46 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 出力のファイルの位置: javac・Maven・rustc・スタックトレース。時刻・URL の : は位置にしない
+    #[test]
+    fn locations_in_output() {
+        let locs = |t: &str| location_spans(t).into_iter().map(|(a, b, x)| (t[a..b].to_string(), x)).collect::<Vec<_>>();
+        assert_eq!(locs("src/main.rs:3:4: error"), [("src/main.rs:3:4".into(), "src/main.rs:3:4".into())]);
+        assert_eq!(locs("[ERROR] C:\\p\\A.java:[12,5] cannot find symbol"), [("C:\\p\\A.java:[12,5]".into(), "C:\\p\\A.java:12:5".into())]);
+        assert_eq!(
+            locs("\tat com.example.app.Main$Inner.run(Main.java:42)"),
+            [("Main.java:42".into(), "com/example/app/Main.java:42".into())],
+            "スタックトレースはパッケージのフォルダを付ける"
+        );
+        assert!(locs("12:30:45 started on port 8080").is_empty());
+        assert!(locs("see a.:3 and :12").is_empty());
+        assert_eq!(parse_location("C:\\p\\A.java:12:5"), Some(("C:\\p\\A.java".into(), 11, 4)));
+        assert_eq!(parse_location("C:\\p\\A.java:12"), Some(("C:\\p\\A.java".into(), 11, 0)));
+        assert_eq!(parse_location("a/b/Main.java:42"), Some(("a/b/Main.java".into(), 41, 0)));
+    }
+
+    /// 位置を開く: 出した所から・プロジェクトの中で後ろが同じファイル（スタックトレース）
+    #[test]
+    fn open_location_finds_file() {
+        let dir = std::env::temp_dir().join(format!("nagi-diag-loc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::create_dir_all(dir.join("src/main/java/com/ex")).unwrap();
+        std::fs::write(dir.join("src/main/java/com/ex/Main.java"), "a\nb\nc\n").unwrap();
+        std::fs::write(dir.join("top.txt"), "x\n").unwrap();
+        let mut buf = nagi_core::Buffer::open(&dir.join("top.txt")).unwrap();
+        buf.path = Some(dir.join("top.txt"));
+        let mut e = Editor::new(buf, None);
+        e.set_screen(120, 40);
+        assert!(e.open_location("com/ex/Main.java:3", None));
+        assert!(e.core.buf.path.as_ref().unwrap().ends_with("Main.java"));
+        assert_eq!(e.core.cursor.line, 2);
+        assert!(e.open_location("top.txt:1", Some(&dir)));
+        assert!(e.core.buf.path.as_ref().unwrap().ends_with("top.txt"));
+        assert!(!e.open_location("Nope.java:1", Some(&dir)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn parse_formats() {

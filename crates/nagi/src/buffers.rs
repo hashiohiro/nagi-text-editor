@@ -234,6 +234,7 @@ impl Editor {
         self.watch_file(&path);
         self.svc.notify.info(message);
         self.note_mixed_newlines();
+        self.db_restore_attach();
     }
 
     /// `:new`。空のバッファを足して作業中にする
