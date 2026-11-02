@@ -50,6 +50,8 @@ pub struct TableEditor {
     pub widths: Vec<usize>,
     pub row: usize,
     pub col: usize,
+    /// セルの範囲の起点（Shift+矢印・Shift+クリック・Ctrl+A。nagi_ui::cells）
+    pub anchor: Option<(usize, usize)>,
     pub scroll: usize,
     pub hscroll: usize,
     pub offset: usize,
@@ -212,6 +214,7 @@ impl TableEditor {
             undo: Vec::new(),
             sent: HashMap::new(),
             pinned: false,
+            anchor: None,
         }
     }
 
@@ -379,6 +382,12 @@ impl TableEditor {
         // 標準のキーだけ（ADR 0019。F2・Enter 値を直す、Delete 行を消す、Ctrl+Z 戻す、Ctrl+Enter 送る、Esc 閉じる。ほかはアクション）
         let last_row = te.len().saturating_sub(1);
         let last_col = te.cols.len().saturating_sub(1);
+        // Shift+矢印・Ctrl+A でセルの範囲を選ぶ。修飾の無い移動で外す
+        let (rows, cols) = (te.len(), te.cols.len());
+        if nagi_ui::cells::key(key, &mut te.row, &mut te.col, &mut te.anchor, rows, cols, half * 2) {
+            return TableAction::None;
+        }
+        te.anchor = None;
         match key {
             Key::Right | Key::Tab => te.col = (te.col + 1).min(last_col),
             Key::Left => te.col = te.col.saturating_sub(1),
@@ -534,6 +543,7 @@ impl Editor {
             widths: Vec::new(),
             row: 0,
             col: 0,
+            anchor: None,
             scroll: 0,
             hscroll: 0,
             offset: 0,
@@ -608,8 +618,14 @@ impl Editor {
     /// 選んでいるセルの値をコピー（NULL は空）
     pub(crate) fn db_table_copy(&mut self) {
         let Some(te) = self.panels.db_table.as_ref().filter(|t| t.len() > 0 && !t.cols.is_empty()) else { return };
-        let s = te.value(te.row, te.col).unwrap_or_default();
-        self.copy_text(s, "値");
+        let r = nagi_ui::cells::rect(te.row, te.col, te.anchor);
+        if r.0 == r.1 && r.2 == r.3 {
+            let s = te.value(te.row, te.col).unwrap_or_default();
+            self.copy_text(s, "値");
+        } else {
+            let s = nagi_ui::cells::tsv(r, |d, c| te.value(d, c));
+            self.copy_text(s, "セル");
+        }
     }
 
     /// クリップボードを選んでいるセルに貼る（タブ・改行で区切ってあれば、そこから右・下のセルへ。消す行は飛ばす）
@@ -793,6 +809,8 @@ impl crate::layout::View for DbTableView {
             ed.db_table_commit_edit();
         }
         let Some(te) = &mut ed.panels.db_table else { return crate::layout::Click::Done };
+        // Shift+クリックは選んでいたセルからの範囲
+        te.anchor = if ed.click_mods.shift { te.anchor.or(Some((te.row, te.col))) } else { None };
         let pick = nagi_ui::list::pick_row(&mut te.row, te.scroll, at.row, 4, len, clicks);
         let cell = crate::result_grid::grid_col_at(te.hscroll, &te.widths, at.col);
         if pick.is_some() {
@@ -910,7 +928,15 @@ pub(crate) mod draw {
             (RowState::Deleted, r) => ((te.offset + r + 1).to_string(), Some(DIFF_DEL_BG)),
             (RowState::Normal, r) => ((te.offset + r + 1).to_string(), None),
         };
-        let cell_bg = |d: usize, c: usize| te.modified(d, c).then_some(rgb(0x1f3550));
+        let sel = nagi_ui::cells::rect(te.row, te.col, te.anchor);
+        let multi = te.anchor.is_some();
+        let cell_bg = |d: usize, c: usize| {
+            if multi && (sel.0..=sel.1).contains(&d) && (sel.2..=sel.3).contains(&c) {
+                Some(SEL_BG)
+            } else {
+                te.modified(d, c).then_some(rgb(0x1f3550))
+            }
+        };
         let g = GridView {
             cols: &te.cols,
             types: &te.types,
@@ -1027,6 +1053,12 @@ mod tests {
         assert_eq!((0..2).map(|d| (te.value(d, 0), te.value(d, 1))).collect::<Vec<_>>(), [(Some("10".into()), Some("p".into())), (Some("20".into()), Some("q".into()))]);
         keys(&mut e, "<C-z>");
         assert_eq!(e.panels.db_table.as_ref().unwrap().value(1, 1).as_deref(), Some("z"), "Ctrl+Z は 1 つのセルずつ戻す");
+        // Shift+矢印でセルの範囲を選び、Ctrl+C でタブと改行で区切ってコピー
+        keys(&mut e, "<Up><Home>");
+        e.key(Key::Mod(nagi_vim::Nav::Down, nagi_vim::Mods { shift: true, ..Default::default() }));
+        e.key(Key::Ctrl('c'));
+        let te = e.panels.db_table.as_ref().unwrap();
+        assert_eq!(get(), Some(format!("{}\n{}", te.value(0, 0).unwrap_or_default(), te.value(1, 0).unwrap_or_default())));
     }
 
     /// マウスで欄を移る: WHERE・ORDER BY の欄やセルを、打っている欄が Insert・Visual のままでもすぐ押せる

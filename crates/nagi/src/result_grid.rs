@@ -88,6 +88,8 @@ pub struct ResultTab {
     pub(crate) sent: HashMap<(usize, usize), Option<String>>,
     /// ピン留め（次に流した結果で上書きしない。DataGrip と同じ）
     pub pinned: bool,
+    /// セルの範囲の起点（Shift+矢印・Shift+クリック・Ctrl+A。nagi_ui::cells）
+    pub anchor: Option<(usize, usize)>,
 }
 
 impl ResultTab {
@@ -352,6 +354,7 @@ impl DbResults {
             undo: Vec::new(),
             sent: HashMap::new(),
             pinned: false,
+            anchor: None,
         };
         match reuse {
             Some(k) => {
@@ -612,6 +615,11 @@ impl DbResults {
             },
             k => {
                 let Some(t) = self.active_tab_mut() else { return ResultAction::None };
+                // Shift+矢印・Ctrl+A でセルの範囲を選ぶ。修飾の無い移動で外す
+                if nagi_ui::cells::key(k, &mut t.row, &mut t.col, &mut t.anchor, t.rows.len(), t.cols.len(), half * 2) {
+                    return ResultAction::None;
+                }
+                t.anchor = None;
                 let last_row = t.rows.len().saturating_sub(1);
                 let last_col = t.cols.len().saturating_sub(1);
                 match k {
@@ -844,14 +852,15 @@ impl Editor {
 
     /// 表（クエリの結果・テーブルの編集）の Ctrl+C・Ctrl+V（Shift+Insert）。セルのコピー・貼り付けをしたら true。
     /// キーマップ（Vim を使わないときの Ctrl+C・V は本文のコピー・貼り付け）より先に見る
+    /// 表（クエリの結果・テーブルの編集）に向いている
+    pub(crate) fn grid_focused(&self) -> bool {
+        let table = self.state() == State::DbTable && self.panels.db_table.is_some();
+        table || (self.focus == Some(crate::editor::Panel::List) && self.list_side == Side::Bottom && self.bottom_kind == BottomKind::Result && self.panels.db_results.active > 0)
+    }
+
     pub(crate) fn grid_clipboard_key(&mut self, key: Key) -> bool {
         let table = self.state() == State::DbTable && self.panels.db_table.is_some();
-        let results = !table
-            && self.focus == Some(crate::editor::Panel::List)
-            && self.list_side == Side::Bottom
-            && self.bottom_kind == BottomKind::Result
-            && self.panels.db_results.active > 0;
-        if !table && !results {
+        if !self.grid_focused() {
             return false;
         }
         // 値・絞り込みを打っている間: Vim ならいつも通り（Ctrl+C は Insert を抜ける）。使わないなら、Ctrl+V は欄に貼り、Ctrl+C は選んだ所（選んでいなければ欄の値）をコピー
@@ -886,8 +895,15 @@ impl Editor {
     /// 選んでいるセルの値をコピー（NULL は空）
     fn result_copy(&mut self) {
         let Some(t) = self.panels.db_results.active_tab().filter(|t| !t.rows.is_empty() && !t.cols.is_empty()) else { return };
-        let s = t.value(t.row, t.col).unwrap_or_default();
-        self.copy_text(s, "値");
+        let r = nagi_ui::cells::rect(t.row, t.col, t.anchor);
+        if r.0 == r.1 && r.2 == r.3 {
+            let s = t.value(t.row, t.col).unwrap_or_default();
+            self.copy_text(s, "値");
+        } else {
+            // 範囲はタブと改行で区切る（表計算に貼れる形）
+            let s = nagi_ui::cells::tsv(r, |k, c| t.value(k, c));
+            self.copy_text(s, "セル");
+        }
     }
 
     /// クリップボードを選んでいるセルに貼る（タブ・改行で区切ってあれば、そこから右・下のセルへ）
@@ -934,8 +950,13 @@ impl Editor {
             return;
         }
         if let Some(t) = self.panels.db_results.active_tab_mut().filter(|t| !t.rows.is_empty()) {
-            let (r, c) = (t.row, t.col);
-            t.set_value(r, c, None);
+            // 範囲を選んでいれば、その全部のセル
+            let r = nagi_ui::cells::rect(t.row, t.col, t.anchor);
+            for k in r.0..=r.1 {
+                for c in r.2..=r.3 {
+                    t.set_value(k, c, None);
+                }
+            }
         }
     }
 
@@ -1099,8 +1120,10 @@ impl Editor {
         if row < head {
             return;
         }
-        // 行と列。1 回のクリックは選ぶだけ、ダブルクリックで直し始める（DataGrip と同じ。直せないときはわけを知らせる）
+        // 行と列。1 回のクリックは選ぶだけ、ダブルクリックで直し始める（DataGrip と同じ。直せないときはわけを知らせる）。
+        // Shift+クリックは選んでいたセルからの範囲
         let len = t.rows.len();
+        t.anchor = if self.click_mods.shift { t.anchor.or(Some((t.row, t.col))) } else { None };
         let pick = nagi_ui::list::pick_row(&mut t.row, t.scroll, row, head, len, clicks);
         let cell = grid_col_at(t.hscroll, &t.widths, col);
         if let Some(c) = cell {
@@ -1271,7 +1294,15 @@ pub(crate) mod draw {
                 } else {
                     let value = |k: usize, c: usize| t.value(k, c);
                     let row_style = |k: usize| ((t.offset + k + 1).to_string(), None);
-                    let cell_bg = |k: usize, c: usize| t.modified(k, c).then_some(rgb(0x1f3550));
+                    let sel = nagi_ui::cells::rect(t.row, t.col, t.anchor);
+                    let multi = t.anchor.is_some();
+                    let cell_bg = |k: usize, c: usize| {
+                        if multi && (sel.0..=sel.1).contains(&k) && (sel.2..=sel.3).contains(&c) {
+                            Some(SEL_BG)
+                        } else {
+                            t.modified(k, c).then_some(rgb(0x1f3550))
+                        }
+                    };
                     let g = GridView {
                         cols: &t.cols,
                         types: &t.types,
@@ -1426,6 +1457,24 @@ mod tests {
         e.key(Key::Ctrl('v'));
         let t = e.panels.db_results.active_tab().unwrap();
         assert_eq!((t.value(1, 1).as_deref(), t.changes()), (Some("p"), 2));
+        // Shift+矢印でセルの範囲を選び、Ctrl+C でタブと改行で区切ってコピー。修飾の無い移動で外す
+        keys(&mut e, "<Up><Home>");
+        e.key(Key::Mod(nagi_vim::Nav::Down, nagi_vim::Mods { shift: true, ..Default::default() }));
+        e.key(Key::Mod(nagi_vim::Nav::Right, nagi_vim::Mods { shift: true, ..Default::default() }));
+        e.key(Key::Ctrl('c'));
+        assert_eq!(get().as_deref(), Some("1\tz\n2\tp"));
+        // Shift+クリックでも範囲（起点はそのまま）
+        e.click_mods = nagi_vim::Mods { shift: true, ..Default::default() };
+        e.result_click(5, 8, 1);
+        e.click_mods = Default::default();
+        e.key(Key::Ctrl('c'));
+        assert_eq!(get().as_deref(), Some("1\n2"), "起点（1 行目の id）から押したセル（2 行目の id）まで");
+        keys(&mut e, "<Down>");
+        assert!(e.panels.db_results.active_tab().unwrap().anchor.is_none());
+        // Ctrl+A で全部
+        e.key(Key::Ctrl('a'));
+        e.key(Key::Ctrl('c'));
+        assert_eq!(get().as_deref(), Some("1\tz\n2\tp"));
     }
 
     /// 1 つのテーブルからの SELECT の結果を F2 で直し、Ctrl+Enter で送る（SQLite で）

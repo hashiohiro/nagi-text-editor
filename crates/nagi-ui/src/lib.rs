@@ -7,7 +7,9 @@
 //! - `Folds`・`TreeRow`・`left`・`right`・`path_rows`: 畳める木の状態と ← → の動き（段 4）
 //! - `list`: 一覧の移動・見える範囲・押した行・ホイール（段 4）
 //! - `speed`: 打って探すスピードサーチ（木・一覧）
+//! - `cells`: 表のセルの範囲の選び方（Shift+矢印・Ctrl+A）とコピーの形
 
+pub mod cells;
 pub mod list;
 mod sizes;
 pub mod speed;

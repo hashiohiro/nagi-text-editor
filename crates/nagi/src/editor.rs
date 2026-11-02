@@ -1245,9 +1245,9 @@ impl Editor {
         if self.db_type_to_filter(key) {
             return Effect::None;
         }
-        // 修飾（Shift・Ctrl）つきの移動を見るのは、Vim を使わないときの本文だけ。ほかは修飾を外して今まで通りに
+        // 修飾（Shift・Ctrl）つきの移動を見るのは、Vim を使わないときの本文と、表（Shift+矢印でセルの範囲）だけ。ほかは修飾を外して今まで通りに
         let body = crate::component::focused(self).is_none() && matches!(self.state(), State::Insert | State::Visual { .. });
-        let key = if !self.vim_on && body { key } else { key.base() };
+        let key = if (!self.vim_on && body) || self.grid_focused() { key } else { key.base() };
         if !self.vim_on && body && self.plain_key(key) {
             self.scroll_into_view();
             return Effect::None;
