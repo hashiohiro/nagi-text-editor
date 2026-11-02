@@ -748,10 +748,6 @@ impl Frame {
             },
             _ => return,
         };
-        if keys == [VKey::Ctrl('q')] {
-            self.closed = true;
-            return;
-        }
         // 移動のキーを押し始めたら、自分で繰り返す（ほかのキーを押したら止める。OS と同じ）
         self.held = None;
         if !ev.repeat && self.repeatable(&keys) {

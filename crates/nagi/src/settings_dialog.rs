@@ -1259,7 +1259,7 @@ pub(crate) mod draw {
         if let Some(it) = d.current() {
             let mut desc = it.help.to_string();
             if it.project {
-                desc = format!("{desc}{}プロジェクトごとに変えられる（p）", if desc.is_empty() { "" } else { "。" });
+                desc = format!("{desc}{}プロジェクトごとに変えられる（右クリックの「全体 / このプロジェクトだけ」）", if desc.is_empty() { "" } else { "。" });
             }
             if it.kind == SKind::Key {
                 let other: Vec<&str> = crate::settings::key_conflicts(&d.work, it.key).iter().map(|i| i.label).collect();
@@ -1395,7 +1395,7 @@ pub(crate) mod draw {
                 continue;
             }
             let Some(m) = d.maps.get(k) else {
-                p.text("＋ 割り当てを足す（o）", rx, y(r), ACCENT_FG);
+                p.text("＋ キーボードショートカットの追加", rx, y(r), ACCENT_FG);
                 continue;
             };
             p.text(&m.mode.letter().to_string(), rx, y(r), STATUS_FG);

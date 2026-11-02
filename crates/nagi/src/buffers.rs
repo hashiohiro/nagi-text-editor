@@ -539,6 +539,8 @@ mod tests {
     fn switch_keeps_changes_and_cursor() {
         let (a, b) = files();
         let mut e = Editor::new(Buffer::from_str(""), None);
+        // 自動で保存しないとき（Vim と同じく、変更は隠れたバッファに残る）
+        e.settings.set("editor.autosave", "off", false);
         e.rows = 5;
         keys(&mut e, &format!(":e {}<CR>", a.display()));
         assert_eq!(e.core.docs.len(), 1, "最初の空のバッファは置き換える");
@@ -592,6 +594,8 @@ mod tests {
         std::fs::write(&a, "a1\na2\na3\n").unwrap();
         std::fs::write(&b, "b1\nb2\n").unwrap();
         let mut e = Editor::new(Buffer::open(&a).unwrap(), None);
+        // 自動で保存しないとき（Vim と同じく、変更は隠れたバッファに残る）
+        e.settings.set("editor.autosave", "off", false);
         e.rows = 5;
         keys(&mut e, "x");
         keys(&mut e, &format!(":e {}<CR>", b.display()));

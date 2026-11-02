@@ -119,6 +119,8 @@ pub enum CommitAction {
     Diff(PathBuf, String),
     Close,
     ToText,
+    /// コミットの修正を入れた: 直前のコミットのメッセージを欄に入れる（欄が空のときだけ）
+    LoadAmendMessage,
 }
 
 /// コミットの欄の操作（キー・アクションから）
@@ -196,7 +198,12 @@ impl CommitPanel {
                 let all = self.items.iter().all(|i| i.checked);
                 self.items.iter_mut().for_each(|i| i.checked = !all);
             }
-            CommitOp::Amend => self.amend = !self.amend,
+            CommitOp::Amend => {
+                self.amend = !self.amend;
+                if self.amend && self.msg.text().trim().is_empty() {
+                    return CommitAction::LoadAmendMessage;
+                }
+            }
             CommitOp::EditMessage => {
                 self.msg.reinsert();
                 return CommitAction::EditMessage;
@@ -324,7 +331,7 @@ impl Editor {
         }
         let msg = p.msg.text().trim().to_string();
         if msg.is_empty() && !p.amend {
-            self.svc.notify.info("コミットのメッセージを書いてください（c で欄へ）");
+            self.svc.notify.info("コミットのメッセージを書いてください（メッセージの欄を押す）");
             return;
         }
         let paths: Vec<String> = p.checked().iter().flat_map(|c| [Some(c.path.clone()), c.orig.clone()]).flatten().collect();
@@ -432,7 +439,7 @@ impl Editor {
         let Some(it) = p.items.get(i) else { return };
         let c = it.change.clone();
         if c.state == FileState::Untracked {
-            self.svc.notify.warn("未追跡のファイルは戻せません（消すなら D）");
+            self.svc.notify.warn("未追跡のファイルは戻せません（消すなら右クリックの「未追跡ファイルの削除…」）");
             return;
         }
         let rx = run_git(self.waker.clone(), move || {
@@ -535,7 +542,25 @@ impl Editor {
         // 部品の中で済むこと（選び・チェック・amend・知らせ）は CommitPanel::key が部品の状態と Services で行い、外に及ぶことを返す（ADR 0018 の §5）
         let a = p.key(key, &mut self.svc);
         self.commit_do(a);
+        self.commit_follow();
         Effect::None
+    }
+
+    /// 選んでいる行が見えるように一覧を送る（見出しの行も数える）
+    pub(crate) fn commit_follow(&mut self) {
+        let Some(h) = self.commit_rect().map(|r| layout(r.h).list_h) else { return };
+        let Some(p) = &mut self.panels.commit else { return };
+        let tracked = p.tracked();
+        let total = p.items.len() + 1 + usize::from(tracked < p.items.len());
+        // 一覧の並びの中の位置（0 は「変更」の見出し、未追跡の前にもう 1 つ見出し）
+        let at = p.selected + 1 + usize::from(p.selected >= tracked && tracked < p.items.len());
+        if at < p.scroll + 1 {
+            // 一番上なら見出しも見せる
+            p.scroll = if p.selected == 0 { 0 } else { at };
+        } else if at >= p.scroll + h {
+            p.scroll = at + 1 - h;
+        }
+        p.scroll = p.scroll.min(total.saturating_sub(h));
     }
 
     /// コミットの欄の操作（アクションから）
@@ -543,12 +568,23 @@ impl Editor {
         let Some(p) = &mut self.panels.commit else { return };
         let a = p.op(op, &mut self.svc);
         self.commit_do(a);
+        self.commit_follow();
     }
 
     fn commit_do(&mut self, a: CommitAction) {
         match a {
             CommitAction::None => {}
             CommitAction::EditMessage => self.set_state(State::CommitMsg),
+            CommitAction::LoadAmendMessage => {
+                let Some(root) = self.svc.git.root.clone() else { return };
+                let read = move || nagi_workers::git::git(&root, &["log", "-1", "--format=%B"]).ok().map(|b| String::from_utf8_lossy(&b).trim_end().to_string());
+                self.job("git-amend-msg", read, |e, msg| {
+                    let Some(msg) = msg.filter(|m| !m.is_empty()) else { return };
+                    if let Some(p) = e.panels.commit.as_mut().filter(|p| p.amend && p.msg.text().trim().is_empty()) {
+                        p.msg = crate::vim_field::VimField::new(&msg, true);
+                    }
+                });
+            }
             CommitAction::Commit(push) => self.commit(push),
             CommitAction::AskRevert(i, path) => self.ask(format!("{path} の変更を戻しますか"), move |e| e.revert_item(i)),
             CommitAction::AskDeleteUntracked => self.ask_delete_untracked(),
@@ -663,9 +699,12 @@ impl crate::layout::View for CommitView {
     }
 
     fn wheel(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At, dy: isize, dx: isize) -> bool {
-        let _ = (at, r, dx);
+        let _ = (at, dx);
+        // ホイールは一覧を送る（選びは動かさない。IntelliJ と同じ）
+        let h = layout(r.h).list_h;
         if let Some(c) = ed.panels.commit.as_mut().filter(|c| !c.items.is_empty()) {
-            c.selected = (c.selected as isize + dy).clamp(0, c.items.len() as isize - 1) as usize;
+            let total = c.items.len() + 1 + usize::from(c.tracked() < c.items.len());
+            c.scroll = (c.scroll as isize + dy).clamp(0, total.saturating_sub(h) as isize) as usize;
         }
         true
     }
@@ -802,7 +841,7 @@ pub(crate) mod draw {
         p.out.push(Instance::fill(bx + bw - 1.0, box_top - 1.0, 1.0, bh + 2.0, border));
         p.cols = mx + mw;
         if c.msg.text().is_empty() && !editing {
-            p.text("c で書く（1 行目が件名）", mx, box_top, STATUS_FG);
+            p.text("押して書く（1 行目が件名）", mx, box_top, STATUS_FG);
         }
         let (cl, _) = c.cursor_pos();
         let first = cl.saturating_sub(l.msg_h.saturating_sub(1));
@@ -814,7 +853,7 @@ pub(crate) mod draw {
         p.cols = r.x + r.w;
         // amend とボタン（右寄せ）
         let ay = row_y(l.amend);
-        p.text(&format!(" [{}] 直前のコミットを直す（A）", if c.amend { 'x' } else { ' ' }), r.x, ay, STATUS_FG);
+        p.text(&format!(" [{}] コミットの修正", if c.amend { 'x' } else { ' ' }), r.x, ay, STATUS_FG);
         let by = row_y(l.buttons);
         for (label, x, w, push) in crate::commit_panel::buttons(r.w) {
             let bg = if push { MATCH_BG } else { FG };

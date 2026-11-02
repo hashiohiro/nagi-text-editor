@@ -326,7 +326,7 @@ impl Editor {
         self.core.hist.begin();
         self.edit(start, end, &text);
         self.core.hist.close();
-        self.svc.notify.info("変更を戻しました（バッファで u で取り消し）");
+        self.svc.notify.info("変更を戻しました（バッファで Ctrl+Z で取り消し）");
         drop(keep);
         // 差分を作り直して開き直す
         let new = self.core.buf.text();

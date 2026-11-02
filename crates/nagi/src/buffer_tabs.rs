@@ -118,12 +118,22 @@ impl Editor {
         self.switch_doc(doc);
     }
 
-    /// タブを閉じる。保存していなければ、保存して閉じるか・保存せずに閉じるかを窓で確かめる
+    /// タブを閉じる。保存していなければ、自動で保存する設定なら保存して閉じ（IntelliJ と同じく確かめない）、
+    /// そうでなければ（名前の無いバッファも）、保存して閉じるか・保存せずに閉じるかを窓で確かめる
     pub(crate) fn tab_close(&mut self, doc: usize) {
         let Some((_, path, dirty, _)) = self.buffer_list().into_iter().find(|t| t.0 == doc) else { return };
         let n = (doc + 1).to_string();
         if !dirty {
             self.delete_buffer(&n, false);
+            return;
+        }
+        if path.is_some() && self.settings.get("editor.autosave") != "off" {
+            self.tab_select(doc);
+            self.shortcut("w");
+            // 保存できなかった（書き込めない）ら残す
+            if self.core.cur_doc == doc && !self.core.buf.dirty {
+                self.delete_buffer("", false);
+            }
             return;
         }
         let name = path.as_deref().map_or("無題".into(), file_name);
@@ -331,6 +341,8 @@ mod tests {
         let mut e = Editor::new(buf, None);
         e.settings.set("editor.tabs", "true", false);
         e.set_screen(100, 30);
+        // 自動で保存しないとき（閉じるときに確かめる）。自動で保存するときは closing_a_dirty_tab_asks の後半
+        e.settings.set("editor.autosave", "off", false);
         for f in &files[1..] {
             e.edit_file(dir.join(f));
         }
@@ -399,6 +411,16 @@ mod tests {
         // 最後のタブを閉じると、タブは無くなる（空のバッファはタブにしない）
         e.tab_close(e.core.cur_doc);
         assert!(labels(&e).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+        // 自動で保存する（既定）ときは、確かめずに保存して閉じる（IntelliJ と同じ）
+        let (mut e, dir) = editor(&["f.txt", "g.txt"]);
+        e.settings.set("editor.autosave", "idle", false);
+        e.core.buf.edit(0, 0, "y");
+        e.core.buf.dirty = true;
+        e.tab_close(e.core.cur_doc);
+        assert!(e.menu.is_none(), "確かめない");
+        assert_eq!(labels(&e), ["f.txt"]);
+        assert_eq!(std::fs::read_to_string(dir.join("g.txt")).unwrap(), "yg.txt\n");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

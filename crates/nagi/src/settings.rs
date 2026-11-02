@@ -99,7 +99,7 @@ pub static SCHEMA: &[Item] = &[
     pitem("editor.new_bom", "エディタ", "新しいファイルに BOM を付ける", B, "false", ""),
     item("editor.grammar_download", "エディタ", "文法を自動でダウンロード", B, "true", "C・Go・C# など 21 言語の文法（色分け・定義へ移動）は、初めて開いたときに GitHub から取ってくる（1 言語 60〜510KB）。オフなら :GrammarInstall で"),
     item("editor.restore_session", "エディタ", "前回開いていたファイルを開き直す", B, "true", "プロジェクトを開いたとき、前に nagi で開いていたファイルとカーソルの位置を戻す（無ければ IntelliJ で開いていたもの）"),
-    item("editor.autosave", "エディタ", "自動で保存", SKind::Choice(&[("off", "しない"), ("focus", "窓を離れたとき・別のファイルへ移ったとき"), ("idle", "それと、打つのを止めて決めた秒数たったとき")]), "off", "IntelliJ と同じく、名前のある変更したファイルをすべて保存する"),
+    item("editor.autosave", "エディタ", "自動で保存", SKind::Choice(&[("off", "しない"), ("focus", "窓を離れたとき・別のファイルへ移ったとき"), ("idle", "それと、打つのを止めて決めた秒数たったとき")]), "idle", "IntelliJ と同じく、名前のある変更したファイルをすべて保存する"),
     item("editor.autosave_secs", "エディタ", "自動で保存するまでの秒数", SKind::Int(1, 600), "15", "「自動で保存」が「それと、打つのを止めて…」のとき"),
     item("editor.autoread", "エディタ", "外部での変更", SKind::Choice(&[("auto", "自動で読み直す（変えていなければ）"), ("ask", "知らせるだけ"), ("off", "何もしない")]), "auto", ""),
     item("editor.scrolloff", "エディタ", "カーソルの上下に残す行", SKind::Int(0, 50), "0", "カーソルを画面の端からこの行数より近づけない（scrolloff）"),
@@ -128,7 +128,7 @@ pub static SCHEMA: &[Item] = &[
     item("vim.ideajoin", "Vim", "J で注釈・文字列をつなぐ", B, "false", "J で注釈の続きの // や #、\"a\" +\n\"b\" の引用符を外してつなぐ（ideajoin）"),
     item("vim.clipboard", "Vim", "クリップボード", SKind::Choice(&[("unnamed", "ヤンク・削除をいつもクリップボードへ"), ("explicit", "\"+ と \"* のときだけ")]), "unnamed", "clipboard=unnamed"),
     // 入力補完
-    item("completion.auto", "入力補完", "打っている間に自動で出す", B, "false", "オフなら Ctrl+Space で出す"),
+    item("completion.auto", "入力補完", "打っている間に自動で出す", B, "true", "オフなら Ctrl+Space で出す"),
     item("completion.delay_ms", "入力補完", "自動で出すまで（ms）", SKind::Int(0, 2000), "300", ""),
     item("completion.min_chars", "入力補完", "自動で出す文字数", SKind::Int(1, 10), "2", ". の後はすぐ出す"),
     item("completion.case", "入力補完", "大文字小文字", SKind::Choice(&[("first", "最初の文字だけ区別"), ("none", "区別しない"), ("all", "区別する")]), "none", "IntelliJ の Match case"),

@@ -161,9 +161,10 @@ mod tests {
         let f = dir.join("a.txt");
         std::fs::write(&f, "x\n").unwrap();
         let mut e = Editor::new(nagi_core::Buffer::open(&f).unwrap(), None);
+        e.settings.set("editor.autosave", "off", false);
         e.insert_text("y");
         e.autosave(AutoSave::FocusLost);
-        assert_eq!(std::fs::read_to_string(&f).unwrap(), "x\n", "既定はしない");
+        assert_eq!(std::fs::read_to_string(&f).unwrap(), "x\n", "しない");
         e.settings.set("editor.autosave", "focus", false);
         assert!(e.autosave_deadline().is_none());
         e.autosave(AutoSave::Idle);
