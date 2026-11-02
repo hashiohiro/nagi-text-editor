@@ -1023,6 +1023,17 @@ impl Editor {
                 }
             }
         }
+        // 1 行目の右: ツールバー
+        if row == 0 {
+            let w = self.bottom_content_rect().map_or(0, |c| c.w);
+            if let (Some(k), Some(t)) = (toolbar_cols(w).into_iter().position(|c| col + 1 >= c && col + 1 < c + 3), self.panels.db_results.active_tab()) {
+                let op = TOOLBAR[k].2.clone();
+                if toolbar_enabled(t, &op) {
+                    self.result_op(op);
+                }
+                return;
+            }
+        }
         let r = &mut self.panels.db_results;
         // 1 行目: タブ
         if row == 0 {
@@ -1086,6 +1097,33 @@ pub fn grid_col_at(hscroll: usize, widths: &[usize], col: usize) -> Option<usize
 }
 
 /// タブの見出し
+/// 結果の上のツールバーのボタン（DataGrip と同じ。印, 名前, 操作）。タブの行の右に並べる
+pub const TOOLBAR: [(&str, &str, ResultOp); 6] = [
+    ("‹", "前のページ", ResultOp::PrevPage),
+    ("›", "次のページ", ResultOp::NextPage),
+    ("⟳", "ページの再ロード", ResultOp::Reload),
+    ("✓", "送信", ResultOp::Send),
+    ("↶", "選択項目の復元", ResultOp::Undo),
+    ("⇩", "データのエクスポート…", ResultOp::Export),
+];
+
+/// ツールバーのボタンの列（欄の左端から）。右端の「隠す」の手前に右寄せ
+pub fn toolbar_cols(w: usize) -> Vec<usize> {
+    let start = w.saturating_sub(4 + TOOLBAR.len() * 3);
+    (0..TOOLBAR.len()).map(|k| start + k * 3).collect()
+}
+
+/// ツールバーのボタンが押せるか
+pub fn toolbar_enabled(t: &ResultTab, op: &ResultOp) -> bool {
+    match op {
+        ResultOp::PrevPage => t.filterable && t.offset > 0,
+        ResultOp::NextPage => t.filterable && t.more,
+        ResultOp::Reload => t.filterable,
+        ResultOp::Send | ResultOp::Undo => !t.edits.is_empty(),
+        _ => true,
+    }
+}
+
 pub fn tab_label(k: usize, t: &ResultTab) -> String {
     let short: String = t.title.split(" · ").nth(1).unwrap_or(&t.title).chars().take(18).collect();
     format!("結果 {} · {short}", k + 1)
@@ -1134,7 +1172,8 @@ pub(crate) mod draw {
         p.out.push(Instance::fill(x0, y0, wpx, 1.0, LINE_NO));
         let focused = ed.state() == State::List && ed.list_side == crate::editor::Side::Bottom;
         let saved = p.cols;
-        p.cols = (r.x + r.w).saturating_sub(3);
+        // タブはツールバーの手前まで
+        p.cols = if res.active_tab().is_some() { r.x + crate::result_grid::toolbar_cols(r.w)[0] } else { (r.x + r.w).saturating_sub(3) };
         // タブ
         let mut x = r.x + 1;
         let labels: Vec<String> = std::iter::once("出力".to_string()).chain(res.tabs.iter().enumerate().map(|(k, t)| crate::result_grid::tab_label(k, t))).collect();
@@ -1145,6 +1184,16 @@ pub(crate) mod draw {
                 p.out.push(Instance::fill(x as f32 * cell.w, y0 + cell.h - crate::metrics::accent_line(), (end - x) as f32 * cell.w, crate::metrics::accent_line(), if focused { GIT_MOD } else { STATUS_FG }));
             }
             x = end + 1;
+        }
+        // タブの行の右: ツールバー（押せないものは薄く）
+        if let Some(t) = res.active_tab() {
+            p.cols = r.x + r.w;
+            for ((glyph, label, op), c) in crate::result_grid::TOOLBAR.iter().zip(crate::result_grid::toolbar_cols(r.w)) {
+                let on = crate::result_grid::toolbar_enabled(t, op);
+                p.out.push(Instance::fill((r.x + c) as f32 * cell.w, y0 + 1.0, 3.0 * cell.w, cell.h - 2.0, PANEL_BG));
+                p.text(glyph, r.x + c + 1, y0, if on { FG } else { LINE_NO });
+                p.tab_hits.push((r.y, r.x + c, r.x + c + 3, label));
+            }
         }
         p.out.push(Instance::fill(x0, y0 + cell.h - 1.0, wpx, 1.0, SEPARATOR));
         p.cols = r.x + r.w;
@@ -1372,6 +1421,8 @@ mod tests {
         wait(&mut e, &|e| e.panels.db.as_ref().unwrap().conns[i].columns.contains_key(&("main".into(), "item".into())));
         e.list_side = Side::Bottom;
         e.set_state(State::List);
+        // 直していなければツールバーの送信・復元は押せない
+        assert!(!toolbar_enabled(e.panels.db_results.active_tab().unwrap(), &ResultOp::Send));
         // 2 行目の name を F2 で直す（値を消して打つ）
         keys(&mut e, "<Down><Right>");
         e.key(Key::F(2));
@@ -1384,8 +1435,11 @@ mod tests {
         // 送ると読み直さずに表へ入る。DB の値も変わっている（ここからは本当に手動の Tx に）
         e.panels.db.as_mut().unwrap().conns[i].manual = false;
         e.db_toggle_tx(i);
-        e.key(Key::Ctrl('m'));
-        keys(&mut e, "y");
+        // ツールバーの ✓（送信）を押す
+        let w = e.bottom_content_rect().unwrap().w;
+        let send = toolbar_cols(w)[TOOLBAR.iter().position(|b| b.2 == ResultOp::Send).unwrap()];
+        assert!(toolbar_enabled(e.panels.db_results.active_tab().unwrap(), &ResultOp::Send));
+        e.result_click(0, send, 1);
         wait(&mut e, &|e| e.panels.db_results.active_tab().is_some_and(|t| t.edits.is_empty() && t.info.contains("直しました")));
         assert_eq!(e.panels.db_results.active_tab().unwrap().rows[1][1].as_deref(), Some("x'y"));
         e.db_execute(i, "select name from item where id = 2".into());

@@ -38,6 +38,7 @@ pub struct CommitPanel {
 
 impl CommitPanel {
     /// git を動かしている途中か（コミット・プッシュ・戻す）
+    #[cfg(test)]
     pub(crate) fn busy(&self) -> bool {
         self.running.is_some()
     }
