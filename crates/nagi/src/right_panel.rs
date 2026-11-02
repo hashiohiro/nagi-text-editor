@@ -177,6 +177,16 @@ impl crate::component::Component for RightComponent {
 /// 右の欄（データベース・Maven・プレビュー）（layout.rs の View）
 pub struct RightView;
 
+/// データソースのフォームの枠の行（題・欄・接続のテスト・案内）。描き方と押した位置で共通
+pub(crate) fn form_lines(f: &crate::db_panel::Form) -> Vec<String> {
+    let mut lines = vec![if f.edit.is_some() { " データソースのプロパティ" } else { " データソースの作成" }.to_string()];
+    // 見出しは部品の文字（幅がそろわない）なので、値と ▸ は見出しの最も広い幅の右に、列を決めて描く
+    lines.extend(f.fields.iter().map(|(label, _)| format!(" {label}")));
+    lines.push(String::new());
+    lines.push(if f.edit.is_some() { " Tab 次の欄・Enter 保存・Esc やめる" } else { " Tab 次の欄・Enter 保存してつなぐ・Esc やめる" }.to_string());
+    lines
+}
+
 /// データベースの見出しの ＋ の列（画面の列。右端の「隠す」の 1 列手前をあけて）
 pub(crate) fn plus_col(r: crate::panes::Rect) -> usize {
     (r.x + r.w).saturating_sub(5)
@@ -194,6 +204,25 @@ impl crate::layout::View for RightView {
     }
 
     fn click(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At, clicks: u32) -> crate::layout::Click {
+        // データソースのフォーム: 欄の行を押すとその欄へ、「接続のテスト」の行で確かめる
+        if let Some(f) = ed.panels.db.as_ref().and_then(|p| p.form.as_ref()).filter(|_| ed.right_visible() == Some(RightTab::Database)) {
+            let n = form_lines(f).len();
+            let top = r.h.saturating_sub(n + 1);
+            if at.row >= top && at.row < top + n {
+                let k = at.row - top;
+                let fields = f.fields.len();
+                ed.focus_right(RightTab::Database);
+                if k == fields + 1 {
+                    ed.run_ui_action("db.testConnection");
+                } else if (1..=fields).contains(&k) {
+                    if let Some(f) = ed.panels.db.as_mut().and_then(|p| p.form.as_mut()) {
+                        f.at = k - 1;
+                        f.fields[f.at].1.reinsert();
+                    }
+                }
+                return crate::layout::Click::Done;
+            }
+        }
         // データベースの見出しの ＋
         let c0 = plus_col(r) - r.x;
         if at.row == 0 && ed.right_visible() == Some(RightTab::Database) && (c0..c0 + 2).contains(&at.col) {
@@ -424,11 +453,11 @@ pub(crate) mod draw {
                 ];
                 draw_panel_box(p, r, &lines, 0);
             } else if let Some(f) = &d.form {
-                let mut lines = vec![if f.edit.is_some() { " データソースのプロパティ" } else { " データソースの作成" }.to_string()];
-                // 見出しは部品の文字（幅がそろわない）なので、値と ▸ は見出しの最も広い幅の右に、列を決めて描く
-                lines.extend(f.fields.iter().map(|(label, _)| format!(" {label}")));
-                lines.push(if f.edit.is_some() { " Tab 次の欄・Enter 保存・Esc やめる" } else { " Tab 次の欄・Enter 保存してつなぐ・Esc やめる" }.to_string());
+                let lines = super::form_lines(f);
                 let (bx, by) = draw_panel_box(p, r, &lines, f.at + 1);
+                // 値は枠の中で切る（長い URL）
+                let saved_cols = p.cols;
+                p.cols = (r.x + r.w).saturating_sub(1);
                 let mark = bx + 2 + f.fields.iter().map(|(label, _)| p.width(&format!(" {label}"))).max().unwrap_or(0);
                 let val = mark + p.width("▸") + 1;
                 for (k, (_, field)) in f.fields.iter().enumerate() {
@@ -436,14 +465,32 @@ pub(crate) mod draw {
                     if k == f.at {
                         p.text("▸", mark, y, FG);
                     }
+                    let label = f.fields[k].0;
                     if f.kind_row(k) {
                         p.text(&format!("‹ {} ›", field.text()), val, y, FG);
+                    } else if label == "パスワード" {
+                        // 伏せ字（打っている間は終わりに縦棒）
+                        let x = p.text(&"●".repeat(field.text().chars().count()), val, y, FG);
+                        if k == f.at {
+                            p.caret(x, y);
+                        }
                     } else if k == f.at {
                         draw_vim_field(p, field, val, y, &ed.preedit);
                     } else {
-                        p.text(&field.text(), val, y, FG);
+                        p.text(&field.text(), val, y, if k == 0 { STATUS_FG } else { FG });
                     }
                 }
+                // 接続のテスト（ボタンと結果）
+                let y = by + (f.fields.len() + 1) as f32 * cell.h;
+                let c = p.text(" 接続のテスト ", bx + 2, y, if f.kind == nagi_workers::db::Kind::Salesforce { LINE_NO } else { ACCENT_FG });
+                let (msg, color) = match (&f.test, f.testing) {
+                    (_, true) => ("つないでいます…".to_string(), STATUS_FG),
+                    (Some(Ok(product)), _) => (format!("成功: {product}"), GIT_ADD),
+                    (Some(Err(e)), _) => (format!("失敗: {e}"), DIAG_ERROR),
+                    (None, _) => (String::new(), STATUS_FG),
+                };
+                p.text(&format!("  {msg}"), c, y, color);
+                p.cols = saved_cols;
             }
         }
         p.cols = saved;

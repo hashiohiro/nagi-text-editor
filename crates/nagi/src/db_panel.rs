@@ -195,24 +195,53 @@ impl DbRow {
 /// データソースの作成・プロパティのフォーム
 pub struct Form {
     pub kind: Kind,
-    /// (見出し, 入力欄)。作るときは 0 番が種類（← → で切り替え）。入力欄は Vim 風
+    /// (見出し, 入力欄)。0 番は種類（作るときは ← → で切り替え、直すときは見せるだけ）。入力欄は Vim 風
     pub fields: Vec<(&'static str, VimField)>,
     pub at: usize,
-    /// プロパティ（直す接続先の番号）。名前・URL・利用者・既定のスキーマをそのまま直す（Spring の設定の URL も表せるように）
+    /// プロパティ（直す接続先の番号）
     pub edit: Option<usize>,
+    /// 接続のテストの結果（Ok は製品の名前、Err は誤り）と、テストしている途中か
+    pub test: Option<Result<String, String>>,
+    pub testing: bool,
 }
+
+/// URL を組み立てる欄（変えたら URL を作り直す。URL を変えたらこれらに分ける。DataGrip と同じ）
+const URL_PARTS: [&str; 6] = ["ホスト", "ポート", "サービス名", "データベース", "ファイル", "ログイン URL"];
 
 impl Form {
     fn new(kind: Kind) -> Form {
-        let mut f = Form { kind, fields: Vec::new(), at: 1, edit: None };
+        let mut f = Form { kind, fields: Vec::new(), at: 1, edit: None, test: None, testing: false };
         f.set_kind(kind);
         f
     }
 
     fn edit(i: usize, ds: &DataSource) -> Form {
-        let p = |s: &str| VimField::new(s, false);
-        let fields = vec![("名前", p(&ds.name)), ("URL", p(&ds.url)), ("利用者", p(&ds.user)), ("既定のスキーマ", p(&ds.schema))];
-        Form { kind: Kind::of(&ds.url).unwrap_or(Kind::Oracle), fields, at: 0, edit: Some(i) }
+        let kind = Kind::of(&ds.url).unwrap_or(Kind::Oracle);
+        let pass = if ds.user.is_empty() { String::new() } else { nagi_workers::db::saved_password(&ds.url, &ds.user).unwrap_or_default() };
+        let vals = [("名前", ds.name.as_str()), ("利用者", ds.user.as_str()), ("パスワード", pass.as_str()), ("既定のスキーマ", ds.schema.as_str()), ("URL", ds.url.as_str())];
+        let mut f = Form { kind, fields: Self::fields_for(kind, &vals), at: 1, edit: Some(i), test: None, testing: false };
+        f.parts_from_url();
+        f
+    }
+
+    /// 種類ごとの欄（`vals` にある見出しはその値、無ければ既定）
+    fn fields_for(kind: Kind, vals: &[(&str, &str)]) -> Vec<(&'static str, VimField)> {
+        let labels: &[&'static str] = match kind {
+            Kind::Oracle => &["種類", "名前", "ホスト", "ポート", "サービス名", "利用者", "パスワード", "既定のスキーマ", "URL"],
+            Kind::Postgres => &["種類", "名前", "ホスト", "ポート", "データベース", "利用者", "パスワード", "既定のスキーマ", "URL"],
+            Kind::Sqlite => &["種類", "名前", "ファイル", "URL"],
+            Kind::Salesforce => &["種類", "名前", "ログイン URL", "利用者", "URL"],
+        };
+        let default = |l: &str| match (kind, l) {
+            (_, "種類") => kind.label(),
+            (Kind::Oracle | Kind::Postgres, "ホスト") => "localhost",
+            (Kind::Oracle, "ポート") => "1521",
+            (Kind::Postgres, "ポート") => "5432",
+            (Kind::Postgres, "データベース") => "postgres",
+            (Kind::Salesforce, "ログイン URL") => "https://login.salesforce.com",
+            _ => "",
+        };
+        labels.iter().map(|&l| (l, VimField::new(vals.iter().find(|v| v.0 == l).map_or(default(l), |v| v.1), false))).collect()
     }
 
     /// 種類を ← → で選ぶ行か（作るときの 0 番）
@@ -221,20 +250,59 @@ impl Form {
     }
 
     fn set_kind(&mut self, kind: Kind) {
+        let keep: Vec<(&str, String)> = ["名前", "利用者", "パスワード"].iter().map(|&l| (l, self.get(l))).collect();
+        let vals: Vec<(&str, &str)> = keep.iter().map(|(l, v)| (*l, v.as_str())).collect();
         self.kind = kind;
-        let p = |s: &str| VimField::new(s, false);
-        let name = self.fields.get(1).map(|f| f.1.text()).unwrap_or_default();
-        self.fields = match kind {
-            Kind::Oracle => vec![("種類", p("Oracle")), ("名前", p(&name)), ("ホスト", p("localhost")), ("ポート", p("1521")), ("サービス名", p("")), ("利用者", p(""))],
-            Kind::Sqlite => vec![("種類", p("SQLite")), ("名前", p(&name)), ("ファイル", p(""))],
-            Kind::Postgres => vec![("種類", p("PostgreSQL")), ("名前", p(&name)), ("ホスト", p("localhost")), ("ポート", p("5432")), ("データベース", p("postgres")), ("利用者", p(""))],
-            Kind::Salesforce => vec![("種類", p("Salesforce")), ("名前", p(&name)), ("ログイン URL", p("https://login.salesforce.com")), ("利用者", p(""))],
-        };
+        self.fields = Self::fields_for(kind, &vals);
+        self.url_from_parts();
         self.at = self.at.min(self.fields.len() - 1);
+        self.test = None;
     }
 
     fn get(&self, label: &str) -> String {
         self.fields.iter().find(|f| f.0 == label).map_or(String::new(), |f| f.1.text().trim().to_string())
+    }
+
+    fn set(&mut self, label: &str, value: &str) {
+        if let Some(f) = self.fields.iter_mut().find(|f| f.0 == label) {
+            f.1 = VimField::new(value, false);
+        }
+    }
+
+    /// 欄を変えた: URL なら各欄に分け、URL を組み立てる欄なら URL を作り直す
+    fn changed(&mut self, label: &str) {
+        self.test = None;
+        if label == "URL" {
+            self.parts_from_url();
+        } else if URL_PARTS.contains(&label) {
+            self.url_from_parts();
+        }
+    }
+
+    /// 各欄から URL を作る（PostgreSQL の ? の後ろ（sslmode など）は今の URL のものを残す）
+    fn url_from_parts(&mut self) {
+        let or = |v: String, d: &str| if v.is_empty() { d.to_string() } else { v };
+        let url = match self.kind {
+            Kind::Oracle => format!("jdbc:oracle:thin:@//{}:{}/{}", self.get("ホスト"), or(self.get("ポート"), "1521"), self.get("サービス名")),
+            Kind::Postgres => {
+                let tail = self.get("URL").split_once('?').map(|(_, q)| format!("?{q}")).unwrap_or_default();
+                format!("jdbc:postgresql://{}:{}/{}{tail}", self.get("ホスト"), or(self.get("ポート"), "5432"), self.get("データベース"))
+            }
+            Kind::Sqlite => format!("jdbc:sqlite:{}", or(self.get("ファイル"), ":memory:")),
+            Kind::Salesforce => format!("salesforce:{}", or(self.get("ログイン URL"), "https://login.salesforce.com")),
+        };
+        self.set("URL", &url);
+    }
+
+    /// URL を各欄に分ける（分けられない形なら各欄はそのまま）
+    fn parts_from_url(&mut self) {
+        for (l, v) in url_parts(self.kind, &self.get("URL")) {
+            self.set(l, &v);
+        }
+    }
+
+    pub fn password(&self) -> String {
+        self.get("パスワード")
     }
 
     /// 入力から接続先を作る
@@ -243,38 +311,43 @@ impl Form {
         if name.is_empty() {
             return Err("名前を入れてください".into());
         }
-        if self.edit.is_some() {
-            let url = self.get("URL");
-            if Kind::of(&url).is_none() {
-                return Err("URL は jdbc:oracle:・jdbc:postgresql:・jdbc:sqlite:・salesforce: で始めてください".into());
-            }
-            return Ok(DataSource { name, url, user: self.get("利用者"), origin: config_path().display().to_string(), schema: self.get("既定のスキーマ") });
+        let url = self.get("URL");
+        if Kind::of(&url).is_none() {
+            return Err("URL は jdbc:oracle:・jdbc:postgresql:・jdbc:sqlite:・salesforce: で始めてください".into());
         }
-        let (url, user) = match self.kind {
-            Kind::Oracle => {
-                let (host, port, svc) = (self.get("ホスト"), self.get("ポート"), self.get("サービス名"));
-                if host.is_empty() || svc.is_empty() {
-                    return Err("ホストとサービス名を入れてください".into());
-                }
-                (format!("jdbc:oracle:thin:@//{host}:{}/{svc}", if port.is_empty() { "1521".into() } else { port }), self.get("利用者"))
-            }
-            Kind::Sqlite => {
-                let f = self.get("ファイル");
-                (format!("jdbc:sqlite:{}", if f.is_empty() { ":memory:".into() } else { f }), String::new())
-            }
-            Kind::Postgres => {
-                let (host, port, db) = (self.get("ホスト"), self.get("ポート"), self.get("データベース"));
-                if host.is_empty() || db.is_empty() {
-                    return Err("ホストとデータベースを入れてください".into());
-                }
-                (format!("jdbc:postgresql://{host}:{}/{db}", if port.is_empty() { "5432".into() } else { port }), self.get("利用者"))
-            }
-            Kind::Salesforce => {
-                let u = self.get("ログイン URL");
-                (format!("salesforce:{}", if u.is_empty() { "https://login.salesforce.com".into() } else { u }), self.get("利用者"))
-            }
-        };
-        Ok(DataSource { name, url, user, origin: config_path().display().to_string(), schema: String::new() })
+        match self.kind {
+            Kind::Oracle if self.get("ホスト").is_empty() && url.contains("@//:") => return Err("ホストとサービス名を入れてください".into()),
+            Kind::Postgres if url.contains("://:") => return Err("ホストとデータベースを入れてください".into()),
+            _ => {}
+        }
+        Ok(DataSource { name, url, user: self.get("利用者"), origin: config_path().display().to_string(), schema: self.get("既定のスキーマ") })
+    }
+}
+
+/// URL を各欄に分ける（Oracle の @//ホスト:ポート/サービス名、PostgreSQL の //ホスト:ポート/データベース、SQLite のファイル、Salesforce のログイン URL）
+pub fn url_parts(kind: Kind, url: &str) -> Vec<(&'static str, String)> {
+    let host_port = |hp: &str| -> (String, String) {
+        match hp.rsplit_once(':') {
+            Some((h, p)) if p.chars().all(|c| c.is_ascii_digit()) => (h.to_string(), p.to_string()),
+            _ => (hp.to_string(), String::new()),
+        }
+    };
+    match kind {
+        Kind::Oracle => {
+            let Some(rest) = url.split_once("@//").map(|x| x.1) else { return Vec::new() };
+            let (hp, svc) = rest.split_once('/').unwrap_or((rest, ""));
+            let (h, p) = host_port(hp);
+            vec![("ホスト", h), ("ポート", p), ("サービス名", svc.to_string())]
+        }
+        Kind::Postgres => {
+            let Some(rest) = url.split_once("://").map(|x| x.1) else { return Vec::new() };
+            let rest = rest.split_once('?').map_or(rest, |x| x.0);
+            let (hp, db) = rest.split_once('/').unwrap_or((rest, ""));
+            let (h, p) = host_port(hp);
+            vec![("ホスト", h), ("ポート", p), ("データベース", db.to_string())]
+        }
+        Kind::Sqlite => url.split_once("sqlite:").map(|x| vec![("ファイル", x.1.to_string())]).unwrap_or_default(),
+        Kind::Salesforce => url.strip_prefix("salesforce:").map(|x| vec![("ログイン URL", x.to_string())]).unwrap_or_default(),
     }
 }
 
@@ -789,12 +862,14 @@ pub enum DbAction {
     ToText,
     /// 接続先を足すフォームを開く（欄が無ければ出す）
     AddForm,
+    /// フォームの値で、つながるかを確かめる
+    TestForm,
     /// 絞り込みの欄へ
     Filter,
 }
 
 /// データベースの欄のアクション（ui_action.rs。ADR 0019）。メニュー・ボタン・パレット・ショートカット（既定は付けない）はここを引く
-pub static ACTIONS: [crate::ui_action::UiAction; 13] = {
+pub static ACTIONS: [crate::ui_action::UiAction; 14] = {
     use crate::ui_action::{always, Scope::Database, UiAction};
     // 選んでいる行の接続先がつないでいるか
     fn connected(e: &Editor) -> bool {
@@ -828,6 +903,7 @@ pub static ACTIONS: [crate::ui_action::UiAction; 13] = {
         UiAction { id: "db.properties", label: "プロパティ", scope: Database, enabled: selected, run: |e| e.db_do(DbAction::Properties) },
         UiAction { id: "db.duplicate", label: "複製", scope: Database, enabled: selected, run: |e| e.db_do(DbAction::Duplicate) },
         UiAction { id: "db.remove", label: "データソースの除去…", scope: Database, enabled: removable, run: |e| e.db_do(DbAction::Remove) },
+        UiAction { id: "db.testConnection", label: "接続のテスト", scope: Database, enabled: |e| e.panels.db.as_ref().and_then(|p| p.form.as_ref()).is_some_and(|f| f.kind != Kind::Salesforce && !f.testing), run: |e| e.db_do(DbAction::TestForm) },
         UiAction { id: "db.filter", label: "フィルター", scope: Database, enabled: open, run: |e| e.db_do(DbAction::Filter) },
         UiAction { id: "db.close", label: "非表示", scope: Database, enabled: open, run: |e| e.db_do(DbAction::Close) },
     ]
@@ -876,11 +952,18 @@ impl DbPanel {
                     f.set_kind(order[k]);
                     FieldOut::None
                 }
-                Key::Esc if f.kind_row(f.at) => FieldOut::Cancel,
-                Key::Enter if f.kind_row(f.at) => FieldOut::Submit,
+                // 種類の行（直すときは見せるだけ）
+                Key::Esc if f.at == 0 => FieldOut::Cancel,
+                Key::Enter if f.at == 0 => FieldOut::Submit,
+                _ if f.at == 0 => FieldOut::None,
                 k => {
                     let at = f.at;
-                    f.fields[at].1.feed(k, svc)
+                    let out = f.fields[at].1.feed(k, svc);
+                    if out == FieldOut::Changed {
+                        let label = f.fields[at].0;
+                        f.changed(label);
+                    }
+                    out
                 }
             };
             match out {
@@ -895,6 +978,17 @@ impl DbPanel {
                 FieldOut::Submit => match f.source() {
                     Ok(ds) => {
                         let edit = f.edit;
+                        // パスワードは DPAPI で暗号化して保存する（つなぐときに聞かない）。直すときに消したら、保存したものも消す
+                        let pass = f.password();
+                        if !ds.user.is_empty() && f.fields.iter().any(|x| x.0 == "パスワード") {
+                            if !pass.is_empty() {
+                                if let Err(e) = nagi_workers::db::save_password(&ds.url, &ds.user, &pass) {
+                                    svc.notify.error(format!("パスワードを保存できません: {e}"));
+                                }
+                            } else if edit.is_some() {
+                                nagi_workers::db::forget_password(&ds.url, &ds.user);
+                            }
+                        }
                         self.form = None;
                         return match edit {
                             Some(i) => DbAction::EditSource(i, ds),
@@ -1688,6 +1782,43 @@ impl Editor {
         self.db_execute(i, sql);
     }
 
+    /// フォームの値で、つながるかを裏で確かめる（接続のテスト。DataGrip と同じ）
+    pub(crate) fn db_form_test(&mut self) {
+        let Some(f) = self.panels.db.as_mut().and_then(|p| p.form.as_mut()) else { return };
+        let ds = match f.source() {
+            Ok(ds) => ds,
+            Err(e) => {
+                f.test = Some(Err(e.to_string()));
+                return;
+            }
+        };
+        let pass = f.password();
+        // パスワードの欄が空なら、保存したものを使う
+        let pass = if pass.is_empty() && !ds.user.is_empty() { nagi_workers::db::saved_password(&ds.url, &ds.user).unwrap_or_default() } else { pass };
+        f.testing = true;
+        f.test = None;
+        let url = ds.url.clone();
+        self.job(
+            "db-test",
+            move || -> Result<String, String> {
+                let c = Client::connect(&ds.url, &ds.user, &pass, std::sync::Arc::new(|| {})).map_err(|e| e.to_string())?;
+                match c.rx.recv_timeout(std::time::Duration::from_secs(30)) {
+                    Ok(nagi_workers::db::Reply::Connected { product, .. }) => Ok(product),
+                    Ok(nagi_workers::db::Reply::Error(e)) => Err(e),
+                    Ok(_) => Err("思わない答えが届きました".into()),
+                    Err(_) => Err("30 秒たってもつながりません".into()),
+                }
+            },
+            move |e, r| {
+                // 届くまでにフォームを閉じた・URL を変えたら捨てる
+                if let Some(f) = e.panels.db.as_mut().and_then(|p| p.form.as_mut()).filter(|f| f.get("URL") == url) {
+                    f.testing = false;
+                    f.test = Some(r);
+                }
+            },
+        );
+    }
+
     /// 接続先 `i` で流している文を止める（実行中ステートメントのキャンセル。DataGrip と同じ）
     pub(crate) fn db_cancel(&mut self, i: usize) {
         let ok = self.panels.db.as_ref().and_then(|p| p.conns.get(i)).and_then(|c| c.client.as_ref()).is_some_and(|c| c.cancel());
@@ -2210,6 +2341,7 @@ impl Editor {
                 self.db_begin_connect(i);
             }
             DbAction::EditSource(i, ds) => self.db_update_source(i, ds),
+            DbAction::TestForm => self.db_form_test(),
             DbAction::Properties => {
                 if let (Some(r), Some(p)) = (self.db_selected(), &mut self.panels.db) {
                     p.open_properties(r.source());
@@ -2446,6 +2578,54 @@ pub(crate) mod tests {
 
     /// NAGI_DB_DIR を書き換える試験は 1 つずつ（並んで走ると置き場所が入れ替わる）
     static DB_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// データソースのフォーム: 各欄を変えると URL が、URL を変えると各欄が変わる（? の後ろは残す）。種類を替えても名前・利用者は残す
+    #[test]
+    fn form_url_sync() {
+        let mut f = Form::new(Kind::Postgres);
+        assert_eq!(f.get("URL"), "jdbc:postgresql://localhost:5432/postgres");
+        f.set("URL", "jdbc:postgresql://db.example:6543/shop?sslmode=require");
+        f.changed("URL");
+        assert_eq!((f.get("ホスト"), f.get("ポート"), f.get("データベース")), ("db.example".into(), "6543".into(), "shop".into()));
+        f.set("データベース", "shop2");
+        f.changed("データベース");
+        assert_eq!(f.get("URL"), "jdbc:postgresql://db.example:6543/shop2?sslmode=require");
+        f.set("名前", "n");
+        f.set("利用者", "me");
+        f.set_kind(Kind::Oracle);
+        assert_eq!((f.get("名前"), f.get("利用者"), f.get("URL")), ("n".into(), "me".into(), "jdbc:oracle:thin:@//localhost:1521/".into()));
+        f.set("サービス名", "ORCL");
+        f.changed("サービス名");
+        assert_eq!(f.source().unwrap().url, "jdbc:oracle:thin:@//localhost:1521/ORCL");
+        // 分けられない URL（TNS の記述など）なら各欄はそのまま
+        assert!(url_parts(Kind::Oracle, "jdbc:oracle:thin:@(DESCRIPTION=...)").is_empty());
+        let ds = DataSource { name: "x".into(), url: "jdbc:oracle:thin:@//h:1522/S".into(), user: String::new(), origin: String::new(), schema: "APP".into() };
+        let f = Form::edit(0, &ds);
+        assert_eq!((f.get("ホスト"), f.get("ポート"), f.get("サービス名"), f.get("既定のスキーマ")), ("h".into(), "1522".into(), "S".into(), "APP".into()));
+    }
+
+    /// パスワードの欄は保存のときに DPAPI で暗号化して置き、つなぐときに聞かない
+    #[test]
+    fn form_saves_password() {
+        let dir = std::env::temp_dir().join(format!("nagi-dbpass-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _env = DB_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        // SAFETY: テストの中だけで使う
+        unsafe {
+            std::env::set_var("NAGI_PASSWORD_DIR", &dir);
+        }
+        let mut p = DbPanel { sources: Vec::new(), conns: Vec::new(), folds: nagi_ui::Folds::closed(), rows: Vec::new(), selected: 0, scroll: 0, filter_text: String::new(), filter: None, password: None, setup_ask: None, download: None, form: Some(Form::new(Kind::Postgres)), removed: HashSet::new(), consoles: HashMap::new(), then: HashMap::new() };
+        let f = p.form.as_mut().unwrap();
+        f.set("名前", "pg");
+        f.set("利用者", "me");
+        f.set("パスワード", "s3cret");
+        f.at = f.fields.len() - 1;
+        let mut e = Editor::new(nagi_core::Buffer::from_str(""), None);
+        let a = p.key(Key::Enter, 10, &mut e.svc);
+        assert!(matches!(a, DbAction::AddSource(ref ds) if ds.user == "me"));
+        assert_eq!(nagi_workers::db::saved_password("jdbc:postgresql://localhost:5432/postgres", "me").as_deref(), Some("s3cret"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn statements() {
@@ -2802,7 +2982,7 @@ pub(crate) mod tests {
         let mut e = Editor::new(nagi_core::Buffer::from_str("x\n"), None);
         e.set_screen(160, 50);
         e.open_db_panel();
-        // 接続先を足す → 種類を SQLite に（名前の順で最後なので、Oracle から ← で回る）→ 名前 → ファイル → Enter で保存してつなぐ
+        // 接続先を足す → 種類を SQLite に（名前の順で最後なので、Oracle から ← で回る）→ 名前 → ファイル（URL も変わる）→ 接続のテスト → Enter で保存してつなぐ
         assert!(e.run_ui_action("db.addSource"));
         assert!(e.panels.db.as_ref().unwrap().form.is_some());
         keys(&mut e, "<Up><Left><Down>shop<Tab>");
@@ -2810,7 +2990,12 @@ pub(crate) mod tests {
         for c in file.display().to_string().chars() {
             e.key(Key::Char(c));
         }
-        keys(&mut e, "<CR>");
+        assert_eq!(e.panels.db.as_ref().unwrap().form.as_ref().unwrap().get("URL"), format!("jdbc:sqlite:{}", file.display()), "ファイルを打つと URL も変わる");
+        assert!(e.run_ui_action("db.testConnection"));
+        e.wait_jobs();
+        let t = e.panels.db.as_ref().unwrap().form.as_ref().unwrap().test.clone();
+        assert!(matches!(&t, Some(Ok(p)) if p.starts_with("SQLite")), "{t:?}");
+        keys(&mut e, "<CR><CR>");
         assert!(std::fs::read_to_string(dir.join(".config/nagi/databases.txt")).unwrap().contains("shop | jdbc:sqlite:"));
         let i = e.panels.db.as_ref().unwrap().sources.len() - 1;
         wait(&mut e, &|e| e.panels.db.as_ref().unwrap().conns[i].objects.contains_key("main"));
@@ -2876,9 +3061,9 @@ pub(crate) mod tests {
         assert!(e.run_ui_action("db.properties"));
         let f = e.panels.db.as_ref().unwrap().form.as_ref().unwrap();
         assert_eq!(f.edit, Some(i));
-        assert_eq!(f.fields.iter().map(|f| f.1.text()).collect::<Vec<_>>()[..2], ["shop".to_string(), format!("jdbc:sqlite:{}", file.display())]);
-        e.panels.db.as_mut().unwrap().form.as_mut().unwrap().fields[0].1 = VimField::new("shop2", false);
-        keys(&mut e, "<CR><CR><CR><CR>");
+        assert_eq!(f.fields.iter().map(|f| f.1.text()).collect::<Vec<_>>()[1..], ["shop".to_string(), file.display().to_string(), format!("jdbc:sqlite:{}", file.display())], "URL から各欄に分ける");
+        e.panels.db.as_mut().unwrap().form.as_mut().unwrap().fields[1].1 = VimField::new("shop2", false);
+        keys(&mut e, "<CR><CR><CR>");
         assert!(e.panels.db.as_ref().unwrap().form.is_none(), "最後の欄の Enter で保存");
         assert_eq!(e.panels.db.as_ref().unwrap().sources[i].name, "shop2");
         let text = std::fs::read_to_string(&cfg).unwrap();
