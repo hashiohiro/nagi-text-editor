@@ -11,8 +11,11 @@ use nagi_core::{Buffer, Cursor, History, Motion, byte_at_col, display_col};
 use nagi_vim::Key;
 use unicode_segmentation::UnicodeSegmentation;
 
-/// 行番号の欄の幅（セル）
-pub const GUTTER: usize = 6;
+/// 行番号の欄の幅（セル）: 行番号 5・空き 1・実行の ▶ 2・折りたたみの印 1（IntelliJ と同じ並び）
+pub const GUTTER: usize = 9;
+/// 行番号の欄の中の、実行の ▶ と折りたたみの印の列（欄の左端から）
+pub const GUTTER_RUN: usize = 6;
+pub const GUTTER_FOLD: usize = 8;
 
 /// 入力の状態の見え方（Vim の状態と、向いている部品を合わせたもの）。持つのは `vim`（Mode）と `focus`（Panel）で、
 /// これは `Editor::state()` が導く。変えるときは `Editor::set_state`
@@ -2093,8 +2096,15 @@ impl Editor {
         if row < self.rows && col + GUTTER == self.gutter() && self.hunk_marker_click(self.pos_at(row, self.gutter()).line) {
             return;
         }
+        // 実行の ▶・折りたたみの印（行番号の右）
+        if row < self.rows {
+            let r = self.active_rect();
+            if self.gutter_icon_click(row, col, (r.y + row + 1, r.x + col)) {
+                return;
+            }
+        }
         let java = self.core.buf.path.as_deref().and_then(crate::debugger::lang_of).is_some();
-        if java && row < self.rows && col < self.gutter() && col + GUTTER >= self.gutter() {
+        if java && row < self.rows && col + GUTTER >= self.gutter() && col + GUTTER < self.gutter() + GUTTER_RUN {
             let line = self.pos_at(row, self.gutter()).line;
             self.toggle_breakpoint(Some(line));
             return;

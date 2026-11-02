@@ -73,6 +73,7 @@ mod input_dialog;
 mod search_bar;
 mod scrollbar;
 mod hover;
+mod gutter;
 mod toggles;
 mod tree_panel;
 mod tree_files;

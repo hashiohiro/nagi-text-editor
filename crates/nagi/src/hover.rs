@@ -24,15 +24,21 @@ pub struct HoverTip {
 }
 
 impl Editor {
-    /// マウスが動いた（画面のセル。ボタンを押していないとき）。出していた説明を消したら true（描き直す）
+    /// マウスが動いた（画面のセル。ボタンを押していないとき）。出していた説明を消した・行番号の欄に出入りしたら true（描き直す）
     pub(crate) fn hover_move(&mut self, row: usize, col: usize, now: Instant) -> bool {
         if self.hover_cell == Some((row, col)) {
             return false;
         }
+        let was = self.hover_cell.is_some_and(|(r, c)| self.over_gutter(r, c));
         self.hover_cell = Some((row, col));
         let had = self.hover_tip.take().is_some();
         self.hover_due = self.over_text(row, col).then_some(now + HOVER_DELAY);
-        had
+        had || was != self.over_gutter(row, col)
+    }
+
+    /// どれかの窓の行番号の欄の上か（開いた折りたたみの印を出す）
+    fn over_gutter(&self, row: usize, col: usize) -> bool {
+        self.editor_shown() && self.window_rects().iter().any(|(_, r)| row >= r.y && row < r.y + r.h && col >= r.x && col < r.x + self.gutter())
     }
 
     /// 説明を出す時刻（App の待ちに入れる）

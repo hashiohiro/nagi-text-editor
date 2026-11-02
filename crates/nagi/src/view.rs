@@ -662,6 +662,13 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
     let cursorline = ed.settings.bool("editor.cursorline") && pane.active;
     let flash = ed.yank_flash.filter(|_| pane.active).map(|f| (f.0, f.1));
     let line_numbers = ed.settings.get("editor.line_numbers");
+    // 行番号の右: 折りたためる範囲の頭（開いたものはマウスを欄に載せている間だけ印を出す）と、実行の ▶（gutter.rs）
+    let fold_heads: Vec<usize> = match (pane.syntax, shown.first(), shown.last()) {
+        (Some(syn), Some(&a), Some(&b)) => syn.folds_in(a, b + 1).into_iter().map(|f| f.0).collect(),
+        _ => Vec::new(),
+    };
+    let gutter_hover = ed.hover_cell.is_some_and(|(r, c)| r >= rect.y && r < rect.y + rect.h && c >= rect.x && c < rect.x + gutter);
+    let run_ext = pane.buf.path.as_deref().and_then(|p| p.extension()).map(|x| x.to_string_lossy().to_ascii_lowercase()).filter(|x| matches!(x.as_str(), "java" | "kt" | "kts" | "rs" | "py"));
     // 飾りのない行は前のフレームで描いた結果を使う（line_cache.rs）
     let frame = crate::line_cache::Frame { x0: rect.x + gutter, cols: p.cols, left: pane.left, tab: nagi_core::tab_width(), wide: p.fonts.ambiguous_wide || nagi_core::ambiguous_wide(), show_ws: show_ws.clone(), show_zen, cell: (cell.w.to_bits(), cell.h.to_bits()), atlas: p.r.glyph_gen() };
     let mut lines = ed.line_cache.borrow_mut();
@@ -733,6 +740,22 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
             // 止まっている行の印（▶ のアイコン。大きさは metrics.rs）
             let px = crate::metrics::icon(crate::metrics::Icon::Small);
             crate::icons::draw(p, "r_run", (rect.x + bw) as f32 * cell.w + cell.w * 0.5, crate::metrics::centered(y, px), px, Some(DIAG_WARN));
+        }
+        // 実行の ▶（main・テスト）
+        if let Some(ext) = &run_ext {
+            let prev = if ln > 0 { pane.buf.line(ln - 1) } else { String::new() };
+            if pane.exec != Some(ln) && crate::gutter::run_kind(ext, &heads[i].0, &prev).is_some() {
+                let px = crate::metrics::icon(crate::metrics::Icon::Small);
+                let x = (rect.x + bw + crate::editor::GUTTER_RUN) as f32 * cell.w + ((2.0 * cell.w - px) / 2.0).round();
+                crate::icons::draw(p, "r_run", x, crate::metrics::centered(y, px), px, Some(GIT_ADD));
+            }
+        }
+        // 折りたたみの印（閉じていれば ▸ をいつも、開いていればマウスを載せている間だけ ▾）
+        let closed_here = pane.folds.closed.iter().any(|f| f.0 == ln);
+        if closed_here || (gutter_hover && fold_heads.contains(&ln)) {
+            let px = (cell.w * 1.2).round();
+            let x = (rect.x + bw + crate::editor::GUTTER_FOLD) as f32 * cell.w + ((cell.w - px) / 2.0).round();
+            crate::icons::draw(p, if closed_here { "g_chevronRight" } else { "g_chevronDown" }, x, crate::metrics::centered(y, px), px, Some(LINE_NO));
         }
         // SQL コンソール: カーソルのある文（Ctrl+Enter で流す範囲）に緑の線
         if stmt.is_some_and(|(s, e)| ln >= s && ln < e) {

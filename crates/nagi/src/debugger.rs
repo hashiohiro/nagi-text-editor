@@ -256,7 +256,7 @@ impl Editor {
         self.debug_config(cfg);
     }
 
-    fn debug_config(&mut self, cfg: nagi_workers::runconfig::RunConfig) {
+    pub(crate) fn debug_config(&mut self, cfg: nagi_workers::runconfig::RunConfig) {
         use nagi_workers::runconfig::Kind;
         let Some(port) = free_port() else {
             self.svc.notify.error("空いているポートがありません");
@@ -969,12 +969,13 @@ mod tests {
         e.core.buf.path = Some(std::env::temp_dir().join("nagi-bp-click/A.java"));
         e.set_screen(120, 40);
         assert!(e.active_rect().x > 0, "枠の分だけ右から");
-        // 窓の中の位置（main.rs の mouse_cell と同じ）: 2 行目・行番号の欄の真ん中
-        e.click(2, e.gutter() - 2);
+        // 窓の中の位置（main.rs の mouse_cell と同じ）: 2 行目・行番号の欄の真ん中（右の ▶・折りたたみの列ではない）
+        let num = e.gutter() - crate::editor::GUTTER + 3;
+        e.click(2, num);
         assert_eq!(e.breaks_for(e.core.buf.path.as_deref()), [2]);
-        e.click(0, e.gutter() - 2);
+        e.click(0, num);
         assert_eq!(e.breaks_for(e.core.buf.path.as_deref()), [0, 2], "1 行目も");
-        e.click(2, e.gutter() - 2);
+        e.click(2, num);
         assert_eq!(e.breaks_for(e.core.buf.path.as_deref()), [0]);
         // 本文を押したらカーソルが動くだけ
         e.click(3, e.gutter());

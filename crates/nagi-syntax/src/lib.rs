@@ -865,6 +865,35 @@ impl Syntax {
         out
     }
 
+    /// 始まりの行が `from..to` にある折りたためる範囲（行）。画面に見えている所だけを歩く（ガターの印に毎回使う）
+    pub fn folds_in(&self, from: usize, to: usize) -> Vec<(usize, usize)> {
+        let Some(tree) = &self.tree else { return Vec::new() };
+        let mut out = Vec::new();
+        let mut c = tree.walk();
+        'walk: loop {
+            let n = c.node();
+            let (s, e) = (n.start_position().row, n.end_position().row);
+            if e > s && s >= from && s < to && foldable(n.kind()) {
+                out.push((s, e));
+            }
+            // 見えている範囲に重ならない節・1 行に収まる節の中には入らない
+            if e > s && e >= from && s < to && c.goto_first_child() {
+                continue;
+            }
+            loop {
+                if c.goto_next_sibling() {
+                    continue 'walk;
+                }
+                if !c.goto_parent() {
+                    break 'walk;
+                }
+            }
+        }
+        out.sort_unstable();
+        out.dedup();
+        out
+    }
+
     /// ファイルの中のすべての折りたためる範囲（行）
     pub fn all_folds(&self) -> Vec<(usize, usize)> {
         let Some(tree) = &self.tree else { return Vec::new() };
