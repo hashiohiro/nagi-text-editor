@@ -2,6 +2,7 @@
 //!
 //! - `<Click:場所>` `<DClick:場所>` `<RClick:場所>`: 左のクリック・ダブルクリック・右クリック。場所は `行,列`（セル）か、
 //!   画面に描いた文字（いちばん上に描いたものの真ん中を押す。前後の空白を除いて同じ文字の所を先に、無ければ含む所）
+//! - `<Drag:行,列-行,列>`: 押して動かして離す（区切りをつかめたかを記録する）
 //! - `<WaitFor:文字>` `<WaitGone:文字>`: その文字が出る・消えるまで待つ（10 秒まで。過ぎたら NG を記録して先へ）
 //! - `<See:文字>` `<NotSee:文字>`: 今の画面にある・無いを確かめて記録する
 //! - `<Chord:Shift+F6>`: 本物のキーと同じくキーマップ（設定 → vimrc → IntelliJ と同じ既定）を通して押す（操作が無ければキーとして流す）
@@ -29,6 +30,8 @@ pub enum At {
 pub enum Step {
     Key(VKey),
     Mouse { right: bool, clicks: u32, at: At },
+    /// 押して動かして離す（区切り・選び）
+    Drag { from: (usize, usize), to: (usize, usize) },
     WaitFor { text: String, gone: bool, until: Option<Instant> },
     See { text: String, gone: bool },
     Wait(u64),
@@ -41,7 +44,7 @@ pub enum Step {
 
 /// キー列を手順に分ける（`<名前:引数>` の形の手順と、それ以外のキー）
 pub fn parse(s: &str, leader: &str) -> VecDeque<Step> {
-    const NAMES: [&str; 12] = ["Click", "DClick", "RClick", "WaitFor", "WaitGone", "See", "NotSee", "Wait", "Shot", "Dump", "Chord", "ShiftTap"];
+    const NAMES: [&str; 13] = ["Click", "DClick", "RClick", "Drag", "WaitFor", "WaitGone", "See", "NotSee", "Wait", "Shot", "Dump", "Chord", "ShiftTap"];
     let mut out = VecDeque::new();
     let mut rest = s;
     let keys = |k: &str, out: &mut VecDeque<Step>| out.extend(nagi_vim::parse_keys(k, leader).into_iter().map(Step::Key));
@@ -84,6 +87,14 @@ fn step_of(name: &str, arg: &str) -> Step {
         "Click" => Step::Mouse { right: false, clicks: 1, at: at() },
         "DClick" => Step::Mouse { right: false, clicks: 2, at: at() },
         "RClick" => Step::Mouse { right: true, clicks: 1, at: at() },
+        "Drag" => {
+            // 行,列-行,列
+            let cell = |s: &str| s.split_once(',').and_then(|(r, c)| Some((r.trim().parse().ok()?, c.trim().parse().ok()?)));
+            match arg.split_once('-').and_then(|(a, b)| Some((cell(a)?, cell(b)?))) {
+                Some((from, to)) => Step::Drag { from, to },
+                None => Step::Dump,
+            }
+        }
         "WaitFor" => Step::WaitFor { text: arg.into(), gone: false, until: None },
         "WaitGone" => Step::WaitFor { text: arg.into(), gone: true, until: None },
         "See" => Step::See { text: arg.into(), gone: false },
@@ -186,6 +197,26 @@ impl crate::Frame {
                         self.on_left(false, el);
                     }
                 }
+                self.draw();
+            }
+            Step::Drag { from, to } => {
+                let Some(c) = self.fonts.as_ref().map(|f| f.cell()) else { return false };
+                let at = |(r, k): (usize, usize)| ((k as f64 + 0.5) * c.w as f64, (r as f64 + 0.5) * c.h as f64);
+                if let Some(ed) = &self.ed {
+                    let seps: Vec<String> = ed.frame_splitters().iter().map(|s| format!("{} {:?}@{} {:?}", s.key, s.axis, s.line, s.span)).collect();
+                    log(&format!("INFO splitters {}", seps.join(" / ")));
+                }
+                self.mouse = at(from);
+                self.on_left(true, el);
+                let grabbed = self.sep_drag.is_some();
+                self.mouse = at(to);
+                if self.sep_drag.is_some() {
+                    self.on_sep_drag();
+                } else if self.press.is_some() {
+                    self.on_drag();
+                }
+                self.on_left(false, el);
+                log(&format!("INFO drag {from:?} -> {to:?} sep={grabbed}"));
                 self.draw();
             }
             Step::WaitFor { text, gone, until } => {

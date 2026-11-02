@@ -97,7 +97,7 @@ impl Editor {
     }
 
     /// 欄（左・右・下）の区切り。全画面の履歴は欄を覆うので無い
-    fn frame_splitters(&self) -> Vec<Splitter> {
+    pub(crate) fn frame_splitters(&self) -> Vec<Splitter> {
         let mut out = Vec::new();
         if self.log_fullscreen() {
             return out;
@@ -108,6 +108,12 @@ impl Editor {
         }
         if let Some(r) = self.right_rect().filter(|r| r.x > a.x) {
             out.push(Splitter { key: "right_width", axis: Axis::Cols, line: r.x - 1, span: r.y..r.y + r.h, origin: a.x + a.w, forward: false, extra: 1 });
+        }
+        // Git の注釈（blame）の欄の右の線。origin を 1 つ左にして、線の列までを欄の幅にする
+        if self.blame_active() {
+            let r = self.active_rect();
+            let bw = self.blame_width();
+            out.push(Splitter { key: "blame_width", axis: Axis::Cols, line: r.x + bw - 1, span: r.y..r.y + self.text_rows(r), origin: r.x.saturating_sub(1), forward: true, extra: 0 });
         }
         if let Some(r) = self.panel_rect() {
             out.push(Splitter { key: "bottom_height", axis: Axis::Rows, line: r.y, span: 0..usize::MAX, origin: self.screen.1, forward: false, extra: 0 });
