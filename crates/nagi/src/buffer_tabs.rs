@@ -332,7 +332,10 @@ mod tests {
     use nagi_core::Buffer;
 
     fn editor(files: &[&str]) -> (Editor, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!("nagi-tabs-{}-{}", std::process::id(), files.join("-")));
+        // 同じファイルの並びを使う試験が並んで走ってもぶつからないように、呼ぶたびに別のフォルダ
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("nagi-tabs-{}-{n}-{}", std::process::id(), files.join("-")));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         for f in files {
