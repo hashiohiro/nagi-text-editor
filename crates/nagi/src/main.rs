@@ -71,6 +71,7 @@ mod icons;
 mod metrics;
 mod input_dialog;
 mod search_bar;
+mod scrollbar;
 mod toggles;
 mod tree_panel;
 mod tree_files;
@@ -325,6 +326,8 @@ struct Frame {
     term_select: bool,
     /// 検索・ログの欄の中で行の範囲を選んでいる（左ボタンを押したまま）
     list_select: bool,
+    /// エディタのスクロールバーのつまみをドラッグしている
+    stripe_drag: bool,
     /// 今のマウスのカーソルの形（区切りの上では ↔ / ↕）
     cursor_icon: winit::window::CursorIcon,
     stats: stats::Stats,
@@ -1244,6 +1247,7 @@ impl Frame {
                 self.last_click = Some((now, (row, usize::MAX - 16 - i), clicks(i)));
                 self.list_select = done == layout::Click::SelectList;
                 self.term_select = done == layout::Click::SelectTerminal;
+                self.stripe_drag = done == layout::Click::DragStripe;
                 return;
             }
         }
@@ -1650,8 +1654,12 @@ impl Frame {
                 // 描くのは request_redraw に任せ、1 フレームに 1 回にまとめる（動かす知らせは 1 秒に数百回来る）
                 let cell = self.fonts.as_ref().map(|f| ((position.y.max(0.0) as f32 / f.cell().h) as usize, (position.x.max(0.0) as f32 / f.cell().w) as usize));
                 let new_cell = std::mem::replace(&mut self.mouse_at, cell) != cell;
-                let dragging = self.list_select || self.term_select || self.sep_drag.is_some() || self.press.is_some();
-                if self.list_select {
+                let dragging = self.list_select || self.term_select || self.stripe_drag || self.sep_drag.is_some() || self.press.is_some();
+                if self.stripe_drag {
+                    if let (Some(f), Some(ed)) = (&self.fonts, &mut self.ed) {
+                        ed.stripe_drag((position.y.max(0.0) as f32 / f.cell().h) as usize);
+                    }
+                } else if self.list_select {
                     if let (Some(f), Some(ed)) = (&self.fonts, &mut self.ed) {
                         let row = (position.y.max(0.0) as f32 / f.cell().h) as usize;
                         if let Some(r) = ed.bottom_content_rect() {
@@ -1706,6 +1714,11 @@ impl Frame {
             }
             false => {
                 self.list_select = false;
+                if std::mem::take(&mut self.stripe_drag) {
+                    if let Some(ed) = &mut self.ed {
+                        ed.stripe_grab = None;
+                    }
+                }
                 if std::mem::take(&mut self.term_select) {
                     if let Some(ed) = &mut self.ed {
                         ed.terminal_release();
@@ -2049,6 +2062,7 @@ fn new_frame(opts: Opts, pending: Pending, proxy: winit::event_loop::EventLoopPr
         sep_drag: None,
         term_select: false,
         list_select: false,
+        stripe_drag: false,
         cursor_icon: winit::window::CursorIcon::Default,
         autoscroll_deadline: None,
         held: None,

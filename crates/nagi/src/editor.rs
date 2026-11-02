@@ -510,6 +510,8 @@ pub struct Editor {
     pub grep_preview: std::cell::RefCell<Option<(std::path::PathBuf, std::sync::Arc<Vec<String>>)>>,
     /// 部品を左クリックしている間の修飾キー（Ctrl・Shift+クリックで一覧の複数を選ぶ）。押した間だけ App が入れる
     pub click_mods: nagi_vim::Mods,
+    /// スクロールバーのつまみをつかんでいる（つかんだ行とつまみの頭の差。scrollbar.rs）
+    pub stripe_grab: Option<isize>,
     /// マウスを載せているタブのアイコン（行, 列, 名前）と、描いたアイコンの位置
     pub hover_tab: Option<(usize, usize, &'static str)>,
     /// 状態行の「▶ 構成の名前」の列（始め, 終わり）。押すと実行のメニュー
@@ -811,6 +813,7 @@ impl Editor {
             line_cache: Default::default(),
             grep_preview: Default::default(),
             click_mods: Default::default(),
+            stripe_grab: None,
             hover_tab: None,
             tab_hits: Default::default(),
             field_hits: Default::default(),

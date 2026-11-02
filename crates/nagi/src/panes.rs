@@ -202,7 +202,7 @@ impl Editor {
     }
 
     /// 差分・ログ・テーブルを画面いっぱいに出していないか（タブ・帯を出す）
-    fn editor_shown(&self) -> bool {
+    pub(crate) fn editor_shown(&self) -> bool {
         self.panels.diff.is_none() && !self.log_fullscreen() && self.panels.db_table.is_none()
     }
 

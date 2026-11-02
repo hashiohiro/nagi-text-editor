@@ -35,6 +35,8 @@ pub enum Click {
     SelectList,
     /// 受け取って、そのままドラッグでターミナルの範囲を選ぶ
     SelectTerminal,
+    /// 受け取って、そのままドラッグでスクロールバーのつまみを動かす
+    DragStripe,
 }
 
 pub trait View: Sync {
@@ -96,6 +98,7 @@ pub static PANELS: &[&dyn View] = &[
     &crate::right_panel::RightView,
     &crate::db_table::DbTableView,
     &crate::db_panel::ConsoleBarView,
+    &crate::scrollbar::StripeView,
     &crate::buffer_tabs::BufferTabsView,
     &crate::search_bar::SearchBarView,
     &crate::bottom_panel::BottomView,
