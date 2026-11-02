@@ -409,26 +409,92 @@ pub fn unsafe_statement(sql: &str) -> Option<String> {
     })
 }
 
-/// カーソルの行を含む文の行の範囲（空行で区切ったまとまり。start..end）
-pub fn statement_lines(lines: &[&str], line: usize) -> Option<(usize, usize)> {
-    let blank = |l: &str| l.trim().is_empty();
-    if lines.is_empty() || blank(lines[line.min(lines.len() - 1)]) {
-        return None;
+/// カーソルのある文の範囲（`text` の中の byte）。文は `;` で区切る（DataGrip と同じ）。`;` の無い台本のために空行でも区切る。
+/// 文字列・注釈の中の `;` は数えない。頭の注釈と空白は除き、終わりの `;` は含めない。
+/// `;` の後（その行の残りが空白だけ）にいれば、その前の文。空行・注釈だけの所なら None
+pub fn statement_span(text: &str, cur: usize) -> Option<std::ops::Range<usize>> {
+    let b = text.as_bytes();
+    let cur = cur.min(text.len());
+    // 文の区切り: (この文の終わり, 次の文の始まり, `;` で区切ったか)
+    let mut segs: Vec<(usize, usize, bool)> = Vec::new();
+    let mut start = 0;
+    let mut i = 0;
+    let mut line_blank = true;
+    let mut line_start = 0;
+    while i < b.len() {
+        match b[i] {
+            b'\'' | b'"' => {
+                let q = b[i];
+                i += 1;
+                while i < b.len() && b[i] != q {
+                    i += 1;
+                }
+                line_blank = false;
+            }
+            b'-' if b.get(i + 1) == Some(&b'-') => {
+                while i < b.len() && b[i] != b'\n' {
+                    i += 1;
+                }
+                line_blank = false;
+                continue;
+            }
+            b'/' if b.get(i + 1) == Some(&b'*') => {
+                i = text[i + 2..].find("*/").map_or(b.len(), |k| i + 2 + k + 1);
+                line_blank = false;
+            }
+            b';' => {
+                segs.push((start, i, true));
+                start = i + 1;
+                line_blank = false;
+            }
+            b'\n' => {
+                if line_blank && line_start > start {
+                    segs.push((start, line_start, false));
+                    start = i + 1;
+                } else if line_blank && line_start == start && start > 0 {
+                    start = i + 1;
+                }
+                line_blank = true;
+                line_start = i + 1;
+            }
+            c if !c.is_ascii_whitespace() => line_blank = false,
+            _ => {}
+        }
+        i += 1;
     }
-    let line = line.min(lines.len() - 1);
-    let start = (0..=line).rev().find(|&i| blank(lines[i])).map_or(0, |i| i + 1);
-    let end = (line..lines.len()).find(|&i| blank(lines[i])).unwrap_or(lines.len());
-    // 頭のコメントだけの行は除く
-    let start = (start..end).find(|&i| !lines[i].trim_start().starts_with("--")).unwrap_or(end);
-    (start < end).then_some((start, end))
+    segs.push((start, text.len(), false));
+    // 頭の空白と注釈の行を除き、終わりの空白を除く
+    let trim = |(a, e): (usize, usize)| -> Option<std::ops::Range<usize>> {
+        let mut a = a;
+        loop {
+            let rest = &text[a..e];
+            let t = rest.trim_start();
+            a += rest.len() - t.len();
+            if t.starts_with("--") {
+                a = text[a..e].find('\n').map_or(e, |k| a + k + 1);
+            } else {
+                break;
+            }
+        }
+        let body = text[a..e].trim_end();
+        (!body.is_empty()).then(|| a..a + body.len())
+    };
+    let k = segs.iter().position(|&(a, e, _)| a <= cur && cur <= e)?;
+    if let Some(r) = trim((segs[k].0, segs[k].1)) {
+        // 文の前の空白・注釈の上にいても、その文
+        return Some(r);
+    }
+    // `;` の後ろの、同じ行の空白にいる: その前の文
+    let prev = k.checked_sub(1).map(|j| segs[j])?;
+    (prev.2 && !text[prev.1..cur].contains('\n')).then(|| trim((prev.0, prev.1))).flatten()
 }
 
 /// カーソルの行を含む文（コメントだけの行は除く）
 #[cfg(test)]
 pub fn statement_at(text: &str, line: usize) -> String {
-    let lines: Vec<&str> = text.lines().collect();
-    let Some((s, e)) = statement_lines(&lines, line) else { return String::new() };
-    lines[s..e].iter().filter(|l| !l.trim_start().starts_with("--")).copied().collect::<Vec<_>>().join("\n").trim().to_string()
+    let at: usize = text.split_inclusive('\n').take(line).map(str::len).sum();
+    let Some(r) = statement_span(text, at) else { return String::new() };
+    text[r].lines().filter(|l| !l.trim_start().starts_with("--")).collect::<Vec<_>>().join("\n").trim().to_string()
 }
 
 pub use nagi_lang::sql::ident;
@@ -1481,14 +1547,29 @@ impl Editor {
         self.panels.db.as_ref()?.consoles.get(&path).copied()
     }
 
-    /// コンソールでカーソルのある文の行の範囲
+    /// コンソールでカーソルのある文の行の範囲（start..end）
     pub fn console_statement(&self) -> Option<(usize, usize)> {
-        self.console_source()?;
-        let lo = self.core.cursor.line.saturating_sub(200);
+        let (_, l0, a, e) = self.console_statement_text()?;
+        let text = self.console_window(l0);
+        let line = |b: usize| l0 + text[..b].matches('\n').count();
+        Some((line(a), line(e.saturating_sub(1).max(a)) + 1))
+    }
+
+    /// カーソルのまわり（前後 200 行）の本文と、その始まりの行
+    fn console_window(&self, l0: usize) -> String {
         let hi = (self.core.cursor.line + 200).min(self.core.buf.line_count());
-        let lines: Vec<String> = (lo..hi).map(|l| self.core.buf.line(l)).collect();
-        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
-        statement_lines(&refs, self.core.cursor.line - lo).map(|(s, e)| (s + lo, e + lo))
+        let (a, b) = (self.core.buf.line_start(l0), if hi < self.core.buf.line_count() { self.core.buf.line_start(hi) } else { self.core.buf.len_bytes() });
+        self.core.buf.slice_string(a, b.max(a))
+    }
+
+    /// コンソールでカーソルのある文（`;` で区切る）: (文, まわりの始まりの行, まわりの中の byte の範囲)
+    pub(crate) fn console_statement_text(&self) -> Option<(String, usize, usize, usize)> {
+        self.console_source()?;
+        let l0 = self.core.cursor.line.saturating_sub(200);
+        let text = self.console_window(l0);
+        let cur = self.core.buf.line_start(self.core.cursor.line) + self.core.cursor.byte - self.core.buf.line_start(l0);
+        let r = statement_span(&text, cur)?;
+        Some((text[r.clone()].to_string(), l0, r.start, r.end))
     }
 
     /// Ctrl+Enter（コンソールで）: カーソルのある文、Visual なら選んだ範囲を流す
@@ -1500,8 +1581,8 @@ impl Editor {
             self.set_state(State::Normal);
             s
         } else {
-            match self.console_statement() {
-                Some((s, e)) => (s..e).map(|l| self.core.buf.line(l)).filter(|l| !l.trim_start().starts_with("--")).collect::<Vec<_>>().join("\n").trim().to_string(),
+            match self.console_statement_text() {
+                Some((sql, ..)) => sql.lines().filter(|l| !l.trim_start().starts_with("--")).collect::<Vec<_>>().join("\n").trim().to_string(),
                 None => String::new(),
             }
         };
@@ -1724,7 +1805,7 @@ impl Editor {
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join(format!("{}.sql", safe_name(&s.name)));
         if !path.exists() {
-            let _ = std::fs::write(&path, format!("-- {}  {}\n-- Ctrl+Enter でカーソルのある文（空行で区切る）を実行。Visual なら選んだ範囲\n\n", s.name, s.url));
+            let _ = std::fs::write(&path, format!("-- {}  {}\n-- Ctrl+Enter でカーソルのある文（; で区切る）を実行。選んでいれば選んだ範囲\n\n", s.name, s.url));
         }
         let abs = std::path::absolute(&path).unwrap_or(path.clone());
         p.consoles.insert(abs, i);
@@ -2227,11 +2308,20 @@ pub(crate) mod tests {
     #[test]
     fn statements() {
         let text = "-- head\n\nselect 1\nfrom dual;\n\n-- note\nupdate t set a = 1\n";
-        assert_eq!(statement_at(text, 2), "select 1\nfrom dual;");
-        assert_eq!(statement_at(text, 3), "select 1\nfrom dual;");
+        assert_eq!(statement_at(text, 2), "select 1\nfrom dual");
+        assert_eq!(statement_at(text, 3), "select 1\nfrom dual");
         assert_eq!(statement_at(text, 6), "update t set a = 1");
         assert_eq!(statement_at(text, 5), "update t set a = 1");
         assert_eq!(statement_at(text, 1), "");
+        // `;` で区切る（空行が無くても）。文字列・注釈の中の ; は数えない。`;` の後ろにいれば、その前の文
+        let t = "select 1; select 'a;b' -- x;y\nfrom t;\nupdate u set a = 2;  \n";
+        let span = |at: usize| statement_span(t, at).map(|r| &t[r]);
+        assert_eq!(span(0), Some("select 1"));
+        assert_eq!(span(t.find("'a").unwrap()), Some("select 'a;b' -- x;y\nfrom t"));
+        assert_eq!(span(t.find("from").unwrap()), Some("select 'a;b' -- x;y\nfrom t"));
+        assert_eq!(span(t.find("2;").unwrap() + 3), Some("update u set a = 2"), "; の後ろの空白");
+        assert_eq!(span(t.len()), None, "最後の空の行");
+        assert_eq!(span(t.find(" select").unwrap()), Some("select 'a;b' -- x;y\nfrom t"), "; の直後の空白は次の文の頭");
         assert!(is_read_only("-- x\n  select * from t"));
         assert!(!is_read_only("update t set a=1"));
         // WHERE の無い UPDATE・DELETE だけ確かめる

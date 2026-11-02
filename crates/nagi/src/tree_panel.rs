@@ -54,10 +54,18 @@ pub struct TreePanel {
     reveal: Option<PathBuf>,
     /// 最後に合わせた開いているファイル（変わったら木をそこまで展開して選ぶ）
     synced: Option<PathBuf>,
+    /// 打って探す（IntelliJ のスピードサーチ。見えている行の名前から）
+    pub speed: nagi_ui::SpeedSearch,
 }
 
 /// 木の上の見出しの行数（描き方・押した行・見える範囲で使う）
 pub const HEAD: usize = 1;
+
+/// 見出しの右のボタン（画面の列・アイコン・アクション。右端の「隠す」の手前に、IntelliJ と同じ並びで）
+pub(crate) fn head_buttons(r: Rect) -> [(usize, &'static str, &'static str); 2] {
+    let end = r.x + r.w;
+    [(end.saturating_sub(8), "g_locate", "tree.selectOpened"), (end.saturating_sub(5), "g_collapseAll", "tree.collapseAll")]
+}
 
 /// 左の欄（プロジェクト・コミット）の幅（36 列。狭い画面では 1/3 まで）
 pub fn tree_width(cols: usize) -> usize {
@@ -188,7 +196,7 @@ pub enum TreeAction {
 }
 
 /// プロジェクトの木のアクション（ui_action.rs。ADR 0019）
-pub static ACTIONS: [crate::ui_action::UiAction; 15] = {
+pub static ACTIONS: [crate::ui_action::UiAction; 17] = {
     use crate::ui_action::{Scope::ProjectTree, UiAction};
     fn open(e: &Editor) -> bool {
         e.panels.tree.is_some()
@@ -213,6 +221,8 @@ pub static ACTIONS: [crate::ui_action::UiAction; 15] = {
         UiAction { id: "tree.delete", label: "削除…", scope: ProjectTree, enabled: selected, run: |e| e.tree_delete() },
         UiAction { id: "tree.reveal", label: "エクスプローラーで表示", scope: ProjectTree, enabled: selected, run: |e| e.tree_reveal() },
         UiAction { id: "tree.terminal", label: "ターミナルで開く", scope: ProjectTree, enabled: selected, run: |e| e.tree_open_terminal() },
+        UiAction { id: "tree.selectOpened", label: "開いているファイルを選択", scope: ProjectTree, enabled: |e| open(e) && e.core.buf.path.is_some(), run: |e| e.select_in_tree() },
+        UiAction { id: "tree.collapseAll", label: "すべて折りたたむ", scope: ProjectTree, enabled: open, run: |e| e.tree_collapse_all() },
         UiAction { id: "tree.reload", label: "ディスクからの再読み込み", scope: ProjectTree, enabled: open, run: |e| e.tree_do(TreeAction::Reload) },
         UiAction { id: "tree.close", label: "非表示", scope: ProjectTree, enabled: open, run: |e| e.tree_do(TreeAction::Close) },
     ]
@@ -222,6 +232,14 @@ impl TreePanel {
     /// 木のキー（`half` は半画面の行数）。部品の中で済むこと（移動・開閉・読み直し）はここで行い、外に及ぶことを返す
     /// 木の上は標準のキーだけ（ADR 0019。読み直す・閉じるなどはアクション: 右クリックのメニュー・パレット・付けたショートカット）
     pub fn key(&mut self, key: Key, half: usize, waker: &nagi_workers::Waker) -> TreeAction {
+        // 文字を打つとスピードサーチ（↑↓ は当たりの間を動く。ほかのキーは検索を閉じて木のキーとして受ける）
+        let rows = &self.rows;
+        if let nagi_ui::speed::Out::Took(hit) = self.speed.key(key, self.selected, rows.len(), |i| rows[i].name.as_str()) {
+            if let Some(i) = hit {
+                self.selected = i;
+            }
+            return TreeAction::None;
+        }
         let moved = nagi_ui::list::nav(key, self.selected, self.rows.len(), half * 2);
         match key {
             _ if moved.is_some() => self.selected = moved.unwrap_or(self.selected),
@@ -375,6 +393,7 @@ impl Editor {
                 stale: Default::default(),
                 reveal: None,
                 synced: None,
+                speed: Default::default(),
             };
             t.load(&root, &waker);
             self.panels.tree = Some(t);
@@ -389,6 +408,17 @@ impl Editor {
         self.set_state(State::List);
         self.pending_keys.clear();
         self.rows = self.text_rows(self.active_rect());
+    }
+
+    /// すべて折りたたむ（選んでいる行は、その行を含む一番上のフォルダへ）
+    pub(crate) fn tree_collapse_all(&mut self) {
+        let Some(t) = &mut self.panels.tree else { return };
+        let top = t.rows.get(t.selected).and_then(|r| r.path.strip_prefix(&t.root).ok()?.components().next().map(|c| t.root.join(c)));
+        t.folds.clear();
+        t.speed.clear();
+        t.rebuild();
+        t.selected = top.and_then(|p| t.rows.iter().position(|r| r.path == p)).unwrap_or(0);
+        t.scroll = 0;
     }
 
     /// `<leader>.`: 閉じていれば開いて移り、開いていて移っていれば閉じる
@@ -513,6 +543,7 @@ impl Editor {
         self.set_state(State::List);
         let waker = self.waker_or_noop();
         let Some(t) = &mut self.panels.tree else { return };
+        t.speed.clear();
         let len = t.rows.len();
         let Some(pick) = nagi_ui::list::pick_row(&mut t.selected, t.scroll, row, HEAD, len, clicks) else { return };
         let r = t.rows[t.selected].clone();
@@ -541,7 +572,7 @@ pub struct TreeComponent;
 impl crate::component::Component for TreeComponent {
     fn status(&self, ed: &crate::editor::Editor) -> Option<crate::component::Status> {
         let _ = ed;
-        crate::component::Status::new("-- プロジェクト --", "Enter 開く  ←→ 開閉  右クリック 操作  Esc 窓へ ")
+        crate::component::Status::new("-- プロジェクト --", "打って探す  Enter 開く  ←→ 開閉  右クリック 操作  Esc 窓へ ")
     }
 
     fn scope(&self, ed: &crate::editor::Editor) -> Option<crate::ui_action::Scope> {
@@ -631,7 +662,19 @@ impl crate::layout::View for LeftTabsView {
     }
 
     fn click(&self, ed: &mut crate::editor::Editor, r: crate::panes::Rect, at: crate::layout::At, clicks: u32) -> crate::layout::Click {
-        let _ = (at, r, clicks);
+        let _ = clicks;
+        // プロジェクトの見出しのボタン
+        if ed.left_visible() == Some(LeftTab::Project) {
+            let col = r.x + at.col;
+            if let Some(id) = head_buttons(r).into_iter().find(|b| (b.0..b.0 + 2).contains(&col)).map(|b| b.2) {
+                if id == "tree.selectOpened" {
+                    ed.run_ui_action("tree.selectOpened");
+                } else {
+                    ed.run_ui_action("tree.collapseAll");
+                }
+                return crate::layout::Click::Done;
+            }
+        }
         // 見出しを押したら、その欄へ移る（タブを替えるのは左のアイコンの列）
         if let Some(tab) = ed.left_visible() {
             ed.select_left_tab(tab);
@@ -675,6 +718,13 @@ pub(crate) mod draw {
         // プロジェクトの名前は窓の題名に出す（タブの横には出さない）
         let _ = name;
         draw_left_tabs(p, r, crate::tree_panel::LeftTab::Project, focused, if t.loading() { "…" } else { "" });
+        let px = crate::metrics::icon(crate::metrics::Icon::Small);
+        for (col, icon, id) in crate::tree_panel::head_buttons(r) {
+            let cx = col as f32 * cell.w + ((2.0 * cell.w - px) / 2.0).round();
+            crate::icons::draw(p, icon, cx, crate::metrics::centered(y0, px), px, Some(STATUS_FG));
+            let label = crate::tree_panel::ACTIONS.iter().find(|a| a.id == id).map_or("", |a| a.label);
+            p.tab_hits.push((r.y, col, col + 2, label));
+        }
         for k in 0..r.h.saturating_sub(crate::tree_panel::HEAD) {
             let Some(row) = t.rows.get(t.scroll + k) else { break };
             let y = (r.y + crate::tree_panel::HEAD + k) as f32 * cell.h;
@@ -713,9 +763,40 @@ pub(crate) mod draw {
             }
             let name_at = icon_at + crate::metrics::icon_cols(crate::metrics::Icon::Small);
             let mut items = p.items(&row.name, fg);
+            // スピードサーチの当たりの字に地を付ける
+            if let Some(m) = t.speed.find(&row.name) {
+                let mut at = 0;
+                for it in &mut items {
+                    if m.contains(&at) {
+                        it.bg = Some(SEARCH_BG);
+                    }
+                    at += it.g.len();
+                }
+            }
             crate::view::skip_cols(&mut items, left.saturating_sub(name_at), &mut None);
             p.draw(&items, r.x + name_at.saturating_sub(left), y);
         }
+        p.cols = saved;
+        if t.speed.active() {
+            draw_speed_search(p, r, &t.speed.query, t.rows.iter().any(|x| t.speed.find(&x.name).is_some()));
+        }
+    }
+
+    /// スピードサーチの欄（木の 1 行目に重ねる。当たりが無ければ字を赤に。IntelliJ と同じ）
+    pub(crate) fn draw_speed_search(p: &mut Painter, r: Rect, query: &str, found: bool) {
+        let cell = p.fonts.cell();
+        let icon = crate::metrics::icon_cols(crate::metrics::Icon::Small);
+        // 見出しの名前を隠し（右のボタンの手前まで）、字の幅に合わせた欄を重ねる
+        let room = crate::tree_panel::head_buttons(r)[0].0.saturating_sub(r.x + 1);
+        p.out.push(Instance::fill(r.x as f32 * cell.w, r.y as f32 * cell.h, room as f32 * cell.w, cell.h - 1.0, PANEL_BG));
+        let w = (icon + p.width(query) + 2).max(12).min(room);
+        let (x, y) = (r.x as f32 * cell.w + 2.0, r.y as f32 * cell.h);
+        popup_frame(p, x, y + 1.0, w as f32 * cell.w, cell.h - 2.0);
+        let px = crate::metrics::icon(crate::metrics::Icon::Small);
+        crate::icons::draw(p, "g_search", x + cell.w * 0.5, crate::metrics::centered(y, px), px, None);
+        let saved = p.cols;
+        p.cols = r.x + w;
+        p.text(query, r.x + icon + 1, y, if found { FG_BRIGHT } else { DIAG_ERROR });
         p.cols = saved;
     }
 
@@ -831,6 +912,67 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
         panic!("ツリーが読み終わらない");
+    }
+
+    /// 木の上で打つとスピードサーチ: 当たりの行を選び、↓ で次の当たり、Esc で検索だけ閉じ、Enter で開く。Vim を使っていても同じ
+    #[test]
+    fn speed_search() {
+        let dir = std::env::temp_dir().join(format!("nagi-tree-speed-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        for f in ["alpha.txt", "beta.rs", "gamma.rs", "Main.java"] {
+            std::fs::write(dir.join(f), "x\n").unwrap();
+        }
+        let mut buf = Buffer::open(&dir.join("alpha.txt")).unwrap();
+        buf.path = Some(dir.join("alpha.txt"));
+        let mut e = Editor::new(buf, None);
+        e.set_screen(120, 40);
+        e.open_tree();
+        settle(&mut e);
+        let name = |e: &Editor| { let t = e.panels.tree.as_ref().unwrap(); t.rows[t.selected].name.clone() };
+        keys(&mut e, "RS");
+        assert_eq!(name(&e), "beta.rs", "大文字小文字を区別しない");
+        keys(&mut e, "<Down>");
+        assert_eq!(name(&e), "gamma.rs");
+        // 当たりの無い字では選びは動かない。Backspace で戻る
+        keys(&mut e, "q<BS>");
+        assert_eq!(name(&e), "gamma.rs");
+        keys(&mut e, "<Esc>");
+        assert!(!e.panels.tree.as_ref().unwrap().speed.active());
+        assert_eq!(e.state(), State::List, "Esc は検索だけ閉じる");
+        keys(&mut e, "main<CR>");
+        assert_eq!(e.core.buf.path.as_deref().and_then(|p| p.file_name()).unwrap(), "Main.java");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 見出しのボタン: すべて折りたたむ・開いているファイルを選択（IntelliJ のプロジェクトの見出しと同じ）
+    #[test]
+    fn head_buttons_collapse_and_locate() {
+        let dir = std::env::temp_dir().join(format!("nagi-tree-head-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".git")).unwrap();
+        std::fs::create_dir_all(dir.join("src/deep")).unwrap();
+        std::fs::write(dir.join("src/deep/a.rs"), "x\n").unwrap();
+        std::fs::write(dir.join("b.txt"), "x\n").unwrap();
+        let mut buf = Buffer::open(&dir.join("src/deep/a.rs")).unwrap();
+        buf.path = Some(dir.join("src/deep/a.rs"));
+        let mut e = Editor::new(buf, None);
+        e.set_screen(120, 40);
+        e.open_tree();
+        settle(&mut e);
+        let sel = |e: &Editor| { let t = e.panels.tree.as_ref().unwrap(); t.rows[t.selected].name.clone() };
+        assert_eq!(sel(&e), "a.rs", "開いたファイルまで展開している");
+        let s = crate::layout::Screen { rows: 40, cols: 120 };
+        let r = e.left_rect().unwrap();
+        let [locate, collapse] = head_buttons(r);
+        crate::layout::press(&mut e, s, r.y, collapse.0, |_| 1);
+        let t = e.panels.tree.as_ref().unwrap();
+        assert!(t.rows.iter().all(|x| x.depth == 0), "すべて畳んだ: {:?}", t.rows.iter().map(|x| &x.name).collect::<Vec<_>>());
+        assert_eq!(sel(&e), "src", "選びは一番上のフォルダへ");
+        crate::layout::press(&mut e, s, r.y, locate.0 + 1, |_| 1);
+        settle(&mut e);
+        assert_eq!(sel(&e), "a.rs", "開いているファイルを選び直す");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// 木を操作した後に本文をクリックすると、本文の操作に戻る（カーソルが出て、キーが本文へ行く）

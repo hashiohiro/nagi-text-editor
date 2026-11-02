@@ -42,6 +42,8 @@ const ICONS: &[(&str, &str, &str)] = &[
     ("g_search", include_str!("../icons/g_search.svg"), include_str!("../icons/g_search_dark.svg")),
     ("g_settings", include_str!("../icons/g_settings.svg"), include_str!("../icons/g_settings_dark.svg")),
     ("g_vcs", include_str!("../icons/g_vcs.svg"), include_str!("../icons/g_vcs_dark.svg")),
+    ("g_locate", include_str!("../icons/g_locate.svg"), include_str!("../icons/g_locate_dark.svg")),
+    ("g_collapseAll", include_str!("../icons/g_collapseAll.svg"), include_str!("../icons/g_collapseAll_dark.svg")),
     ("n_annotation", include_str!("../icons/n_annotation.svg"), include_str!("../icons/n_annotation_dark.svg")),
     ("n_class", include_str!("../icons/n_class.svg"), include_str!("../icons/n_class_dark.svg")),
     ("n_dataSchema", include_str!("../icons/n_dataSchema.svg"), include_str!("../icons/n_dataSchema_dark.svg")),

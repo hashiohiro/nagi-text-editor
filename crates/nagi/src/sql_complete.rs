@@ -3,7 +3,7 @@
 //! 打つたびに絞り込み（大文字小文字は区別しない・飛ばし打ちも当てる）、Enter・Tab で決める。`.` の後は打った時に、
 //! FROM・JOIN の後と語を打っている間は設定の「自動で出す」で出る。
 //! 列・ほかのスキーマのテーブルがまだ読めていなければ裏で読み、届いたら出している一覧を作り直す（一覧が出ていなければ出す）。
-//! 文は空行で区切ったまとまり（Ctrl+Enter と同じ）の中の、`;` で区切った部分。
+//! 文は Ctrl+Enter と同じく `;`（と空行）で区切った部分。
 
 use std::cell::RefCell;
 
@@ -54,7 +54,7 @@ impl nagi_lang::sql::Catalog for ConnCatalog<'_> {
 }
 
 impl Editor {
-    /// カーソルのある文（空行で区切ったまとまりの中の、`;` で区切った部分）と、その中での `at`（絶対 byte）の位置
+    /// カーソルのある文（`;` と空行で区切った部分）と、その中での `at`（絶対 byte）の位置
     fn sql_statement_around(&self, at: usize) -> (String, usize) {
         let (l0, l1) = self.console_statement().unwrap_or((self.core.cursor.line, self.core.cursor.line + 1));
         let start = self.core.buf.line_start(l0);
