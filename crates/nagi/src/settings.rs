@@ -171,6 +171,7 @@ pub static SCHEMA: &[Item] = &[
     item("keymap.debug_stop", "キーマップ", "デバッグ: 止める", K, "Shift+F5", "Visual Studio と同じ（Ctrl+F2 でも）"),
     item("keymap.debug_panel", "キーマップ", "デバッグの欄", K, "Alt+5", ""),
     item("keymap.evaluate", "キーマップ", "デバッグ: 式の評価", K, "Alt+F8", "IntelliJ と同じ"),
+    item("keymap.quick_fix", "キーマップ", "クイックフィックス", K, "Alt+Enter", "IntelliJ と同じ（クラスをインポート・未使用のインポート文を削除）"),
     item("keymap.view_breakpoints", "キーマップ", "ブレークポイントの表示", K, "Ctrl+Shift+F8", "IntelliJ と同じ"),
     item("keymap.palette", "キーマップ", "コマンドパレット", K, "Ctrl+Shift+A", "IntelliJ の Find Action"),
     item("keymap.goto_file", "キーマップ", "ファイルを開く", K, "Ctrl+Shift+N", ""),

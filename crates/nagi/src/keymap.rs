@@ -80,7 +80,7 @@ pub enum Action {
 /// 操作（設定のキー, 操作）。既定は IntelliJ（Windows）の既定のキーマップと同じ。ただし定義へは F12、
 /// デバッグは Visual Studio と同じ（F5 続ける・F9 ブレークポイント・F10 次へ・F11 中へ・Shift+F11 外へ・Shift+F5 止める）。
 /// ここは Vim のキー操作を使うときも効くので、Vim と重ならないもの（F キー・Alt・Ctrl+Alt・Ctrl+Shift）だけ
-pub const ACTIONS: [(&str, Action); 57] = [
+pub const ACTIONS: [(&str, Action); 58] = [
     ("keymap.settings", Action::Cmd("Settings")),
     ("keymap.complete", Action::Key(Key::Ctrl(' '))),
     ("keymap.run", Action::Cmd("Run")),
@@ -110,6 +110,7 @@ pub const ACTIONS: [(&str, Action); 57] = [
     ("keymap.debug_stop", Action::Cmd("DebugStop")),
     ("keymap.debug_panel", Action::Cmd("ToolDebug")),
     ("keymap.evaluate", Action::Cmd("Evaluate")),
+    ("keymap.quick_fix", Action::Cmd("QuickFix")),
     ("keymap.view_breakpoints", Action::Cmd("Breakpoints")),
     ("keymap.palette", Action::Cmd("Commands")),
     ("keymap.goto_file", Action::Cmd("Files")),
