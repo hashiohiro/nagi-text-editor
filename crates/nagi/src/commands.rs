@@ -161,6 +161,7 @@ pub static COMMANDS: &[Cmd] = &[
     cmd!(["CommentLine"], "行コメントを付ける・外す", Args::None, |e, c| e.plain_comment()),
     cmd!(["GotoLine"], "行へ移動（行:列 を打つダイアログ。Ctrl+G）", Args::None, |e, c| e.goto_line_dialog()),
     cmd!(["Grep", "grep", "Rg", "rg"], "全文検索", Args::Text, |e, c| e.open_grep(c.arg)),
+    cmd!(["ReplaceInPath"], "複数ファイル内置換（Ctrl+Shift+R）", Args::None, |e, c| e.open_replace()),
     cmd!(["Tree", "Explore", "Ex", "NERDTreeToggle"], "ファイルツリー", Args::None, |e, c| e.toggle_tree()),
     cmd!(["TreeSync"], "プロジェクトの木を開いているファイルに合わせる・合わせない（切り替え）", Args::None, |e, c| {
         e.tree_sync = !e.tree_sync;
@@ -306,6 +307,7 @@ pub const ACTIONS: &[(&str, &str)] = &[
     ("finder.recent", "Recent"),
     ("buffer.close", "bd"),
     ("search.project", "Grep"),
+    ("search.replace_project", "ReplaceInPath"),
     ("tool.project", "Tree"),
     ("palette", "Commands"),
     ("finder.symbols", "Symbols"),

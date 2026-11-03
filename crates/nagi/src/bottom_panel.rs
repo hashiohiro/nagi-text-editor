@@ -428,6 +428,28 @@ impl crate::layout::View for BottomView {
                     v.ed.scroll(dy);
                     v.ed.hscroll(dx);
                 }
+                // 木: 表示を送り、選びが外へ出たら見えている所の端の一致へ
+                Some(g) if g.tree() => {
+                    let rows = g.tree_rows();
+                    let (mut sel, mut top) = (g.shown_row(), g.scroll);
+                    nagi_ui::list::wheel(&mut sel, &mut top, rows.len(), h, dy);
+                    g.scroll = top;
+                    if sel != g.shown_row() {
+                        if let Some(row) = rows.get(sel) {
+                            let r = row.clone();
+                            match r {
+                                crate::grep_panel::GRow::File { first, .. } => {
+                                    g.selected = first;
+                                    g.on_file = true;
+                                }
+                                crate::grep_panel::GRow::Hit(i) => {
+                                    g.selected = i;
+                                    g.on_file = false;
+                                }
+                            }
+                        }
+                    }
+                }
                 Some(g) => {
                     nagi_ui::list::wheel(&mut g.selected, &mut g.scroll, g.hits.len(), h, dy);
                     if dx != 0 {
@@ -681,7 +703,7 @@ pub(crate) mod draw {
         match ed.bottom_kind {
             BottomKind::Result => draw_db_results(p, ed, c),
             BottomKind::Grep | BottomKind::Output => match &ed.panels.grep {
-                Some(g) => draw_grep_panel(p, g, c, matches!(ed.state(), State::List | State::GrepPrompt)),
+                Some(g) => draw_grep_panel(p, ed, g, c, matches!(ed.state(), State::List | State::GrepPrompt)),
                 None if ed.bottom_kind == BottomKind::Grep => empty(p, "検索していません。ここを押すか Ctrl+Shift+F でプロジェクトを検索"),
                 None => empty(p, "コマンドの出力はありません（実行・Maven のゴールの出力がここに出ます）"),
             },

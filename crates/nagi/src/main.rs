@@ -76,6 +76,7 @@ mod hover;
 mod gutter;
 mod push_dialog;
 mod breakpoints_dialog;
+mod replace_in_path;
 mod toggles;
 mod tree_panel;
 mod tree_files;

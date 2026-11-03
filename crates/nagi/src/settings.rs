@@ -179,6 +179,7 @@ pub static SCHEMA: &[Item] = &[
     item("keymap.goto_impl", "キーマップ", "実装へ", K, "Ctrl+Alt+B", ""),
     item("keymap.find_usages", "キーマップ", "参照を探す", K, "Alt+F7", ""),
     item("keymap.find_in_files", "キーマップ", "プロジェクトを検索", K, "Ctrl+Shift+F", ""),
+    item("keymap.replace_in_files", "キーマップ", "複数ファイル内置換", K, "Ctrl+Shift+R", "IntelliJ と同じ"),
     item("keymap.recent_locations", "キーマップ", "最近の編集箇所", K, "Ctrl+Shift+E", ""),
     item("keymap.back", "キーマップ", "前の場所へ", K, "Ctrl+Alt+Left", ""),
     item("keymap.forward", "キーマップ", "次の場所へ", K, "Ctrl+Alt+Right", ""),

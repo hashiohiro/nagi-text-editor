@@ -273,7 +273,7 @@ pub fn search_with(root: &Path, pattern: &str, opts: &Opts, waker: Waker) -> nag
                         }
                         return search_plain(&mut searcher, &matcher, e.path(), &rel, &stop, &count, &tx, &waker);
                     };
-                    let Ok(text) = std::fs::read_to_string(e.path()) else { return ignore::WalkState::Continue };
+                    let Some(text) = read_text(e.path()) else { return ignore::WalkState::Continue };
                     if matcher.find(text.as_bytes()).ok().flatten().is_none() {
                         return ignore::WalkState::Continue;
                     }
@@ -326,9 +326,27 @@ fn send_hits(hits: Vec<Hit>, count: &AtomicUsize, tx: &std::sync::mpsc::Sender<V
 #[allow(clippy::too_many_arguments)]
 fn search_plain(searcher: &mut grep_searcher::Searcher, matcher: &grep_regex::RegexMatcher, path: &Path, rel: &str, stop: &std::sync::atomic::AtomicBool, count: &AtomicUsize, tx: &std::sync::mpsc::Sender<Vec<Hit>>, waker: &Waker) -> ignore::WalkState {
     let mut hits = Vec::new();
-    let _ = searcher.search_path(
+    // UTF-8 でないファイル（Shift_JIS・EUC-JP など）は、エディタと同じ見立てで読んだ文字で探す（日本語の語でも当たるように）
+    // バイナリ（頭の 8KB に NUL がある）は読みきらずに飛ばす（jar・画像。前の BinaryDetection::quit(0) と同じく探さない）
+    let Some(bytes) = read_unless_binary(path) else { return ignore::WalkState::Continue };
+    if std::str::from_utf8(&bytes).is_err() {
+        let text = nagi_core::encoding::decode(&bytes, None).0;
+        for (no, raw) in text.split_inclusive('\n').enumerate() {
+            let line = raw.trim_end_matches(['\r', '\n']);
+            let lead = line.len() - line.trim_start().len();
+            let body = &line[lead..];
+            let Ok(Some(m)) = matcher.find(body.as_bytes()) else { continue };
+            let mut cut = body.len().min(MAX_TEXT);
+            while !body.is_char_boundary(cut) {
+                cut -= 1;
+            }
+            hits.push(Hit { path: rel.to_string(), line: no + 1, range: (m.start().min(cut), m.end().min(cut)), text: body[..cut].to_string() });
+        }
+        return send_hits(hits, count, tx, waker);
+    }
+    let _ = searcher.search_slice(
         matcher,
-        path,
+        &bytes,
         UTF8(|line_no, line| {
             let line = line.trim_end_matches(['\r', '\n']);
             let lead = line.len() - line.trim_start().len();
@@ -346,9 +364,55 @@ fn search_plain(searcher: &mut grep_searcher::Searcher, matcher: &grep_regex::Re
     send_hits(hits, count, tx, waker)
 }
 
+/// ファイルの中身。頭の 8KB に NUL があれば（バイナリ）None
+fn read_unless_binary(path: &Path) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path).ok()?;
+    let mut head = vec![0u8; 8192];
+    let mut n = 0;
+    while n < head.len() {
+        match f.read(&mut head[n..]) {
+            Ok(0) => break,
+            Ok(k) => n += k,
+            Err(_) => return None,
+        }
+    }
+    head.truncate(n);
+    if head.contains(&0) {
+        return None;
+    }
+    f.read_to_end(&mut head).ok()?;
+    Some(head)
+}
+
+/// ファイルの中身（UTF-8 でなければ、エディタと同じ見立て（設定の文字コード・Shift_JIS・EUC-JP）で読む）
+fn read_text(path: &Path) -> Option<String> {
+    let bytes = std::fs::read(path).ok()?;
+    match String::from_utf8(bytes) {
+        Ok(s) => Some(s),
+        Err(e) => Some(nagi_core::encoding::decode(e.as_bytes(), None).0),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// UTF-8 でないファイル（Shift_JIS）も、エディタと同じく読んで探す（日本語の語でも）。前は飛ばしていた
+    #[test]
+    fn finds_in_shift_jis_files() {
+        let dir = std::env::temp_dir().join(format!("nagi-grep-sjis-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (bytes, _, _) = encoding_rs::SHIFT_JIS.encode("一行目\n顧客の名前 name\n");
+        std::fs::write(dir.join("a.txt"), &bytes).unwrap();
+        for q in ["name", "顧客"] {
+            let job = search(&dir, q, false, Arc::new(|| {})).unwrap();
+            let hits: Vec<Hit> = job.rx.iter().flatten().collect();
+            assert_eq!(hits.iter().map(|h| (h.line, h.text.as_str())).collect::<Vec<_>>(), [(2, "顧客の名前 name")], "{q}");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn finds_case_insensitive_and_literal() {

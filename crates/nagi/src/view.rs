@@ -1116,7 +1116,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     }
     if let (Some(r), Some(g)) = (ed.panel_rect(), &mut ed.panels.grep) {
         // 選んでいる結果が見える範囲に入るように送る（1 行目は見出し）
-        nagi_ui::list::fit(g.selected, &mut g.scroll, r.h.saturating_sub(1));
+        nagi_ui::list::fit(g.shown_row(), &mut g.scroll, r.h.saturating_sub(1));
     }
     if let (Some(r), Some(c)) = (ed.commit_rect(), &mut ed.panels.commit) {
         // 選んでいる項目（見出しの行を含めた位置）が見える範囲に入るように送る

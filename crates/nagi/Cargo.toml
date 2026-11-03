@@ -50,3 +50,7 @@ windows = { workspace = true, features = [
     "Win32_Security",
     "Win32_System_IO",
 ] }
+
+[dev-dependencies]
+# 試験で Shift_JIS のファイルを作る（nagi-core と同じ版）
+encoding_rs = "0.8.35"

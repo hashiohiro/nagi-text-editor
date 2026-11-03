@@ -1,7 +1,9 @@
-//! 全文検索のパネル（下にドッキング）。最下行で検索語を打つたびに探し直し、結果を `path:行: 本文` の形で並べる。
+//! 全文検索のパネル（下にドッキング）。小窓で検索語を打つたびに探し直し、結果をファイルごとの木で並べる
+//! （IntelliJ の検索のツールウィンドウと同じ。ファイルの行の下に `行番号 本文`。欄が広ければ右に選んだ所のプレビュー）。
+//! 診断・ログの結果は `path:行: 本文` の平らな一覧。
 //!
-//! パネルに移ると共通の「リストモード」で操作する（architecture.md §7.1）: `j/k` `gg/G` `Ctrl-d/u` で選び、
-//! Enter で開いて編集画面へ、`o` はパネルに残ったまま開く、`/` で検索語を直す、Esc で編集画面へ、`q` で閉じる。
+//! 欄では ↑↓ で選び、← → でファイルを畳む・開く、Enter で開いて本文へ（ファイルの行なら畳む・開く）、Esc で本文へ。
+//! パス内置換（Ctrl+Shift+R）は小窓に置換の欄を足し、選んだ所・すべてを置き換える（replace_in_path.rs）。
 
 use std::path::PathBuf;
 
@@ -44,6 +46,25 @@ pub struct GrepPanel {
     pub view: Option<crate::read_view::ReadView>,
     /// 参照の検索（gr）で、探し終わったら定義で絞る
     pub refs: Option<RefsFilter>,
+    /// 木で選んでいるのが、`selected` の一致のファイルの行か
+    pub on_file: bool,
+    /// 木で畳んだファイル（根からの相対パス）
+    pub collapsed: std::collections::HashSet<String>,
+    /// パス内置換の置換の文字（replace_in_path.rs）
+    pub replace: Prompt,
+    /// パス内置換の小窓か
+    pub replacing: bool,
+    /// 置換の欄を打っているか（でなければ検索語）
+    pub editing_replace: bool,
+}
+
+/// 検索の結果の木の 1 行
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GRow {
+    /// ファイル（根からの相対パス, 一致の数, 最初の一致の番号, 開いているか）
+    File { path: String, count: usize, first: usize, open: bool },
+    /// 一致（hits の番号）
+    Hit(usize),
 }
 
 /// 参照の検索の絞り込み: 名前と、その定義（根からの相対パス, 行, 列。0 始まり）
@@ -137,7 +158,92 @@ impl GrepPanel {
 
     fn select(&mut self, i: usize) {
         self.selected = i.min(self.hits.len().saturating_sub(1));
+        self.on_file = false;
         self.moved = true;
+    }
+
+    /// 木で出すか（全文検索の結果。診断・ログは平らな一覧）
+    pub fn tree(&self) -> bool {
+        self.title.is_none()
+    }
+
+    /// 木の行（一致はパスの順に並んでいるので、続く同じパスを 1 つのファイルにまとめる）
+    pub fn tree_rows(&self) -> Vec<GRow> {
+        let mut out = Vec::new();
+        let mut i = 0;
+        while i < self.hits.len() {
+            let path = &self.hits[i].path;
+            let end = (i..self.hits.len()).find(|&j| self.hits[j].path != *path).unwrap_or(self.hits.len());
+            let open = !self.collapsed.contains(path);
+            out.push(GRow::File { path: path.clone(), count: end - i, first: i, open });
+            if open {
+                out.extend((i..end).map(GRow::Hit));
+            }
+            i = end;
+        }
+        out
+    }
+
+    /// 選んでいる行の、出している並びの中の位置（木なら木の行、平らなら一致の番号）
+    pub fn shown_row(&self) -> usize {
+        if !self.tree() {
+            return self.selected;
+        }
+        let rows = self.tree_rows();
+        let Some(path) = self.hits.get(self.selected).map(|h| h.path.as_str()) else { return 0 };
+        let on_file = self.on_file || self.collapsed.contains(path);
+        rows.iter().position(|r| if on_file { matches!(r, GRow::File { path: p, .. } if p == path) } else { *r == GRow::Hit(self.selected) }).unwrap_or(0)
+    }
+
+    /// 木の行を選ぶ
+    fn select_row(&mut self, r: &GRow) {
+        match r {
+            GRow::File { first, .. } => {
+                self.selected = *first;
+                self.on_file = true;
+            }
+            GRow::Hit(i) => {
+                self.selected = *i;
+                self.on_file = false;
+            }
+        }
+        self.moved = true;
+    }
+
+    /// 選んでいるファイルを畳む・開く
+    fn toggle_file(&mut self) {
+        let Some(path) = self.hits.get(self.selected).map(|h| h.path.clone()) else { return };
+        if !self.collapsed.remove(&path) {
+            self.collapsed.insert(path);
+        }
+        self.on_file = true;
+    }
+
+    /// 木のキー（↑↓ PageUp・Down Home End で選ぶ、← → で畳む・開く、Enter はファイルなら畳む・開く）。
+    /// 扱ったら Some（Enter で一致を開くなら Some(true)）
+    pub fn tree_key(&mut self, key: Key, page: usize) -> Option<bool> {
+        let rows = self.tree_rows();
+        if rows.is_empty() {
+            return None;
+        }
+        let pos = self.shown_row();
+        if let Some(to) = nagi_ui::list::nav(key, pos, rows.len(), page) {
+            self.select_row(&rows[to]);
+            self.anchor = None;
+            return Some(false);
+        }
+        let on_file = matches!(rows.get(pos), Some(GRow::File { .. }));
+        let open = matches!(rows.get(pos), Some(GRow::File { open: true, .. }));
+        match key {
+            Key::Left if !on_file => self.on_file = true,
+            Key::Left if open => self.toggle_file(),
+            Key::Right if on_file && !open => self.toggle_file(),
+            Key::Right if on_file => self.on_file = false,
+            Key::Enter if on_file => self.toggle_file(),
+            Key::Enter => return Some(true),
+            _ => return None,
+        }
+        Some(false)
     }
 
     /// 選んでいる行の範囲（範囲を選んでいなければ今の行だけ）
@@ -239,6 +345,8 @@ impl Editor {
         if let Some(g) = &mut self.panels.grep {
             g.forced = None;
             g.editing_mask = false;
+            g.replacing = false;
+            g.editing_replace = false;
         }
         self.open_grep_raw(initial);
     }
@@ -329,6 +437,11 @@ impl Editor {
             anchor: None,
             view: None,
             refs: None,
+            on_file: false,
+            collapsed: Default::default(),
+            replace: Prompt::default(),
+            replacing: false,
+            editing_replace: false,
         });
         self.bottom_hidden = false;
         self.bottom_kind = crate::result_grid::BottomKind::Grep;
@@ -354,7 +467,7 @@ impl Editor {
         self.restart_grep();
     }
 
-    fn restart_grep(&mut self) {
+    pub(crate) fn restart_grep(&mut self) {
         let waker = self.waker();
         let Some(g) = &mut self.panels.grep else { return };
         g.job = None;
@@ -362,6 +475,7 @@ impl Editor {
         g.selected = 0;
         g.scroll = 0;
         g.moved = false;
+        g.on_file = false;
         g.error = None;
         g.title = None;
         g.running = false;
@@ -431,6 +545,32 @@ impl Editor {
         if self.grep_option_key(key) {
             return;
         }
+        // 複数ファイル内置換: Tab で欄を行き来、Enter で置換、Alt+A ですべて置換、置換の欄の文字
+        if self.panels.grep.as_ref().is_some_and(|g| g.replacing) {
+            match key {
+                Key::Tab => {
+                    if let Some(g) = &mut self.panels.grep {
+                        g.editing_replace = !g.editing_replace;
+                    }
+                    return;
+                }
+                Key::Enter => {
+                    self.grep_replace(false);
+                    return;
+                }
+                Key::Alt('a') => {
+                    self.grep_replace(true);
+                    return;
+                }
+                k if self.panels.grep.as_ref().is_some_and(|g| g.editing_replace) && !matches!(k, Key::Esc | Key::Ctrl('c') | Key::Ctrl('[') | Key::Up | Key::Down | Key::Ctrl('n') | Key::Ctrl('p')) => {
+                    if let Some(g) = &mut self.panels.grep {
+                        g.replace.key(k);
+                    }
+                    return;
+                }
+                _ => {}
+            }
+        }
         let Some(g) = &mut self.panels.grep else { return };
         match key {
             // 結果があればパネルは残す（リストモードへは Ctrl-w j かクリックで）
@@ -464,6 +604,11 @@ impl Editor {
 
     pub(crate) fn grep_insert(&mut self, text: &str) {
         if let Some(g) = &mut self.panels.grep {
+            if g.editing_replace && g.replacing {
+                // 置換の文字は探し直さない
+                g.replace.insert(text);
+                return;
+            }
             if g.editing_mask {
                 g.mask.insert(text);
                 g.opts.mask = g.mask.text.clone();
@@ -538,6 +683,18 @@ impl Editor {
             self.set_state(State::Normal);
             return crate::editor::Effect::None;
         };
+        // 全文検索の結果は木（ファイルの行の下に一致）
+        if g.tree() && !matches!(key, Key::Ctrl('c') | Key::Esc) {
+            match g.tree_key(key, half * 2) {
+                Some(true) => {
+                    self.set_state(State::Normal);
+                    self.open_hit(false);
+                }
+                Some(false) => {}
+                None => {}
+            }
+            return crate::editor::Effect::None;
+        }
         // 標準のキーだけ（ADR 0019。開いて欄に残る・検索し直す・閉じるはアクション）
         let moved = nagi_ui::list::nav(key, g.selected, g.hits.len(), half * 2);
         match key {
@@ -662,7 +819,15 @@ impl Editor {
         if g.hits.is_empty() {
             return;
         }
-        let i = (g.scroll + row.max(1) - 1).min(g.hits.len() - 1);
+        let i = if g.tree() {
+            // 木: 一致の行だけ（ファイルの行は飛ばす）
+            match g.tree_rows().get(g.scroll + row.max(1) - 1) {
+                Some(GRow::Hit(i)) => *i,
+                _ => return,
+            }
+        } else {
+            (g.scroll + row.max(1) - 1).min(g.hits.len() - 1)
+        };
         if i != g.selected && g.anchor.is_none() {
             g.anchor = Some(g.selected);
         }
@@ -702,6 +867,26 @@ impl Editor {
             if let Some(c) = g.title.is_none().then(|| chip_at(g, col)).flatten() {
                 self.toggle_chip(c);
                 return;
+            }
+            self.focus_panel();
+            return;
+        }
+        if g.tree() {
+            let Some(r) = g.tree_rows().get(g.scroll + row - 1).cloned() else {
+                self.focus_panel();
+                return;
+            };
+            g.select_row(&r);
+            g.anchor = None;
+            match r {
+                // ファイルの行: ▸▾ かダブルクリックで畳む・開く
+                GRow::File { .. } if col < 3 || clicks >= 2 => g.toggle_file(),
+                GRow::Hit(_) if clicks >= 2 => {
+                    self.set_state(State::Normal);
+                    self.open_hit(false);
+                    return;
+                }
+                _ => {}
             }
             self.focus_panel();
             return;
@@ -766,8 +951,10 @@ impl crate::component::Component for ListComponent {
 pub mod popup {
     use crate::panes::Rect;
 
-    /// 一覧が始まる行（見出し・入力欄・マスクと範囲・区切り）
-    pub const LIST_TOP: usize = 4;
+    /// 一覧が始まる行（見出し・入力欄・（置換の欄）・マスクと範囲・区切り）
+    pub fn list_top(replacing: bool) -> usize {
+        4 + usize::from(replacing)
+    }
 
     /// 小窓（画面の真ん中より少し上。一覧の下にプレビュー）
     pub fn rect(cols: usize, rows: usize) -> Rect {
@@ -778,10 +965,19 @@ pub mod popup {
     }
 
     /// 一覧の行の数とプレビューの行の数
-    pub fn heights(r: Rect) -> (usize, usize) {
-        let rest = r.h.saturating_sub(LIST_TOP + 2);
+    pub fn heights(r: Rect, replacing: bool) -> (usize, usize) {
+        let rest = r.h.saturating_sub(list_top(replacing) + 2);
         let preview = (rest * 2 / 5).min(9);
         (rest.saturating_sub(preview).max(1), preview)
+    }
+
+    /// 置換のボタン（番号 0: 置換・1: すべて置換, 行, 始めの列, 終わりの列）。いちばん下の行の右
+    pub fn replace_buttons(r: Rect) -> Vec<(usize, usize, usize, usize)> {
+        let w = |s: &str| nagi_core::display_col(s, s.len(), false) + 2;
+        let row = r.y + r.h - 1;
+        let all = (1, row, r.x + r.w - 1 - w("すべて置換"), r.x + r.w - 1);
+        let one = (0, row, all.2 - 1 - w("置換"), all.2 - 1);
+        vec![one, all]
     }
 
     /// 一覧の先頭の候補（選んでいる候補が見えるように）
@@ -837,8 +1033,9 @@ impl Editor {
             x -= 1;
         }
         let mut x = b.x + 1;
+        let row = b.y + 2 + usize::from(g.replacing);
         for (t, _, c) in cs.iter().skip(3) {
-            out.push((*c, b.y + 2, x, x + w(t)));
+            out.push((*c, row, x, x + w(t)));
             x += w(t) + 1;
         }
         out
@@ -858,8 +1055,22 @@ impl Editor {
             }
             return;
         }
-        let (list_h, _) = popup::heights(b);
-        let list_y = b.y + popup::LIST_TOP;
+        let replacing = self.panels.grep.as_ref().is_some_and(|g| g.replacing);
+        if replacing {
+            if let Some(i) = popup::replace_buttons(b).into_iter().find(|x| x.1 == row && col >= x.2 && col < x.3).map(|x| x.0) {
+                self.grep_replace(i == 1);
+                return;
+            }
+            // 置換の欄・検索語の欄を押したらそこを打つ
+            if row == b.y + 1 || row == b.y + 2 {
+                if let Some(g) = &mut self.panels.grep {
+                    g.editing_replace = row == b.y + 2;
+                }
+                return;
+            }
+        }
+        let (list_h, _) = popup::heights(b, replacing);
+        let list_y = b.y + popup::list_top(replacing);
         let Some(g) = &mut self.panels.grep else { return };
         if row < list_y || row >= list_y + list_h {
             return;
@@ -905,7 +1116,7 @@ pub(crate) mod draw {
         let row_y = |r: usize| (b.y + r) as f32 * cell.h;
         // 見出し（件数も）と札
         let count = format!("  {} 件 / {} ファイル{}", g.hits.len(), g.files(), if g.searching() { " …" } else { "" });
-        let c = p.text(" ファイル内検索", b.x, row_y(0), FG_BRIGHT);
+        let c = p.text(if g.replacing { " 複数ファイル内置換" } else { " 複数ファイル内検索" }, b.x, row_y(0), FG_BRIGHT);
         p.text(&count, c, row_y(0), STATUS_FG);
         let on: std::collections::HashMap<String, bool> = crate::grep_panel::chips(g).into_iter().map(|c| (format!("{:?}", c.2), c.1)).collect();
         for (chip, r, c0, c1) in ed.grep_popup_chips(cols, rows) {
@@ -919,21 +1130,28 @@ pub(crate) mod draw {
         // 入力欄
         { let px = crate::metrics::icon(crate::metrics::Icon::Small); crate::icons::draw(p, "g_search", (b.x as f32 + 1.5) * cell.w - px / 2.0, crate::metrics::centered(row_y(1), px), px, None); }
         let preedit = |active: bool| if active { ed.preedit.as_str() } else { "" };
-        field(p, &g.query.text, g.query.cursor, preedit(!g.editing_mask), b.x + 1 + crate::metrics::icon_cols(crate::metrics::Icon::Small), row_y(1), !g.editing_mask);
+        let typing_query = !g.editing_mask && !(g.replacing && g.editing_replace);
+        field(p, &g.query.text, g.query.cursor, preedit(typing_query), b.x + 1 + crate::metrics::icon_cols(crate::metrics::Icon::Small), row_y(1), typing_query);
+        if g.replacing {
+            let c = p.text(" 置換: ", b.x, row_y(2), STATUS_FG);
+            field(p, &g.replace.text, g.replace.cursor, preedit(g.editing_replace), c, row_y(2), g.editing_replace);
+        }
+        let rep = usize::from(g.replacing);
         if g.editing_mask {
             // マスクを打っている間は 3 行目の札の代わりに欄
-            p.out.push(Instance::fill(x0, row_y(2), wpx, cell.h, POPUP_BG));
-            let c = p.text(" マスク: ", b.x, row_y(2), FG);
-            field(p, &g.mask.text, g.mask.cursor, preedit(true), c, row_y(2), true);
+            p.out.push(Instance::fill(x0, row_y(2 + rep), wpx, cell.h, POPUP_BG));
+            let c = p.text(" マスク: ", b.x, row_y(2 + rep), FG);
+            field(p, &g.mask.text, g.mask.cursor, preedit(true), c, row_y(2 + rep), true);
         }
-        p.out.push(Instance::fill(x0, row_y(3) + cell.h * 0.5, wpx, 1.0, SEPARATOR));
+        p.out.push(Instance::fill(x0, row_y(3 + rep) + cell.h * 0.5, wpx, 1.0, SEPARATOR));
         // 候補（本文、右に場所）。本文とプレビューはコードなので等幅
         let ui = std::mem::replace(&mut p.ui, false);
-        let (list_h, prev_h) = popup::heights(b);
+        let (list_h, prev_h) = popup::heights(b, g.replacing);
+        let lt = popup::list_top(g.replacing);
         let top = popup::top(g.selected, list_h);
         for k in 0..list_h {
             let Some(h) = g.hits.get(top + k) else { break };
-            let y = row_y(popup::LIST_TOP + k);
+            let y = row_y(lt + k);
             let sel = top + k == g.selected;
             if sel {
                 selection(p, x0 + 4.0, y, wpx - 8.0, cell.h, LIST_SEL_BG);
@@ -953,7 +1171,7 @@ pub(crate) mod draw {
             p.text(&place, right, y, STATUS_FG);
         }
         // プレビュー（選んだ所の前後。その行に地）
-        let py = popup::LIST_TOP + list_h;
+        let py = lt + list_h;
         p.out.push(Instance::fill(x0, row_y(py), wpx, 1.0, SEPARATOR));
         p.out.push(Instance::fill(x0, row_y(py) + 1.0, wpx, prev_h as f32 * cell.h, BG));
         if let Some(h) = g.hits.get(g.selected).filter(|_| prev_h > 0) {
@@ -972,14 +1190,96 @@ pub(crate) mod draw {
         }
         p.ui = ui;
         // 案内
-        let hint = " Enter 開く  Ctrl+Enter 下の欄へ  ↑↓ 選ぶ  Alt+C・O・X・F・T 条件  Esc 閉じる";
+        let hint = if g.replacing { " Enter 置換  Alt+A すべて置換  Tab 欄を切り替え  ↑↓ 選ぶ  Esc 閉じる" } else { " Enter 開く  Ctrl+Enter 下の欄へ  ↑↓ 選ぶ  Alt+C・O・X・F・T 条件  Esc 閉じる" };
         p.out.push(Instance::fill(x0, row_y(b.h - 1), wpx, 1.0, SEPARATOR));
         p.text(hint, b.x, row_y(b.h - 1), STATUS_FG);
+        if g.replacing {
+            for (i, row, c0, c1) in popup::replace_buttons(b) {
+                let label = if i == 0 { "置換" } else { "すべて置換" };
+                p.out.push(Instance::rounded(c0 as f32 * cell.w, row as f32 * cell.h + crate::metrics::pad(), (c1 - c0) as f32 * cell.w, cell.h - 2.0 * crate::metrics::pad(), crate::metrics::radius(crate::metrics::Radius::Control), if i == 1 { ACCENT_FG } else { RAISED_BG }));
+                p.text(label, c0 + 1, row as f32 * cell.h, FG_BRIGHT);
+            }
+        }
+        p.cols = saved;
+    }
+
+    /// 欄が広ければ右にプレビューを出す（この幅から）
+    pub(crate) const PREVIEW_MIN_W: usize = 100;
+
+    /// 全文検索の結果の木（ファイルの行の下に `行番号 本文`）と、広ければ右に選んだ所のプレビュー
+    pub(crate) fn draw_tree(p: &mut Painter, ed: &Editor, g: &crate::grep_panel::GrepPanel, r: Rect, focused: bool) {
+        use crate::grep_panel::GRow;
+        let cell = p.fonts.cell();
+        let lw = if r.w >= PREVIEW_MIN_W { r.w * 55 / 100 } else { r.w };
+        let x = r.x as f32 * cell.w;
+        let saved = p.cols;
+        p.cols = r.x + lw;
+        let rows = g.tree_rows();
+        let shown = g.shown_row();
+        for (k, row) in rows.iter().enumerate().skip(g.scroll).take(r.h) {
+            let y = (r.y + k - g.scroll) as f32 * cell.h;
+            let selected = match row {
+                GRow::Hit(i) => (!g.on_file || g.anchor.is_some()) && g.in_selection(*i) || k == shown,
+                GRow::File { .. } => k == shown,
+            };
+            let reversed = selected && focused;
+            if reversed {
+                selection(p, x, y, lw as f32 * cell.w, cell.h, LIST_SEL_BG);
+            } else if selected {
+                p.out.push(Instance::fill(x, y, lw as f32 * cell.w, cell.h, MATCH_BG));
+            }
+            let (fg, dim, accent) = if reversed { (FG_BRIGHT, FG_BRIGHT, FG_BRIGHT) } else { (FG, STATUS_FG, FINDER_MATCH) };
+            match row {
+                GRow::File { path, count, open, .. } => {
+                    let (dir, name) = path.rsplit_once('/').map_or(("", path.as_str()), |(d, n)| (d, n));
+                    let mut items = p.items(if *open { " ▾ " } else { " ▸ " }, dim);
+                    items.extend(p.items(name, fg));
+                    let tail = format!("  {dir}  {count} 件");
+                    items.extend(p.items(&tail, dim));
+                    p.draw(&items, r.x, y);
+                }
+                GRow::Hit(i) => {
+                    let h = &g.hits[*i];
+                    let num = format!("    {:>5}  ", h.line);
+                    let mut items = p.items(&num, dim);
+                    for (b, gr) in h.text.grapheme_indices(true) {
+                        let m = b >= h.range.0 && b < h.range.1;
+                        let width = p.cell_width(gr);
+                        items.push(Item { g: Cow::Borrowed(gr), width, fg: if m { accent } else { fg }, bg: None, underline: m && reversed });
+                    }
+                    skip_cols(&mut items, g.left, &mut None);
+                    p.draw(&items, r.x, y);
+                }
+            }
+        }
+        p.cols = saved;
+        if lw == r.w {
+            return;
+        }
+        // プレビュー（選んだ一致の前後。その行に地、一致に印）
+        let px = r.x + lw;
+        p.out.push(Instance::fill(px as f32 * cell.w, r.y as f32 * cell.h, 1.0, r.h as f32 * cell.h, SEPARATOR));
+        p.out.push(Instance::fill(px as f32 * cell.w + 1.0, r.y as f32 * cell.h, (r.w - lw) as f32 * cell.w - 1.0, r.h as f32 * cell.h, BG));
+        let Some(h) = g.hits.get(g.selected) else { return };
+        let lines = ed.grep_preview_lines(&g.root.join(&h.path));
+        let first = h.line.saturating_sub(1).saturating_sub(r.h / 2);
+        p.cols = r.x + r.w;
+        for k in 0..r.h {
+            let ln = first + k;
+            let Some(text) = lines.get(ln) else { break };
+            let y = (r.y + k) as f32 * cell.h;
+            let here = ln + 1 == h.line;
+            if here {
+                p.out.push(Instance::fill(px as f32 * cell.w + 1.0, y, (r.w - lw) as f32 * cell.w - 1.0, cell.h, CURSOR_LINE_BG));
+            }
+            let c = p.text(&format!("{:>5}  ", ln + 1), px + 1, y, if here { LINE_NO_CUR } else { LINE_NO });
+            p.text(text, c, y, FG);
+        }
         p.cols = saved;
     }
 
     /// 全文検索のパネル。1 行目は見出し（検索語と件数）、2 行目から `path:行: 本文`（ripgrep の vimgrep と同じ形）
-    pub(crate) fn draw_grep_panel(p: &mut Painter, g: &crate::grep_panel::GrepPanel, r: Rect, focused: bool) {
+    pub(crate) fn draw_grep_panel(p: &mut Painter, ed: &Editor, g: &crate::grep_panel::GrepPanel, r: Rect, focused: bool) {
         if let (Some(v), Some(_)) = (&g.view, &g.title) {
             draw_read_view(p, g, v, r, focused);
             return;
@@ -1004,6 +1304,10 @@ pub(crate) mod draw {
         }
         p.text(&head, cx, y0, STATUS_FG);
         p.cols = saved;
+        if g.tree() {
+            draw_tree(p, ed, g, Rect { x: r.x, y: r.y + 1, w: r.w, h: r.h.saturating_sub(1) }, focused);
+            return;
+        }
         for k in 0..r.h.saturating_sub(1) {
             let Some(h) = g.hits.get(g.scroll + k) else { break };
             let y = (r.y + 1 + k) as f32 * cell.h;
@@ -1158,20 +1462,23 @@ mod tests {
         keys(&mut e, "<End><CR>");
         assert_eq!(e.state(), State::Normal);
         assert_eq!(e.core.cursor.line, 2);
-        // 本文へ移った後に、結果をマウスで選び直せる（下の欄の 0 行目はタブ、1 行目は見出し、2 行目から結果）
+        // 本文へ移った後に、結果をマウスで選び直せる（下の欄の 0 行目はタブ、1 行目は見出し、2 行目から結果の木:
+        // a.rs・a.rs:2・b.rs・b.rs:1・b.rs:3）
         assert_eq!(e.state(), State::Normal);
-        e.bottom_click(3, 5, 1);
+        let rows = e.panels.grep.as_ref().unwrap().tree_rows();
+        assert_eq!(rows.iter().map(|r| matches!(r, GRow::File { .. })).collect::<Vec<_>>(), [true, false, true, false, false]);
+        e.bottom_click(5, 5, 1);
         assert_eq!(e.state(), State::List, "{}", e.svc.notify.text);
         assert_eq!(e.panels.grep.as_ref().unwrap().selected, 1);
-        e.bottom_click(3, 5, 2);
+        e.bottom_click(5, 5, 2);
         assert_eq!(e.state(), State::Normal);
         assert_eq!(e.core.buf.line(0), "// Needle here");
         // 本文で挿入・ビジュアルの最中でも、結果を押せば選べる
         for k in ["ix", "v", "V"] {
             keys(&mut e, k);
-            e.bottom_click(2, 5, 1);
+            e.bottom_click(3, 5, 1);
             assert_eq!((e.state(), e.panels.grep.as_ref().unwrap().selected), (State::List, 0), "{k}: {}", e.svc.notify.text);
-            e.bottom_click(2, 5, 2);
+            e.bottom_click(3, 5, 2);
             assert_eq!(e.state(), State::Normal, "{k}");
             keys(&mut e, "<Esc>u");
         }
@@ -1180,20 +1487,33 @@ mod tests {
         fn set(t: &str) { CLIP.with(|c| *c.borrow_mut() = t.to_string()); }
         fn get() -> Option<String> { CLIP.with(|c| Some(c.borrow().clone())) }
         e.svc.clipboard = Some(crate::editor::Clipboard { set, get });
-        e.bottom_click(2, 5, 1);
-        // ドラッグの行は欄の中の行（0 は見出し）
-        e.panel_drag(2, 0);
+        e.bottom_click(3, 5, 1);
+        // ドラッグの行は欄の中の行（0 は見出し）。木のファイルの行は飛ばす
+        e.panel_drag(4, 0);
         keys(&mut e, "<C-c>");
         assert_eq!(get().unwrap(), "src/a.rs:2: let needle = 1;\r\nsrc/b.rs:1: // Needle here");
         assert!(e.panels.grep.as_ref().unwrap().anchor.is_none());
         keys(&mut e, "<C-c>");
         assert_eq!(get().unwrap(), "src/b.rs:1: // Needle here");
         // ドラッグ（欄の中の行。0 は見出し）でも範囲を選べる
-        e.bottom_click(2, 5, 1);
-        e.panel_drag(4, 0);
+        e.bottom_click(3, 5, 1);
+        e.panel_drag(5, 0);
         assert_eq!(e.panels.grep.as_ref().unwrap().sel_range(), (0, 2));
         e.panel_copy();
         assert_eq!(get().unwrap().lines().count(), 3);
+        // ファイルの行: ← で畳み、→ で開く。畳んだファイルの一致は飛ばす
+        e.bottom_click(4, 5, 1);
+        let g = e.panels.grep.as_mut().unwrap();
+        assert!(g.on_file && g.selected == 1);
+        g.tree_key(Key::Left, 10);
+        assert_eq!(g.tree_rows().len(), 3, "b.rs を畳んだ");
+        g.tree_key(Key::Up, 10);
+        assert_eq!((g.selected, g.on_file), (0, false));
+        g.tree_key(Key::Down, 10);
+        g.tree_key(Key::Right, 10);
+        assert_eq!(g.tree_rows().len(), 5);
+        g.tree_key(Key::Right, 10);
+        assert_eq!((g.selected, g.on_file), (1, false), "→ でファイルの最初の一致へ");
         keys(&mut e, "<Esc>");
         // パネルの q は何もしない（ADR 0019）。「欄を閉じる」で閉じ、窓が元の大きさに戻る
         keys(&mut e, "<C-w>jq");
