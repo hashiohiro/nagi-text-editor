@@ -3,6 +3,8 @@
 //! 押すとそのバッファへ、× で閉じる（保存していなければ、保存して閉じるか・保存せずに閉じるかを窓で確かめる）。
 //! 変更のあるタブは × の代わりに ●（マウスを載せると ×）。右クリックで閉じる・ほかを閉じる・すべて閉じる・一覧。
 //! ホイールで隣のバッファへ。入りきらなければ、作業中のタブが見えるように左を詰める。
+//! 窓を分けている間は、窓ごとにその窓で開いたファイルのタブの列を窓の上に出す（IntelliJ の分割と同じ。新しい窓は
+//! 今のファイルだけから始まる）。窓のタブを閉じるとその窓から外し、ほかの窓に無ければファイルも閉じる。最後のタブで窓を閉じる。
 
 use std::path::PathBuf;
 
@@ -49,7 +51,49 @@ impl Editor {
 
     /// 幅 `w` に入るタブ（同じ名前のファイルは親のフォルダを添える）
     pub(crate) fn buffer_tabs(&self, w: usize) -> Vec<BufTab> {
-        let list: Vec<_> = self.buffer_list().into_iter().filter(|(i, p, d, _)| self.tab_worthy(*i, p, *d)).collect();
+        self.buffer_tabs_in(None, w)
+    }
+
+    /// 窓を分けている間の、窓 `win` のバッファ（その窓で開いた順。今出しているものは必ず）
+    pub(crate) fn win_docs(&self, win: usize) -> Vec<usize> {
+        let shown = self.win_state(win).map(|s| s.doc);
+        let mut v: Vec<usize> = self.win_tabs.get(&win).cloned().unwrap_or_default().into_iter().filter(|&d| matches!(self.core.docs.get(d), Some(Slot::Active | Slot::Parked(_)))).collect();
+        if let Some(d) = shown.filter(|d| !v.contains(d)) {
+            v.push(d);
+        }
+        v
+    }
+
+    /// 窓に出したバッファを、その窓のタブに覚える（窓を分けている間。消したバッファは外す）
+    pub(crate) fn sync_win_tabs(&mut self) {
+        if !self.is_split() {
+            return;
+        }
+        let wins: Vec<usize> = self.window_rects().into_iter().map(|(w, _)| w).collect();
+        for w in wins {
+            let docs = self.win_docs(w);
+            self.win_tabs.insert(w, docs);
+        }
+    }
+
+    /// 窓ごとのタブの列（窓, 列の矩形）
+    pub(crate) fn tab_strips(&self) -> Vec<(usize, Rect)> {
+        if !self.win_tabs_on() {
+            return Vec::new();
+        }
+        self.window_rects().into_iter().map(|(w, r)| (w, Rect { x: r.x, y: r.y.saturating_sub(1), w: r.w, h: 1 })).collect()
+    }
+
+    /// 幅 `w` に入るタブ（`win` が Some なら、窓を分けている間のその窓のタブ）
+    pub(crate) fn buffer_tabs_in(&self, win: Option<usize>, w: usize) -> Vec<BufTab> {
+        let mine = win.filter(|_| self.win_tabs_on()).map(|x| (self.win_docs(x), self.win_state(x).map(|s| s.doc)));
+        let list: Vec<_> = self
+            .buffer_list()
+            .into_iter()
+            .filter(|(i, p, d, _)| self.tab_worthy(*i, p, *d) || mine.as_ref().is_some_and(|m| m.1 == Some(*i)))
+            .filter(|(i, ..)| mine.as_ref().is_none_or(|m| m.0.contains(i)))
+            .map(|(i, p, d, a)| (i, p, d, mine.as_ref().map_or(a, |m| m.1 == Some(i))))
+            .collect();
         let names: Vec<String> = list.iter().map(|(_, p, ..)| p.as_deref().map_or("無題".into(), file_name)).collect();
         let width = crate::chrome::ui_width;
         let mut tabs: Vec<BufTab> = list
@@ -66,8 +110,8 @@ impl Editor {
                 BufTab { doc: *doc, w: width(&label) + 4 + crate::metrics::icon_cols(crate::metrics::Icon::Small), label, x: 0, active: *active, dirty: *dirty, path: path.clone() }
             })
             .collect();
-        // 差分のタブ（diff_view.rs）。出している間は、それが作業中のタブ
-        if let Some(label) = self.diff_tab_label() {
+        // 差分のタブ（diff_view.rs）。出している間は、それが作業中のタブ（窓ごとの列には出さない）
+        if let Some(label) = self.diff_tab_label().filter(|_| mine.is_none()) {
             let shown = self.diff_shown();
             if shown {
                 tabs.iter_mut().for_each(|t| t.active = false);
@@ -96,13 +140,55 @@ impl Editor {
 
     /// 画面の (行, 列) にあるタブ（バッファの番号, × の上か）
     pub fn buftab_at(&self, row: usize, col: usize) -> Option<(usize, bool)> {
+        self.buftab_win_at(row, col).map(|t| (t.1, t.2))
+    }
+
+    /// 画面の (行, 列) にあるタブ（窓ごとの列なら窓, バッファの番号, × の上か）
+    pub fn buftab_win_at(&self, row: usize, col: usize) -> Option<(Option<usize>, usize, bool)> {
+        if let Some((win, r)) = self.tab_strips().into_iter().find(|(_, r)| r.contains(row, col)) {
+            let c = col - r.x;
+            let t = self.buffer_tabs_in(Some(win), r.w).into_iter().find(|t| c >= t.x && c < t.x + t.w)?;
+            return Some((Some(win), t.doc, c == t.close_col()));
+        }
         if self.tabs_row() == 0 || row != self.area().y {
             return None;
         }
         let (x, w) = self.tabs_span();
         let c = col.checked_sub(x)?;
         let t = self.buffer_tabs(w).into_iter().find(|t| c >= t.x && c < t.x + t.w)?;
-        Some((t.doc, c == t.close_col()))
+        Some((None, t.doc, c == t.close_col()))
+    }
+
+    /// 窓 `win` のタブを閉じる（窓を分けている間）。ほかの窓にもあれば、この窓から外すだけ。
+    /// この窓に出していれば、窓の別のタブへ移す。窓のタブが無くなれば窓を閉じる。ほかの窓に無ければファイルも閉じる
+    pub(crate) fn tab_close_in(&mut self, win: usize, doc: usize) {
+        if !self.win_tabs_on() {
+            self.tab_close(doc);
+            return;
+        }
+        let elsewhere = self.win_tabs.iter().any(|(w, v)| *w != win && v.contains(&doc)) || self.window_rects().iter().any(|(w, _)| *w != win && self.win_state(*w).is_some_and(|s| s.doc == doc));
+        let docs = self.win_docs(win);
+        let rest: Vec<usize> = docs.iter().copied().filter(|&d| d != doc).collect();
+        if self.win_state(win).is_some_and(|s| s.doc == doc) {
+            match rest.last() {
+                Some(&next) => {
+                    self.focus_window(win);
+                    self.switch_doc(next);
+                }
+                None => {
+                    // 最後のタブ: 窓を閉じる
+                    self.close_window(win);
+                    if !elsewhere {
+                        self.tab_close(doc);
+                    }
+                    return;
+                }
+            }
+        }
+        self.win_tabs.insert(win, rest);
+        if !elsewhere {
+            self.tab_close(doc);
+        }
     }
 
     /// タブの行の (左端, 幅)。左上・右上の隅の出すボタン（» «）の所は空ける
@@ -229,6 +315,12 @@ pub struct BufferTabsView;
 impl crate::layout::View for BufferTabsView {
     fn rect(&self, ed: &Editor, s: crate::layout::Screen) -> Option<Rect> {
         let _ = s;
+        // 窓ごとの列: 窓の領域（列の行の外は下へ通す）
+        if ed.win_tabs_on() {
+            let (x, w) = ed.windows_x();
+            let y = ed.windows_top();
+            return Some(Rect { x, y, w, h: ed.windows_rows().saturating_sub(y) });
+        }
         if ed.tabs_row() == 0 {
             return None;
         }
@@ -238,16 +330,41 @@ impl crate::layout::View for BufferTabsView {
 
     fn draw(&self, ed: &Editor, p: &mut crate::view::Painter, r: Rect, s: crate::layout::Screen) {
         let _ = s;
+        if ed.win_tabs_on() {
+            for (w, strip) in ed.tab_strips() {
+                draw::draw_tabs_in(p, ed, strip, Some(w));
+            }
+            return;
+        }
         draw::draw_tabs(p, ed, r);
     }
 
     fn click(&self, ed: &mut Editor, r: Rect, at: crate::layout::At, clicks: u32) -> crate::layout::Click {
         let (row, col) = at.screen;
         let _ = (r, clicks);
-        match ed.buftab_at(row, col) {
-            Some((doc, true)) => ed.tab_close(doc),
-            Some((doc, false)) => ed.tab_select(doc),
-            None => {}
+        let strip = ed.win_tabs_on();
+        if strip && !ed.tab_strips().iter().any(|(_, s)| s.contains(row, col)) {
+            return crate::layout::Click::Pass;
+        }
+        match ed.buftab_win_at(row, col) {
+            Some((Some(w), doc, true)) => ed.tab_close_in(w, doc),
+            Some((win, doc, close)) => {
+                if let Some(w) = win {
+                    ed.leave_panel();
+                    ed.focus_window(w);
+                }
+                if close {
+                    ed.tab_close(doc);
+                } else {
+                    ed.tab_select(doc);
+                }
+            }
+            None => {
+                // 列の空いた所: その窓へ
+                if let Some((w, _)) = ed.tab_strips().into_iter().find(|(_, s)| s.contains(row, col)) {
+                    ed.focus_window(w);
+                }
+            }
         }
         crate::layout::Click::Done
     }
@@ -255,6 +372,12 @@ impl crate::layout::View for BufferTabsView {
     fn context(&self, ed: &mut Editor, r: Rect, at: crate::layout::At) -> bool {
         let (row, col) = at.screen;
         let _ = r;
+        if ed.win_tabs_on() && !ed.tab_strips().iter().any(|(_, s)| s.contains(row, col)) {
+            return false;
+        }
+        if let Some((Some(w), ..)) = ed.buftab_win_at(row, col) {
+            ed.focus_window(w);
+        }
         let tab = ed.buftab_at(row, col).map(|t| t.0);
         let mut m = crate::menu::Menu::new(row, col);
         // IntelliJ のエディタのタブと同じ並び: 閉じる → 他・すべて・未変更・左側・右側 → 分割 → パス → 閉じたタブを再度開く
@@ -302,13 +425,19 @@ pub(crate) mod draw {
     use crate::view::*;
 
     pub(crate) fn draw_tabs(p: &mut Painter, ed: &Editor, r: Rect) {
+        draw_tabs_in(p, ed, r, None);
+    }
+
+    /// タブの列（`win` が Some なら窓ごとの列。作業中の窓でなければ下線を控えめに）
+    pub(crate) fn draw_tabs_in(p: &mut Painter, ed: &Editor, r: Rect, win: Option<usize>) {
         let cell = p.fonts.cell();
+        let current = win.is_none_or(|w| w == ed.core.cur_win);
         let (x0, wpx, y0) = (r.x as f32 * cell.w, r.w as f32 * cell.w, r.y as f32 * cell.h);
         p.out.push(Instance::fill(x0, y0, wpx, cell.h, BG));
         p.out.push(Instance::fill(x0, y0 + cell.h - 1.0, wpx, 1.0, SEPARATOR));
         let saved = p.cols;
         p.cols = r.x + r.w;
-        for t in ed.buffer_tabs(r.w) {
+        for t in ed.buffer_tabs_in(win, r.w) {
             let hover = ed.hover_buftab.filter(|h| h.0 == t.doc);
             let tx = (r.x + t.x) as f32 * cell.w;
             // 選んでいるタブは青い下線（IntelliJ の New UI と同じ）。載せたタブは地を明るく
@@ -316,9 +445,9 @@ pub(crate) mod draw {
                 p.out.push(Instance::fill(tx, y0, t.w as f32 * cell.w, cell.h - 1.0, RAISED_BG));
             }
             if t.active {
-                p.out.push(Instance::fill(tx, y0 + cell.h - crate::metrics::accent_line(), t.w as f32 * cell.w, crate::metrics::accent_line(), ACCENT_FG));
+                p.out.push(Instance::fill(tx, y0 + cell.h - crate::metrics::accent_line(), t.w as f32 * cell.w, crate::metrics::accent_line(), if current { ACCENT_FG } else { STATUS_FG }));
             }
-            let fg = if t.active { FG_BRIGHT } else if hover.is_some() { FG } else { STATUS_FG };
+            let fg = if t.active && current { FG_BRIGHT } else if t.active { FG } else if hover.is_some() { FG } else { STATUS_FG };
             // ファイルの種類のアイコン（プロジェクトの木と同じ）。差分のタブは差分のアイコン
             if t.doc == crate::diff_view::DIFF_TAB {
                 let px = crate::metrics::icon(crate::metrics::Icon::Small);
@@ -372,6 +501,50 @@ mod tests {
             e.edit_file(dir.join(f));
         }
         (e, dir)
+    }
+
+    /// 窓を分けると、窓ごとにタブの列を出す: 新しい窓は今のファイルだけ、前の窓は開いていたものすべて。
+    /// 窓の本文は列の下から。窓のタブを押すとその窓へ移って開く。ほかの窓にあるタブを閉じても、その窓から外すだけ。
+    /// 最後のタブを閉じると窓を閉じ、分けていなければ上の列に戻る
+    #[test]
+    fn tabs_per_split() {
+        let (mut e, dir) = editor(&["a.txt", "b.txt", "c.txt"]);
+        // 今は c.txt
+        let top = e.area().y;
+        assert_eq!(e.tabs_row(), 1);
+        e.split(true);
+        assert!(e.win_tabs_on());
+        assert_eq!(e.tabs_row(), 0, "上の共通の列は出さない");
+        let rects = e.window_rects();
+        assert!(rects.iter().all(|(_, r)| r.y == top + 1), "窓の本文は列の下から: {rects:?}");
+        let new = e.core.cur_win;
+        let old = rects.iter().map(|x| x.0).find(|&w| w != new).unwrap();
+        let names = |e: &Editor, w: usize| e.buffer_tabs_in(Some(w), 100).into_iter().map(|t| t.label).collect::<Vec<_>>();
+        assert_eq!(names(&e, new), ["c.txt"], "新しい窓は今のファイルだけ");
+        assert_eq!(names(&e, old), ["a.txt", "b.txt", "c.txt"]);
+        // 前の窓の a.txt を押す: その窓へ移って開く
+        let strip = e.tab_strips().into_iter().find(|s| s.0 == old).unwrap().1;
+        let t = e.buffer_tabs_in(Some(old), strip.w).into_iter().find(|t| t.label == "a.txt").unwrap();
+        let s = crate::layout::Screen { rows: 30, cols: 100 };
+        crate::layout::press(&mut e, s, strip.y, strip.x + t.x + 1, |_| 1);
+        assert_eq!(e.core.cur_win, old);
+        assert!(e.core.buf.path.as_ref().unwrap().ends_with("a.txt"));
+        // 新しい窓で b.txt を開くと、その窓のタブに増える
+        e.focus_window(new);
+        let b = e.buffer_list().into_iter().find(|t| t.1.as_ref().is_some_and(|p| p.ends_with("b.txt"))).unwrap().0;
+        e.switch_doc(b);
+        assert_eq!(names(&e, new), ["b.txt", "c.txt"]);
+        // 前の窓にもある c.txt を新しい窓で閉じる: 新しい窓から外すだけ（ファイルは開いたまま）
+        let c = e.buffer_list().into_iter().find(|t| t.1.as_ref().is_some_and(|p| p.ends_with("c.txt"))).unwrap().0;
+        e.tab_close_in(new, c);
+        assert_eq!(names(&e, new), ["b.txt"]);
+        assert!(e.buffer_list().iter().any(|t| t.0 == c));
+        // 最後のタブを閉じると窓を閉じ、上の列に戻る（b.txt は前の窓にもあるので開いたまま）
+        e.tab_close_in(new, b);
+        assert!(!e.is_split());
+        assert_eq!(e.tabs_row(), 1);
+        assert!(e.buffer_list().iter().any(|t| t.0 == b));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     fn labels(e: &Editor) -> Vec<String> {

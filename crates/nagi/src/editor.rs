@@ -546,6 +546,8 @@ pub struct Editor {
     pub(crate) file_clip: Option<(PathBuf, bool)>,
     /// タブの列をホイールで送った数（右へ +。別のバッファへ移ったら 0 に戻す）
     pub(crate) tab_shift: isize,
+    /// 窓ごとのタブ（窓の番号 → その窓で開いたバッファの順。分けている間だけ使う。buffer_tabs.rs）
+    pub(crate) win_tabs: std::collections::HashMap<usize, Vec<usize>>,
     /// 描いた入力欄（行, 列の始め, 終わり, Vim 風の欄か。view.rs の Painter::field_hits）
     pub field_hits: std::cell::RefCell<Vec<(usize, usize, usize, bool)>>,
     /// `--replay` の試験: 描いた文字を控える（行, 列, 文字）。replay.rs が押す所・待つ文字を探す
@@ -850,6 +852,7 @@ impl Editor {
             field_hits: Default::default(),
             file_clip: None,
             tab_shift: 0,
+            win_tabs: Default::default(),
             record_texts: false,
             drawn_texts: Default::default(),
             run_hit: Default::default(),

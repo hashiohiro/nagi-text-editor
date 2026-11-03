@@ -188,7 +188,19 @@ impl Editor {
         let top = self.windows_top();
         let mut out = Vec::new();
         self.core.layout.rects(Rect { x, y: top, w: cols, h: rows.saturating_sub(top) }, &mut out);
+        // 窓ごとのタブ: 窓の頭の 1 行はタブの列
+        if self.win_tabs_on() {
+            for (_, r) in &mut out {
+                r.y += 1;
+                r.h = r.h.saturating_sub(1);
+            }
+        }
         out
+    }
+
+    /// 窓ごとにタブの列を出しているか（分けていて、タブを出す設定で、本文を出しているとき。buffer_tabs.rs）
+    pub fn win_tabs_on(&self) -> bool {
+        self.is_split() && self.editor_shown() && self.settings.bool("editor.tabs")
     }
 
     /// 窓の領域の上端の行（枠の内側の上から、バッファのタブと SQL コンソールの帯を除いた所）
@@ -210,7 +222,8 @@ impl Editor {
     pub fn tabs_row(&self) -> usize {
         // 差分はタブで出すので、差分の間もタブの行を出す
         let diff_tab = self.diff_shown() && !self.log_fullscreen() && self.panels.db_table.is_none();
-        usize::from((self.editor_shown() || diff_tab) && self.settings.bool("editor.tabs"))
+        // 分けている間は窓ごとの列（window_rects）
+        usize::from((self.editor_shown() || diff_tab) && self.settings.bool("editor.tabs") && !self.win_tabs_on())
     }
 
     /// SQL コンソールの帯の行（タブの下。.sql なら付けていなくても、データソースのアタッチのために出す）
@@ -286,6 +299,12 @@ impl Editor {
         }
         let new = self.core.wins.len();
         self.core.wins.push(WinSlot::Parked(Win { doc: self.core.cur_doc, cursor: self.core.cursor, top: self.core.top, left: self.core.left }));
+        // タブ: 分ける前の窓は開いていたものすべて、新しい窓は今のファイルだけ（IntelliJ の分割と同じ）
+        if !self.is_split() {
+            let all: Vec<usize> = self.buffer_list().into_iter().map(|t| t.0).collect();
+            self.win_tabs.insert(self.core.cur_win, all);
+        }
+        self.win_tabs.insert(new, vec![self.core.cur_doc]);
         // 新しい窓は上・左に（Vim と同じ）。設定の splitbelow・splitright なら下・右に
         let after = if vertical { self.settings.bool("editor.split_right") } else { self.settings.bool("editor.split_below") };
         self.core.layout.insert(self.core.cur_win, new, vertical, !after);
@@ -307,6 +326,7 @@ impl Editor {
         }
         self.core.wins[w] = WinSlot::Closed;
         self.core.layout.remove(w);
+        self.win_tabs.remove(&w);
         if self.core.prev_win == Some(w) {
             self.core.prev_win = None;
         }

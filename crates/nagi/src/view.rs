@@ -1108,6 +1108,8 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     ed.sync_tree();
     // ターミナルを欄の大きさに合わせる
     ed.sync_terminal();
+    // 窓ごとのタブに、窓に出したバッファを覚える
+    ed.sync_win_tabs();
     let bar = (cell.w / 6.0).round().max(2.0);
     let underline = (cell.h / 16.0).round().max(1.0);
     let mut p = Painter { out: Vec::with_capacity(cols * rows + 64), fonts, r, cols, bar, underline, caret_at: None, tab_hits: Vec::new(), field_hits: Vec::new(), wrap_w: 0, wrap_rows: 1, end_y: 0.0, texts: ed.record_texts.then(Vec::new), ui: false, prof: std::env::var_os("NAGI_DEBUG_BUILD").map(|_| Default::default()) };

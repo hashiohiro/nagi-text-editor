@@ -92,6 +92,7 @@ impl Editor {
             self.restore_syntax();
         }
         self.trim_trees();
+        self.sync_win_tabs();
     }
 
     /// 構文木を作り直す。小さいファイルはその場で（色の無い瞬間を作らない）、大きいファイルは裏で
