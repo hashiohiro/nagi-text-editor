@@ -9,9 +9,14 @@
 //! - 止まったら: その行へ移って行を目立たせ、下の欄の「デバッグ」にスタックと変数を出す
 //! - F5 続ける、F10 次へ、F11 中へ、Shift+F11 外へ、Shift+F5・Ctrl+F2 止める（Visual Studio と同じ。キーマップで変えられる）
 //!
-//! 変数は木で、オブジェクト・配列は開くと中身を裏で読む。式の評価（Alt+F8）はコンパイラが要るので作らない。
+//! - 止まっている間は、関数の頭から止まった行までの行末に変数の値を薄く出す（IntelliJ のインラインの値）
+//! - 式の評価（Alt+F8）: 止まっているフレームで評価して変数の頭に出す。Java はコンパイラを使わず、値を読む・メソッドを
+//!   呼ぶ形で評価できる式だけ（nagi-workers の jeval.rs）、ブラウザと Python は相手が評価する
+//! - ブレークポイントの条件・有効（行番号の欄の右クリック・Ctrl+Shift+F8 のダイアログ）。無効のものは送らない
+//!
+//! 変数は木で、オブジェクト・配列は開くと中身を裏で読む。
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 
@@ -46,6 +51,45 @@ pub struct VarRow {
     pub depth: usize,
     pub var: Var,
     pub open: bool,
+    /// 式の評価の結果の行（行末の値には出さない）
+    pub eval: bool,
+}
+
+/// ブレークポイントの設定（IntelliJ のブレークポイントのダイアログの「有効」「条件」）
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BpOpt {
+    pub enabled: bool,
+    /// 空なら条件なし
+    pub condition: String,
+}
+
+impl Default for BpOpt {
+    fn default() -> Self {
+        BpOpt { enabled: true, condition: String::new() }
+    }
+}
+
+/// 行番号の欄の印の形
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BpMark {
+    /// 赤い ●
+    Normal,
+    /// 条件つき（● に ?）
+    Conditional,
+    /// 無効（赤い ○）
+    Disabled,
+}
+
+impl BpOpt {
+    pub fn mark(&self) -> BpMark {
+        if !self.enabled {
+            BpMark::Disabled
+        } else if self.condition.trim().is_empty() {
+            BpMark::Normal
+        } else {
+            BpMark::Conditional
+        }
+    }
 }
 
 pub struct DebugUi {
@@ -74,6 +118,10 @@ pub struct DebugUi {
     pub terminal: Option<String>,
     /// 1 行目のボタン（列の始め, 終わり, 押したときの処理）
     pub buttons: std::cell::RefCell<Vec<(usize, usize, fn(&mut Editor))>>,
+    /// 行末に出す変数の値（ファイル, 行 → 「名前: 値」を並べたもの。IntelliJ のインラインの値）
+    pub inline: Option<(PathBuf, HashMap<usize, String>)>,
+    /// 最後に評価した式（次の式の評価の初めの値）
+    pub last_eval: String,
 }
 
 /// JVM に JDWP の口を開ける引数
@@ -133,10 +181,10 @@ impl Editor {
         };
         let line = line.unwrap_or(self.core.cursor.line);
         let set = self.breakpoints.entry(path.clone()).or_default();
-        let on = if set.remove(&line) {
+        let on = if set.remove(&line).is_some() {
             false
         } else {
-            set.insert(line);
+            set.insert(line, BpOpt::default());
             true
         };
         if set.is_empty() {
@@ -151,9 +199,46 @@ impl Editor {
     }
 
     /// `path` の行のブレークポイント
+    #[cfg(test)]
     pub(crate) fn breaks_for(&self, path: Option<&Path>) -> Vec<usize> {
         let Some(p) = path.and_then(|p| std::path::absolute(p).ok()) else { return Vec::new() };
-        self.breakpoints.get(&p).map(|s| s.iter().copied().collect()).unwrap_or_default()
+        self.breakpoints.get(&p).map(|s| s.keys().copied().collect()).unwrap_or_default()
+    }
+
+    /// `path` の行のブレークポイントと印の形（行番号の欄に描く）
+    pub(crate) fn break_marks(&self, path: Option<&Path>) -> Vec<(usize, BpMark)> {
+        let Some(p) = path.and_then(|p| std::path::absolute(p).ok()) else { return Vec::new() };
+        self.breakpoints.get(&p).map(|s| s.iter().map(|(l, o)| (*l, o.mark())).collect()).unwrap_or_default()
+    }
+
+    /// ファイルの行のブレークポイントの設定を変える（無ければ何もしない）。変えたら送り直す
+    pub(crate) fn update_breakpoint(&mut self, path: &Path, line: usize, f: impl FnOnce(&mut BpOpt)) {
+        if let Some(o) = self.breakpoints.get_mut(path).and_then(|s| s.get_mut(&line)) {
+            f(o);
+            self.send_breakpoints();
+        }
+    }
+
+    /// ブレークポイントを外す
+    pub(crate) fn remove_breakpoint(&mut self, path: &Path, line: usize) {
+        if let Some(s) = self.breakpoints.get_mut(path) {
+            s.remove(&line);
+            if s.is_empty() {
+                self.breakpoints.remove(path);
+            }
+        }
+        self.send_breakpoints();
+    }
+
+    /// 「条件…」: 入力のダイアログで条件を書く（空なら条件なし）。書いたら `then` を行う
+    pub(crate) fn edit_breakpoint_condition(&mut self, path: PathBuf, line: usize, then: impl FnOnce(&mut Editor) + 'static) {
+        let Some(cur) = self.breakpoints.get(&path).and_then(|s| s.get(&line)).map(|o| o.condition.clone()) else { return };
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let notes = vec!["true になったときだけ止まります（空にすると条件なし）".to_string(), "例: i == 3 && name.equals(\"x\")".to_string()];
+        self.open_input(format!("{name}:{} のブレークポイント", line + 1), "条件:", &cur, notes, move |e, t| {
+            e.update_breakpoint(&path, line, |o| o.condition = t.trim().to_string());
+            then(e);
+        });
     }
 
     /// `path` の止まっている行
@@ -170,20 +255,7 @@ impl Editor {
         }
         let Some(p) = self.core.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()) else { return };
         let Some(set) = self.breakpoints.get_mut(&p) else { return };
-        let moved: BTreeSet<usize> = set
-            .iter()
-            .map(|&l| {
-                let Some(start_line) = start_line else { return l + inserted - removed.min(l + inserted) };
-                if l <= start_line {
-                    l
-                } else if l <= start_line + removed {
-                    // 消えた行の中にあったものは、編集の行に
-                    start_line
-                } else {
-                    l + inserted - removed
-                }
-            })
-            .collect();
+        let moved: std::collections::BTreeMap<usize, BpOpt> = std::mem::take(set).into_iter().map(|(l, o)| (shift_line(l, start_line, removed, inserted), o)).collect();
         *set = moved;
     }
 
@@ -198,7 +270,8 @@ impl Editor {
             } else {
                 String::new()
             };
-            out.extend(lines.iter().map(|l| Bp { class: class.clone(), file: path.clone(), line: l + 1 }));
+            // 無効のものは送らない。条件は相手で（Java は nagi が評価して）見る
+            out.extend(lines.iter().filter(|(_, o)| o.enabled).map(|(l, o)| Bp { class: class.clone(), file: path.clone(), line: l + 1, condition: Some(o.condition.clone()).filter(|c| !c.trim().is_empty()) }));
         }
         out
     }
@@ -239,6 +312,8 @@ impl Editor {
             src: HashMap::new(),
             terminal,
             buttons: Default::default(),
+            inline: None,
+            last_eval: String::new(),
         });
     }
 
@@ -485,6 +560,7 @@ impl Editor {
                     if let Some(d) = &mut self.panels.debug {
                         d.stopped = false;
                         d.at = None;
+                        d.inline = None;
                         d.status = "動いています".into();
                     }
                 }
@@ -496,12 +572,13 @@ impl Editor {
                         d.frames = frames;
                         d.frame = frame;
                         d.sel_frame = frame;
-                        d.vars = vars.into_iter().map(|var| VarRow { depth: 0, var, open: false }).collect();
+                        d.vars = vars.into_iter().map(|var| VarRow { depth: 0, var, open: false, eval: false }).collect();
                         d.sel_var = 0;
                         d.var_scroll = 0;
                         d.status = format!("止まっています: {reason}（{thread}）  {top}");
                     }
                     self.show_frame(frame);
+                    self.update_inline();
                     // 下の欄の「デバッグ」を出す（本文のカーソルはそのまま）
                     self.bottom_hidden = false;
                     self.bottom_kind = BottomKind::Debug;
@@ -510,17 +587,36 @@ impl Editor {
                 Ev::Vars { frame, vars } => {
                     if let Some(d) = &mut self.panels.debug {
                         d.frame = frame;
-                        d.vars = vars.into_iter().map(|var| VarRow { depth: 0, var, open: false }).collect();
+                        d.vars = vars.into_iter().map(|var| VarRow { depth: 0, var, open: false, eval: false }).collect();
                         d.sel_var = 0;
                         d.var_scroll = 0;
                     }
+                    self.update_inline();
                 }
+                Ev::Evaluated { expr, result } => match result {
+                    Ok(var) => {
+                        let shown = format!("{expr} = {}", var.value);
+                        if let Some(d) = &mut self.panels.debug {
+                            // 同じ式の前の結果（と開いた中身）は除いて、頭に
+                            if let Some(i) = d.vars.iter().position(|r| r.eval && r.var.name == expr) {
+                                let end = (i + 1..d.vars.len()).find(|&j| d.vars[j].depth == 0).unwrap_or(d.vars.len());
+                                d.vars.drain(i..end);
+                            }
+                            d.vars.insert(0, VarRow { depth: 0, var, open: false, eval: true });
+                            d.sel_var = 0;
+                            d.var_scroll = 0;
+                            d.on_vars = true;
+                        }
+                        self.svc.notify.info(shown);
+                    }
+                    Err(e) => self.svc.notify.warn(format!("評価できません: {expr}（{e}）")),
+                },
                 Ev::Children { parent, vars } => {
                     if let Some(d) = &mut self.panels.debug {
                         if let Some(i) = d.vars.iter().position(|r| r.var.children == Some(parent) && !r.open) {
                             let depth = d.vars[i].depth + 1;
                             d.vars[i].open = true;
-                            let rows: Vec<VarRow> = vars.into_iter().map(|var| VarRow { depth, var, open: false }).collect();
+                            let rows: Vec<VarRow> = vars.into_iter().map(|var| VarRow { depth, var, open: false, eval: false }).collect();
                             d.vars.splice(i + 1..i + 1, rows);
                         }
                     }
@@ -531,6 +627,7 @@ impl Editor {
                         d.ended = true;
                         d.stopped = false;
                         d.at = None;
+                        d.inline = None;
                         d.tx = None;
                         d.status = format!("終わりました: {m}");
                     }
@@ -545,6 +642,56 @@ impl Editor {
         if let Some(d) = &mut self.panels.debug {
             d.status = s;
         }
+    }
+
+    /// 行末の値を作り直す（止まった・フレームを選んだとき）。止まった行を含む関数の頭から止まった行まで、
+    /// 行に出てくる変数の名前の今の値を並べる（IntelliJ のインラインのデバッガと同じ）
+    fn update_inline(&mut self) {
+        let Some(d) = &self.panels.debug else { return };
+        let Some((path, stop)) = d.at.clone() else { return };
+        let vals: Vec<(String, String)> = d.vars.iter().filter(|r| r.depth == 0 && !r.eval).map(|r| (r.var.name.clone(), inline_value(&r.var.value))).collect();
+        let here = self.core.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()).is_some_and(|p| p == path);
+        let lines: Vec<String> = if here { (0..=stop.min(self.core.buf.line_count().saturating_sub(1))).map(|l| self.core.buf.line(l)).collect() } else { std::fs::read_to_string(&path).unwrap_or_default().lines().take(stop + 1).map(String::from).collect() };
+        // 関数の頭（構文木が無ければ 30 行上まで）
+        let start = here
+            .then(|| self.syntax.as_ref())
+            .flatten()
+            .and_then(|syn| syn.defs(&self.core.buf).into_iter().filter(|d| matches!(d.kind, nagi_syntax::defs::DefKind::Function | nagi_syntax::defs::DefKind::Method) && d.line <= stop).map(|d| d.line).max())
+            .unwrap_or(stop.saturating_sub(30));
+        let map = inline_values(&lines, start, stop, &vals);
+        if let Some(d) = &mut self.panels.debug {
+            d.inline = Some((path, map));
+        }
+    }
+
+    /// `path` の行末の値（view.rs が描く）
+    pub(crate) fn inline_for(&self, path: Option<&Path>) -> Option<&HashMap<usize, String>> {
+        let (p, m) = self.panels.debug.as_ref()?.inline.as_ref()?;
+        let here = std::path::absolute(path?).ok()?;
+        (here == *p).then_some(m)
+    }
+
+    /// 式の評価（Alt+F8）: 式を書くと、止まっているフレームで評価して変数の頭に出す（開いて中を見られる）
+    pub(crate) fn debug_evaluate(&mut self) {
+        if !self.panels.debug.as_ref().is_some_and(|d| d.stopped) {
+            self.svc.notify.info("止まっている間だけ式を評価できます");
+            return;
+        }
+        // 初めの値は選んでいる文字、無ければカーソルの語、無ければ前の式
+        let word = self.plain_selection().map(|(a, b)| self.core.buf.text()[a..b].to_string()).filter(|t| !t.contains('\n')).or_else(|| self.word_at_cursor().map(|w| w.0)).unwrap_or_default();
+        let initial = if word.is_empty() { self.panels.debug.as_ref().map(|d| d.last_eval.clone()).unwrap_or_default() } else { word };
+        let notes = vec!["変数・フィールド・配列の要素・メソッドの呼び出し・演算（Java は list.size()・s.equals(\"x\")・a[i] + 1 など）".to_string()];
+        self.open_input("評価", "式:", &initial, notes, |e, expr| {
+            let expr = expr.trim().to_string();
+            if expr.is_empty() {
+                return;
+            }
+            let frame = e.panels.debug.as_ref().map_or(0, |d| d.frame);
+            if let Some(d) = &mut e.panels.debug {
+                d.last_eval = expr.clone();
+            }
+            e.debug_send(Cmd::Evaluate(frame, expr));
+        });
     }
 
     /// 変数の行を開く・閉じる
@@ -644,6 +791,45 @@ impl Editor {
     }
 }
 
+/// 行末に出す値（長いものは切る）
+fn inline_value(v: &str) -> String {
+    if v.chars().count() > 40 { format!("{}…", v.chars().take(40).collect::<String>()) } else { v.to_string() }
+}
+
+/// 行末の値（行 → 「名前: 値」を並べたもの）。`start` から `stop` の行に出てくる変数の名前を、出てきた順に
+pub fn inline_values(lines: &[String], start: usize, stop: usize, vals: &[(String, String)]) -> HashMap<usize, String> {
+    let mut out = HashMap::new();
+    for (ln, line) in lines.iter().enumerate().take(stop + 1).skip(start) {
+        // 行のコメントより後は見ない
+        let code = line.split("//").next().unwrap_or(line);
+        let code = if code.trim_start().starts_with('#') || code.trim_start().starts_with('*') { "" } else { code };
+        let mut seen: Vec<&str> = Vec::new();
+        for w in code.split(|c: char| !(c.is_alphanumeric() || c == '_' || c == '$')) {
+            if !w.is_empty() && !seen.contains(&w) && vals.iter().any(|(n, _)| n == w) {
+                seen.push(w);
+            }
+        }
+        if !seen.is_empty() {
+            let parts: Vec<String> = seen.iter().map(|n| format!("{n}: {}", vals.iter().find(|v| v.0 == *n).map_or("", |v| v.1.as_str()))).collect();
+            out.insert(ln, parts.join("   "));
+        }
+    }
+    out
+}
+
+/// 編集で動いた後の行（`start_line` より後の行が動く。None はすべて）
+fn shift_line(l: usize, start_line: Option<usize>, removed: usize, inserted: usize) -> usize {
+    let Some(start_line) = start_line else { return l + inserted - removed.min(l + inserted) };
+    if l <= start_line {
+        l
+    } else if l <= start_line + removed {
+        // 消えた行の中にあったものは、編集の行に
+        start_line
+    } else {
+        l + inserted - removed
+    }
+}
+
 /// スタックの 1 行の名前（Java は Foo.main、ほかは main（a.ts））
 pub(crate) fn frame_label(lang: Lang, f: &Frame) -> String {
     match lang {
@@ -714,12 +900,14 @@ pub(crate) mod draw {
         // 1 行目: ボタンと様子
         let mut x = r.x + 1;
         let mut buttons = Vec::new();
-        let buttons_of: [(&str, fn(&mut Editor), bool); 5] = [
+        let buttons_of: [(&str, fn(&mut Editor), bool); 7] = [
             ("▶ 再開", |e| e.debug_resume(), d.stopped),
             ("ステップオーバー", |e| e.debug_step(Depth::Over), d.stopped),
             ("ステップイン", |e| e.debug_step(Depth::Into), d.stopped),
             ("ステップアウト", |e| e.debug_step(Depth::Out), d.stopped),
             ("■ 停止", |e| e.debug_stop(), !d.ended),
+            ("式の評価", |e| e.debug_evaluate(), d.stopped),
+            ("ブレークポイント", |e| e.open_breakpoints_dialog(), true),
         ];
         for (label, key, on) in buttons_of {
             let w = p.width(label) + 2;
@@ -828,7 +1016,7 @@ mod tests {
         let Some(bin) = jdk_bin() else { return };
         let dir = std::env::temp_dir().join(format!("nagi-dbgui-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("src/demo")).unwrap();
-        let src = "package demo;\n\npublic class Main {\n  public static void main(String[] args) {\n    int n = 41;\n    n = n + 1;\n    System.out.println(n);\n  }\n}\n";
+        let src = "package demo;\n\npublic class Main {\n  public static void main(String[] args) {\n    int n = 41;\n    n = n + 1;\n    for (int i = 0; i < 3; i++) {\n      n += i;\n    }\n    System.out.println(n);\n  }\n}\n";
         let file = dir.join("src/demo/Main.java");
         std::fs::write(&file, src).unwrap();
         assert!(std::process::Command::new(bin.join("javac")).args(["-g", "-d", "out", "src/demo/Main.java"]).current_dir(&dir).status().unwrap().success());
@@ -845,6 +1033,10 @@ mod tests {
         e.cwd = dir.clone();
         e.set_screen(120, 40);
         e.toggle_breakpoint(Some(5));
+        // ループの中は i == 2 のときだけ
+        e.toggle_breakpoint(Some(7));
+        let abs = std::path::absolute(&file).unwrap();
+        e.update_breakpoint(&abs, 7, |o| o.condition = "i == 2".into());
         e.debug_attach(&port.to_string());
         let wait = |e: &mut Editor, f: &dyn Fn(&DebugUi) -> bool| {
             let until = std::time::Instant::now() + std::time::Duration::from_secs(30);
@@ -862,10 +1054,33 @@ mod tests {
         assert_eq!(e.bottom_kind, BottomKind::Debug);
         let d = e.panels.debug.as_ref().unwrap();
         assert_eq!(d.vars.iter().map(|r| (r.var.name.as_str(), r.var.value.as_str())).collect::<Vec<_>>(), [("args", "String[0]"), ("n", "41")]);
+        // 行末の値（関数の頭から止まった行まで）
+        let inline = e.inline_for(Some(&file)).cloned().unwrap_or_default();
+        assert_eq!(inline.get(&3).map(String::as_str), Some("args: String[0]"), "{inline:?}");
+        assert_eq!(inline.get(&4).map(String::as_str), Some("n: 41"));
+        assert!(!inline.contains_key(&6), "止まった行より後には出さない");
+        // 式の評価（Alt+F8）: 入力のダイアログで書くと、変数の頭に結果
+        e.set_state(State::Normal);
+        e.shortcut("Evaluate");
+        assert_eq!(e.state(), State::Input);
+        for _ in 0..20 {
+            e.input_key(Key::Backspace);
+        }
+        for c in "n * 2 + 1".chars() {
+            e.input_key(Key::Char(c));
+        }
+        e.input_key(Key::Enter);
+        wait(&mut e, &|d| d.vars.first().is_some_and(|r| r.eval));
+        let top = &e.panels.debug.as_ref().unwrap().vars[0];
+        assert_eq!((top.var.name.as_str(), top.var.value.as_str()), ("n * 2 + 1", "83"));
         e.debug_step(Depth::Over);
         wait(&mut e, &|d| d.stopped && d.at.as_ref().is_some_and(|a| a.1 == 6));
         assert_eq!(e.exec_line_for(Some(&file)), Some(6));
         assert!(e.panels.debug.as_ref().unwrap().vars.iter().any(|r| r.var.name == "n" && r.var.value == "42"));
+        // 条件つきのブレークポイント: i が 2 のときだけ止まる
+        e.debug_resume();
+        wait(&mut e, &|d| d.stopped && d.at.as_ref().is_some_and(|a| a.1 == 7));
+        assert!(e.panels.debug.as_ref().unwrap().vars.iter().any(|r| r.var.name == "i" && r.var.value == "2"), "{:?}", e.panels.debug.as_ref().unwrap().vars);
         e.debug_resume();
         wait(&mut e, &|d| d.ended);
         let _ = jvm.wait();
@@ -905,10 +1120,10 @@ mod tests {
         let exe = nagi_workers::cdp::find_browser().unwrap();
         let dir = std::env::temp_dir().join(format!("nagi-tsui-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("src")).unwrap();
-        let ts = "function add(a: number, b: number): number {\n  const c = a + b;\n  return c;\n}\nsetInterval(() => { document.title = String(add(2, 3)); }, 300);\n";
+        let ts = "function add(a: number, b: number): number {\n  const c = a + b;\n  return c;\n}\nlet k = 0;\nsetInterval(() => { k++; document.title = String(add(k, 3)); }, 100);\n";
         std::fs::write(dir.join("src/a.ts"), ts).unwrap();
         let js = ts.replace(": number", "");
-        let map = r#"{"version":3,"file":"a.js","sources":["a.ts"],"mappings":"AAAA;AACA;AACA;AACA;AACA"}"#;
+        let map = r#"{"version":3,"file":"a.js","sources":["a.ts"],"mappings":"AAAA;AACA;AACA;AACA;AACA;AACA"}"#;
         std::fs::write(dir.join("src/a.js"), format!("{js}//# sourceMappingURL=data:application/json;base64,{}\n", nagi_workers::ws::base64_encode(map.as_bytes()))).unwrap();
         std::fs::write(dir.join("index.html"), "<html><body><script src=\"src/a.js\"></script></body></html>").unwrap();
         let port = free_port().unwrap();
@@ -920,10 +1135,20 @@ mod tests {
         e.cwd = dir.clone();
         e.set_screen(120, 40);
         e.toggle_breakpoint(Some(1));
+        // 条件つき: a が 3 のときだけ（ブラウザが評価する）
+        let abs = std::path::absolute(&file).unwrap();
+        e.update_breakpoint(&abs, 1, |o| o.condition = "a === 3".into());
         e.debug_attach_browser(&port.to_string());
         wait_until(&mut e, &|d| d.stopped);
         assert_eq!(e.exec_line_for(Some(&file)), Some(1), "{}", e.panels.debug.as_ref().unwrap().status);
-        assert!(e.panels.debug.as_ref().unwrap().vars.iter().any(|r| r.var.name == "b" && r.var.value == "3"));
+        let vars = &e.panels.debug.as_ref().unwrap().vars;
+        assert!(vars.iter().any(|r| r.var.name == "a" && r.var.value == "3") && vars.iter().any(|r| r.var.name == "b" && r.var.value == "3"), "{vars:?}");
+        assert_eq!(e.inline_for(Some(&file)).and_then(|m| m.get(&0)).map(String::as_str), Some("a: 3   b: 3"));
+        // 式の評価
+        let frame = e.panels.debug.as_ref().unwrap().frame;
+        e.debug_send(Cmd::Evaluate(frame, "a * 10 + b".into()));
+        wait_until(&mut e, &|d| d.vars.first().is_some_and(|r| r.eval));
+        assert_eq!(e.panels.debug.as_ref().unwrap().vars[0].var.value, "33");
         e.debug_stop();
         let _ = child.kill();
         let _ = std::fs::remove_dir_all(&dir);
@@ -950,11 +1175,18 @@ mod tests {
         e.cwd = dir.clone();
         e.set_screen(120, 40);
         e.toggle_breakpoint(Some(2));
+        // 条件つき: i が 1 のときだけ（debugpy が評価する）
+        let abs = std::path::absolute(&file).unwrap();
+        e.update_breakpoint(&abs, 2, |o| o.condition = "i == 1".into());
         e.debug_attach_python(&port.to_string());
         wait_until(&mut e, &|d| d.stopped);
         assert_eq!(e.exec_line_for(Some(&file)), Some(2), "{}", e.panels.debug.as_ref().unwrap().status);
-        e.debug_resume();
-        wait_until(&mut e, &|d| d.stopped && d.vars.iter().any(|r| r.var.name == "i" && r.var.value == "1"));
+        assert!(e.panels.debug.as_ref().unwrap().vars.iter().any(|r| r.var.name == "i" && r.var.value == "1"), "{:?}", e.panels.debug.as_ref().unwrap().vars);
+        // 式の評価
+        let frame = e.panels.debug.as_ref().unwrap().frame;
+        e.debug_send(Cmd::Evaluate(frame, "i * 10 + total".into()));
+        wait_until(&mut e, &|d| d.vars.first().is_some_and(|r| r.eval));
+        assert_eq!(e.panels.debug.as_ref().unwrap().vars[0].var.value, "10");
         e.toggle_breakpoint(Some(2));
         e.debug_resume();
         wait_until(&mut e, &|d| d.ended);

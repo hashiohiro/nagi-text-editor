@@ -149,6 +149,8 @@ pub(crate) const CURSOR: [f32; 4] = rgb(0xced0d6);
 /// Visual で選んだ行末（空行など）にあるカーソル。選択の地とも本文の地とも見分けられる灰色
 pub(crate) const CURSOR_IN_SELECTION: [f32; 4] = rgb(0x6f737a);
 pub(crate) const STATUS_FG: [f32; 4] = rgb(0x868a91);
+/// デバッグで止まっている間の行末の値（IntelliJ のインラインの値と同じく、薄い青みの灰色）
+pub(crate) const INLINE_VALUE: [f32; 4] = rgb(0x7f8ea3);
 /// ツールウィンドウ・上の帯・状態の行の地（本文の地より明るい）
 pub(crate) const PANEL_BG: [f32; 4] = rgb(0x2b2d30);
 /// 小窓・メニュー・ダイアログの地
@@ -547,8 +549,10 @@ pub(crate) struct Pane<'a> {
     pub(crate) frac: f32,
     pub(crate) active: bool,
     /// ブレークポイントの行と、デバッグで止まっている行（debugger.rs）
-    pub(crate) breaks: Vec<usize>,
+    pub(crate) breaks: Vec<(usize, crate::debugger::BpMark)>,
     pub(crate) exec: Option<usize>,
+    /// 行末に出す変数の値（デバッグで止まっている間）
+    pub(crate) inline: Option<&'a std::collections::HashMap<usize, String>>,
 }
 
 /// 行の頭から表示の `cols` 列ぶんの文字を落とす（横に送ったとき）。途中で切れる幅の広い文字は空白に。
@@ -731,11 +735,28 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
         if pane.exec == Some(ln) {
             p.out.push(Instance::fill(rect.x as f32 * cell.w, y, rect.w as f32 * cell.w, cell.h * line_rows as f32, rgb(0x1f3a5f)));
         }
-        if pane.breaks.contains(&ln) {
-            // 赤い丸（IntelliJ のブレークポイントと同じく行番号の上に）
+        if let Some(&(_, mark)) = pane.breaks.iter().find(|b| b.0 == ln) {
+            // 赤い丸（IntelliJ のブレークポイントと同じく行番号の上に）。無効は輪、条件つきは ? を重ねる
             let d = (crate::metrics::icon(crate::metrics::Icon::Small) * 0.65).round();
             let cx = (rect.x + bw) as f32 * cell.w + cell.w * 2.5;
-            p.out.push(Instance::rounded(cx - d / 2.0, y + (cell.h - d) / 2.0, d, d, d / 2.0, rgb(0xe55765)));
+            let (bx, by) = (cx - d / 2.0, y + (cell.h - d) / 2.0);
+            p.out.push(Instance::rounded(bx, by, d, d, d / 2.0, rgb(0xe55765)));
+            match mark {
+                crate::debugger::BpMark::Disabled => {
+                    let t = (d * 0.18).max(1.5).round();
+                    p.out.push(Instance::rounded(bx + t, by + t, d - 2.0 * t, d - 2.0 * t, (d - 2.0 * t) / 2.0, BG));
+                }
+                crate::debugger::BpMark::Conditional => {
+                    // ? は丸の真ん中に（白い短い線と点で）
+                    let u = (d / 8.0).max(1.0);
+                    p.out.push(Instance::fill(cx - 1.5 * u, by + 1.5 * u, 3.0 * u, u, BG));
+                    p.out.push(Instance::fill(cx + 1.0 * u, by + 1.5 * u, u, 2.5 * u, BG));
+                    p.out.push(Instance::fill(cx - 0.5 * u, by + 3.5 * u, 1.5 * u, u, BG));
+                    p.out.push(Instance::fill(cx - 0.5 * u, by + 3.5 * u, u, 1.5 * u, BG));
+                    p.out.push(Instance::fill(cx - 0.5 * u, by + 6.0 * u, u, u, BG));
+                }
+                crate::debugger::BpMark::Normal => {}
+            }
         } else if pane.exec == Some(ln) {
             // 止まっている行の印（▶ のアイコン。大きさは metrics.rs）
             let px = crate::metrics::icon(crate::metrics::Icon::Small);
@@ -809,6 +830,17 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
                         s0 = e0;
                     }
                 }
+            }
+        }
+        // デバッグで止まっている間の行末の値（IntelliJ と同じく薄い色で行の後ろに）
+        if let Some(t) = pane.inline.and_then(|m| m.get(&ln)).filter(|_| wrapw == 0) {
+            let w = nagi_core::display_col(line, line.len(), false);
+            let x = rect.x + gutter + w.saturating_sub(pane.left) + 3;
+            if x < rect.x + rect.w {
+                let saved = p.cols;
+                p.cols = rect.x + rect.w;
+                p.text(t, x, y, INLINE_VALUE);
+                p.cols = saved;
             }
         }
         let ti = debug.then(std::time::Instant::now);
@@ -1151,7 +1183,7 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
         let last = buf.line_count().saturating_sub(1);
         let mut cursor = st.cursor;
         cursor.line = cursor.line.min(last);
-        let pane = Pane { buf, marks: ed.git_markers(buf.path.as_deref()), diags: ed.diag_lines(buf.path.as_deref()), squiggles: if ed.settings.bool("editor.squiggles") { ed.diag_spans(buf.path.as_deref()) } else { Vec::new() }, folds, syntax, cursor, top: st.top.min(last), left: if ed.settings.bool("editor.wrap") { 0 } else { st.left }, frac: if active { ed.core.frac } else { 0.0 }, active, breaks: ed.breaks_for(buf.path.as_deref()), exec: ed.exec_line_for(buf.path.as_deref()) };
+        let pane = Pane { buf, marks: ed.git_markers(buf.path.as_deref()), diags: ed.diag_lines(buf.path.as_deref()), squiggles: if ed.settings.bool("editor.squiggles") { ed.diag_spans(buf.path.as_deref()) } else { Vec::new() }, folds, syntax, cursor, top: st.top.min(last), left: if ed.settings.bool("editor.wrap") { 0 } else { st.left }, frac: if active { ed.core.frac } else { 0.0 }, active, breaks: ed.break_marks(buf.path.as_deref()), exec: ed.exec_line_for(buf.path.as_deref()), inline: ed.inline_for(buf.path.as_deref()) };
         draw_pane(&mut p, ed, &pane, Rect { h: ed.text_rows(rect), ..rect });
     }
     // 窓ごとの状態行（分割中だけ。Vim の laststatus=1 と同じ）と、左右の窓の間の 1px の区切り線

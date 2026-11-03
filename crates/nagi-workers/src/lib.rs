@@ -11,6 +11,7 @@ pub mod grep;
 pub mod index;
 pub mod jdk;
 pub mod jdwp;
+pub mod jeval;
 pub mod debug;
 pub mod cdp;
 pub mod dap;

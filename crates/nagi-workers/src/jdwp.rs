@@ -163,6 +163,29 @@ impl Out<'_> {
     pub fn location(&mut self, l: &Location) -> &mut Self {
         self.u8(l.tag).reftype(l.class).method(l.method).u64(l.index)
     }
+    /// タグ付きの値
+    pub fn value(&mut self, v: &Value) -> &mut Self {
+        match v {
+            Value::Void => self.u8(b'V'),
+            Value::Bool(b) => self.u8(b'Z').u8(*b as u8),
+            Value::Byte(x) => self.u8(b'B').u8(*x as u8),
+            Value::Char(c) => {
+                self.u8(b'C');
+                self.v.extend_from_slice(&c.to_be_bytes());
+                self
+            }
+            Value::Short(x) => {
+                self.u8(b'S');
+                self.v.extend_from_slice(&x.to_be_bytes());
+                self
+            }
+            Value::Int(x) => self.u8(b'I').i32(*x),
+            Value::Long(x) => self.u8(b'J').u64(*x as u64),
+            Value::Float(x) => self.u8(b'F').i32(x.to_bits() as i32),
+            Value::Double(x) => self.u8(b'D').u64(x.to_bits()),
+            Value::Object(t, id) => self.u8(*t).object(*id),
+        }
+    }
 }
 
 /// 受け取ったデータを読む
@@ -664,6 +687,44 @@ impl Conn {
             o.object(a);
         })?;
         r.i32()
+    }
+
+    /// VM の中に文字列を作る（メソッドに渡す）
+    pub fn create_string(&mut self, text: &str) -> Result<Id, String> {
+        let mut r = self.request(1, 11, |o| {
+            o.string(text);
+        })?;
+        r.object()
+    }
+
+    /// static のフィールドの値
+    pub fn static_values(&mut self, class: Id, fields: &[Id]) -> Result<Vec<Value>, String> {
+        let mut r = self.request(2, 6, |o| {
+            o.reftype(class).i32(fields.len() as i32);
+            for f in fields {
+                o.field(*f);
+            }
+        })?;
+        let n = r.i32()?;
+        (0..n).map(|_| r.value()).collect()
+    }
+
+    /// メソッドを呼ぶ（止まっているスレッドで。ほかのスレッドは止めたまま）。`obj` が None なら static。(戻り値, 投げた例外)
+    pub fn invoke(&mut self, obj: Option<Id>, thread: Id, class: Id, method: Id, args: &[Value]) -> Result<(Value, Value), String> {
+        let body = |o: &mut Out| {
+            match obj {
+                Some(id) => o.object(id).object(thread).reftype(class).method(method),
+                None => o.reftype(class).object(thread).method(method),
+            };
+            o.i32(args.len() as i32);
+            for a in args {
+                o.value(a);
+            }
+            // INVOKE_SINGLE_THREADED
+            o.i32(1);
+        };
+        let mut r = if obj.is_some() { self.request(9, 6, body)? } else { self.request(3, 3, body)? };
+        Ok((r.value()?, r.value()?))
     }
 
     /// 配列の値（始め, 数）

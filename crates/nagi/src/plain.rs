@@ -373,7 +373,18 @@ impl Editor {
             .item("注釈", |e| {
                 e.shortcut("Gblame");
             })
-            .item("行ブレークポイントの切り替え", move |e| e.toggle_breakpoint(Some(line)))
+            .item("行ブレークポイントの切り替え", move |e| e.toggle_breakpoint(Some(line)));
+        // ブレークポイントのある行: 有効・条件（IntelliJ のブレークポイントの右クリックと同じ）
+        let bp = self.core.buf.path.as_deref().and_then(|p| std::path::absolute(p).ok()).and_then(|p| self.breakpoints.get(&p).and_then(|s| s.get(&line)).map(|o| (p, o.enabled)));
+        let m = match bp {
+            Some((path, on)) => {
+                let p2 = path.clone();
+                m.item(format!("{}有効", check(on)), move |e| e.update_breakpoint(&path, line, |o| o.enabled = !o.enabled)).item("条件…", move |e| e.edit_breakpoint_condition(p2.clone(), line, |_| {}))
+            }
+            None => m,
+        };
+        let m = m
+            .item("ブレークポイントの表示…", |e| e.open_breakpoints_dialog())
             .sep()
             .item(format!("{}行番号の表示", check(numbers)), move |e| e.set_setting("editor.line_numbers", if numbers { "off" } else { "absolute" }))
             .item(format!("{}行の折り返し", check(wrap)), move |e| e.set_setting("editor.wrap", if wrap { "false" } else { "true" }));
@@ -707,12 +718,12 @@ mod tests {
         assert_eq!(labels(&e), ["開く"]);
         e.menu_run(0);
         assert!(e.left_visible().is_some());
-        // ガター: 注釈・行ブレークポイントの切り替え・行番号の表示・行の折り返し
+        // ガター: 注釈・行ブレークポイントの切り替え・ブレークポイントの表示・行番号の表示・行の折り返し
         e.set_state(State::Normal);
         e.gutter_context(1, (3, 1));
-        assert_eq!(labels(&e), ["注釈", "行ブレークポイントの切り替え", "✓ 行番号の表示", "   行の折り返し"]);
+        assert_eq!(labels(&e), ["注釈", "行ブレークポイントの切り替え", "ブレークポイントの表示…", "✓ 行番号の表示", "   行の折り返し"]);
         e.menu_run(1);
-        assert!(e.breakpoints.values().any(|b| b.contains(&1)), "押した行（2 行目）に付ける: {:?}", e.breakpoints);
+        assert!(e.breakpoints.values().any(|b| b.contains_key(&1)), "押した行（2 行目）に付ける: {:?}", e.breakpoints);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

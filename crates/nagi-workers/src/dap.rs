@@ -131,12 +131,18 @@ impl Session {
     }
 
     fn set_breakpoints(&mut self) -> Result<(), String> {
-        let mut by_file: BTreeMap<PathBuf, Vec<usize>> = BTreeMap::new();
+        let mut by_file: BTreeMap<PathBuf, Vec<(usize, Option<String>)>> = BTreeMap::new();
         for b in &self.bps {
-            by_file.entry(b.file.clone()).or_default().push(b.line);
+            by_file.entry(b.file.clone()).or_default().push((b.line, b.condition.clone().filter(|c| !c.trim().is_empty())));
         }
         for (f, lines) in by_file {
-            let bps: Vec<J> = lines.iter().map(|l| json!({"line": l})).collect();
+            let bps: Vec<J> = lines
+                .iter()
+                .map(|(l, c)| match c {
+                    Some(c) => json!({"line": l, "condition": c}),
+                    None => json!({"line": l}),
+                })
+                .collect();
             self.call("setBreakpoints", json!({"source": {"path": f.display().to_string()}, "breakpoints": bps}))?;
         }
         Ok(())
@@ -235,6 +241,16 @@ impl Session {
                     send(Ev::Vars { frame: i, vars });
                 }
             }
+            Cmd::Evaluate(i, expr) => {
+                let result = match self.frames.get(i).copied() {
+                    None => Err("止まっていません".to_string()),
+                    Some(f) => self.call("evaluate", json!({"expression": expr, "frameId": f, "context": "watch"})).map(|v| {
+                        let child = v["variablesReference"].as_i64().filter(|r| *r > 0).map(|r| (b'd', r as u64));
+                        Var { name: expr.clone(), ty: v["type"].as_str().unwrap_or("").into(), value: v["result"].as_str().unwrap_or("").into(), children: child }
+                    }),
+                };
+                send(Ev::Evaluated { expr, result });
+            }
             Cmd::Expand(t, r) => {
                 let vars = self.variables(r as i64);
                 send(Ev::Children { parent: (t, r), vars });
@@ -324,7 +340,7 @@ mod tests {
             .stderr(std::process::Stdio::null())
             .spawn()
             .unwrap();
-        let (tx, task) = start(format!("127.0.0.1:{port}"), vec![Bp { class: String::new(), file: f.clone(), line: 6 }], std::sync::Arc::new(|| {}));
+        let (tx, task) = start(format!("127.0.0.1:{port}"), vec![Bp { class: String::new(), file: f.clone(), line: 6, condition: None }], std::sync::Arc::new(|| {}));
         let stop = || loop {
             match task.recv_timeout(Duration::from_secs(30)) {
                 Some(Ev::Stopped { frames, vars, .. }) => return (frames, vars),

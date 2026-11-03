@@ -60,6 +60,8 @@ pub enum State {
     Input,
     /// コミットのプッシュのダイアログ（push_dialog.rs）
     Push,
+    /// ブレークポイントのダイアログ（breakpoints_dialog.rs）
+    Breakpoints,
 }
 
 /// 見え方の状態を、持つもの（Vim の状態, 向いている部品）に分ける
@@ -86,6 +88,7 @@ pub fn split_state(s: State) -> (Mode, Option<Panel>) {
         State::Menu => (Mode::Normal, Some(Panel::Menu)),
         State::Input => (Mode::Normal, Some(Panel::Input)),
         State::Push => (Mode::Normal, Some(Panel::Push)),
+        State::Breakpoints => (Mode::Normal, Some(Panel::Breakpoints)),
     }
 }
 
@@ -126,6 +129,8 @@ pub enum Panel {
     Input,
     /// プッシュのダイアログ（push_dialog.rs）
     Push,
+    /// ブレークポイントのダイアログ（breakpoints_dialog.rs）
+    Breakpoints,
 }
 
 /// リストモードでいるパネル
@@ -341,6 +346,7 @@ pub struct Panels {
     /// 入力のダイアログ（input_dialog.rs）
     pub input: Option<crate::input_dialog::InputDialog>,
     pub push: Option<crate::push_dialog::PushDialog>,
+    pub breakpoints: Option<crate::breakpoints_dialog::BreakpointsDialog>,
     /// ブランチのポップアップ（開いている間だけ）
     pub branch_popup: Option<crate::branches::BranchPopup>,
     /// 履歴の画面（開いている間だけ）
@@ -396,7 +402,7 @@ pub struct Editor {
     pub yank_flash: Option<(usize, usize, std::time::Instant)>,
     /// 動いている整形（format.rs）
     pub(crate) format_job: Option<crate::format::FormatJob>,
-    pub(crate) breakpoints: std::collections::BTreeMap<std::path::PathBuf, std::collections::BTreeSet<usize>>,
+    pub(crate) breakpoints: std::collections::BTreeMap<std::path::PathBuf, std::collections::BTreeMap<usize, crate::debugger::BpOpt>>,
     /// 最後に編集した時刻（自動で保存するまでの時間を数える）
     pub last_edit_at: Option<std::time::Instant>,
     /// .editorconfig の値（ファイルごと。設定を効かせ直すとき・保存したときに捨てる。editorconfig.rs）
@@ -652,6 +658,7 @@ impl Editor {
             Panel::Menu => State::Menu,
             Panel::Input => State::Input,
             Panel::Push => State::Push,
+            Panel::Breakpoints => State::Breakpoints,
         }
     }
 
@@ -757,6 +764,7 @@ impl Editor {
                 settings_dialog: None,
                 input: None,
                 push: None,
+                breakpoints: None,
                 branch_popup: None,
                 log: None,
                 blame: None,

@@ -204,6 +204,17 @@ impl Session {
                 let vars = self.frame_vars(i);
                 send(Ev::Vars { frame: i, vars });
             }
+            Cmd::Evaluate(i, expr) => {
+                let id = self.frames.get(i).and_then(|f| f["callFrameId"].as_str()).map(str::to_string);
+                let result = match id {
+                    None => Err("止まっていません".to_string()),
+                    Some(id) => self.call("Debugger.evaluateOnCallFrame", json!({"callFrameId": id, "expression": expr, "silent": true})).and_then(|r| match r.get("exceptionDetails") {
+                        Some(x) => Err(x["exception"]["description"].as_str().or(x["text"].as_str()).unwrap_or("評価できません").lines().next().unwrap_or("").to_string()),
+                        None => Ok(self.var(&expr, &r["result"])),
+                    }),
+                };
+                send(Ev::Evaluated { expr, result });
+            }
             Cmd::Expand(t, h) => {
                 let vars = self.handles.get(h as usize).cloned().map(|id| self.props(&id)).unwrap_or_default();
                 send(Ev::Children { parent: (t, h), vars });
@@ -264,7 +275,11 @@ impl Session {
             }
         }
         for (b, l, c) in todo {
-            if let Ok(r) = self.call("Debugger.setBreakpoint", json!({"location": {"scriptId": id, "lineNumber": l, "columnNumber": c}})) {
+            let mut req = json!({"location": {"scriptId": id, "lineNumber": l, "columnNumber": c}});
+            if let Some(cond) = b.condition.as_deref().filter(|c| !c.trim().is_empty()) {
+                req["condition"] = json!(cond);
+            }
+            if let Ok(r) = self.call("Debugger.setBreakpoint", req) {
                 if let Some(bid) = r["breakpointId"].as_str() {
                     self.placed.push((bid.to_string(), id.to_string(), b));
                 }
@@ -410,7 +425,7 @@ mod tests {
         let url = format!("file:///{}", dir.join("index.html").display().to_string().replace('\\', "/"));
         // 窓を出さない（試験で画面の前に出さないように）
         let mut child = launch_browser(&exe, port, &url, true).unwrap();
-        let bp = Bp { class: String::new(), file: dir.join("src/a.ts"), line: 2 };
+        let bp = Bp { class: String::new(), file: dir.join("src/a.ts"), line: 2, condition: None };
         let (tx, task) = start(format!("127.0.0.1:{port}"), "index.html".into(), dir.clone(), vec![bp], std::sync::Arc::new(|| {}));
         let stop = || loop {
             match task.recv_timeout(Duration::from_secs(30)) {
