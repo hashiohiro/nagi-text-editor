@@ -1,6 +1,8 @@
 //! 設定の画面（IntelliJ の Settings と同じ並び）。画面の中央に重ねて出す。
 //!
-//! 左は分類、右はその分類の項目（上の絞り込みの欄で、名前・説明・キーから探せる）。下に選んだ項目の説明とボタン。
+//! 左は分類の木（IntelliJ と同じ入れ子: 外観 & 振る舞い ＞ 外観、エディター ＞ 一般・コード補完・検索 など）、
+//! 右はその分類の項目（上の絞り込みの欄で、名前・説明・キーから探せる。当たった語を光らせ、木は当たった分類を明るく件数つきで）。
+//! 下に選んだ項目の説明とボタン。
 //! - オン・オフは Space・Enter で切り替え、選択肢は h/l（Enter で次）、数・文字・キーは Enter で Vim の入力欄にして直す
 //! - r で既定値に戻す、p で保存先（全体 ⇔ このプロジェクト）を切り替える（プロジェクトで上書きできる項目だけ）
 //! - Tab で分類 ⇔ 項目、/ で絞り込み、Ctrl+Enter で適用して閉じる、Esc で閉じる（直したものがあれば確かめる）
@@ -67,6 +69,10 @@ pub struct SettingsDialog {
     /// 開いたとき（・前に適用したとき）の写し。適用で書くのは、これから変えた項目だけ（ほかの窓が保存した項目を消さない）
     pub base: Settings,
     pub cat: usize,
+    /// 木で選んでいる行（cat_rows の番号）
+    pub cat_row: usize,
+    /// 木で閉じた見出し
+    pub cat_closed: std::collections::HashSet<&'static str>,
     pub selected: usize,
     pub top: usize,
     pub focus: SFocus,
@@ -97,6 +103,65 @@ pub struct SettingsDialog {
     pub map_rhs: Option<String>,
 }
 
+/// 左の欄の木（見出し, その分類（葉なら）, 子（見出し, 分類））。分類は settings::CATEGORIES の名前
+pub const CAT_TREE: &[(&str, Option<&str>, &[(&str, &str)])] = &[
+    ("外観 & 振る舞い", None, &[("外観", "外観")]),
+    ("エディター", None, &[("一般", "エディタ"), ("コード補完", "入力補完"), ("検索", "検索")]),
+    ("キーマップ", Some("キーマップ"), &[]),
+    ("Vim", None, &[("設定", "Vim"), ("Vim の割り当て", MAPS_CAT)]),
+    ("ビルド、実行、デプロイ", Some("ビルド・実行"), &[]),
+    ("ツール", Some("ツール"), &[]),
+    ("プロジェクト", Some("プロジェクト"), &[]),
+    ("その他の設定", Some("その他"), &[]),
+    ("（すべて）", Some("（すべて）"), &[]),
+];
+
+/// 木の 1 行
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CatRow {
+    pub label: &'static str,
+    pub depth: usize,
+    /// 葉なら分類（CATEGORIES の番号）
+    pub cat: Option<usize>,
+    /// 子のある見出しなら、開いているか
+    pub group: Option<bool>,
+}
+
+/// 分類の木の中の道（「エディター › 一般」。上の見出し）
+pub fn cat_path(cat: usize) -> String {
+    let name = CATEGORIES.get(cat).copied().unwrap_or("");
+    for (label, c, kids) in CAT_TREE {
+        if *c == Some(name) {
+            return label.to_string();
+        }
+        if let Some((l, _)) = kids.iter().find(|k| k.1 == name) {
+            return format!("{label} › {l}");
+        }
+    }
+    name.to_string()
+}
+
+fn cat_index(name: &str) -> usize {
+    CATEGORIES.iter().position(|c| *c == name).unwrap_or(0)
+}
+
+/// 木の行（`closed` は閉じた見出し）
+pub fn cat_rows(closed: &std::collections::HashSet<&'static str>) -> Vec<CatRow> {
+    let mut v = Vec::new();
+    for (label, cat, kids) in CAT_TREE {
+        if kids.is_empty() {
+            v.push(CatRow { label, depth: 0, cat: cat.map(cat_index), group: None });
+            continue;
+        }
+        let open = !closed.contains(label);
+        v.push(CatRow { label, depth: 0, cat: None, group: Some(open) });
+        if open {
+            v.extend(kids.iter().map(|(l, c)| CatRow { label: l, depth: 1, cat: Some(cat_index(c)), group: None }));
+        }
+    }
+    v
+}
+
 pub type Releases = std::sync::Arc<std::sync::Mutex<std::collections::HashMap<String, nagi_core::Result<Vec<nagi_workers::toolchains::Release>>>>>;
 
 /// 版を調べている間の一覧の行の値
@@ -122,6 +187,22 @@ impl SettingsDialog {
     }
 
     /// Vim の割り当ての分類を見ている（絞り込んでいないとき）
+    /// 木の行を選ぶ（見出しなら最初の子の分類を出す）
+    pub fn pick_cat_row(&mut self, i: usize) {
+        let rows = cat_rows(&self.cat_closed);
+        let Some(r) = rows.get(i) else { return };
+        self.cat_row = i;
+        let cat = r.cat.or_else(|| {
+            let label = r.label;
+            CAT_TREE.iter().find(|t| t.0 == label).and_then(|t| t.2.first()).map(|c| cat_index(c.1))
+        });
+        if let Some(c) = cat.filter(|&c| c != self.cat) {
+            self.cat = c;
+            self.selected = 0;
+            self.top = 0;
+        }
+    }
+
     pub fn is_maps(&self) -> bool {
         CATEGORIES[self.cat] == MAPS_CAT && self.filter.text().is_empty()
     }
@@ -599,21 +680,33 @@ impl SettingsDialog {
                 d.selected = 0;
                 d.top = 0;
             }
-            SFocus::Cats => match key {
-                Key::Down => {
-                    d.cat = (d.cat + 1).min(CATEGORIES.len() - 1);
-                    d.selected = 0;
-                    d.top = 0;
+            SFocus::Cats => {
+                let rows = cat_rows(&d.cat_closed);
+                let row = rows.get(d.cat_row).cloned();
+                if let Some(to) = nagi_ui::list::nav(key, d.cat_row, rows.len(), 10) {
+                    d.pick_cat_row(to);
+                    return SettingsAction::None;
                 }
-                Key::Up => {
-                    d.cat = d.cat.saturating_sub(1);
-                    d.selected = 0;
-                    d.top = 0;
+                match (key, row) {
+                    // 見出し: ← で閉じる、→ で開く・最初の子へ、Enter で開け閉め
+                    (Key::Left, Some(CatRow { group: Some(true), label, .. })) | (Key::Enter, Some(CatRow { group: Some(true), label, .. })) => {
+                        d.cat_closed.insert(label);
+                    }
+                    (Key::Right | Key::Enter, Some(CatRow { group: Some(false), label, .. })) => {
+                        d.cat_closed.remove(label);
+                    }
+                    (Key::Right, Some(CatRow { group: Some(true), .. })) => d.pick_cat_row(d.cat_row + 1),
+                    // 子の葉: ← で見出しへ
+                    (Key::Left, Some(CatRow { depth: 1, .. })) => {
+                        if let Some(p) = (0..d.cat_row).rev().find(|&i| rows[i].depth == 0) {
+                            d.pick_cat_row(p);
+                        }
+                    }
+                    (Key::Enter | Key::Tab | Key::Right, _) => d.focus = SFocus::Items,
+                    (Key::Esc, _) => return SettingsAction::Close(confirm),
+                    _ => {}
                 }
-                Key::Enter | Key::Tab | Key::Right => d.focus = SFocus::Items,
-                Key::Esc => return SettingsAction::Close(confirm),
-                _ => {}
-            },
+            }
             SFocus::Items if d.is_maps() => {
                 let n = d.maps.len() + 1;
                 let moved = nagi_ui::list::nav(key, d.selected, n, 10);
@@ -849,6 +942,8 @@ impl Editor {
             base: work.clone(),
             work,
             cat: 0,
+            cat_row: 1,
+            cat_closed: Default::default(),
             selected: 0,
             top: 0,
             focus: if query.is_empty() { SFocus::Cats } else { SFocus::Items },
@@ -1043,15 +1138,22 @@ impl Editor {
             return;
         }
         let cat = d.cat_rows.at(row, col);
-        let mut c = d.cat;
+        let mut c = d.cat_row;
         if let Some(pick) = nagi_ui::list::pick(&mut c, cat, clicks, 2) {
-            if c != d.cat {
-                d.selected = 0;
-                d.top = 0;
+            d.pick_cat_row(c);
+            // 見出しは押すと開け閉め、葉のダブルクリックは Enter と同じ（項目へ）
+            let r = cat_rows(&d.cat_closed).get(c).cloned();
+            match r {
+                Some(CatRow { group: Some(open), label, .. }) => {
+                    if open {
+                        d.cat_closed.insert(label);
+                    } else {
+                        d.cat_closed.remove(label);
+                    }
+                    d.focus = SFocus::Cats;
+                }
+                _ => d.focus = if matches!(pick, nagi_ui::list::Pick::Accept(_)) { SFocus::Items } else { SFocus::Cats },
             }
-            d.cat = c;
-            // ダブルクリックは Enter と同じ（項目へ）
-            d.focus = if matches!(pick, nagi_ui::list::Pick::Accept(_)) { SFocus::Items } else { SFocus::Cats };
             return;
         }
         let item = d.item_rows.borrow().iter().find(|(r, _, _)| *r == row).map(|x| (x.1, x.2));
@@ -1180,18 +1282,41 @@ pub(crate) mod draw {
         p.out.push(Instance::fill(sx as f32 * cell.w, y(0), sw as f32 * cell.w, cell.h, if d.project_scope { LIST_SEL_BG } else { MATCH_BG }));
         p.text(scope, sx, y(0), FG);
         buttons.push((y0, sx, sx + sw, SButton::Scope));
-        // 左: 分類
-        let lw = 16;
+        // 左: 分類の木（絞り込んでいる間は、当たった項目のある分類を明るく件数つきで）
+        let lw = 24;
         let mut cat_rows = Vec::new();
         p.cols = x0 + lw;
         let filtering = !d.filter.text().is_empty();
-        for (i, c) in CATEGORIES.iter().enumerate() {
+        let hits_in = |cat: usize| d.items().iter().filter(|i| i.cat == CATEGORIES[cat]).count();
+        for (i, row) in crate::settings_dialog::cat_rows(&d.cat_closed).iter().enumerate() {
             let r = 2 + i;
-            let sel = i == d.cat && !filtering;
+            if r + 4 >= h {
+                break;
+            }
+            let sel = i == d.cat_row && !filtering;
             if sel {
                 p.out.push(Instance::fill(x0 as f32 * cell.w, y(r), lw as f32 * cell.w, cell.h, if d.focus == SFocus::Cats { LIST_SEL_BG } else { MATCH_BG }));
             }
-            p.text(&format!(" {c}"), x0, y(r), if sel && d.focus == SFocus::Cats { FG_BRIGHT } else if filtering { STATUS_FG } else { FG });
+            let lead = match row.group {
+                Some(true) => " ▾ ",
+                Some(false) => " ▸ ",
+                None => "   ",
+            };
+            let indent = "  ".repeat(row.depth);
+            let n = if filtering { row.cat.filter(|&c| CATEGORIES[c] != "（すべて）").map_or(0, hits_in) } else { 0 };
+            let color = if sel && d.focus == SFocus::Cats {
+                FG_BRIGHT
+            } else if filtering && n == 0 {
+                LINE_NO
+            } else if filtering {
+                FG_BRIGHT
+            } else {
+                FG
+            };
+            let end = p.text(&format!("{indent}{lead}{}", row.label), x0, y(r), color);
+            if n > 0 {
+                p.text(&format!("  {n}"), end, y(r), FINDER_MATCH);
+            }
             cat_rows.push((y0 + r, x0, x0 + lw, i));
         }
         p.out.push(Instance::fill((x0 + lw) as f32 * cell.w + cell.w * 0.5, y(1), 1.0, (h - 3) as f32 * cell.h, LINE_NO));
@@ -1204,8 +1329,8 @@ pub(crate) mod draw {
         let vx = rx + label_w;
         let mut item_rows = Vec::new();
         p.cols = x0 + w;
-        let title = if filtering { "絞り込んだ項目" } else { CATEGORIES.get(d.cat).copied().unwrap_or("") };
-        p.text(title, rx, y(1), FG_BRIGHT);
+        let title = if filtering { "絞り込んだ項目".to_string() } else { crate::settings_dialog::cat_path(d.cat) };
+        p.text(&title, rx, y(1), FG_BRIGHT);
         for (k, it) in items.iter().enumerate().skip(top).take(body) {
             let r = 2 + k - top;
             let sel = k == d.selected;
@@ -1218,7 +1343,22 @@ pub(crate) mod draw {
             }
             let saved2 = p.cols;
             p.cols = vx.saturating_sub(1);
-            p.text(it.label, rx, y(r), if focused { FG_BRIGHT } else { FG });
+            // 絞り込みの語に当たった所を光らせる（IntelliJ の設定の検索と同じ）
+            let mut items_l = p.items(it.label, if focused { FG_BRIGHT } else { FG });
+            if filtering {
+                let q = d.filter.text().to_lowercase();
+                let low = it.label.to_lowercase();
+                if let Some(at) = low.find(&q).filter(|_| low.len() == it.label.len()) {
+                    let (a, b) = (it.label[..at].chars().count(), it.label[..at + q.len()].chars().count());
+                    for (k, item) in items_l.iter_mut().enumerate() {
+                        if k >= a && k < b {
+                            item.bg = Some(SEARCH_BG);
+                            item.fg = FG_BRIGHT;
+                        }
+                    }
+                }
+            }
+            p.draw(&items_l, rx, y(r));
             p.cols = saved2;
             // 値（直している項目は入力欄）
             let overridden = d.work.project.contains_key(it.key) && it.project;
@@ -1443,8 +1583,10 @@ mod tests {
         e.vim_maps_base = vim_maps::rows(&nagi_vim::parse_rc("nnoremap ew :<C-u>w<CR>\nnnoremap Q :<C-u>quit!<CR>\n").keymap, "\\");
         e.vim_maps = e.vim_maps_base.clone();
         e.open_settings("");
+        // 木: Vim ＞ Vim の割り当て（開いたときは「外観」の行）
         let cat = CATEGORIES.iter().position(|c| *c == MAPS_CAT).unwrap();
-        keys(&mut e, &format!("{}<Tab>", "<Down>".repeat(cat)));
+        let row = cat_rows(&Default::default()).iter().position(|r| r.cat == Some(cat)).unwrap();
+        keys(&mut e, &format!("{}<Tab>", "<Down>".repeat(row - 1)));
         assert!(e.panels.settings_dialog.as_ref().unwrap().is_maps());
         // 足す: 「n <leader>」の続きを打つ
         assert!(e.run_ui_action("settings.mapAdd"));
@@ -1472,6 +1614,32 @@ mod tests {
         assert!(e.rc_dirty);
         let text = vim_maps::render(&e.vim_maps_base, &e.vim_maps);
         assert_eq!(text.lines().skip(1).collect::<Vec<_>>(), ["nnoremap <leader>x :Files", "nunmap Q"]);
+    }
+
+    /// 分類の木: 見出しの下に入れ子、← → で閉じる・開く、見出しを選ぶと最初の子の項目。絞り込みで当たった分類は件数つき
+    #[test]
+    fn category_tree() {
+        let mut e = Editor::new(Buffer::from_str("x"), None);
+        e.set_screen(140, 40);
+        e.open_settings("");
+        let rows = cat_rows(&Default::default());
+        assert_eq!(rows[0], CatRow { label: "外観 & 振る舞い", depth: 0, cat: None, group: Some(true) });
+        assert_eq!(rows[3], CatRow { label: "一般", depth: 1, cat: Some(1), group: None });
+        assert_eq!(cat_path(1), "エディター › 一般");
+        // ↓ で「エディター」の見出し → 項目はエディタの分類
+        keys(&mut e, "<Down>");
+        let d = e.panels.settings_dialog.as_ref().unwrap();
+        assert_eq!((d.cat_row, CATEGORIES[d.cat]), (2, "エディタ"));
+        // ← で閉じる、→ で開く
+        keys(&mut e, "<Left>");
+        assert_eq!(cat_rows(&e.panels.settings_dialog.as_ref().unwrap().cat_closed).len(), rows.len() - 3);
+        keys(&mut e, "<Right>");
+        keys(&mut e, "<Right>");
+        let d = e.panels.settings_dialog.as_ref().unwrap();
+        assert_eq!((d.cat_row, CATEGORIES[d.cat]), (3, "エディタ"), "→ で最初の子");
+        // 子で ← は見出しへ
+        keys(&mut e, "<Left>");
+        assert_eq!(e.panels.settings_dialog.as_ref().unwrap().cat_row, 2);
     }
 
     #[test]
