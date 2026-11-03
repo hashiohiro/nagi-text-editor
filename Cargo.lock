@@ -1185,6 +1185,7 @@ checksum = "743fb55ba31b18fb1ecef6bdc9aa2743314978ac084044301a7eee33fb99a20d"
 name = "nagi"
 version = "0.8.0"
 dependencies = [
+ "encoding_rs",
  "nagi-core",
  "nagi-lang",
  "nagi-render",
@@ -1280,6 +1281,7 @@ version = "0.8.0"
 name = "nagi-workers"
 version = "0.8.0"
 dependencies = [
+ "encoding_rs",
  "grep-matcher",
  "grep-regex",
  "grep-searcher",
