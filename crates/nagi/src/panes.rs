@@ -203,12 +203,14 @@ impl Editor {
 
     /// 差分・ログ・テーブルを画面いっぱいに出していないか（タブ・帯を出す）
     pub(crate) fn editor_shown(&self) -> bool {
-        self.panels.diff.is_none() && !self.log_fullscreen() && self.panels.db_table.is_none()
+        !self.diff_shown() && !self.log_fullscreen() && self.panels.db_table.is_none()
     }
 
     /// バッファのタブの行の数（0 か 1。buffer_tabs.rs。設定の「タブ」で隠せる）。行の位置は area().y
     pub fn tabs_row(&self) -> usize {
-        usize::from(self.editor_shown() && self.settings.bool("editor.tabs"))
+        // 差分はタブで出すので、差分の間もタブの行を出す
+        let diff_tab = self.diff_shown() && !self.log_fullscreen() && self.panels.db_table.is_none();
+        usize::from((self.editor_shown() || diff_tab) && self.settings.bool("editor.tabs"))
     }
 
     /// SQL コンソールの帯の行（タブの下。.sql なら付けていなくても、データソースのアタッチのために出す）

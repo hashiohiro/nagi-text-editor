@@ -240,6 +240,7 @@ pub static SCHEMA: &[Item] = &[
     item("tools.extra_path", "ツール", "追加の PATH", T, "", "gradle・npm・cargo などの場所（; で区切る）"),
     item("git.path", "ツール", "Git: git の場所", T, "", "空なら PATH の git"),
     item("git.wsl", "ツール", "Git: WSL のプロジェクトは WSL の git", B, "true", ""),
+    item("git.diff_viewer", "ツール", "Git: 差分のビューアー", SKind::Choice(&[("side", "横並びビューアー"), ("unified", "統合ビューアー")]), "side", "差分の見出しの右でも切り替えられる"),
     item("db.drivers_dir", "ツール", "データベース: ドライバーの置き場所", T, "", "空なら %LOCALAPPDATA%\\nagi\\drivers"),
     item("tools.browser", "ツール", "ブラウザ", T, "", "空なら既定のブラウザ（実行の構成の URL・Markdown のリンク）"),
     // プロジェクト

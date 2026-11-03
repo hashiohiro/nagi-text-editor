@@ -1,8 +1,10 @@
 //! git の画面の 3 段目: 左右並べの差分（IntelliJ の差分の画面と同じ形）。
 //!
-//! 窓の領域全体に出す。左が HEAD（履歴から開いたときは 1 つ前の版）、右が作業中のファイル（またはその版）。
-//! 足した・消した・変えた行を色分けし、対になる行は変わった部分を濃く塗る。作業中のファイルとの差分では
-//! `u` でその変更を戻し、`s` でステージする。
+//! エディタのタブ（「名前（差分）」）として窓の領域に出す。ほかのタブ・本文へ移っても閉じずにタブに残り、押すと戻る。
+//! 左が HEAD（履歴から開いたときは 1 つ前の版）、右が作業中のファイル（またはその版）。
+//! 足した・消した・変えた行を色分けし、対になる行は変わった部分を濃く塗る。本文は構文の色で出す。
+//! 見出しの右の「横並びビューアー ▾」で、左右に並べるか 1 列にまとめる（統合ビューアー）かを選ぶ（設定に覚える）。
+//! 作業中のファイルとの差分では、右クリックでその変更をステージ・行のロールバック。
 
 use std::path::{Path, PathBuf};
 
@@ -32,7 +34,17 @@ pub struct Row {
 pub struct DiffView {
     pub left_title: String,
     pub right_title: String,
+    /// 出している行（横並びなら `pairs` と同じ、統合なら消した行・足した行を 1 列に）
     pub rows: Vec<Row>,
+    /// 左右に並べた行
+    pairs: Vec<Row>,
+    /// 統合ビューアー（1 列）で出しているか
+    pub unified: bool,
+    /// タブに残して隠しているか（本文・ほかのタブへ移った）
+    pub hidden: bool,
+    /// 構文の色（古い版・新しい版の行ごとの (始め, 終わり, 色の種類)。行の中の byte）
+    pub hl_old: Vec<Vec<(usize, usize, nagi_syntax::Hl)>>,
+    pub hl_new: Vec<Vec<(usize, usize, nagi_syntax::Hl)>>,
     pub top: usize,
     pub cursor: usize,
     /// カーソルの列（本文の表示の列。行の長さより右なら行末に出す）
@@ -61,8 +73,17 @@ pub enum DiffAction {
 /// 行番号の欄の幅（"{:>5} "）
 pub const NUM_W: usize = 6;
 
+/// 統合ビューアーの行番号の欄の幅（古い版と新しい版の 2 つ）
+pub const UNI_NUM_W: usize = 2 * NUM_W;
+
+/// 見出しの右のビューアーの切り替え
+const VIEWER_CHIP: &str = " ▾";
+
+/// バッファのタブの並びで差分のタブを表す番号（buffer_tabs.rs）
+pub const DIFF_TAB: usize = usize::MAX;
+
 /// 差分の画面のアクション（ui_action.rs。ADR 0019）
-pub static ACTIONS: [crate::ui_action::UiAction; 6] = {
+pub static ACTIONS: [crate::ui_action::UiAction; 8] = {
     use crate::ui_action::{Scope::Diff, UiAction};
     fn open(e: &Editor) -> bool {
         e.panels.diff.is_some()
@@ -77,6 +98,8 @@ pub static ACTIONS: [crate::ui_action::UiAction; 6] = {
         UiAction { id: "diff.revert", label: "行のロールバック", scope: Diff, enabled: work, run: |e| e.diff_apply(false) },
         UiAction { id: "diff.open", label: "ソースに移動", scope: Diff, enabled: open, run: |e| e.diff_key(Key::Enter) },
         UiAction { id: "diff.close", label: "閉じる", scope: Diff, enabled: open, run: |e| e.close_diff() },
+        UiAction { id: "diff.sideBySide", label: "横並びビューアー", scope: Diff, enabled: open, run: |e| e.diff_set_unified(false) },
+        UiAction { id: "diff.unified", label: "統合ビューアー", scope: Diff, enabled: open, run: |e| e.diff_set_unified(true) },
     ]
 };
 
@@ -199,6 +222,71 @@ pub fn build_rows(old: &str, new: &str) -> (Vec<Row>, Vec<usize>, Vec<Hunk>) {
     (rows, starts, hunks)
 }
 
+/// 左右に並べた行を 1 列に（変更のまとまりは、消した行を先に、足した行を後に）
+pub fn build_unified(pairs: &[Row]) -> Vec<Row> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < pairs.len() {
+        let Some(h) = pairs[i].hunk else {
+            out.push(pairs[i].clone());
+            i += 1;
+            continue;
+        };
+        let end = (i..pairs.len()).find(|&j| pairs[j].hunk != Some(h)).unwrap_or(pairs.len());
+        for r in &pairs[i..end] {
+            if let Some(l) = &r.left {
+                out.push(Row { left: Some(l.clone()), right: None, kind: RowKind::Del, hunk: Some(h) });
+            }
+        }
+        for r in &pairs[i..end] {
+            if let Some(n) = &r.right {
+                out.push(Row { left: None, right: Some(n.clone()), kind: RowKind::Add, hunk: Some(h) });
+            }
+        }
+        i = end;
+    }
+    out
+}
+
+/// 各まとまりの最初の行（rows の番号）
+fn hunk_starts(rows: &[Row]) -> Vec<usize> {
+    let mut v = Vec::new();
+    let mut last = None;
+    for (i, r) in rows.iter().enumerate() {
+        if r.hunk.is_some() && r.hunk != last {
+            v.push(i);
+        }
+        last = r.hunk;
+    }
+    v
+}
+
+/// 中身の構文の色を行ごとに（`path` の拡張子で言語を決める。知らない言語なら空）
+pub fn line_highlights(text: &str, path: &Path) -> Vec<Vec<(usize, usize, nagi_syntax::Hl)>> {
+    let Some(lang) = nagi_syntax::Lang::detect(path) else { return Vec::new() };
+    let Some(mut syn) = nagi_syntax::Syntax::new(lang) else { return Vec::new() };
+    let mut buf = nagi_core::Buffer::from_str(text);
+    syn.parse(&mut buf);
+    let n = buf.line_count();
+    let mut out = vec![Vec::new(); n];
+    for (rg, hl) in syn.highlight(&buf, 0..buf.len_bytes()) {
+        let mut l = buf.pos_of(rg.start).0;
+        while l < n {
+            let ls = buf.line_start(l);
+            let le = if l + 1 < n { buf.line_start(l + 1) } else { buf.len_bytes() };
+            if ls >= rg.end {
+                break;
+            }
+            let (a, b) = (rg.start.max(ls) - ls, rg.end.min(le) - ls);
+            if b > a {
+                out[l].push((a, b, hl));
+            }
+            l += 1;
+        }
+    }
+    out
+}
+
 impl Editor {
     /// 作業中のファイル `rel` と HEAD の差分を開く（コミットのパネルの d、:Gdiff）
     pub(crate) fn open_file_diff(&mut self, root: &Path, rel: &str) {
@@ -228,20 +316,86 @@ impl Editor {
         self.open_file_diff(&root, &rel);
     }
 
-    /// 2 つの中身の差分を開く
+    /// 2 つの中身の差分を開く（題の最後の語はファイルのパス。構文の色とタブの名前に使う）
     pub(crate) fn show_diff(&mut self, left_title: String, right_title: String, old: &str, new: &str, work: Option<(PathBuf, String, PathBuf)>) {
-        let (rows, hunk_rows, hunks) = build_rows(old, new);
+        let (pairs, _, hunks) = build_rows(old, new);
         if hunks.is_empty() {
             self.svc.notify.info("差分はありません");
         }
+        let unified = self.settings.get("git.diff_viewer") == "unified";
+        let rows = if unified { build_unified(&pairs) } else { pairs.clone() };
+        let hunk_rows = hunk_starts(&rows);
+        let path = PathBuf::from(right_title.split_whitespace().last().unwrap_or(""));
+        let (hl_old, hl_new) = (line_highlights(old, &path), line_highlights(new, &path));
         let cursor = hunk_rows.first().copied().unwrap_or(0);
-        self.panels.diff = Some(DiffView { left_title, right_title, rows, top: cursor.saturating_sub(5), cursor, col: 0, on_left: false, left: 0, hunk_rows, work, hunks, old_text: old.to_string() });
-        self.diff_return = Some(self.state());
+        // 前の差分のタブにいたなら、戻る先はそのまま
+        let back = if self.panels.diff.as_ref().is_some_and(|d| !d.hidden) { self.diff_return.take() } else { Some(self.state()) };
+        self.panels.diff = Some(DiffView { left_title, right_title, rows, pairs, unified, hidden: false, hl_old, hl_new, top: cursor.saturating_sub(5), cursor, col: 0, on_left: false, left: 0, hunk_rows, work, hunks, old_text: old.to_string() });
+        self.diff_return = back;
         self.set_state(State::Diff);
     }
 
-    fn close_diff(&mut self) {
+    /// 差分を窓に出しているか（タブに隠していない）
+    pub fn diff_shown(&self) -> bool {
+        self.panels.diff.as_ref().is_some_and(|d| !d.hidden)
+    }
+
+    /// 差分のタブを押した: 隠していた差分を出して向く
+    pub(crate) fn diff_tab_select(&mut self) {
+        let Some(d) = &mut self.panels.diff else { return };
+        if d.hidden {
+            d.hidden = false;
+            self.diff_return = Some(State::Normal);
+        }
+        self.set_state(State::Diff);
+    }
+
+    /// 差分のタブの名前（右の題のファイルの名前）
+    pub(crate) fn diff_tab_label(&self) -> Option<String> {
+        let d = self.panels.diff.as_ref()?;
+        let path = d.right_title.split_whitespace().last().unwrap_or("");
+        let name = path.rsplit(['/', '\\']).next().unwrap_or(path);
+        Some(format!("{name}（差分）"))
+    }
+
+    /// 横並び・統合ビューアーを切り替える（カーソルは同じ行のまま。設定に覚える）
+    pub(crate) fn diff_set_unified(&mut self, on: bool) {
+        let tw0 = self.windows_x().1;
+        let Some(d) = &mut self.panels.diff else { return };
+        if d.unified != on {
+            let cur = d.rows.get(d.cursor).cloned();
+            d.unified = on;
+            d.rows = if on { build_unified(&d.pairs) } else { d.pairs.clone() };
+            d.hunk_rows = hunk_starts(&d.rows);
+            let same = |r: &Row, c: &Row| (c.right.is_some() && r.right.as_ref().map(|x| x.0) == c.right.as_ref().map(|x| x.0)) || (c.right.is_none() && r.left.as_ref().map(|x| x.0) == c.left.as_ref().map(|x| x.0));
+            d.cursor = cur.and_then(|c| d.rows.iter().position(|r| same(r, &c))).unwrap_or(0);
+            let rows = self.screen.1.saturating_sub(2).max(1);
+            nagi_ui::list::fit(d.cursor, &mut d.top, rows);
+            d.left = 0;
+            let tw = if on { tw0.saturating_sub(UNI_NUM_W) } else { (tw0.saturating_sub(1) / 2).saturating_sub(NUM_W) };
+            d.follow(tw.max(1));
+        }
+        self.set_setting("git.diff_viewer", if on { "unified" } else { "side" });
+    }
+
+    /// ビューアーを選ぶメニュー（見出しの右の ▾）
+    fn diff_viewer_menu(&mut self, row: usize, col: usize) {
+        let on = self.panels.diff.as_ref().is_some_and(|d| d.unified);
+        let mark = |b: bool| if b { "✓ " } else { "   " };
+        let m = crate::menu::Menu::new(row, col)
+            .item(format!("{}横並びビューアー", mark(!on)), |e| e.diff_set_unified(false))
+            .item(format!("{}統合ビューアー", mark(on)), |e| e.diff_set_unified(true));
+        self.open_menu(m);
+    }
+
+    pub(crate) fn close_diff(&mut self) {
+        let shown = self.diff_shown();
         self.panels.diff = None;
+        if !shown {
+            // 隠していた差分のタブを閉じた: 今の画面はそのまま
+            self.diff_return = None;
+            return;
+        }
         let back = match self.diff_return.take() {
             Some(m @ (State::List | State::Normal | State::Log)) => m,
             _ => State::Normal,
@@ -280,8 +434,11 @@ impl Editor {
         }
     }
 
-    /// 差分の本文の見える幅（左右の狭い方。行番号の欄を除く）
+    /// 差分の本文の見える幅（左右の狭い方。行番号の欄を除く。統合ビューアーは 1 列）
     fn diff_text_w(&self) -> usize {
+        if self.panels.diff.as_ref().is_some_and(|d| d.unified) {
+            return self.windows_x().1.saturating_sub(UNI_NUM_W).max(1);
+        }
         (self.windows_x().1.saturating_sub(1) / 2).saturating_sub(NUM_W).max(1)
     }
 
@@ -373,15 +530,24 @@ impl crate::layout::View for DiffScreenView {
 
     fn rect(&self, ed: &crate::editor::Editor, s: crate::layout::Screen) -> Option<crate::panes::Rect> {
         let _ = s;
-        ed.panels.diff.as_ref()?;
+        if !ed.diff_shown() {
+            return None;
+        }
+        // タブの行の下から
         let (x, w) = ed.windows_x();
-        Some(crate::panes::Rect { x, y: ed.area().y, w, h: ed.windows_rows().saturating_sub(ed.area().y) })
+        let y = ed.area().y + ed.tabs_row();
+        Some(crate::panes::Rect { x, y, w, h: ed.windows_rows().saturating_sub(y) })
     }
 
     fn draw(&self, ed: &crate::editor::Editor, p: &mut crate::view::Painter, r: crate::panes::Rect, s: crate::layout::Screen) {
         let _ = (r, s);
         if let Some(d) = &ed.panels.diff {
-            draw::draw_diff_view(p, d, r);
+            if d.unified {
+                draw::draw_unified(p, d, r);
+            } else {
+                draw::draw_diff_view(p, d, r);
+            }
+            draw::draw_viewer_chip(p, d, r);
         }
     }
 
@@ -389,8 +555,22 @@ impl crate::layout::View for DiffScreenView {
         let _ = clicks;
         // 窓を覆って出ている差分: 押したら差分へ向き、押した行・列へカーソルを置く（下の本文へは通さない）
         ed.set_state(crate::editor::State::Diff);
+        // 見出しの右のビューアーの切り替え
+        if at.row == 0 && at.col + viewer_chip_w() + 2 >= r.w {
+            ed.diff_viewer_menu(at.screen.0 + 1, at.screen.1);
+            return crate::layout::Click::Done;
+        }
         let tw = ed.diff_text_w();
         if let Some(d) = &mut ed.panels.diff {
+            if d.unified {
+                if let Some(k) = at.row.checked_sub(1).map(|k| d.top + k).filter(|&k| k < d.rows.len()) {
+                    d.cursor = k;
+                    d.col = at.col.saturating_sub(UNI_NUM_W) + d.left;
+                    d.col = d.shown_col();
+                    d.follow(tw);
+                }
+                return crate::layout::Click::Done;
+            }
             let half = r.w.saturating_sub(1) / 2;
             let k = at.row.checked_sub(1).map(|k| d.top + k).filter(|&k| k < d.rows.len());
             if let Some(k) = k {
@@ -432,6 +612,10 @@ impl crate::layout::View for DiffScreenView {
             .action(ed, "diff.revert")
             .sep()
             .action(ed, "diff.open")
+            .sep()
+            .action(ed, "diff.sideBySide")
+            .action(ed, "diff.unified")
+            .sep()
             .action(ed, "diff.close");
         ed.open_menu(m);
         true
@@ -484,6 +668,7 @@ pub(crate) mod draw {
             // カーソルを出す側（右に行が無ければ左）
             let caret_left = d.on_left && row.left.is_some() || row.right.is_none();
             for (is_left, side, col, w, span, word) in [(true, &row.left, r.x, half, spans.0, DIFF_WORD_DEL_BG), (false, &row.right, rx, r.w - half - 1, spans.1, DIFF_WORD_BG)] {
+                let hl = if is_left { &d.hl_old } else { &d.hl_new };
                 let saved = p.cols;
                 p.cols = col + w;
                 if let Some((n, text)) = side {
@@ -499,6 +684,7 @@ pub(crate) mod draw {
                     let caret = (cursor && caret_left == is_left).then(|| d.shown_col());
                     let mut caret_item = None;
                     let mut at = 0;
+                    let colors = line_colors(text, hl.get(*n));
                     for (b, g) in text.grapheme_indices(true) {
                         let width = p.cell_width(g);
                         let hit = span.as_ref().is_some_and(|s| b >= s.start && b < s.end);
@@ -506,7 +692,7 @@ pub(crate) mod draw {
                             caret_item = Some(items.len());
                         }
                         at += width;
-                        items.push(Item { g: Cow::Borrowed(g), width, fg: FG, bg: if hit { Some(word) } else { None }, underline: false });
+                        items.push(Item { g: Cow::Borrowed(g), width, fg: colors[b], bg: if hit { Some(word) } else { None }, underline: false });
                     }
                     let gone = d.left > 0 && (skip_cols(&mut items, d.left, &mut caret_item) || at < d.left);
                     if let Some(i) = caret_item {
@@ -526,6 +712,92 @@ pub(crate) mod draw {
         }
         p.out.push(Instance::fill((r.x + half) as f32 * cell.w + cell.w * 0.5, y0 + cell.h, 1.0, body as f32 * cell.h, LINE_NO));
     }
+
+    /// 行の byte ごとの文字色（構文の色。後から塗ったものが勝つ）
+    pub(crate) fn line_colors(text: &str, hl: Option<&Vec<(usize, usize, nagi_syntax::Hl)>>) -> Vec<[f32; 4]> {
+        let mut c = vec![FG; text.len() + 1];
+        for &(a, b, h) in hl.into_iter().flatten() {
+            let (a, b) = (a.min(text.len()), b.min(text.len()));
+            c[a..b].fill(hl_color(h));
+        }
+        c
+    }
+
+    /// 見出しの右の「横並びビューアー ▾」
+    pub(crate) fn draw_viewer_chip(p: &mut Painter, d: &crate::diff_view::DiffView, r: Rect) {
+        let cell = p.fonts.cell();
+        let label = format!("{}{}", if d.unified { "統合ビューアー" } else { "横並びビューアー" }, super::VIEWER_CHIP);
+        let w = super::viewer_chip_w();
+        let x = (r.x + r.w).saturating_sub(w + 1);
+        let y = r.y as f32 * cell.h;
+        p.out.push(Instance::fill(x as f32 * cell.w, y, (w + 1) as f32 * cell.w, cell.h - 1.0, BG));
+        let saved = p.cols;
+        p.cols = r.x + r.w;
+        p.text(&label, x, y, STATUS_FG);
+        p.cols = saved;
+    }
+
+    /// 統合ビューアー: 1 列に、古い版・新しい版の行番号と本文。消した行は赤、足した行は緑の地
+    pub(crate) fn draw_unified(p: &mut Painter, d: &crate::diff_view::DiffView, r: Rect) {
+        use crate::diff_view::RowKind;
+        let cell = p.fonts.cell();
+        let (x0, y0) = (r.x as f32 * cell.w, r.y as f32 * cell.h);
+        p.out.push(Instance::fill(x0, y0, r.w as f32 * cell.w, r.h as f32 * cell.h, BG));
+        let saved = p.cols;
+        p.cols = r.x + r.w;
+        p.text(&format!(" {}  →  {}", d.left_title, d.right_title), r.x, y0, FG);
+        p.out.push(Instance::fill(x0, y0 + cell.h - 1.0, r.w as f32 * cell.w, 1.0, LINE_NO));
+        let body = r.h.saturating_sub(1);
+        for (k, row) in d.rows.iter().enumerate().skip(d.top).take(body) {
+            let y = y0 + (1 + k - d.top) as f32 * cell.h;
+            let bg = match row.kind {
+                RowKind::Add => DIFF_ADD_BG,
+                RowKind::Del => DIFF_DEL_BG,
+                _ => BG,
+            };
+            p.out.push(Instance::fill(x0, y, r.w as f32 * cell.w, cell.h, bg));
+            let cursor = k == d.cursor;
+            let num = |n: Option<&(usize, String)>| n.map_or("      ".to_string(), |x| format!("{:>5} ", x.0 + 1));
+            let nums = format!("{}{}", num(row.left.as_ref()), num(row.right.as_ref()));
+            if cursor {
+                p.out.push(Instance::fill(x0, y, (super::UNI_NUM_W - 1) as f32 * cell.w, cell.h, FG));
+            }
+            let c = p.text(&nums, r.x, y, if cursor { BG } else { LINE_NO });
+            let (text, hl) = match (&row.right, &row.left) {
+                (Some(n), _) => (n, d.hl_new.get(n.0)),
+                (None, Some(o)) => (o, d.hl_old.get(o.0)),
+                _ => continue,
+            };
+            let colors = line_colors(&text.1, hl);
+            let caret = cursor.then(|| d.shown_col());
+            let mut caret_item = None;
+            let mut items = Vec::new();
+            let mut at = 0;
+            for (b, g) in text.1.grapheme_indices(true) {
+                let width = p.cell_width(g);
+                if caret.is_some_and(|cc| cc >= at && cc < at + width) {
+                    caret_item = Some(items.len());
+                }
+                at += width;
+                items.push(Item { g: Cow::Borrowed(g), width, fg: colors[b], bg: None, underline: false });
+            }
+            let gone = d.left > 0 && (skip_cols(&mut items, d.left, &mut caret_item) || at < d.left);
+            if let Some(i) = caret_item {
+                items[i].bg = Some(CURSOR);
+                items[i].fg = BG;
+            }
+            let end = p.draw(&items, c, y);
+            if caret.is_some() && caret_item.is_none() && !gone && end < r.x + r.w {
+                p.out.push(Instance::fill(end as f32 * cell.w, y, cell.w, cell.h, CURSOR));
+            }
+        }
+        p.cols = saved;
+    }
+}
+
+/// 見出しの右のビューアーの切り替えの幅（長い方に合わせる）
+fn viewer_chip_w() -> usize {
+    nagi_core::display_col("横並びビューアー", "横並びビューアー".len(), false) + nagi_core::display_col(VIEWER_CHIP, VIEWER_CHIP.len(), false)
 }
 
 #[cfg(test)]
@@ -546,7 +818,7 @@ mod tests {
     }
 
     /// 差分は窓の範囲だけを覆う: 欄に移っても残り、欄の大きさを変えられ、隠した欄を出せる。
-    /// `:` から戻ると差分へ。本文に向く（木で開いた・飛んだ）と閉じる（開いたものが覆いの下に隠れない）
+    /// `:` から戻ると差分へ。本文に向く（木で開いた・飛んだ）とタブに隠れる（開いたものが覆いの下に隠れない）
     #[test]
     fn diff_leaves_panels_usable() {
         let keys = |e: &mut Editor, k: &str| {
@@ -571,14 +843,80 @@ mod tests {
         keys(&mut e, "echo 1<CR>");
         assert_eq!(e.state(), State::Diff);
         assert!(e.panels.diff.is_some());
-        // 本文に向くと閉じる
+        // 本文に向くとタブに隠れる
         e.set_state(State::Normal);
-        assert!(e.panels.diff.is_none());
+        assert!(e.panels.diff.is_some() && !e.diff_shown());
         // 左の欄を隠していても、差分の間に出すアイコンがある
         e.show_diff("a".into(), "b".into(), "a\n", "b\n", None);
         e.left_hidden = true;
         let row = e.left_stripe()[0].0;
         assert!(e.chrome_at(row, 0).is_some());
+    }
+
+    /// 差分はエディタのタブ: 開くとタブが増えて作業中のタブになり、ほかのタブを押すと隠れ、差分のタブで戻り、× で閉じる
+    #[test]
+    fn diff_is_an_editor_tab() {
+        let dir = std::env::temp_dir().join(format!("nagi-difftab-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("A.java"), "class A {}\n").unwrap();
+        let mut b = nagi_core::Buffer::open(&dir.join("A.java")).unwrap();
+        b.path = Some(dir.join("A.java"));
+        let mut e = Editor::new(b, None);
+        e.settings.set("editor.tabs", "true", false);
+        e.set_screen(120, 40);
+        e.show_diff("HEAD  src/Main.java".into(), "作業中のファイル  src/Main.java".into(), "a\n", "b\n", None);
+        let tabs = e.buffer_tabs(120);
+        let t = tabs.iter().find(|t| t.doc == DIFF_TAB).expect("差分のタブ");
+        assert_eq!(t.label, "Main.java（差分）");
+        assert!(t.active && tabs.iter().filter(|t| t.active).count() == 1, "差分が作業中のタブ");
+        assert_eq!(e.tabs_row(), 1, "差分の間もタブの行を出す");
+        let r = crate::layout::View::rect(&DiffScreenView, &e, crate::layout::Screen { rows: 40, cols: 120 }).unwrap();
+        assert_eq!(r.y, e.area().y + 1, "差分はタブの行の下");
+        // ほかのタブを押すと隠れる（閉じない）
+        let doc = tabs.iter().find(|t| t.doc != DIFF_TAB).unwrap().doc;
+        e.tab_select(doc);
+        assert!(!e.diff_shown() && e.panels.diff.is_some());
+        assert!(e.buffer_tabs(120).iter().any(|t| t.doc == DIFF_TAB && !t.active));
+        // 差分のタブで戻る
+        e.tab_select(DIFF_TAB);
+        assert!(e.diff_shown());
+        assert_eq!(e.state(), State::Diff);
+        // × で閉じる
+        e.tab_close(DIFF_TAB);
+        assert!(e.panels.diff.is_none());
+        assert!(!e.buffer_tabs(120).iter().any(|t| t.doc == DIFF_TAB));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 統合ビューアー: 消した行を先に・足した行を後に 1 列で。切り替えてもカーソルは同じ行のまま、設定に覚える。構文の色を付ける
+    #[test]
+    fn unified_viewer_and_colors() {
+        let (pairs, _, _) = build_rows("a\nb\nc\n", "a\nB\nx\nc\n");
+        let u = build_unified(&pairs);
+        let kinds: Vec<RowKind> = u.iter().map(|r| r.kind).collect();
+        assert_eq!(kinds, [RowKind::Eq, RowKind::Del, RowKind::Add, RowKind::Add, RowKind::Eq]);
+        assert_eq!(hunk_starts(&u), [1]);
+        let mut e = Editor::new(nagi_core::Buffer::from_str(""), None);
+        e.set_screen(100, 30);
+        e.show_diff("HEAD  A.java".into(), "作業中  A.java".into(), "class A {\n  int a = 1;\n}\n", "class A {\n  int a = 2;\n  int b;\n}\n", None);
+        e.diff_key(Key::Down);
+        let d = e.panels.diff.as_ref().unwrap();
+        assert_eq!(d.rows[d.cursor].right.as_ref().map(|x| x.0), Some(2));
+        e.diff_set_unified(true);
+        let d = e.panels.diff.as_ref().unwrap();
+        assert!(d.unified);
+        assert_eq!(d.rows[d.cursor].right.as_ref().map(|x| x.0), Some(2), "同じ行のまま");
+        assert_eq!(e.settings.get("git.diff_viewer"), "unified");
+        // 次に開く差分も統合
+        e.show_diff("a  A.java".into(), "b  A.java".into(), "x\n", "y\n", None);
+        assert!(e.panels.diff.as_ref().unwrap().unified);
+        e.diff_set_unified(false);
+        assert_eq!(e.settings.get("git.diff_viewer"), "side");
+        // 構文の色: class はキーワード
+        let hl = line_highlights("class A {}\n", Path::new("A.java"));
+        assert!(hl[0].iter().any(|&(a, b, _)| (a, b) == (0, 5)), "{:?}", hl[0]);
+        assert!(line_highlights("x\n", Path::new("a.unknownext")).is_empty());
     }
 
     /// 列のカーソル: ← → で動き（Home・End で行の頭・行末）、行末で止まり、長い行は左端が付いてくる。押した位置へ置く

@@ -676,7 +676,9 @@ impl Editor {
 
     /// 本文を覆っている差分・テーブルを閉じる。テーブルに送っていない変更があれば閉じずに知らせて false（変更を黙って捨てない）
     fn uncover(&mut self) -> bool {
-        if self.panels.diff.take().is_some() {
+        // 差分は閉じずにタブに残す（タブを押すと戻る）
+        if let Some(d) = self.panels.diff.as_mut().filter(|d| !d.hidden) {
+            d.hidden = true;
             self.diff_return = None;
         }
         match self.panels.db_table.as_ref().map(|t| t.changes()) {
@@ -694,7 +696,7 @@ impl Editor {
     pub(crate) fn cmdline_back(&self) -> State {
         if self.panels.db_table.is_some() {
             State::DbTable
-        } else if self.panels.diff.is_some() {
+        } else if self.diff_shown() {
             State::Diff
         } else {
             State::Normal

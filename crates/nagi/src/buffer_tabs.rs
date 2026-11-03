@@ -66,6 +66,14 @@ impl Editor {
                 BufTab { doc: *doc, w: width(&label) + 4 + crate::metrics::icon_cols(crate::metrics::Icon::Small), label, x: 0, active: *active, dirty: *dirty, path: path.clone() }
             })
             .collect();
+        // 差分のタブ（diff_view.rs）。出している間は、それが作業中のタブ
+        if let Some(label) = self.diff_tab_label() {
+            let shown = self.diff_shown();
+            if shown {
+                tabs.iter_mut().for_each(|t| t.active = false);
+            }
+            tabs.push(BufTab { doc: crate::diff_view::DIFF_TAB, w: width(&label) + 4 + crate::metrics::icon_cols(crate::metrics::Icon::Small), label, x: 0, active: shown, dirty: false, path: None });
+        }
         // 作業中のタブが入るまで左を詰める
         let fits = |t: &[BufTab]| t.iter().map(|t| t.w).sum::<usize>() <= w;
         if let Some(a) = tabs.iter().position(|t| t.active) {
@@ -116,6 +124,11 @@ impl Editor {
 
     /// タブを押した: 本文へ向き直ってそのバッファへ
     pub(crate) fn tab_select(&mut self, doc: usize) {
+        if doc == crate::diff_view::DIFF_TAB {
+            self.diff_tab_select();
+            return;
+        }
+        // 差分を出していれば、本文へ向くときにタブに隠れる（Editor::set_state）
         self.leave_panel();
         self.switch_doc(doc);
     }
@@ -123,6 +136,10 @@ impl Editor {
     /// タブを閉じる。保存していなければ、自動で保存する設定なら保存して閉じ（IntelliJ と同じく確かめない）、
     /// そうでなければ（名前の無いバッファも）、保存して閉じるか・保存せずに閉じるかを窓で確かめる
     pub(crate) fn tab_close(&mut self, doc: usize) {
+        if doc == crate::diff_view::DIFF_TAB {
+            self.close_diff();
+            return;
+        }
         let Some((_, path, dirty, _)) = self.buffer_list().into_iter().find(|t| t.0 == doc) else { return };
         let n = (doc + 1).to_string();
         if !dirty {
@@ -302,8 +319,11 @@ pub(crate) mod draw {
                 p.out.push(Instance::fill(tx, y0 + cell.h - crate::metrics::accent_line(), t.w as f32 * cell.w, crate::metrics::accent_line(), ACCENT_FG));
             }
             let fg = if t.active { FG_BRIGHT } else if hover.is_some() { FG } else { STATUS_FG };
-            // ファイルの種類のアイコン（プロジェクトの木と同じ）
-            if let Some(path) = &t.path {
+            // ファイルの種類のアイコン（プロジェクトの木と同じ）。差分のタブは差分のアイコン
+            if t.doc == crate::diff_view::DIFF_TAB {
+                let px = crate::metrics::icon(crate::metrics::Icon::Small);
+                crate::icons::draw(p, "g_diff", (r.x + t.x + 1) as f32 * cell.w, crate::metrics::centered(y0, px), px, None);
+            } else if let Some(path) = &t.path {
                 let row = crate::tree_panel::Row { path: path.clone(), name: file_name(path), depth: 0, dir: false };
                 crate::tree_panel::draw::draw_tree_icon(p, &crate::tree_panel::draw::tree_icon(&row, ed.nav.index.as_ref(), &ed.nav_root()), r.x + t.x + 1, y0);
             }

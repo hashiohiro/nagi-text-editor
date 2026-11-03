@@ -1318,7 +1318,7 @@ impl Editor {
     /// 履歴を出している矩形（窓の領域いっぱいか、下の欄の中身）。区切りをつかむのに使う
     pub(crate) fn log_rect(&self) -> Option<crate::panes::Rect> {
         let l = self.panels.log.as_ref()?;
-        if self.panels.diff.is_some() {
+        if self.diff_shown() {
             return None;
         }
         if !l.docked {
@@ -1733,7 +1733,7 @@ impl crate::layout::View for LogScreenView {
 
     fn rect(&self, ed: &crate::editor::Editor, s: crate::layout::Screen) -> Option<crate::panes::Rect> {
         let _ = s;
-        if ed.panels.diff.is_some() || !ed.panels.log.as_ref().is_some_and(|l| !l.docked) {
+        if ed.diff_shown() || !ed.panels.log.as_ref().is_some_and(|l| !l.docked) {
             return None;
         }
         let (x, w) = ed.windows_x();
