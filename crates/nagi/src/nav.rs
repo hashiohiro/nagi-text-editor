@@ -37,7 +37,7 @@ pub struct IndexState {
 }
 
 /// 識別子に使える文字か
-fn ident_char(c: char) -> bool {
+pub(crate) fn ident_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_' || c == '$'
 }
 

@@ -106,6 +106,7 @@ pub static SCHEMA: &[Item] = &[
     item("editor.show_whitespace", "エディタ", "空白を見せる", SKind::Choice(&[("off", "出さない"), ("trailing", "タブと行末の空白"), ("all", "すべて")]), "off", "空白は ·、タブは →（list）"),
     item("editor.show_fullwidth_space", "エディタ", "全角の空白を見せる", B, "true", "全角の空白（U+3000）を □ で出す"),
     item("editor.cursorline", "エディタ", "カーソルの行を目立たせる", B, "true", "cursorline（IntelliJ と同じく既定でオン）"),
+    item("editor.highlight_usages", "エディタ", "キャレット位置の要素の使用箇所を強調表示", B, "true", "カーソルのある識別子と同じ表記のもの（大文字小文字を区別）に地の色を付ける。打っている間は消える（IntelliJ と同じ）"),
     pitem("editor.colorcolumn", "エディタ", "右端の線", T, "", "列の数をカンマで区切る（120 など。colorcolumn）。.editorconfig の max_line_length も出す"),
     item("editor.split_below", "エディタ", "上下の分割は下に開く", B, "false", "splitbelow"),
     item("editor.split_right", "エディタ", "左右の分割は右に開く", B, "false", "splitright"),

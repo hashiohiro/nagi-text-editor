@@ -66,6 +66,7 @@ const DARCULA: &[(u32, u32)] = &[
     (0x56a8f5, 0xffc66d),
     (0xc77dbb, 0x9876aa),
     (0xb3ae60, 0xbbb529),
+    (0x373b39, 0x344134),
 ];
 /// ブラック（ターミナルのように地は真っ黒。欄・小窓もほぼ黒で、区切りの線で分ける）
 const BLACK: &[(u32, u32)] = &[
@@ -77,6 +78,7 @@ const BLACK: &[(u32, u32)] = &[
     (0x4b5059, 0x5a5a5a),
     (0x2e436e, 0x1f3a66),
     (0x214283, 0x264f78),
+    (0x373b39, 0x26302a),
 ];
 const LIGHT: &[(u32, u32)] = &[
     (0x1e1f22, 0xffffff),
@@ -94,6 +96,7 @@ const LIGHT: &[(u32, u32)] = &[
     (0x43454a, 0xc9ccd6),
     (0x2e436e, 0xd5e1ff),
     (0x2d543f, 0xedebfc),
+    (0x373b39, 0xe4e9e6),
     (0x2d6099, 0x9fc5ff),
     (0xcf8e6d, 0x0033b3),
     (0x6aab73, 0x067d17),
@@ -183,6 +186,8 @@ pub(crate) const SEL_BG: [f32; 4] = rgb(0x214283);
 /// 検索の一致・今の一致の地
 pub(crate) const SEARCH_BG: [f32; 4] = rgb(0x2d543f);
 pub(crate) const SEARCH_CUR_BG: [f32; 4] = rgb(0x2d6099);
+/// カーソルの所の識別子と同じ表記のものの地（IntelliJ の「キャレット下の識別子」）
+pub(crate) const CARET_WORD_BG: [f32; 4] = rgb(0x373b39);
 // git の差分の色（行番号の左の細い帯・差分の画面）
 pub(crate) const GIT_ADD: [f32; 4] = rgb(0x549159);
 pub(crate) const GIT_MOD: [f32; 4] = rgb(0x375fad);
@@ -665,6 +670,8 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
     let show_zen = ed.settings.bool("editor.show_fullwidth_space");
     let cursorline = ed.settings.bool("editor.cursorline") && pane.active;
     let flash = ed.yank_flash.filter(|_| pane.active).map(|f| (f.0, f.1));
+    // カーソルの所の識別子と同じ表記のもの（作業中の窓だけ）
+    let caret_word = if pane.active { ed.caret_word_shown() } else { None };
     let line_numbers = ed.settings.get("editor.line_numbers");
     // 行番号の右: 折りたためる範囲の頭（開いたものはマウスを欄に載せている間だけ印を出す）と、実行の ▶（gutter.rs）
     let fold_heads: Vec<usize> = match (pane.syntax, shown.first(), shown.last()) {
@@ -855,11 +862,13 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
         };
         let is_cursor_line = pane.active && ln == pane.cursor.line;
         let block_span = block.filter(|b| ln >= b.l1 && ln <= b.l2).map(|b| crate::block::span_in_line(line, b.left, b.right));
-        // 飾りのない行（カーソル・一致・選択・ヤンクの光りがかからない。改行の位置にかかるものも見る）は覚えた結果で描く
+        let words = caret_word.map(|n| crate::caret_word::occurrences(line, n)).unwrap_or_default();
+        // 飾りのない行（カーソル・一致・同じ表記の強調・選択・ヤンクの光りがかからない。改行の位置にかかるものも見る）は覚えた結果で描く
         let eol = abs + line.len();
         let plain = wrapw == 0
             && !is_cursor_line
             && line_matches.is_empty()
+            && words.is_empty()
             && block_span.is_none()
             && flash.is_none_or(|(fs, fe)| fe <= abs || fs > eol)
             && visual.is_none_or(|(vs, ve, lw)| if lw { !line_selected } else { ve <= abs || vs > eol });
@@ -922,6 +931,10 @@ pub(crate) fn draw_pane(p: &mut Painter, ed: &Editor, pane: &Pane, rect: Rect) {
                 " " if show_ws == "all" || show_ws == "trailing" && trailing => (it.g, it.fg) = (Cow::Borrowed("·"), LINE_NO),
                 "\u{3000}" if show_zen || show_ws != "off" => (it.g, it.fg) = (Cow::Borrowed("□"), LINE_NO),
                 _ => {}
+            }
+            // 同じ表記の強調の上に、ヤンクの光・検索の一致・選択を重ねる
+            if words.iter().any(|&(s, e)| b >= s && b < e) {
+                it.bg = Some(CARET_WORD_BG);
             }
             if flash.is_some_and(|(fs, fe)| a >= fs && a < fe) {
                 it.bg = Some(YANK_BG);
@@ -1102,6 +1115,8 @@ pub fn build(ed: &mut Editor, fonts: &mut Fonts, r: &mut Renderer) -> Vec<Instan
     ed.set_screen(cols, rows);
     // Markdown のプレビュー: 打った内容と幅に合わせて作り直し、カーソルの行へ送る
     ed.refresh_md_preview();
+    // カーソルの所の識別子と同じ表記の強調を、カーソル・中身に合わせる（caret_word.rs）
+    ed.update_caret_word(std::time::Instant::now());
     // 履歴: 選んでいるコミットの中身を取りに行く（キー・マウスで選びを変えた後）
     ed.log_request_detail();
     // プロジェクトの木を開いているファイルに合わせる

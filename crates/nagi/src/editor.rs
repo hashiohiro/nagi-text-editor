@@ -533,6 +533,8 @@ pub struct Editor {
     pub hover_cell: Option<(usize, usize)>,
     pub hover_due: Option<std::time::Instant>,
     pub hover_tip: Option<crate::hover::HoverTip>,
+    /// カーソルの所の識別子と同じ表記の強調（caret_word.rs）
+    pub(crate) caret_word: crate::caret_word::CaretWord,
     /// マウスを載せているタブのアイコン（行, 列, 名前）と、描いたアイコンの位置
     pub hover_tab: Option<(usize, usize, &'static str)>,
     /// 状態行の「▶ 構成の名前」の列（始め, 終わり）。押すと実行のメニュー
@@ -847,6 +849,7 @@ impl Editor {
             hover_cell: None,
             hover_due: None,
             hover_tip: None,
+            caret_word: Default::default(),
             hover_tab: None,
             tab_hits: Default::default(),
             field_hits: Default::default(),

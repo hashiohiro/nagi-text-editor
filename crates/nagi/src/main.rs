@@ -73,6 +73,7 @@ mod input_dialog;
 mod search_bar;
 mod scrollbar;
 mod hover;
+mod caret_word;
 mod gutter;
 mod push_dialog;
 mod breakpoints_dialog;
@@ -1560,6 +1561,9 @@ impl Frame {
             if self.ed.as_mut().is_some_and(|e| e.fire_hover(now)) {
                 self.draw();
             }
+            if self.ed.as_mut().is_some_and(|e| e.fire_caret_word(now)) {
+                self.draw();
+            }
             if self.replay_deadline.is_some_and(|d| now >= d) {
                 self.replay_deadline = None;
                 if let Some(step) = self.replay.pop_front() {
@@ -1592,7 +1596,8 @@ impl Frame {
         let save_at = self.ed.as_ref().and_then(|e| e.autosave_deadline());
         let balloon = self.ed.as_ref().and_then(|e| e.svc.notify.balloon_deadline());
         let hover = self.ed.as_ref().and_then(|e| e.hover_deadline());
-        let deadline = [self.map_deadline, self.snap_deadline, self.autoscroll_deadline, self.replay_deadline, self.held.as_ref().map(|h| h.3), auto, flash, save_at, balloon, hover].into_iter().flatten().min();
+        let caret_word = self.ed.as_ref().and_then(|e| e.caret_word_deadline());
+        let deadline = [self.map_deadline, self.snap_deadline, self.autoscroll_deadline, self.replay_deadline, self.held.as_ref().map(|h| h.3), auto, flash, save_at, balloon, hover, caret_word].into_iter().flatten().min();
         let _ = el;
         self.flow = if self.scroll_anim.is_some() {
             ControlFlow::Poll
